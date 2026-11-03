@@ -82,9 +82,16 @@ corepack pnpm@11.7.0 -r --if-present build
 # exit 0：web / api / dispatcher 均构建成功
 ```
 
+## 必需 CI
+
+在代码提交 `ce4d6484ef5c1561ff57892c6932958dd65fec9a`（本记录随后只追加文档）上，PR #18 的两项必需检查均通过：
+
+- `check (lint, format, types, unit tests, build)`：success（49s）。
+- `integration (real PostgreSQL)`：success（42s），run `41675410037`；Node 24.22.2 + PostgreSQL 16，包含本次新增回归。
+
 ## 未验证项与限制
 
-1. 本地实际运行使用 Node v22.23.3，而不是仓库锁定的 24.22.2；PR 的必需 CI `integration (real PostgreSQL)` 会在 Node 24.22.2 + PostgreSQL 16 上重复执行本回归，最终以该结果为准。
+1. 本地实际运行使用 Node v22.23.3，而不是仓库锁定的 24.22.2；上述 PR CI 已按锁定 Node 版本重复执行本回归。
 2. 验证对象是隔离 API 进程的 loopback HTTP，不是 `https://moyu.sutrasky.com` 经 nginx 的正式链路；本次验收范围是 SSE 路由的持久化回放边界，不涉及反代缓冲/超时。
 3. 测试使用的数据库代理仅存在于测试进程，用于确定性地把第 502 条事件卡在页边界；生产路由没有测试钩子，也没有改动。
 4. 没有真实长时连接、网络抖动或客户端限速场景；这些不属于 Issue #16 的验收条件。
