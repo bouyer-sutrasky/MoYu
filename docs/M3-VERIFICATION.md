@@ -26,7 +26,7 @@ integrations/superagent/build-patched.sh /root/src/upstream/superagent-tar/dsh-s
 
 - 四个补丁按序 `git apply --check` / `git apply`：`0001-workspace-source.patch`、`0002-machine-bridge.patch`、`0003-ticket-freeze.patch`、`0004-bridge-duplicate-first-result.patch`；补丁失败即停止，不做模糊套用。
 - 在干净环境用固定 Node/pnpm 运行：`pnpm typecheck` exit 0、`pnpm build` exit 0，产物包含 `lib/workspace-watch.js` 与 `lib/index.js`。
-- 复审补丁的定向测试 20 个 Bridge 测试通过；完整套件 1231 通过 / 1 失败，唯一失败是 M0 已记录的 Feishu `sources.spec.ts` 可选测试（在 pristine 上同样失败），与 M3 路径无关。
+- PR #10 已合并最新 main `20e3a06`（#12）；复审补丁的定向测试 20 个 Bridge 测试通过；完整套件 1231 通过 / 1 失败，唯一失败是 M0 已记录的 Feishu `sources.spec.ts` 可选测试（在 pristine 上同样失败），与 M3 路径无关。
 - 证据与命令见 [`integrations/superagent/evidence/m3-upstream-build.md`](../integrations/superagent/evidence/m3-upstream-build.md)。
 
 ## 平台检查
@@ -47,7 +47,7 @@ corepack pnpm@11.7.0 exec prettier --check "**/*.{ts,tsx,mjs,cjs,json,yml,yaml,c
 
 TEST_DATABASE_ADMIN_URL=postgres://moyu:moyu_test@127.0.0.1:5432/postgres \
   corepack pnpm@11.7.0 --filter @moyu/db --filter @moyu/api --filter @moyu/dispatcher test:integration
-# exit 0：db 10、api 18、dispatcher 4，全部在真实 PostgreSQL 上
+# exit 0：db 10、api 20、dispatcher 4，全部在真实 PostgreSQL 上
 ```
 
 集成测试覆盖：迁移与 M3 唯一索引、消息+delivery 同事务、同一 `clientMessageId` 并发（8 路，1×202 + 7×200、1 条消息/1 条 delivery）、不同 payload 409、会话 `clientRequestId` 幂等/409、Channel 回调 `source_event_id` 幂等与首条回调补 Ticket 关联、跨 Ticket 409、dispatcher 503 重试使用同一 trigger id、Bridge 事件投影/游标/重复同步，以及 SSE 在只有较晚事件唤醒时按序补读且真实 `Last-Event-ID` 重连不重复。
