@@ -131,8 +131,18 @@ export class SessionService {
     return true;
   }
 
-  async revokeSessionsForCredential(ownerId: string, credentialRowId: string): Promise<string[]> {
-    const rows = await this.database
+  /**
+   * Marks sessions bound to a revoked credential without publishing live
+   * revocation notifications. Callers inside a transaction must announce the
+   * returned IDs only after the transaction commits, so a rolled-back attempt
+   * never closes a still-valid SSE stream.
+   */
+  async markSessionsRevokedForCredential(
+    executor: Pick<Database, 'update'>,
+    ownerId: string,
+    credentialRowId: string,
+  ): Promise<string[]> {
+    const rows = await executor
       .update(sessions)
       .set({ revokedAt: sql`now()` })
       .where(
@@ -144,10 +154,13 @@ export class SessionService {
       )
       .returning({ id: sessions.id });
 
-    for (const row of rows) {
-      this.events.emitSessionRevoked(row.id);
-    }
     return rows.map((row) => row.id);
+  }
+
+  announceRevokedSessions(sessionIds: readonly string[]): void {
+    for (const sessionId of sessionIds) {
+      this.events.emitSessionRevoked(sessionId);
+    }
   }
 
   async isActive(sessionId: string): Promise<boolean> {
@@ -165,8 +178,11 @@ export class SessionService {
     return Boolean(row);
   }
 
-  async countActiveCredentials(ownerId: string): Promise<number> {
-    const [row] = await this.database
+  async countActiveCredentials(
+    ownerId: string,
+    executor: Pick<Database, 'select'> = this.database,
+  ): Promise<number> {
+    const [row] = await executor
       .select({ count: sql<number>`count(*)::int` })
       .from(passkeyCredentials)
       .where(and(eq(passkeyCredentials.ownerId, ownerId), isNull(passkeyCredentials.revokedAt)));
