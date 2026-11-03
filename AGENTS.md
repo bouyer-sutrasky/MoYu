@@ -3,7 +3,9 @@
 ## 命名
 
 - 项目名：**MoYu**。Issue、PR、提交信息、文档标题一律写 `MoYu`；不要再写「Superagent Workspace」作为项目名。
-- GitHub 仓库：`sutrasky/MoYu`（私有）。agent 账号：`Bouyer12`。
+- GitHub 仓库：`bouyer-sutrasky/MoYu`（组织 `bouyer-sutrasky`，公开）。agent 账号：`Bouyer12`（仓库 Admin）。
+- 2026-11-03 该仓库由 `sutrasky/MoYu` 转移到组织，旧名指同一仓库；`docs/environment-baseline.md`、`docs/M1-VERIFICATION.md` 等历史证据里的旧名保持原样，不要改写。
+- `main` 受分支保护：必须走 PR，且 `check (lint, format, types, unit tests, build)` 与 `integration (real PostgreSQL)` 两个检查必须通过；禁直推、禁 force push、禁删除。
 - 代码内部标识（如插件 id `dsh-superagent-workspace`、包名 `dsh-superagent/*`）沿用上游命名，不随项目名改动。
 
 开始任何开发任务，先读 docs/DEVELOPMENT-GUIDE.md 对应阶段、docs/DESIGN.md 的已确认行为，以及 docs/API-CONTRACTS.md 的相关接口。部署与兼容性工作还须读取 docs/research/，复核现场事实后写 docs/environment-baseline.md。

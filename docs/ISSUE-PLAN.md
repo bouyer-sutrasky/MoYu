@@ -1,10 +1,10 @@
 # 用户实际操作与分阶段 Issue
 
-本文件是用户复制给 superagent 的操作步骤。本次没有自动向 GitHub 发消息。本项目取值：仓库 `sutrasky/MoYu`、agent `Bouyer12`、HTTPS 域名待定（M2 前确定）；历史记录中的账号不是本次确认的当前授权。
+本文件是用户复制给 superagent 的操作步骤。本次没有自动向 GitHub 发消息。本项目取值：仓库 `bouyer-sutrasky/MoYu`、agent `Bouyer12`、HTTPS 域名待定（M2 前确定）；历史记录中的账号不是本次确认的当前授权。
 
 ## 第一步：建仓库并提交资料
 
-1. 仓库已建：`sutrasky/MoYu`（私有，Issues 已启用）。用户自行决定公开/私有。
+1. 仓库已建：`bouyer-sutrasky/MoYu`（组织仓库，公开，Issues 已启用）。用户自行决定公开/私有。
 2. 在仓库 Settings → Collaborators 或组织访问设置中，给予专用 agent 账号所需写权限，并确认邀请已接受；现有token/SSH凭据也必须能访问此新仓库。
 3. 将 repo-kit 目录里的文件作为仓库根内容提交；不要把整个 E:/workplace 上传。该包含 AGENTS.md、README.md、docs 及脱敏取证，不含运行凭据和数据库。
 4. 可在 GitHub 网页使用 Add file → Upload files，上传解压后的目录内容并提交。若用 Git，clone新仓库到单独目录，复制repo-kit内容，检查 `git diff --cached` 后再commit/push；不要把设计工作目录直接变为生产仓库。
