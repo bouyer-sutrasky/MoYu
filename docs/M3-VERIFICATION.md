@@ -182,3 +182,4 @@ Before 为 `main` @ `b08f36d` 的真实 M2 构建，经同一个隔离 API/数�
 - [`integrations/superagent/patches/`](../integrations/superagent/patches/) 与 [`build-patched.sh`](../integrations/superagent/build-patched.sh)
 - [`docs/evidence/m3/`](evidence/m3/)：截图、日志、`e2e-result.json`
 - [`scripts/m3/e2e.mjs`](../scripts/m3/e2e.mjs)：可复现的隔离 E2E
+- [M3 合并后 SSE 跨 500 条边界验收](M3-SSE-BOUNDARY-VERIFICATION.md)：Issue #16 在真实 PostgreSQL 与 HTTP 路由上的回放页边界结果。
