@@ -1,9 +1,12 @@
 import { randomBytes } from 'node:crypto';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 import { Client, Pool } from 'pg';
 
 import { createDatabase, type Database } from '../../src/client';
-import { migrateDatabase } from '../../src/migrate';
+import { defaultMigrationsFolder, migrateDatabase } from '../../src/migrate';
 
 export interface TestDatabase {
   name: string;
@@ -31,12 +34,17 @@ function databaseUrlFor(adminUrl: string, name: string): string {
   return url.toString();
 }
 
+export interface TestDatabaseOptions {
+  /** Migration folder to apply; defaults to the committed migrations. */
+  migrationsFolder?: string;
+}
+
 /**
  * Creates an empty real PostgreSQL database, applies the committed migrations and
  * returns a pool for the suite. The database is dropped afterwards, so a failing
  * test cannot leak state into the next run.
  */
-export async function createTestDatabase(): Promise<TestDatabase> {
+export async function createTestDatabase(options: TestDatabaseOptions = {}): Promise<TestDatabase> {
   const adminUrl = requireAdminUrl();
   const name = `moyu_test_${process.pid}_${randomBytes(6).toString('hex')}`;
 
@@ -51,7 +59,7 @@ export async function createTestDatabase(): Promise<TestDatabase> {
   const url = databaseUrlFor(adminUrl, name);
   const pool = new Pool({ connectionString: url, max: 4 });
   const db = createDatabase(pool);
-  await migrateDatabase(db);
+  await migrateDatabase(db, options.migrationsFolder);
 
   return {
     name,
@@ -69,6 +77,53 @@ export async function createTestDatabase(): Promise<TestDatabase> {
       }
     },
   };
+}
+
+/**
+ * Copies the committed migrations up to and including `upTo` into a temporary
+ * folder, so a test can build a database at an older schema revision and then
+ * exercise the forward migration against realistic existing rows.
+ */
+async function createMigrationSubset(upTo: number): Promise<string> {
+  const target = await mkdtemp(path.join(tmpdir(), 'moyu-migrations-'));
+  await mkdir(path.join(target, 'meta'), { recursive: true });
+  const journal = JSON.parse(
+    await readFile(path.join(defaultMigrationsFolder, 'meta', '_journal.json'), 'utf8'),
+  ) as { entries: { idx: number; tag: string }[] };
+  const entries = journal.entries.filter((entry) => entry.idx <= upTo);
+  await writeFile(
+    path.join(target, 'meta', '_journal.json'),
+    JSON.stringify({ ...journal, entries }),
+  );
+  for (const entry of entries) {
+    await copyFile(
+      path.join(defaultMigrationsFolder, `${entry.tag}.sql`),
+      path.join(target, `${entry.tag}.sql`),
+    );
+    const snapshot = `${String(entry.idx).padStart(4, '0')}_snapshot.json`;
+    try {
+      await copyFile(
+        path.join(defaultMigrationsFolder, 'meta', snapshot),
+        path.join(target, 'meta', snapshot),
+      );
+    } catch {
+      // Older migration folders may not have a snapshot for every entry.
+    }
+  }
+  return target;
+}
+
+/**
+ * Creates an empty database migrated up to (and including) the given migration
+ * index, leaving the newest forward migrations unapplied.
+ */
+export async function createTestDatabaseUpTo(upTo: number): Promise<TestDatabase> {
+  const folder = await createMigrationSubset(upTo);
+  try {
+    return await createTestDatabase({ migrationsFolder: folder });
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
 }
 
 /**

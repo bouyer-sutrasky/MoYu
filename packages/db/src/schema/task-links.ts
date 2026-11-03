@@ -1,6 +1,7 @@
 import {
   bigint,
   check,
+  foreignKey,
   index,
   integer,
   pgTable,
@@ -55,6 +56,14 @@ export const taskLinks = pgTable(
       .where(sql`${table.upstreamTicketId} is not null`),
     index('task_links_state_idx').on(table.state),
     check('task_links_version_nonnegative', sql`${table.version} >= 0`),
+    // A task must belong to the same repository as its conversation. The
+    // existing single-column FKs keep their delete semantics; this composite key
+    // rejects a task that points at another repository's conversation.
+    foreignKey({
+      name: 'task_links_conversation_repository_fk',
+      columns: [table.conversationId, table.repositoryId],
+      foreignColumns: [conversations.id, conversations.repositoryId],
+    }).onDelete('cascade'),
   ],
 );
 

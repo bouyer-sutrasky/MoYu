@@ -252,6 +252,75 @@ describe('work loop API on real PostgreSQL', () => {
     expect(deliveryCount?.count).toBe(1);
   });
 
+  it('rejects a cross-conversation reply without writing a message or delivery', async () => {
+    const conversationA = await createConversation(harness);
+    const conversationB = await createConversation(harness);
+    const targetClientMessageId = `target-${randomUUID()}`;
+
+    const target = await harness.app.inject({
+      method: 'POST',
+      url: `/api/v1/conversations/${conversationA.id}/messages`,
+      ...authCookie(harness),
+      payload: { clientMessageId: targetClientMessageId, text: 'Message in conversation A' },
+    });
+    expect(target.statusCode).toBe(202);
+    const targetMessage = createMessageDataSchema.parse(envelope(target.json())).message;
+
+    const crossClientMessageId = `cross-${randomUUID()}`;
+    const cross = await harness.app.inject({
+      method: 'POST',
+      url: `/api/v1/conversations/${conversationB.id}/messages`,
+      ...authCookie(harness),
+      payload: {
+        clientMessageId: crossClientMessageId,
+        text: 'Conversation B replying to conversation A',
+        replyToMessageId: targetMessage.id,
+      },
+    });
+    expect(cross.statusCode).toBe(422);
+    expect(cross.json()).toMatchObject({ error: { code: 'invalid_request' } });
+    expect((cross.json() as { error: { message: string } }).error.message).toContain(
+      'same conversation',
+    );
+
+    const [crossMessageCount] = await harness.database
+      .select({ count: sql<number>`count(*)::int` })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.conversationId, conversationB.id),
+          eq(messages.clientMessageId, crossClientMessageId),
+        ),
+      );
+    expect(crossMessageCount?.count).toBe(0);
+    const [crossDeliveryCount] = await harness.database
+      .select({ count: sql<number>`count(*)::int` })
+      .from(deliveries)
+      .innerJoin(messages, eq(messages.id, deliveries.messageId))
+      .where(
+        and(
+          eq(messages.conversationId, conversationB.id),
+          eq(messages.clientMessageId, crossClientMessageId),
+        ),
+      );
+    expect(crossDeliveryCount?.count).toBe(0);
+
+    const sameConversation = await harness.app.inject({
+      method: 'POST',
+      url: `/api/v1/conversations/${conversationA.id}/messages`,
+      ...authCookie(harness),
+      payload: {
+        clientMessageId: `same-${randomUUID()}`,
+        text: 'Same-conversation reply',
+        replyToMessageId: targetMessage.id,
+      },
+    });
+    expect(sameConversation.statusCode).toBe(202);
+    const reply = createMessageDataSchema.parse(envelope(sameConversation.json())).message;
+    expect(reply.replyToMessageId).toBe(targetMessage.id);
+    expect(reply.delivery?.state).toBe('stored');
+  });
+
   it('collapses concurrent submissions of the same clientMessageId into one message', async () => {
     const conversation = await createConversation(harness);
     const clientMessageId = `concurrent-${randomUUID()}`;

@@ -36,7 +36,7 @@ import { eventToWorkspaceEvent } from '../events/format';
 import type { AppEventBus } from '../events/bus';
 import { ApiProblem } from '../lib/errors';
 import { parseInput, sendData } from '../lib/http';
-import { isUniqueViolation } from '../lib/pg';
+import { isUniqueViolation, postgresError } from '../lib/pg';
 import { createBridgeClient } from '../runtime/bridge';
 
 export interface ConversationRouteDependencies {
@@ -109,6 +109,32 @@ async function taskByConversation(
     .where(eq(taskLinks.conversationId, conversationId))
     .limit(1);
   return task ?? null;
+}
+
+/**
+ * The database enforces that a reply target belongs to the same conversation.
+ * Checking here as well lets the API return a deliberate 422 instead of a raw
+ * foreign-key error, before any message or delivery row is written.
+ */
+async function assertReplyTargetBelongsToConversation(
+  database: Database,
+  conversationId: string,
+  replyToMessageId: string | null,
+): Promise<void> {
+  if (!replyToMessageId) {
+    return;
+  }
+  const [target] = await database
+    .select({ conversationId: messages.conversationId })
+    .from(messages)
+    .where(eq(messages.id, replyToMessageId))
+    .limit(1);
+  if (!target) {
+    throw ApiProblem.invalid('replyToMessageId does not reference an existing message');
+  }
+  if (target.conversationId !== conversationId) {
+    throw ApiProblem.invalid('replyToMessageId must reference a message in the same conversation');
+  }
 }
 
 async function loadMessages(
@@ -356,6 +382,11 @@ export function registerConversationRoutes(
         throw ApiProblem.conflict('Conversation has no task');
       }
       const input = parseInput(createMessageInputSchema, request.body);
+      await assertReplyTargetBelongsToConversation(
+        database,
+        conversation.id,
+        input.replyToMessageId ?? null,
+      );
 
       let created: { message: MessageRow; delivery: Delivery; event: unknown } | null = null;
       try {
@@ -399,6 +430,11 @@ export function registerConversationRoutes(
           return { message, delivery, event };
         });
       } catch (error) {
+        if (postgresError(error).constraint === 'messages_reply_same_conversation_fk') {
+          throw ApiProblem.invalid(
+            'replyToMessageId must reference a message in the same conversation',
+          );
+        }
         if (!isUniqueViolation(error, 'messages_conversation_client_message_uq')) {
           throw error;
         }

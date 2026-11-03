@@ -29,6 +29,13 @@
       "when": 1793718481436,
       "tag": "0003_robust_the_renegades",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1793722263382,
+      "tag": "0004_nappy_yellowjacket",
+      "breakpoints": true
     }
   ]
 }
