@@ -26,7 +26,7 @@ integrations/superagent/build-patched.sh /root/src/upstream/superagent-tar/dsh-s
 
 - 四个补丁按序 `git apply --check` / `git apply`：`0001-workspace-source.patch`、`0002-machine-bridge.patch`、`0003-ticket-freeze.patch`、`0004-bridge-duplicate-first-result.patch`；补丁失败即停止，不做模糊套用。
 - 在干净环境用固定 Node/pnpm 运行：`pnpm typecheck` exit 0、`pnpm build` exit 0，产物包含 `lib/workspace-watch.js` 与 `lib/index.js`。
-- PR #10 已合并最新 main `20e3a06`（#12）；复审补丁的定向测试 20 个 Bridge 测试通过；完整套件 1231 通过 / 1 失败，唯一失败是 M0 已记录的 Feishu `sources.spec.ts` 可选测试（在 pristine 上同样失败），与 M3 路径无关。
+- PR #10 已更新到最新 `main` `20e3a06`（#12 已合并）；复审补丁的定向测试 20 个 Bridge 测试通过；完整套件 1231 通过 / 1 失败，唯一失败是 M0 已记录的 Feishu `sources.spec.ts` 可选测试（在 pristine 上同样失败），与 M3 路径无关。
 - 证据与命令见 [`integrations/superagent/evidence/m3-upstream-build.md`](../integrations/superagent/evidence/m3-upstream-build.md)。
 
 ## 平台检查
