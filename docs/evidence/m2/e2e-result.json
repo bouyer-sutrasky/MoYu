@@ -1,0 +1,37 @@
+{
+  "ranAt": "2026-11-03T10:28:20.295Z",
+  "baseUrl": "https://moyu.sutrasky.com",
+  "rpId": "moyu.sutrasky.com",
+  "browser": "Chromium (Playwright) + CDP virtual authenticator",
+  "virtualAuthenticatorOnly": true,
+  "checks": {
+    "publicHttps": true,
+    "initialSetupPage": true,
+    "firstBinding": true,
+    "setupClosedAfterBinding": true,
+    "sessionCookieAttributes": true,
+    "refreshKeepsLogin": true,
+    "setupEntryClosed": true,
+    "passkeyLogin": true,
+    "challengeReplayRejected": true,
+    "addPasskey": true,
+    "revokePasskey": true,
+    "lastPasskeyProtected": true,
+    "sseConnected": true,
+    "attachmentBeforeRevocation": true,
+    "revokeSession": true,
+    "revocationClosesSse": true,
+    "attachmentAfterRevocation": true,
+    "revokedSessionFallsBackToLogin": true,
+    "logout": true,
+    "recoveryCode": true,
+    "recoveryRegistration": true
+  },
+  "screenshots": [
+    "docs/evidence/m2/after-desktop-light.png",
+    "docs/evidence/m2/after-desktop-dark.png",
+    "docs/evidence/m2/after-mobile-light.png",
+    "docs/evidence/m2/after-mobile-dark.png"
+  ],
+  "note": "The CDP virtual authenticator is automation evidence only. No real hardware passkey was registered in this run."
+}

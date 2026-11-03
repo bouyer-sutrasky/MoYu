@@ -1,6 +1,6 @@
 # 新平台 API 与上游适配契约
 
-本文所有 `/api/v1` 和 `/bridge/v1` 路由均为拟实现接口。上游已核验符号单独列出。实现时以共享 Zod schema 生成类型/校验，并保存 OpenAPI 文档。
+本文定义目标契约。M2 已实现 Passkey、auth state/me/logout/sessions/credentials、仓库只读列表、受保护 SSE 与附件下载；其余 `/api/v1` 与全部 `/bridge/v1` 路由仍为拟实现。共享 Zod schema 位于 `packages/contracts`，实现时无需另建一套类型。
 
 ## 统一约定
 
@@ -14,20 +14,30 @@
 
 | 接口 | 请求 | 响应/约束 |
 | --- | --- | --- |
+| GET /api/v1/auth/state | 无 | 公开初始化状态：`initialized`、可用凭据数、`setupOpen`、`recoveryOpen`、RP ID/origin；不含凭据标识 |
 | POST /api/v1/auth/bootstrap/exchange | `{code}` | 原子消费短期码，发仅限注册的短期Cookie；不是完整登录 |
-| POST /api/v1/auth/registration/options | `{label}` | `{ceremonyId,optionsJSON}`；需要有效bootstrap或被允许的凭据管理会话 |
-| POST /api/v1/auth/registration/verify | `{ceremonyId,response}` | 校验用户验证结果及challenge，原子登记凭据并完成首个owner初始化 |
+| POST /api/v1/auth/registration/options | `{label?}` | `{ceremonyId,optionsJSON}`；需要有效bootstrap或被允许的凭据管理会话 |
+| POST /api/v1/auth/registration/verify | `{ceremonyId,response}` | 校验用户验证结果及challenge，原子登记凭据并完成首个owner初始化；bootstrap路径同时建立登录会话 |
 | POST /api/v1/auth/login/options | `{}` | `{ceremonyId,optionsJSON}`，限流，不泄露凭据秘密 |
 | POST /api/v1/auth/login/verify | `{ceremonyId,response}` | 创建随机会话，Set-Cookie；原子消费challenge |
-| GET /api/v1/auth/me | 无 | 所有者与当前会话摘要 |
+| GET /api/v1/auth/me | 无 | 所有者、当前会话摘要与可用凭据摘要 |
 | POST /api/v1/auth/logout | 无 | 撤销当前session并清Cookie |
-| GET /api/v1/auth/sessions | 无 | 会话列表，不返回原始凭据 |
+| GET /api/v1/auth/sessions | 无 | 会话列表，不返回原始令牌 |
 | DELETE /api/v1/auth/sessions/:id | 无 | 撤销并主动关闭关联SSE |
-| GET/DELETE /api/v1/auth/credentials/:id | 无 | 查询/撤销Passkey，防止无恢复路径误删最后凭据 |
+| GET /api/v1/auth/credentials | 无 | 当前可用 Passkey 摘要 |
+| GET/DELETE /api/v1/auth/credentials/:id | 无 | 查询/撤销Passkey，防止无恢复路径误删最后凭据；撤销时同时撤销绑定会话 |
 
 SimpleWebAuthn server使用 `generateRegistrationOptions`、`verifyRegistrationResponse`、`generateAuthenticationOptions`、`verifyAuthenticationResponse`；browser使用 `startRegistration({optionsJSON})` / `startAuthentication({optionsJSON})`。保存credential ID/publicKey/counter/transports，校验参数包含expectedChallenge、expectedOrigin、expectedRPID；认证传数据库取出的credential。具体TS形态以锁定版本为准。
 
-Cookie建议 `__Host-workspace`、Secure、HttpOnly、Path=/、无Domain、SameSite=Lax或Strict（选定后测试GitHub跳转）。服务端会话无固定短周期强制过期，滚动更新浏览器有效期，支持撤销和密钥轮换。实际浏览器可能清理Cookie；不能承诺永不重登。新增Passkey必然有一次登记动作，但不因定时器强制普通使用重验。
+M2 实际 Cookie：https origin 使用 `__Host-moyu_session` 与 `__Host-moyu_bootstrap`，非 https 的显式开发覆盖使用 `moyu_session` / `moyu_bootstrap`；均 Secure（开发覆盖除外）、HttpOnly、Path=/、无 Domain、SameSite=Lax。服务端只保存随机令牌的 SHA-256 摘要。会话无固定短周期强制过期，`sessions.expires_at` 随活动滚动延长；支持撤销，撤销会立即关闭该会话的 SSE。实际浏览器可能清理Cookie；不能承诺永不重登。新增Passkey必然有一次登记动作，但不因定时器强制普通使用重验。
+
+## M2 实现边界
+
+- 绑定码只由服务器 CLI 生成；网页进程没有生成绑定码的接口。绑定码与注册 token 都只存摘要，完成登记后 `bootstrap_codes.completed_at` 关闭该次绑定。
+- `auth_challenges.context` 在服务端绑定本次 ceremony 到 bootstrap 行或登录会话，不返回给浏览器；challenge 在验证前原子消费，失败或重放都不会得到第二次成功。
+- WebAuthn 校验固定使用 `expectedChallenge`、`expectedOrigin`、`expectedRPID` 与 `requireUserVerification: true`。
+- 初始化入口在首个凭据登记后由 `/auth/state` 返回关闭；只有服务器 CLI 在无可用凭据时能生成恢复码。
+- 仓库、任务、消息、附件上传与 Bridge 仍按后续阶段实现；界面中对应按钮禁用并标注阶段。
 
 ## 仓库、任务与消息
 
@@ -35,7 +45,7 @@ Cookie建议 `__Host-workspace`、Secure、HttpOnly、Path=/、无Domain、SameS
 | --- | --- |
 | GET /api/v1/github/repositories | 专用账号当前可访问仓库，分页；没有全量可见性时支持输入owner/name检查 |
 | POST /api/v1/repositories | `{fullName}` → repositoryId；校验repo存在与所需读写权限，异步准备配置 |
-| GET /api/v1/repositories | 状态、默认分支、实例状态、GitHub监听状态 |
+| GET /api/v1/repositories | **M2 已实现只读列表**：状态、默认分支、实例状态；添加/唤醒/分支/模型仍为后续阶段 |
 | POST /api/v1/repositories/:id/wake | 返回调度operationId，忙时queued，不承诺立即在线 |
 | GET /api/v1/repositories/:id/branches | 分页分支列表 |
 | GET /api/v1/repositories/:id/models | Harness已配置且可用的模型标识，不返回API Key |
@@ -48,7 +58,7 @@ Cookie建议 `__Host-workspace`、Secure、HttpOnly、Path=/、无Domain、SameS
 | POST /api/v1/tasks/:id/retry | 失败/受阻重试，与人工停止的resume分开 |
 | GET /api/v1/tasks/:id/artifacts | diff、检查结果、PR引用等鉴权数据 |
 | POST /api/v1/conversations/:id/attachments | multipart；限制大小/type，返回attachmentId，不自动执行 |
-| GET /api/v1/attachments/:id | 鉴权下载，安全Content-Disposition与MIME，不内联执行上传HTML |
+| GET /api/v1/attachments/:id | **M2 已实现**鉴权下载，安全Content-Disposition与MIME，不内联执行上传HTML；上传属于 M3/M6 |
 
 建会话返回pending直到任务接单；task_links在接单后填upstreamTicketId，不能把Trigger stored视为Ticket已创建。conversation创建时锁仓库/分支选择，正式执行前解析并记录baseCommit；为避免讨论期间分支移动，执行同一已记录快照或显式要求刷新计划，禁止悄悄换起点。
 
@@ -73,7 +83,7 @@ type WorkspaceEvent = {
 
 任务展示状态：pending_admission / discussing / queued / running / waiting_input / awaiting_review / stopping / stopped / blocked / failed / completed / closed_unmerged / not_accepted。消息状态：stored / delivering / delivered / read / failed；delivered和read均要求实际执行器证据，缺证据停留在前态。
 
-SSE失效时重新校验登录。服务端主动撤销需中断流，不得只在首次建立连接时检查。浏览器通知消费同一事件，按eventId去重；正文展示默认适度摘要，点击定位任务。
+`GET /api/v1/events` 在 M2 已实现：先按 `Last-Event-ID`/`after` 回放持久事件，再接收进程内实时事件；每 15 秒心跳。SSE 失效时重新校验登录；服务端主动撤销会立即中断流，不只依赖首次连接检查。M2 尚无任务事件生产者，主要验证连接、回放边界与撤销关闭；浏览器通知消费同一事件，按eventId去重，正文展示默认适度摘要，点击定位任务（M3/M6）。
 
 ## Bridge 机器协议
 

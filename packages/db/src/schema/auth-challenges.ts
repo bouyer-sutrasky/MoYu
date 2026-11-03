@@ -15,6 +15,8 @@ export const authChallenges = pgTable(
     kind: authChallengeKind('kind').notNull(),
     challenge: text('challenge').notNull(),
     options: jsonb('options').$type<Record<string, unknown>>().notNull().default({}),
+    /** Server-only ceremony binding (bootstrap id or session id); never sent to the browser. */
+    context: jsonb('context').$type<Record<string, unknown>>().notNull().default({}),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     consumedAt: timestamp('consumed_at', { withTimezone: true }),

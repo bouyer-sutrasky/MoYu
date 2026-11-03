@@ -5,3 +5,4 @@ pnpm-lock.yaml
 packages/db/migrations/
 docs/
 integrations/
+packages/theme/src/styles/

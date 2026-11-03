@@ -7,6 +7,7 @@ import { createTestDatabase, type TestDatabase } from './helpers';
 const EXPECTED_TABLES = [
   'artifacts',
   'auth_challenges',
+  'bootstrap_codes',
   'conversations',
   'deliveries',
   'events',
@@ -22,6 +23,7 @@ const EXPECTED_TABLES = [
 const EXPECTED_ENUMS = [
   'artifact_type',
   'auth_challenge_kind',
+  'bootstrap_code_purpose',
   'conversation_mode',
   'delivery_state',
   'execution_mode',
@@ -32,6 +34,8 @@ const EXPECTED_ENUMS = [
 ];
 
 const EXPECTED_INDEXES = [
+  'bootstrap_codes_code_hash_uq',
+  'bootstrap_codes_token_hash_uq',
   'deliveries_message_uq',
   'events_seq_uq',
   'messages_conversation_client_message_uq',
@@ -61,7 +65,7 @@ describe('initial migration on an empty PostgreSQL database', () => {
     }
   });
 
-  it('creates all M1 tables', async () => {
+  it('creates all M1 and M2 tables', async () => {
     const tables = await stringColumn(
       testDatabase,
       sql`select table_name from information_schema.tables where table_schema = 'public' order by table_name`,
@@ -71,7 +75,7 @@ describe('initial migration on an empty PostgreSQL database', () => {
     expect(tables).toEqual(EXPECTED_TABLES);
   });
 
-  it('creates the M1 enums', async () => {
+  it('creates the M1 and M2 enums', async () => {
     const enums = await stringColumn(
       testDatabase,
       sql`select typname from pg_type where typtype = 'e' order by typname`,

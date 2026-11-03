@@ -1,5 +1,6 @@
 export * from './artifacts';
 export * from './auth-challenges';
+export * from './bootstrap-codes';
 export * from './conversations';
 export * from './credentials';
 export * from './deliveries';

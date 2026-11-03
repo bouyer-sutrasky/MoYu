@@ -1,57 +1,65 @@
-:root {
-  color-scheme: light dark;
-
-  --background: #f7f7f5;
-  --foreground: #16181d;
-  --muted: #5f6570;
-  --panel: #ffffff;
-  --border: #e2e3e6;
-  --accent: #3157d5;
-  --success: #1f7a4d;
-  --danger: #b3261e;
-
-  font-family:
-    'Inter',
-    'PingFang SC',
-    'Microsoft YaHei',
-    system-ui,
-    -apple-system,
-    sans-serif;
-  line-height: 1.5;
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0f1115;
-    --foreground: #eceef2;
-    --muted: #9aa1ad;
-    --panel: #161a21;
-    --border: #262c36;
-    --accent: #8aa4ff;
-    --success: #6fd3a1;
-    --danger: #ff8f88;
-  }
-}
-
-* {
+/* The fixed Harness tokens are imported before this file in main.tsx. */
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
 html,
 body,
 #root {
-  min-height: 100%;
+  height: 100%;
 }
 
 body {
   margin: 0;
-  background: var(--background);
-  color: var(--foreground);
+  min-width: 320px;
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-family);
+  font-size: 14px;
+  line-height: 22px;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  min-height: 100dvh;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
 }
 
 a {
-  color: var(--accent);
+  color: var(--dsw-alias-link);
+}
+
+::selection {
+  background: var(--dsw-alias-bg-document-selection);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
