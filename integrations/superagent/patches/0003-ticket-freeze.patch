@@ -1,0 +1,543 @@
+diff --git a/docs/007-architecture.md b/docs/007-architecture.md
+index 184ea54..e1e204d 100644
+--- a/docs/007-architecture.md
++++ b/docs/007-architecture.md
+@@ -343,6 +343,7 @@ Some generic modules still refer directly to GitHub or Feishu:
+ | `src/app/tools/main.ts` | The main Session's tools |
+ | `src/app/tools/executor.ts` | An Executor Session's tools |
+ | `src/app/http.ts` | The `/orchestrator/api` routes: the same-origin check, request limits and one status per kind of failure |
++| `src/app/bridge.ts` | The machine Bridge of the MoYu platform: its loopback server and bearer check, `POST /bridge/v1/triggers` (repository, mode, model and base commit checks), `GET /bridge/v1/{capabilities,models,events,tickets}`, the `EventLog` under `<stateDir>/bridge/events.jsonl` with fsynced append-only events, `projectTicketState`, and the once-a-second projection of stored Tickets and worker `task.progress` |
+ | `src/app/api.ts` | `Api`, every route with its parameters, query, body and response, and the filters of the lists; it imports only types, so the panel bundles it |
+ | `src/app/views/text.ts` | The two forms of a view's text: `preview`, plain text on one line, and `markdown` without HTML; `plain` and `readable` |
+ | `src/app/views/records.ts` | The rows the views share: Triggers, Tickets, Threads, Decisions and Channel links, and `ownersOf`, the owners of follow-ups as one request reads them |
+@@ -374,6 +375,7 @@ Some generic modules still refer directly to GitHub or Feishu:
+ | `src/sources/feishu-read.ts` | The `feishu/` reads of a Trigger's message, its root, parent and topic, and `feishuThreadContext`, which gives them to assessments with their images |
+ | `src/sources/admission-context.ts` | The bounded window an assessment starts from: the first pages of a Trigger's Thread, read through its kind, and the messages around the Trigger |
+ | `src/sources/feishu-image.ts` | Reads a Feishu message's image as an attachment for the assessing Session |
++| `src/sources/workspace.ts` | The MoYu workspace kind and plugin entry, exported as `./workspace-watch`: the owner-only Policy part, its one-page Thread context, the non-secret environment variables of the frozen execution spec, and the Channel that posts replies to the platform's runtime-events endpoint, confirming `sent` only after a 2xx |
+ | `src/client/index.tsx` | The client plugin entry: the sidebar entry, the main panel and the page in DeepSeek Harness's Plugin Manager |
+ | `src/client/app.tsx` | The panel: header, search, glossary, tabs and the page of the current route |
+ | `src/client/provider.tsx` | What every page reads from its host: copy, calls, navigation, notices, the state poll, and `restart`, which reads the state quickly while dsh-superagent restarts |
+@@ -397,7 +399,7 @@ Some generic modules still refer directly to GitHub or Feishu:
+ | `src/client/locales.ts` | All copy in both languages, and the glossary of [001 Domain model](001-domain.md) |
+ | `src/client/client.css`, `css.d.ts` | The panel's stylesheet, loaded as text |
+ 
+-`src/sources/github.ts` and `src/sources/feishu.ts` are also the entries of the two Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch` and `./feishu-watch`. The bundle's `cordis.patch.yml` inserts the three plugins, with Feishu disabled.
++`src/sources/github.ts`, `src/sources/feishu.ts`, and `src/sources/workspace.ts` are also the entries of the Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch`, `./feishu-watch`, and `./workspace-watch`. The bundle's `cordis.patch.yml` inserts the four plugins, with Feishu disabled and the workspace Source enabled (its Bridge only listens when `MOYU_BRIDGE_TOKEN` is set).
+ 
+ ## Tests
+ 
+@@ -408,6 +410,9 @@ Some generic modules still refer directly to GitHub or Feishu:
+ | `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version, settings migrations and assessment outcomes |
+ | `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |
+ | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
++| `tests/workspace.spec.ts` | The workspace Source kind and plugin entry: its non-secret schema, owner-only Policy part, one-page Thread context, frozen-spec environment, the reply id prefixes, and its Channel's `sent`/`gone`/retry answers against a loopback platform stand-in |
++| `tests/bridge.spec.ts` | The machine Bridge: bearer auth and readiness, capabilities and models, Trigger delivery and its 409/422/503 answers, the duplicate ticket lookup, event paging and the fsynced append-only log across a restart, the ticket snapshot, `projectTicketState` row by row, and `task.progress` from worker Session events |
++| `tests/ticket-freeze.spec.ts` | The frozen execution spec: parsing it from a workspace Trigger, copying model/base/mode onto the accepted Ticket, leaving other Sources without one, and the launch-time model validation that never falls back |
+ | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
+ | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
+ | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
+diff --git a/src/app/bridge.ts b/src/app/bridge.ts
+index 47cd0c9..7b187f6 100644
+--- a/src/app/bridge.ts
++++ b/src/app/bridge.ts
+@@ -162,6 +162,8 @@ export interface BridgeHost {
+   models(): Promise<ModelCatalog>
+   /** Resolves a frozen model through the live provider; throws when it is unavailable. Never falls back. */
+   verifyModel(model: RoleModel): Promise<void>
++  /** The instance's configured Executor model, which a delivery that names none freezes; null when it has none. */
++  executorModel(): RoleModel | null
+   /** Whether the workspace Source kind is installed and enabled. */
+   workspaceEnabled(): boolean
+   /** Subscribes to DSH session events for `task.progress`; returns its disposer. */
+@@ -189,11 +191,14 @@ export function bridgeConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig
+ 
+ /** The trigger request of `docs/M3-BRIDGE-PROTOCOL.md` §2; the shapes are the machine contract, so unknown keys are refused. */
+ const ModelSchema = z.object({ provider: z.string().trim().min(1), model: z.string().trim().min(1), reasoningEffort: z.string().trim().min(1).optional() }).strict()
++/** The frozen model of a delivered Trigger: a resolved identity, or null when only the instance default was available. */
++export interface FrozenModel { model: RoleModel | null; source: 'spec' | 'executor' | 'instance' }
+ const ExecutionSpecSchema = z.object({
+   repository: z.string().trim().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, 'owner/name'),
+   baseBranch: z.string().trim().regex(/^[A-Za-z0-9._/-]+$/, 'a branch name').default('main'),
+   baseCommit: z.string().trim().regex(/^[0-9a-fA-F]{7,64}$/, 'a commit sha').nullable().default(null),
+-  model: ModelSchema,
++  // Null asks for the instance's model; the route resolves what it can and records which choice it froze.
++  model: ModelSchema.nullable(),
+   // `discuss` is refused by the route (422), not by the schema, so the platform gets the protocol's own answer.
+   mode: z.enum(['execute', 'discuss']),
+ }).strict()
+@@ -213,7 +218,7 @@ type TriggerRequest = z.infer<typeof TriggerRequestSchema>
+ const CommitSchema = z.object({ sha: z.string().min(1) })
+ 
+ /** Builds the stable workspace Trigger the Router delivers; the resolved `baseCommit` replaces the request's. */
+-export function workspaceTrigger(request: TriggerRequest, baseCommit: string): Trigger {
++export function workspaceTrigger(request: TriggerRequest, baseCommit: string, frozen: FrozenModel): Trigger {
+   const thread = `workspace:${request.conversationId}`
+   const channel: ChannelRef = { source: 'workspace', thread, address: { conversationId: request.conversationId, ...request.messageId ? { messageId: request.messageId } : {} } }
+   return {
+@@ -235,7 +240,8 @@ export function workspaceTrigger(request: TriggerRequest, baseCommit: string): T
+         repository: request.executionSpec.repository,
+         baseBranch: request.executionSpec.baseBranch,
+         baseCommit,
+-        model: request.executionSpec.model,
++        model: frozen.model,
++        modelSource: frozen.source,
+         mode: request.executionSpec.mode,
+       },
+       ...request.parentText ? { parentText: request.parentText } : {},
+@@ -243,7 +249,7 @@ export function workspaceTrigger(request: TriggerRequest, baseCommit: string): T
+   }
+ }
+ 
+-const modelLabel = (model: RoleModel | undefined): string => model ? `${model.provider}/${model.model}` : ''
++const modelLabel = (model: RoleModel | null | undefined): string => model ? `${model.provider}/${model.model}` : ''
+ const json = (res: ServerResponse, status: number, value: unknown): void => {
+   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
+   res.end(JSON.stringify(value))
+@@ -459,12 +465,22 @@ export class Bridge {
+       return json(res, 409, { error: `The instance serves ${deployment.repository}, not ${request.executionSpec.repository}` })
+     }
+     if (request.executionSpec.mode === 'discuss') return json(res, 422, { error: 'discuss mode is not supported in this phase' })
+-    try { await this.host.verifyModel(request.executionSpec.model) }
+-    catch (error) { return json(res, 422, { error: `The model is unavailable: ${error instanceof Error ? error.message : String(error)}` }) }
++    // An explicitly requested model must resolve, and a delivery that names none freezes the instance's Executor model
++    // instead, so a later settings change cannot move an accepted task. When the instance has none either, the ticket
++    // records `model: null, modelSource: 'instance'`: the instance default is not representable, and the ticket says so.
++    const requested = request.executionSpec.model
++    const frozen: FrozenModel = requested ? { model: requested, source: 'spec' }
++      : this.host.executorModel() ? { model: this.host.executorModel(), source: 'executor' } : { model: null, source: 'instance' }
++    if (frozen.model) {
++      try { await this.host.verifyModel(frozen.model) }
++      catch (error) {
++        return json(res, 422, { error: `${requested ? 'The model' : 'The instance\'s Executor model'} is unavailable: ${error instanceof Error ? error.message : String(error)}` })
++      }
++    }
+     let baseCommit: string
+     try { baseCommit = await this.resolveCommit(request.executionSpec.baseBranch, request.executionSpec.baseCommit) }
+     catch (error) { return json(res, 422, { error: `Cannot resolve the base commit: ${error instanceof Error ? error.message : String(error)}` }) }
+-    const trigger = workspaceTrigger(request, baseCommit)
++    const trigger = workspaceTrigger(request, baseCommit, frozen)
+     let result: ReceiveResult
+     try { result = this.host.receive(trigger) }
+     catch (error) { return json(res, 503, { error: `The runtime did not accept the trigger: ${error instanceof Error ? error.message : String(error)}` }) }
+diff --git a/src/app/role-models.ts b/src/app/role-models.ts
+index 5b01e6b..a572584 100644
+--- a/src/app/role-models.ts
++++ b/src/app/role-models.ts
+@@ -2,6 +2,7 @@
+ import type { Context } from '@deepseek-ai/cordis'
+ import type { Agent, ModelSelection } from '@deepseek-ai/dsh-agent'
+ import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
++import type { TicketModel } from '../core/index.ts'
+ import type { RoleModel } from '../policy.ts'
+ 
+ /** Resolve a configured route through the live provider; catalog membership is not a restriction. */
+@@ -11,6 +12,18 @@ export async function resolveRoleModel(ctx: Context, model: RoleModel): Promise<
+   return { provider: value.provider, model: value.model, ...(value.reasoningEffort ? { reasoningEffort: value.reasoningEffort } : {}) }
+ }
+ 
++/**
++ * Resolves a ticket's frozen model before its worker starts, and throws when the route is unavailable. Callers must report
++ * the ticket failed instead of launching it on another model: a frozen model never falls back.
++ */
++export async function verifyTicketModel(ctx: Context, model: TicketModel): Promise<ModelSelection> {
++  try { return await resolveRoleModel(ctx, model) }
++  catch (error) {
++    throw new Error(`The ticket's frozen model ${model.provider}/${model.model} is unavailable: ${error instanceof Error ? error.message : String(error)}`,
++      { cause: error })
++  }
++}
++
+ /** Seed a role's configured model onto a brand-new session before its first request, leaving later manual or durable selections intact. */
+ export async function initializeRoleModel(ctx: Context, agent: Agent, model: RoleModel | null): Promise<void> {
+   if (!model) return
+diff --git a/src/app/runtime.ts b/src/app/runtime.ts
+index 696ef07..491b6b9 100644
+--- a/src/app/runtime.ts
++++ b/src/app/runtime.ts
+@@ -175,6 +175,7 @@ export class Runtime extends Service implements SourceHost {
+         receive: trigger => passes.receive(trigger),
+         models: () => ctx.sessionController.modelCatalog(),
+         verifyModel: async model => { await resolveRoleModel(ctx, model) },
++        executorModel: () => store.settings().executor.model,
+         workspaceEnabled: () => this.sources.instance('workspace')?.enabled ?? false,
+         subscribeSessionEvents: listener => ctx.on('session/event', (session, event) => {
+           listener(session.id, { type: event.type, data: event.data })
+diff --git a/src/app/sessions.ts b/src/app/sessions.ts
+index 1a22388..ef66b14 100644
+--- a/src/app/sessions.ts
++++ b/src/app/sessions.ts
+@@ -6,7 +6,7 @@ import { scopeParentOf } from '@deepseek-ai/dsh-scope'
+ import type { SessionId } from '@deepseek-ai/dsh-session'
+ import { dirname } from 'node:path'
+ import { z } from 'zod'
+-import { key, liveTicket, type Ticket } from '../core/index.ts'
++import { key, liveTicket, type Ticket, type TicketModel } from '../core/index.ts'
+ import { mandateInstructions, ticketOfSession } from '../executor/dsh.ts'
+ import type { HealthEntry } from '../infra/health.ts'
+ import { AgentDelivery, messageId } from './delivery.ts'
+@@ -134,8 +134,12 @@ export class Sessions {
+       if (status === 'idle' && !this.host.closing()) { this.retryHealth.clear(agent.id); this.updateModelHealth() }
+     })
+   }
+-  /** Resolves or creates session `id` in workspace `cwd`, initializes its role model, decorates it with prompts/skills/tools, sets `danger-full-access` permissions, and renames it to `title`. */
+-  async ensure(id: string, cwd: string, title: string, role: 'orchestrator' | 'worker'): Promise<Agent> {
++  /**
++   * Resolves or creates session `id` in workspace `cwd`, initializes its role model, decorates it with prompts/skills/tools,
++   * sets `danger-full-access` permissions, and renames it to `title`. A worker uses the ticket's frozen `model` when it has
++   * one, else the Executor setting; the main Session always uses the Eval setting.
++   */
++  async ensure(id: string, cwd: string, title: string, role: 'orchestrator' | 'worker', model?: TicketModel | null): Promise<Agent> {
+     const ctx = this.ctx
+     let result = await ctx.sessionController.resolveAgent(id as SessionId)
+     if ('error' in result && result.error.code === 'session/not-found') {
+@@ -147,7 +151,7 @@ export class Sessions {
+     }
+     if ('error' in result) throw result.error
+     const settings = this.host.store.settings()
+-    await initializeRoleModel(ctx, result.agent, role === 'orchestrator' ? settings.eval.model : settings.executor.model)
++    await initializeRoleModel(ctx, result.agent, role === 'orchestrator' ? settings.eval.model : model ?? settings.executor.model)
+     await this.decorate(result.agent)
+     ctx.permissionPresets.set(result.agent.session, 'danger-full-access')
+     await ctx.sessionController.rename({ sessionId: id as SessionId, title })
+diff --git a/src/core/model.ts b/src/core/model.ts
+index 5778312..fb0f413 100644
+--- a/src/core/model.ts
++++ b/src/core/model.ts
+@@ -19,6 +19,51 @@ export function isoTime(value: string): string {
+   return Number.isFinite(time) ? new Date(time).toISOString() : value
+ }
+ 
++/** The model a ticket was accepted with, frozen for its worker; the same shape as the Policy's role model, defined here to keep core independent of it. */
++export interface TicketModel { provider: string; model: string; reasoningEffort?: string }
++/** The repository and starting commit a workspace ticket was accepted on. */
++export interface TicketBase { repository: string; branch: string; commit: string }
++/** How a frozen model was chosen: the delivered spec, the instance's Executor setting, or the instance default (no model representable). */
++export type TicketModelSource = 'spec' | 'executor' | 'instance'
++/**
++ * The execution spec a workspace Trigger carried in `meta.spec`, as the machine Bridge froze it. `model` is null when the
++ * platform asked for the instance default and the instance had no Executor model to freeze either; `modelSource` records that.
++ */
++export interface TicketSpec { repository: string; baseBranch: string; baseCommit: string; model: TicketModel | null; mode: 'execute'
++  modelSource: TicketModelSource }
++/**
++ * Reads the frozen execution spec of a workspace Trigger, or undefined when it is missing or invalid. Only the workspace
++ * Source carries one; a ticket accepted from another Source keeps none and runs on the instance's role defaults.
++ */
++export function frozenSpec(trigger: Pick<Trigger, 'source' | 'meta'> | undefined): TicketSpec | undefined {
++  if (!trigger || trigger.source !== 'workspace') return undefined
++  const spec = trigger.meta.spec
++  if (!spec || typeof spec !== 'object') return undefined
++  const record = spec as Record<string, unknown>
++  const model = record.model
++  // A missing model is not a frozen choice; an explicit null records the instance default.
++  if (model === undefined || (model !== null && typeof model !== 'object')) return undefined
++  const { repository, baseBranch, baseCommit, mode, modelSource: source } = record
++  if (typeof repository !== 'string' || !repository) return undefined
++  if (typeof baseBranch !== 'string' || !baseBranch) return undefined
++  if (typeof baseCommit !== 'string' || !baseCommit) return undefined
++  // `discuss` never reaches a ticket: the Bridge refuses it before intake.
++  if (mode !== 'execute') return undefined
++  if (source !== undefined && source !== 'spec' && source !== 'executor' && source !== 'instance') return undefined
++  let frozen: TicketModel | null
++  if (model === null) {
++    frozen = null
++    if (source !== undefined && source !== 'instance') return undefined
++  } else {
++    const { provider, model: name, reasoningEffort } = model as Record<string, unknown>
++    if (typeof provider !== 'string' || !provider || typeof name !== 'string' || !name) return undefined
++    if (reasoningEffort !== undefined && typeof reasoningEffort !== 'string') return undefined
++    frozen = { provider, model: name, ...reasoningEffort ? { reasoningEffort } : {} }
++    if (source === 'instance') return undefined
++  }
++  return { repository, baseBranch, baseCommit, mode, model: frozen, modelSource: source ?? (frozen ? 'spec' : 'instance') }
++}
++
+ /** One immutable event produced by a source. `text` and `meta` are untrusted external data. */
+ export interface Trigger {
+   id: string
+@@ -303,6 +348,14 @@ export interface Ticket {
+   origin: { triggerId: string; triggerIds: string[] }
+   /** What its Executor chose: its short name, directory and assignment text. */
+   execution?: Execution
++  /** Model frozen when the ticket was accepted; its worker uses it, and an unavailable one refuses the launch instead of falling back. */
++  model?: TicketModel | null
++  /** How `model` was chosen; `instance` with `model: null` records that no instance model was representable at acceptance. */
++  modelSource?: TicketModelSource
++  /** Repository and starting commit frozen at acceptance; absent for tickets the workspace Source did not start. */
++  base?: TicketBase
++  /** Execution mode frozen at acceptance; `discuss` is refused before a ticket exists, so only `execute` is stored. */
++  mode?: 'execute'
+   /** The latest failed delivery of an Input to its worker, until a delivery succeeds. */
+   delivery?: { error: string; at: string }
+ }
+diff --git a/src/core/tickets.ts b/src/core/tickets.ts
+index af2e296..7f6a1ec 100644
+--- a/src/core/tickets.ts
++++ b/src/core/tickets.ts
+@@ -1,7 +1,7 @@
+ /** Tickets: their lifecycle from an accept to their end, their Subscriptions and their Inputs. */
+ import { key } from './ids.ts'
+ import { UserError } from './errors.ts'
+-import { latestAssignment, latestReport, liveTicket, readUntil, runningAssignment, settled, threadKey, waitsForPerson } from './model.ts'
++import { frozenSpec, latestAssignment, latestReport, liveTicket, readUntil, runningAssignment, settled, threadKey, waitsForPerson } from './model.ts'
+ import type { Assignment, ChannelRef, Evaluation, Follow, Mandate, PolicyEffect, ThreadRef, Ticket, TicketEndBy, TicketInput, TicketOutcome,
+   Trigger, TriggerDisposition } from './model.ts'
+ import type { AssessmentOutcome } from './ports.ts'
+@@ -41,8 +41,13 @@ export class Tickets extends EnginePart {
+     // Fall back to the last trigger for Evals recorded before `primary` existed.
+     const primary = this.repo.triggers.get(evaluation.primary ?? triggerIds.at(-1)!)
+     const origin = { triggerId: primary?.id ?? triggerIds[0]!, triggerIds }
++    // The workspace Source freezes the execution spec when it accepts the request: keep the model, repository, starting
++    // commit, and mode on the ticket so a later settings change cannot move an already accepted task. Tickets accepted
++    // before this field existed, or from another Source, keep none and use the instance's role defaults.
++    const spec = frozenSpec(primary)
+     let ticket: Ticket = { id, title: outcome.title, decisionId, mandate, channels: [], assignments: [], inputs: [], undelivered: [],
+-      createdAt: at, updatedAt: at, origin }
++      createdAt: at, updatedAt: at, origin,
++      ...spec ? { model: spec.model, modelSource: spec.modelSource, base: { repository: spec.repository, branch: spec.baseBranch, commit: spec.baseCommit }, mode: spec.mode } : {} }
+     for (const triggerId of triggerIds) {
+       const channel = this.repo.triggers.get(triggerId)?.channel
+       if (channel && !ticket.channels.some(item => sameChannel(item, channel))) ticket.channels.push(channel)
+diff --git a/src/executor/dsh.ts b/src/executor/dsh.ts
+index 26234f3..fe6b996 100644
+--- a/src/executor/dsh.ts
++++ b/src/executor/dsh.ts
+@@ -14,6 +14,7 @@ import type { Store } from '../app/store.ts'
+ import { Later, type Effects } from '../app/effects.ts'
+ import { executionRoot, type Variable } from '../app/execution-environment.ts'
+ import type { Sessions } from '../app/sessions.ts'
++import { verifyTicketModel } from '../app/role-models.ts'
+ import { WorktreeNameSchema } from '../app/assessment.ts'
+ import { resultRelay } from '../app/notices.ts'
+ import type { HealthEntry } from '../infra/health.ts'
+@@ -312,7 +313,7 @@ export class DshExecutor implements Executor {
+         try {
+           // Recreate the worker session if it was externally deleted.
+           if (!this.host.context.agents.get(sessionId as SessionId)) {
+-            await this.host.sessions.ensure(sessionId, ticket.execution?.directory ?? '', ticket.title, 'worker')
++            await this.host.sessions.ensure(sessionId, ticket.execution?.directory ?? '', ticket.title, 'worker', ticket.model)
+           }
+           if (input) await this.deliverInput(ticket, assignment, input)
+         } catch (error) {
+@@ -431,6 +432,9 @@ export class DshExecutor implements Executor {
+     const source = sourceTrigger(this.host, ticket)
+     const workspace = ticket.execution?.directory ?? ''
+     if (!current()) return
++    // A frozen model that the provider no longer serves refuses this launch; the ticket is reported failed and never runs on
++    // the instance default instead. The model itself is chosen by `Sessions.ensure` below.
++    if (ticket.model) await verifyTicketModel(this.host.context, ticket.model)
+     // Prepare the workspace directory once; an existing directory counts as already prepared, including worktrees created before `prepare` commands existed.
+     if (!await stat(workspace).then(() => true, () => false)) {
+       await this.prepareDirectory(ticket)
+@@ -438,7 +442,7 @@ export class DshExecutor implements Executor {
+     }
+     if (!current()) return
+     const sessionId = workerSessionId(ticket.id)
+-    const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker')
++    const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker', ticket.model)
+     if (!current()) return
+     // The background work of the Assignment this one replaces stops first, so its end does not clear this one's message.
+     await this.stopped(ticket.id)
+diff --git a/src/sources/workspace.ts b/src/sources/workspace.ts
+index b6f0943..b9063dd 100644
+--- a/src/sources/workspace.ts
++++ b/src/sources/workspace.ts
+@@ -197,6 +197,10 @@ export const workspaceKind: SourceKind<WorkspaceConfig> = {
+       columns: [{ key: 'id', type: 'text', label: { zh: '账号 id', en: 'Account id' }, pattern: '[A-Za-z0-9\\-]+' }] }],
+     explicit: { zh: '所有者在 MoYu 会话里发出的消息；平台只投递这类消息。', en: 'A message the owner writes in a MoYu conversation; the platform delivers only those.' },
+   },
++  // These names are workspace-prefixed on purpose: the GitHub kind declares DSH_SUPERAGENT_GITHUB_* for the same
++  // execution environment, and `SourceRegistry.environments` emits every enabled kind's variables. Declaring the GitHub
++  // names here too would list each one twice whenever the GitHub Source is enabled (it is enabled by default), so the
++  // workspace Source keeps its own names and this note explains the mapping instead.
+   environment: {
+     variables: [
+       { key: 'DSH_SUPERAGENT_WORKSPACE_REPOSITORY', description: { zh: '这次任务冻结的仓库，owner/name。', en: 'The repository frozen for this ticket, as owner/name.' } },
+diff --git a/tests/bridge.spec.ts b/tests/bridge.spec.ts
+index c78f886..0efb51b 100644
+--- a/tests/bridge.spec.ts
++++ b/tests/bridge.spec.ts
+@@ -58,6 +58,7 @@ function harness(overrides: Partial<BridgeHost> = {}): Harness {
+       groups: [{ id: 'commandcode', name: 'Command Code', models: [{ id: 'deepseek/deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash',
+         reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }] } }] }], failures: [] }),
+     verifyModel: async () => {},
++    executorModel: () => ({ provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash' }),
+     workspaceEnabled: () => true,
+     subscribeSessionEvents: () => () => {},
+     ...overrides,
+@@ -151,6 +152,22 @@ describe('POST /bridge/v1/triggers', () => {
+     expect(h.commands.api).toHaveBeenCalledWith(expect.anything(), 'commits/deadbeefdeadbeef')
+   })
+ 
++  it('freezes the instance Executor model when the platform names none, and records the instance default when there is none', async () => {
++    const h = harness()
++    const { call } = await serve(h)
++    const executionSpec = { ...body().executionSpec as object, model: null }
++    expect(await call('POST', '/bridge/v1/triggers', body({ triggerId: 'workspace:default', executionSpec }))).toMatchObject({ status: 200 })
++    expect(h.received.at(-1)!.meta.spec).toMatchObject({ model: { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash' },
++      modelSource: 'executor' })
++    // No Executor model configured: the instance default is not representable, so the spec says so instead of guessing.
++    h.host.executorModel = () => null
++    expect(await call('POST', '/bridge/v1/triggers', body({ triggerId: 'workspace:none', executionSpec }))).toMatchObject({ status: 200 })
++    expect(h.received.at(-1)!.meta.spec).toMatchObject({ model: null, modelSource: 'instance' })
++    // An explicitly requested but unavailable model is still refused, never replaced by the instance's.
++    h.host.verifyModel = async () => { throw new Error('no such route') }
++    expect(await call('POST', '/bridge/v1/triggers', body({ triggerId: 'workspace:broken' }))).toMatchObject({ status: 422 })
++  })
++
+   it('returns the existing ticket of a duplicate instead of creating one', async () => {
+     const h = harness()
+     h.repo.triggers.save(trigger())
+@@ -344,11 +361,13 @@ describe('workspaceTrigger', () => {
+     const built = workspaceTrigger({ triggerId: 'workspace:m9', conversationId: 'c9', messageId: 'm9', replyToMessageId: 'm8',
+       actor: { id: 'owner', name: 'MoYu Owner' }, text: 'hello', at: '2026-11-03T12:00:00.000Z', parentText: 'earlier',
+       executionSpec: { repository: 'acme/widgets', baseBranch: 'main', baseCommit: null,
+-        model: { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash' }, mode: 'execute' } }, 'sha9')
++        model: { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash' }, mode: 'execute' } }, 'sha9',
++      { model: { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash' }, source: 'spec' })
+     expect(built).toMatchObject({ id: 'workspace:m9', threads: [{ source: 'workspace', id: 'workspace:c9' }],
+       actor: { source: 'workspace', id: 'owner' }, human: true, addressed: 'direct',
+       channel: { source: 'workspace', thread: 'workspace:c9', address: { conversationId: 'c9', messageId: 'm9' } },
+       meta: { conversationId: 'c9', messageId: 'm9', replyToMessageId: 'm8', triggerId: 'workspace:m9', parentText: 'earlier',
+-        spec: { repository: 'acme/widgets', baseBranch: 'main', baseCommit: 'sha9', mode: 'execute' } } })
++        spec: { repository: 'acme/widgets', baseBranch: 'main', baseCommit: 'sha9', mode: 'execute',
++          model: { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash' }, modelSource: 'spec' } } })
+   })
+ })
+diff --git a/tests/bundle-patch.spec.ts b/tests/bundle-patch.spec.ts
+index 33c027a..42f2c57 100644
+--- a/tests/bundle-patch.spec.ts
++++ b/tests/bundle-patch.spec.ts
+@@ -28,8 +28,8 @@ const presetOf = (rows: readonly Row[], id: string) => rows.map(row => row.confi
+ 
+ it('defines the worker preset Executor Sessions run under, with a shell that moves long commands to the background', async () => {
+   const rows = await patched()
+-  expect(rows.map(row => row.id)).toEqual(['dsh-superagent', 'dsh-superagent-github', 'dsh-superagent-feishu', 'dsh-superagent-worker-preset',
+-    'dsh-superagent-router-preset'])
++  expect(rows.map(row => row.id)).toEqual(['dsh-superagent', 'dsh-superagent-github', 'dsh-superagent-feishu', 'dsh-superagent-workspace',
++    'dsh-superagent-worker-preset', 'dsh-superagent-router-preset'])
+   const preset = presetOf(rows, WORKER_PRESET)
+   expect(preset.id).toBe(WORKER_PRESET)
+   const plugins = flat(preset.plugins)
+diff --git a/tests/ticket-freeze.spec.ts b/tests/ticket-freeze.spec.ts
+new file mode 100644
+index 0000000..b821010
+--- /dev/null
++++ b/tests/ticket-freeze.spec.ts
+@@ -0,0 +1,115 @@
++import { describe, expect, it, vi } from 'vitest'
++import { Engine, MemoryRepositories, frozenSpec, type Assessor, type Candidate, type Executor, type Outbox, type Policy, type Ticket, type Trigger }
++  from '../src/core/index.ts'
++import { verifyTicketModel } from '../src/app/role-models.ts'
++
++const MODEL = { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash', reasoningEffort: 'high' }
++const SPEC = { repository: 'acme/widgets', baseBranch: 'main', baseCommit: 'abc123', model: MODEL, mode: 'execute', modelSource: 'spec' }
++const trigger = (overrides: Partial<Trigger> = {}): Trigger => ({
++  id: 'workspace:m1', source: 'workspace', threads: [{ source: 'workspace', id: 'workspace:c1' }],
++  actor: { source: 'workspace', id: 'owner' }, human: true, addressed: 'direct', at: '2026-11-03T12:00:00.000Z', text: 'Fix the margin',
++  channel: { source: 'workspace', thread: 'workspace:c1', address: { conversationId: 'c1' } },
++  meta: { conversationId: 'c1', messageId: 'm1', triggerId: 'workspace:m1', spec: SPEC }, ...overrides,
++})
++
++/** Minimal Engine whose Policy admits every human message explicitly, so a ticket is created synchronously. */
++function harness() {
++  const repo = new MemoryRepositories()
++  const requests: Candidate[] = []
++  const assessor: Assessor = { request: candidate => { requests.push(candidate) } }
++  const executor: Executor = { start: () => {}, deliver: () => {}, stop: () => {} }
++  const outbox: Outbox = { send: () => {}, status: () => undefined, withdraw: () => {} }
++  const policy: Policy = { version: 'v1', paused: false, evalTimeoutMs: 60_000,
++    gate: () => ({ admissible: true, strength: 'explicit', basis: { via: 'listed' } }), revalidate: () => true, admitsInferred: () => true }
++  const engine = new Engine({ repo, scope: { scope: () => ({ listened: true, observed: false, row: 'web' }) }, policy: () => policy,
++    assessor, executor, outbox })
++  /** Accepts the newest candidate and returns the ticket it created. */
++  const accept = (): Ticket => {
++    const candidate = requests.at(-1)
++    if (!candidate) throw new Error('no candidate')
++    engine.decide(candidate.triggers[0]!.id, { evalId: candidate.evalId, kind: 'accept', title: 'Fix the margin', scope: 'small', reason: 'asked' })
++    return repo.tickets.list()[0]!
++  }
++  return { repo, engine, requests, accept }
++}
++
++describe('frozenSpec', () => {
++  it('reads a complete execute spec from a workspace Trigger', () => {
++    expect(frozenSpec(trigger())).toEqual(SPEC)
++    expect(frozenSpec(trigger({ meta: { spec: { ...SPEC, model: { provider: 'p', model: 'm' }, modelSource: 'executor' } } })))
++      .toEqual({ ...SPEC, model: { provider: 'p', model: 'm' }, modelSource: 'executor' })
++    expect(frozenSpec(trigger({ meta: { spec: { ...SPEC, model: null, modelSource: 'instance' } } })))
++      .toEqual({ ...SPEC, model: null, modelSource: 'instance' })
++  })
++
++  it('refuses anything it would have to guess', () => {
++    expect(frozenSpec(undefined)).toBeUndefined()
++    expect(frozenSpec(trigger({ source: 'github' }))).toBeUndefined()
++    expect(frozenSpec(trigger({ meta: {} }))).toBeUndefined()
++    expect(frozenSpec(trigger({ meta: { spec: { ...SPEC, baseCommit: '' } } }))).toBeUndefined()
++    expect(frozenSpec(trigger({ meta: { spec: { ...SPEC, repository: '' } } }))).toBeUndefined()
++    expect(frozenSpec(trigger({ meta: { spec: { ...SPEC, baseBranch: undefined } } }))).toBeUndefined()
++    expect(frozenSpec(trigger({ meta: { spec: { ...SPEC, model: { provider: 'p' } } } }))).toBeUndefined()
++    expect(frozenSpec(trigger({ meta: { spec: { ...SPEC, model: { provider: 'p', model: 'm', reasoningEffort: 3 } } } }))).toBeUndefined()
++    // A null model means the instance default, and a resolved model must not claim to be one.
++    expect(frozenSpec(trigger({ meta: { spec: { ...SPEC, model: null } } }))).toBeUndefined()
++    expect(frozenSpec(trigger({ meta: { spec: { ...SPEC, model: null, modelSource: 'spec' } } }))).toBeUndefined()
++    expect(frozenSpec(trigger({ meta: { spec: { ...SPEC, modelSource: 'instance' } } }))).toBeUndefined()
++    // Only execute reaches a ticket; discuss is refused by the Bridge.
++    expect(frozenSpec(trigger({ meta: { spec: { ...SPEC, mode: 'discuss' } } }))).toBeUndefined()
++  })
++})
++
++describe('Ticket freeze at acceptance', () => {
++  it('copies the model, base, and mode onto the ticket the workspace Trigger created', () => {
++    const h = harness()
++    h.engine.receive(trigger())
++    h.engine.evaluateDue()
++    const ticket = h.accept()
++    expect(ticket.model).toEqual(MODEL)
++    expect(ticket.base).toEqual({ repository: 'acme/widgets', branch: 'main', commit: 'abc123' })
++    expect(ticket.mode).toBe('execute')
++    expect(ticket.modelSource).toBe('spec')
++  })
++
++  it('records the model the instance froze when the platform named none, and the instance default when there was none', () => {
++    const h = harness()
++    h.engine.receive(trigger({ meta: { ...trigger().meta, spec: { ...SPEC, model: MODEL, modelSource: 'executor' } } }))
++    h.engine.evaluateDue()
++    expect(h.accept()).toMatchObject({ model: MODEL, modelSource: 'executor' })
++
++    const other = harness()
++    other.engine.receive(trigger({ meta: { ...trigger().meta, spec: { ...SPEC, model: null, modelSource: 'instance' } } }))
++    other.engine.evaluateDue()
++    const ticket = other.accept()
++    expect(ticket.model).toBeNull()
++    expect(ticket.modelSource).toBe('instance')
++  })
++
++  it('leaves a ticket from another Source without a frozen model (no guessed backfill)', () => {
++    const h = harness()
++    h.engine.receive(trigger({ id: 'github:1', source: 'github', threads: [{ source: 'github', id: 'github:1' }],
++      actor: { source: 'github', id: 'alice' }, meta: { number: 1 } }))
++    h.engine.evaluateDue()
++    const ticket = h.accept()
++    expect(ticket.model).toBeUndefined()
++    expect(ticket.base).toBeUndefined()
++    expect(ticket.mode).toBeUndefined()
++  })
++})
++
++describe('verifyTicketModel', () => {
++  it('resolves the frozen route through the live provider', async () => {
++    const resolveCallConfig = vi.fn(async (selection: { provider: string; model: string; reasoningEffort?: unknown }) =>
++      ({ provider: selection.provider, model: selection.model, reasoningEffort: selection.reasoningEffort }))
++    const ctx = { llm: { resolveCallConfig } }
++    await expect(verifyTicketModel(ctx as never, MODEL)).resolves.toMatchObject({ provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash' })
++    expect(resolveCallConfig).toHaveBeenCalledWith({ provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash', reasoningEffort: 'high' })
++  })
++
++  it('throws with the frozen identity instead of falling back to the instance default', async () => {
++    const ctx = { llm: { resolveCallConfig: vi.fn(async () => { throw new Error('unknown provider route') }) } }
++    await expect(verifyTicketModel(ctx as never, MODEL)).rejects.toThrow(/commandcode\/deepseek\/deepseek-v4\.1-flash is unavailable: unknown provider route/)
++    expect(ctx.llm.resolveCallConfig).toHaveBeenCalledTimes(1)
++  })
++})

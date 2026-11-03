@@ -27,10 +27,10 @@ export function ActivityDialog({ onClose }: ActivityDialogProps) {
           </span>
           <strong>当前没有活动记录</strong>
           <p>
-            M2 没有任务与事件写入。M3 起活动会来自持久事件流；网页打开时才会展示通知，不包含 Web
-            Push。
+            活动中心与通知在 M6 接入。M3
+            已提供持久事件流，但未读汇总、系统通知与活动定位仍待接入；本页不展示占位数据。
           </p>
-          <span className={styles.phase}>事件与通知 · M3/M6</span>
+          <span className={styles.phase}>活动与通知 · M6</span>
         </div>
 
         <ul className={styles.filters}>

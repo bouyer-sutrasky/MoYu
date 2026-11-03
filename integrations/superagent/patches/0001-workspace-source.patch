@@ -1,0 +1,661 @@
+diff --git a/cordis.patch.yml b/cordis.patch.yml
+index 5ada6df..7539c67 100644
+--- a/cordis.patch.yml
++++ b/cordis.patch.yml
+@@ -10,6 +10,10 @@
+     - id: dsh-superagent-feishu
+       name: dsh-superagent/feishu-watch
+       disabled: true
++    # The MoYu workspace Source: the machine Bridge of the Runtime delivers platform messages to it, and its Channel posts
++    # replies back to the platform. Enabled by default; the Bridge only listens when MOYU_BRIDGE_TOKEN is set.
++    - id: dsh-superagent-workspace
++      name: dsh-superagent/workspace-watch
+     # The agent preset of every Executor Session (WORKER_PRESET in src/app/sessions.ts); the main Session has its own, below.
+     # It is DSH's `standard` preset with only what a worker needs, and a shell whose foreground command moves to a background job
+     # after 5 seconds, so a long command does not hold back a person's message, which the Session takes at its next step. Left
+diff --git a/package.json b/package.json
+index 6afd24b..c1d1e6f 100644
+--- a/package.json
++++ b/package.json
+@@ -16,6 +16,7 @@
+     "./client": "./lib/client.js",
+     "./github-watch": "./lib/github-watch.js",
+     "./feishu-watch": "./lib/feishu-watch.js",
++    "./workspace-watch": "./lib/workspace-watch.js",
+     "./package.json": "./package.json",
+     "./locale/*.json": "./locale/*.json"
+   },
+diff --git a/src/app/resources.ts b/src/app/resources.ts
+index f19f742..04d8c2e 100644
+--- a/src/app/resources.ts
++++ b/src/app/resources.ts
+@@ -1,6 +1,7 @@
+ /** Serves paginated context resources to orchestrator_read so large bodies stay out of model prompts until requested. */
+ import type { SessionId } from '@deepseek-ai/dsh-session'
+ import { UserError, key, latestReport, reached, runningAssignment, threadKey, type Ticket, type Trigger } from '../core/index.ts'
++import { acknowledgementId } from '../core/replies.ts'
+ import { batchOf, inputMessage, triggerMessage, workerSessionId } from '../executor/dsh.ts'
+ import { readGithub } from '../sources/github-read.ts'
+ import { feishuReferences, feishuRead } from '../sources/feishu-read.ts'
+@@ -224,7 +225,7 @@ const ROUTES: readonly Route[] = [
+     const repliedTo = shown(parent ? host.store.triggers.get(feishuTriggerId(parent)) : undefined)
+     const neighbours = host.store.read.neighbours(threadKey(found.threads[0]!), found.at, found.id)
+     const around = { before: shown(neighbours.before), after: shown(neighbours.after) }
+-    return { ...card, ...await host.sourceLink(found, signal), acknowledgement: host.store.replyStatus(key('ack', found.id)) ?? 'not_requested',
++    return { ...card, ...await host.sourceLink(found, signal), acknowledgement: host.store.replyStatus(acknowledgementId(found.id)) ?? 'not_requested',
+       ...(ref ? { context: feishuReferences(ref) } : {}),
+       ...(offset === 0 ? {
+         ...repliedTo ? { replied_to: triggerLine(repliedTo) } : {},
+diff --git a/src/core/replies.ts b/src/core/replies.ts
+index ee5790a..27fd4ca 100644
+--- a/src/core/replies.ts
++++ b/src/core/replies.ts
+@@ -6,6 +6,15 @@ import type { ChannelRef, Ticket, Trigger } from './model.ts'
+ import type { ReplyStatus } from './ports.ts'
+ import { EnginePart } from './part.ts'
+ 
++/**
++ * Outbound id of a ticket's acknowledgement of `triggerId`. The `ack:` prefix and the Trigger id after it are part of the
++ * machine protocol (`docs/M3-BRIDGE-PROTOCOL.md` §4): the workspace Channel reports it as `sourceEventId`, and the id names
++ * the Trigger the reply answers.
++ */
++export const acknowledgementId = (triggerId: string): string => `ack:${triggerId}`
++/** Outbound id of a ticket's question for a person, which the workspace Channel reports as a `question` message. */
++export const attentionReplyId = (attentionId: string): string => `attention-reply:${attentionId}`
++
+ /**
+  * A message for a Channel, by purpose: an Executor's acknowledgement of a person's request it works on, the answer to a
+  * person's question once the worker reported it, the result of a ticket that is `ready`, `completed`, `merged`, or `dropped`,
+@@ -41,10 +50,10 @@ export class Replies extends EnginePart {
+    * and a person wrote it.
+    */
+   acknowledgeAccepted(ticketId: string, trigger: Trigger, text: string): void {
+-    if (trigger.channel && trigger.human) this.options.outbox.send({ id: key('ack', trigger.id), channel: trigger.channel, text, kind: 'acknowledgement', ticketId })
++    if (trigger.channel && trigger.human) this.options.outbox.send({ id: acknowledgementId(trigger.id), channel: trigger.channel, text, kind: 'acknowledgement', ticketId })
+   }
+   /** Withdraw a ticket's question for a person from the outbox, unless it went out already. */
+-  withdrawAttention(attentionId: string): void { this.options.outbox.withdraw(key('attention-reply', attentionId)) }
++  withdrawAttention(attentionId: string): void { this.options.outbox.withdraw(attentionReplyId(attentionId)) }
+   private acknowledge(request: Extract<ReplyRequest, { purpose: 'acknowledgement' }>): Reply {
+     const ticket = this.require(request.ticketId)
+     if (!liveTicket(ticket)) throw new UserError('ackEnded')
+@@ -53,7 +62,7 @@ export class Replies extends EnginePart {
+     // Context-only threads are read-only and cannot receive acknowledgements.
+     if (!this.reaches(ticket, trigger, false)) throw new UserError('notReached')
+     if (!trigger.channel) throw new UserError('ackNoChannel')
+-    const id = key('ack', trigger.id)
++    const id = acknowledgementId(trigger.id)
+     const existing = this.options.outbox.status(id)
+     if (!existing && !trigger.human) throw new UserError('ackNotPerson')
+     // Preserve the automatic or first queued acknowledgement.
+@@ -76,7 +85,7 @@ export class Replies extends EnginePart {
+     // Attention replies must match the ticket's currently open question text.
+     if (request.purpose === 'attention' && (!attention || attention.question !== request.question)) throw new UserError('notAttention')
+     if (request.purpose === 'answer' && !trigger?.human) throw new UserError('notQuestion')
+-    const id = attention ? key('attention-reply', attention.id) : key('reply', trigger?.id ?? ticket?.id ?? '', request.text)
++    const id = attention ? attentionReplyId(attention.id) : key('reply', trigger?.id ?? ticket?.id ?? '', request.text)
+     const existing = this.options.outbox.status(id)
+     const ready = !ticket || !trigger || ticket.answers?.includes(trigger.id)
+     if (request.purpose === 'answer' && !ready && !existing) throw new UserError('noAnswer')
+diff --git a/src/core/tickets.ts b/src/core/tickets.ts
+index 21376e1..af2e296 100644
+--- a/src/core/tickets.ts
++++ b/src/core/tickets.ts
+@@ -7,6 +7,7 @@ import type { Assignment, ChannelRef, Evaluation, Follow, Mandate, PolicyEffect,
+ import type { AssessmentOutcome } from './ports.ts'
+ import { EnginePart, type EngineOptions } from './part.ts'
+ import type { Replies } from './replies.ts'
++import { acknowledgementId } from './replies.ts'
+ import { canRetry } from './stage.ts'
+ 
+ const sameChannel = (a: ChannelRef, b: ChannelRef): boolean => JSON.stringify(a) === JSON.stringify(b)
+@@ -279,7 +280,7 @@ export class Tickets extends EnginePart {
+    */
+   private takenUp(ticket: Ticket, trigger: Trigger): boolean {
+     const acked = this.repo.triggers.disposition(trigger.id)?.acked
+-    return acked ? acked.includes(ticket.id) : this.options.outbox.status(key('ack', trigger.id)) !== undefined
++    return acked ? acked.includes(ticket.id) : this.options.outbox.status(acknowledgementId(trigger.id)) !== undefined
+   }
+   /** The person's messages among a ticket's Inputs `ids` that it decides and its worker did not take up. */
+   private untaken(ticket: Ticket, ids: readonly string[]): Trigger[] {
+diff --git a/src/sources/workspace.ts b/src/sources/workspace.ts
+new file mode 100644
+index 0000000..b6f0943
+--- /dev/null
++++ b/src/sources/workspace.ts
+@@ -0,0 +1,238 @@
++/**
++ * Workspace Source: the MoYu platform's conversations, delivered by the machine Bridge (`src/app/bridge.ts`) as Triggers
++ * and answered through the platform's runtime-events callback.
++ *
++ * This kind owns no polling: the Bridge is part of the Runtime (it needs the Engine, the Store, and the model catalog), so
++ * the plugin here only registers the kind and reports its health. Replies go out over HTTP to the platform, which is the
++ * only writer of its own messages; the channel confirms a reply only after the platform committed it.
++ */
++import type { Context } from '@deepseek-ai/cordis'
++import { z } from 'zod'
++import type { OutboundMessage, Trigger } from '../core/index.ts'
++import type { ChannelLink, ChannelLinks, ContextPart, SourceChannel, SourceKind, ThreadContext } from './kind.ts'
++import { sourceContext, type SourceContext } from './host.ts'
++
++/** Source kind id; also the `source` of every Trigger and Channel this Source produces. */
++export const SOURCE = 'workspace'
++/** The one health entry this kind owns. */
++export const HEALTH = 'workspace'
++/** How long one runtime-events callback may take before the Outbox is told the send failed (and retries it). */
++export const CALLBACK_TIMEOUT_MS = 10_000
++/** The platform's machine endpoint for Channel messages. */
++const CALLBACK_PATH = '/api/internal/v1/runtime-events'
++
++/**
++ * Non-secret configuration only: the deployment names the repository, and the platform's URL and token are instance
++ * environment variables (`MOYU_PLATFORM_URL`, `MOYU_PLATFORM_TOKEN`), never stored in the Source settings.
++ */
++export const WorkspaceConfigSchema = z.object({
++  repository: z.string().trim().regex(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?$/, 'owner/name').default(''),
++}).strict()
++export type WorkspaceConfig = z.infer<typeof WorkspaceConfigSchema>
++
++/** Shape of the `executionSpec` the Bridge froze into a workspace Trigger's `meta.spec`. */
++interface FrozenSpec { repository: string; baseBranch: string; baseCommit: string; provider: string; model: string; reasoningEffort: string; mode: string }
++
++/** Reads `trigger.meta.spec` tolerantly; unknown or missing fields come back as empty strings. */
++function frozenSpecOf(trigger: Trigger | undefined): FrozenSpec {
++  const empty: FrozenSpec = { repository: '', baseBranch: '', baseCommit: '', provider: '', model: '', reasoningEffort: '', mode: '' }
++  if (!trigger || trigger.source !== SOURCE) return empty
++  const spec = trigger.meta.spec
++  if (!spec || typeof spec !== 'object') return empty
++  const record = spec as Record<string, unknown>
++  const model = record.model && typeof record.model === 'object' ? record.model as Record<string, unknown> : {}
++  const text = (value: unknown): string => typeof value === 'string' ? value : ''
++  return { repository: text(record.repository), baseBranch: text(record.baseBranch), baseCommit: text(record.baseCommit),
++    provider: text(model.provider), model: text(model.model), reasoningEffort: text(model.reasoningEffort), mode: text(record.mode) }
++}
++
++/** `provider/model` as a human and prompt readable identifier; empty while the spec names no model. */
++export function workspaceModelLabel(trigger: Trigger | undefined): string {
++  const spec = frozenSpecOf(trigger)
++  return spec.provider && spec.model ? `${spec.provider}/${spec.model}` : ''
++}
++
++/** The conversation of a workspace Trigger, which is also its primary thread's suffix and its Channel address. */
++export function workspaceConversation(trigger: Trigger): string {
++  const fromMeta = trigger.meta.conversationId
++  if (typeof fromMeta === 'string' && fromMeta) return fromMeta
++  const address = trigger.channel?.address.conversationId
++  return typeof address === 'string' ? address : ''
++}
++
++/** The Channel address of one workspace conversation; `messageId` names the platform message a reply is for, when known. */
++export interface WorkspaceAddress { conversationId: string; messageId?: string }
++/** Builds the Channel address from a Trigger's metadata. */
++export function workspaceAddress(trigger: Pick<Trigger, 'meta' | 'channel'>): WorkspaceAddress {
++  const conversationId = typeof trigger.meta.conversationId === 'string' ? trigger.meta.conversationId
++    : trigger.channel?.address.conversationId ?? ''
++  return { conversationId, ...typeof trigger.meta.messageId === 'string' ? { messageId: trigger.meta.messageId } : {} }
++}
++
++/**
++ * The platform message kind of a queued outbound message. Acknowledgements and questions carry their purpose in the id
++ * prefix (`ack:` and `attention-reply:`, see `src/core/replies.ts`), which is also what tells the platform whether the
++ * reply answers a question; everything else is a `notice`, or an ordinary `reply`.
++ */
++export function messageKindOf(message: Pick<OutboundMessage, 'id' | 'kind'>): 'question' | 'acknowledgement' | 'notice' | 'reply' {
++  if (message.id.startsWith('attention-reply:')) return 'question'
++  if (message.id.startsWith('ack:')) return 'acknowledgement'
++  return message.kind === 'notice' ? 'notice' : 'reply'
++}
++
++/** The Trigger an outbound message answers, when its id names one (`ack:<triggerId>`); undefined otherwise. */
++export function repliedTriggerId(messageId: string): string | undefined {
++  const separator = messageId.indexOf(':')
++  if (separator < 0) return undefined
++  const suffix = messageId.slice(separator + 1)
++  return suffix.startsWith(`${SOURCE}:`) ? suffix : undefined
++}
++
++/** Reads the platform environment, or throws so the Outbox keeps the message pending and retries it. */
++function platformEnvironment(): { url: string; token: string } {
++  const url = (process.env.MOYU_PLATFORM_URL ?? '').replace(/\/+$/, '')
++  const token = process.env.MOYU_PLATFORM_TOKEN ?? ''
++  if (!url) throw new Error('MOYU_PLATFORM_URL is unset: the workspace Channel cannot reach the platform')
++  if (!token) throw new Error('MOYU_PLATFORM_TOKEN is unset: the workspace Channel cannot authenticate to the platform')
++  return { url, token }
++}
++
++/**
++ * Posts one Channel message to the platform's runtime-events endpoint.
++ * Returns `'sent'` only after a 2xx response; throws on network errors, timeouts, 408/429, and 5xx so the Outbox retries;
++ * returns `'gone'` only for a permanent 4xx (the conversation no longer accepts replies).
++ */
++export async function sendWorkspace(message: OutboundMessage): Promise<'sent' | 'gone'> {
++  const { url, token } = platformEnvironment()
++  const conversationId = message.channel.address.conversationId ?? ''
++  if (!conversationId) throw new Error('The workspace message has no conversation to reply to')
++  const triggerId = repliedTriggerId(message.id)
++  const body = JSON.stringify({
++    sourceEventId: message.id,
++    type: 'channel.message',
++    conversationId,
++    ticketId: message.ticketId ?? null,
++    ...triggerId ? { triggerId } : {},
++    messageKind: messageKindOf(message),
++    text: message.text,
++    at: new Date().toISOString(),
++  })
++  let response: Response
++  try {
++    response = await fetch(`${url}${CALLBACK_PATH}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
++      body, signal: AbortSignal.timeout(CALLBACK_TIMEOUT_MS) })
++  } catch (error) {
++    // A timeout, a refused connection, or any other transport failure: the platform may still be starting, so retry later.
++    throw new Error(`The platform did not accept the workspace message: ${error instanceof Error ? error.message : String(error)}`, { cause: error })
++  }
++  if (response.ok) return 'sent'
++  // A permanent rejection of this conversation settles the receipt as gone; 408 and 429 are passing and retried.
++  if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) return 'gone'
++  throw new Error(`The platform answered the workspace message with HTTP ${response.status}`)
++}
++
++/** Channel adapter for workspace conversations: replies are HTTP callbacks, and links have no platform URL yet. */
++export const workspaceChannel = {
++  async send(_host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'> {
++    return sendWorkspace(message)
++  },
++  link(_address: Record<string, string>, _links: ChannelLinks): ChannelLink {
++    return { url: '', label: { zh: 'MoYu 会话', en: 'MoYu conversation' } }
++  },
++} satisfies SourceChannel<WorkspaceConfig>
++
++/** The Trigger's own message id in its Thread, as the platform recorded it. */
++const messageIdOf = (trigger: Trigger): string => String(trigger.meta.messageId ?? '')
++/** The Trigger's replied-to message id, when the platform recorded one. */
++const parentIdOf = (trigger: Trigger): string => {
++  const parent = trigger.meta.replyToMessageId
++  return typeof parent === 'string' && parent ? parent : `${messageIdOf(trigger)}:parent`
++}
++const emptyPage = (): ContextPart => ({ messages: [], body: {} })
++
++/**
++ * Context of a workspace Trigger, which the platform already recorded: one page with the Trigger's own message, and the
++ * replied-to message when its text was delivered with the Trigger. Nothing else is invented: the platform serves the
++ * bounded conversation history itself and does not expect the worker to read it from here.
++ */
++export const workspaceThreadContext: ThreadContext<WorkspaceConfig> = {
++  messageId: trigger => messageIdOf(trigger),
++  async read(_commands, trigger, part): Promise<ContextPart> {
++    if (part === 'parent') {
++      const text = trigger.meta.parentText
++      if (typeof text !== 'string' || !text) return emptyPage()
++      return { messages: [{ id: parentIdOf(trigger), from: trigger.actor.id, at: trigger.at, text }], body: {} }
++    }
++    const id = messageIdOf(trigger)
++    if (!id) return emptyPage()
++    return { messages: [{ id, from: trigger.actor.id, at: trigger.at, text: trigger.text }], body: {} }
++  },
++}
++
++/**
++ * Workspace Source kind: the platform's conversations, admitted by the owner's account id from the Policy part. Every
++ * message it produces is addressed to the agent directly (`addressed: 'direct'` in `src/app/bridge.ts`), so it never needs
++ * an "observed" row.
++ */
++export const workspaceKind: SourceKind<WorkspaceConfig> = {
++  kind: SOURCE,
++  title: { zh: 'MoYu 工作区', en: 'MoYu workspace' },
++  description: { zh: 'MoYu 平台里的会话。机器 Bridge 把平台消息变成触发，回复通过平台的 runtime-events 回调写回会话。',
++    en: 'Conversations in the MoYu platform. The machine Bridge turns platform messages into Triggers, and replies go back through the platform\'s runtime-events callback.' },
++  schema: WorkspaceConfigSchema,
++  fields: [
++    { key: 'repository', type: 'text', pattern: '[A-Za-z0-9_.\\-]+/[A-Za-z0-9_.\\-]+', label: { zh: '工作区仓库', en: 'Workspace repository' },
++      hint: { zh: '写作 owner/name。平台投递的 executionSpec.repository 必须与实例部署的仓库一致，否则 Bridge 返回 409。留空则沿用部署仓库。',
++        en: 'Written owner/name. A delivered executionSpec.repository must equal the deployment\'s repository or the Bridge answers 409. Empty uses the deployment repository.' } },
++  ],
++  health: [HEALTH],
++  // Every delivered workspace message is addressed to the agent, and the Source has no unaddressed scope to observe.
++  scope: () => ({ listened: true, observed: false, row: 'web' }),
++  channel: workspaceChannel,
++  threadContext: workspaceThreadContext,
++  policy: {
++    schema: z.object({ allowed: z.array(z.object({ id: z.string().regex(/^[A-Za-z0-9-]+$/), name: z.string().optional() }).strict()).default([]) }).strict(),
++    fields: [{ key: 'allowed', type: 'rows', label: { zh: '能发起工作的 MoYu 账号', en: 'MoYu accounts that may originate work' },
++      hint: { zh: '填所有者的账号 id（UUID）。平台只把该账号在会话里的消息投递给 Bridge。', en: 'The owner\'s account id (a UUID). The platform delivers only that account\'s conversation messages to the Bridge.' },
++      columns: [{ key: 'id', type: 'text', label: { zh: '账号 id', en: 'Account id' }, pattern: '[A-Za-z0-9\\-]+' }] }],
++    explicit: { zh: '所有者在 MoYu 会话里发出的消息；平台只投递这类消息。', en: 'A message the owner writes in a MoYu conversation; the platform delivers only those.' },
++  },
++  environment: {
++    variables: [
++      { key: 'DSH_SUPERAGENT_WORKSPACE_REPOSITORY', description: { zh: '这次任务冻结的仓库，owner/name。', en: 'The repository frozen for this ticket, as owner/name.' } },
++      { key: 'DSH_SUPERAGENT_WORKSPACE_ACCOUNT', description: { zh: '智能体的 GitHub 账号；除自动合并外的 GitHub 操作都用它。', en: 'The agent\'s GitHub account; use it for every GitHub operation except auto-merge.' } },
++      { key: 'DSH_SUPERAGENT_WORKSPACE_COMMIT_EMAIL', description: { zh: '智能体账号的提交邮箱；提示词没有写明作者时用它提交。', en: 'Commit email of the agent\'s account; commit as it when the instructions name no author.' } },
++      { key: 'DSH_SUPERAGENT_WORKSPACE_BASE_BRANCH', description: { zh: '会话冻结的起始分支。', en: 'The base branch frozen when the conversation started.' } },
++      { key: 'DSH_SUPERAGENT_WORKSPACE_BASE_COMMIT', description: { zh: 'Bridge 校验并冻结的起始 commit；工作从这个 commit 开始。', en: 'The base commit the Bridge verified and froze; start work from it.' } },
++      { key: 'DSH_SUPERAGENT_WORKSPACE_MODEL', description: { zh: '这次任务冻结的模型，写作 provider/model；不可用时任务拒绝启动，不回退。', en: 'The model frozen for this ticket as provider/model; an unavailable one refuses the launch instead of falling back.' } },
++      { key: 'DSH_SUPERAGENT_WORKSPACE_CONVERSATION', description: { zh: '这条消息所属的 MoYu 会话 id。', en: 'The MoYu conversation id this message belongs to.' } },
++    ],
++    values: ({ deployment, config, trigger }) => {
++      const spec = frozenSpecOf(trigger)
++      return {
++        DSH_SUPERAGENT_WORKSPACE_REPOSITORY: spec.repository || deployment.repository || config.repository,
++        DSH_SUPERAGENT_WORKSPACE_ACCOUNT: deployment.github.login,
++        DSH_SUPERAGENT_WORKSPACE_COMMIT_EMAIL: deployment.github.noreply,
++        DSH_SUPERAGENT_WORKSPACE_BASE_BRANCH: spec.baseBranch,
++        DSH_SUPERAGENT_WORKSPACE_BASE_COMMIT: spec.baseCommit,
++        DSH_SUPERAGENT_WORKSPACE_MODEL: workspaceModelLabel(trigger),
++        DSH_SUPERAGENT_WORKSPACE_CONVERSATION: trigger ? workspaceConversation(trigger) : '',
++      }
++    },
++  },
++}
++
++export const name = 'dsh-superagent-workspace'
++export const inject = ['orchestrator']
++/**
++ * Registers the Workspace Source kind. The machine Bridge belongs to the Runtime, not to this plugin: it must see the
++ * Store, the Engine's intake, the deployments, and the model catalog, none of which a Source context exposes.
++ */
++export function apply(ctx: Context): void {
++  ctx.effect(() => {
++    const dispose = ctx.orchestrator.sources.register(workspaceKind)
++    const source = sourceContext(ctx.orchestrator, workspaceKind)
++    source.report(HEALTH, { state: 'ready', detail: 'The machine Bridge delivers workspace triggers', at: new Date().toISOString() })
++    return () => { dispose() }
++  }, 'workspace: source kind')
++}
+diff --git a/tests/core-engine.spec.ts b/tests/core-engine.spec.ts
+index 733d134..d6e9f52 100644
+--- a/tests/core-engine.spec.ts
++++ b/tests/core-engine.spec.ts
+@@ -1,4 +1,5 @@
+ import { describe, expect, it, vi } from 'vitest'
++import { acknowledgementId, attentionReplyId } from '../src/core/replies.ts'
+ import { Engine, MemoryRepositories, UserError, followupOwners, key, runningAssignment, ticketOutcome, ticketStage,
+   waitsForPerson } from '../src/core/index.ts'
+ import type { Assessor, Assignment, Candidate, EngineOptions, Executor, OutboundMessage, Outcome, Policy, Ticket, Trigger } from '../src/core/index.ts'
+@@ -121,7 +122,7 @@ describe('eval', () => {
+     expect(ticket).not.toHaveProperty('ended')
+     expect(ticket.assignments).toEqual([expect.objectContaining({ state: 'running', startedAt: expect.any(String) })])
+     expect(h.repo.threads.get('chat:t1')?.subscriptions).toEqual([ticket.id])
+-    expect(h.outbox).toEqual([{ id: key('ack', '1'), channel: trigger('1').channel, text: 'ok', kind: 'acknowledgement', ticketId: ticket.id }])
++    expect(h.outbox).toEqual([{ id: acknowledgementId('1'), channel: trigger('1').channel, text: 'ok', kind: 'acknowledgement', ticketId: ticket.id }])
+     expect(h.executor.start).toHaveBeenCalledOnce()
+   })
+   it('refuses to decide an eval that a later eval replaced, and decides the later one', async () => {
+@@ -613,7 +614,7 @@ describe('follow-up owners', () => {
+     const ticketId = accepted(h).ticketId!
+     h.engine.report(ticketId, { state: 'progress', summary: 'working' })
+     h.tick(1); h.engine.receive(trigger('2')); h.settle()
+-    h.outbox.push({ id: key('ack', '2'), channel: trigger('2').channel!, text: 'On it', kind: 'acknowledgement', ticketId })
++    h.outbox.push({ id: acknowledgementId('2'), channel: trigger('2').channel!, text: 'On it', kind: 'acknowledgement', ticketId })
+     h.engine.report(ticketId, { state: 'dropped', summary: 'nothing to do' })
+     expect([h.repo.threads.get('chat:t1')!.pending, h.repo.triggers.disposition('2')!.fanout]).toEqual([[], [ticketId]])
+   })
+@@ -787,10 +788,10 @@ describe('worker reports', () => {
+     expect(replaced.attention).toMatchObject({ question: 'Which size?' })
+     expect(replaced.attention).not.toHaveProperty('triggerId')
+     // The replaced question is withdrawn from the outbox if its message has not gone out yet.
+-    expect(h.withdrawn).toEqual([key('attention-reply', asked.attention!.id)])
++    expect(h.withdrawn).toEqual([attentionReplyId(asked.attention!.id)])
+     const cleared = h.engine.report(ticketId, { state: 'progress', summary: 'answered', question: null })
+     expect(cleared).not.toHaveProperty('attention')
+-    expect(h.withdrawn).toEqual([key('attention-reply', asked.attention!.id), key('attention-reply', replaced.attention!.id)])
++    expect(h.withdrawn).toEqual([attentionReplyId(asked.attention!.id), attentionReplyId(replaced.attention!.id)])
+   })
+   it('ends the ticket on a final report: dropped drops it, ready completes it unless it follows a Source\'s Thread that is open', () => {
+     const outcome = (state: 'ready' | 'dropped' | 'failed', follows: boolean, closed = false) => {
+@@ -955,7 +956,7 @@ describe('direct decisions', () => {
+     const second = h.decide(h.requests.at(-1)!, { kind: 'accept', title: 'Other', scope: 'small', reason: 'routed', acknowledgement: 'On it' })
+     expect(second.ticketId).not.toBe(first.ticketId)
+     expect(h.repo.tickets.get(second.ticketId!)!.origin).toEqual({ triggerId: '2', triggerIds: ['2'] })
+-    expect(h.outbox.find(message => message.id === key('ack', '2'))).toMatchObject({ text: 'On it', kind: 'acknowledgement' })
++    expect(h.outbox.find(message => message.id === acknowledgementId('2'))).toMatchObject({ text: 'On it', kind: 'acknowledgement' })
+     // The replayed request still answers with the ticket it started.
+     expect(h.engine.decide('1', { kind: 'accept', title: 'Again', scope: 'small', reason: 'again' })).toEqual(first)
+   })
+@@ -1012,10 +1013,10 @@ describe('replies', () => {
+     const h = harness()
+     const ticketId = accepted(h).ticketId!
+     // The acknowledgement of the accept stays; a later request for one reuses it.
+-    expect(h.engine.reply({ purpose: 'acknowledgement', ticketId, triggerId: '1', text: 'On it' })).toEqual({ id: key('ack', '1'), status: 'pending', reused: true })
++    expect(h.engine.reply({ purpose: 'acknowledgement', ticketId, triggerId: '1', text: 'On it' })).toEqual({ id: acknowledgementId('1'), status: 'pending', reused: true })
+     expect(h.outbox.map(message => message.text)).toEqual(['ok'])
+     h.engine.receive(trigger('2', { actor: guest }))
+-    expect(h.engine.reply({ purpose: 'acknowledgement', ticketId, triggerId: '2', text: 'Looking' })).toEqual({ id: key('ack', '2'), status: 'pending', reused: false })
++    expect(h.engine.reply({ purpose: 'acknowledgement', ticketId, triggerId: '2', text: 'Looking' })).toEqual({ id: acknowledgementId('2'), status: 'pending', reused: false })
+     h.engine.receive(trigger('3', { human: false }))
+     expect(() => h.engine.reply({ purpose: 'acknowledgement', ticketId, triggerId: '3', text: 'x' })).toThrow(new UserError('ackNotPerson'))
+     h.engine.receive(trigger('6', { threads: [{ source: 'chat', id: 'elsewhere' }] }))
+@@ -1041,7 +1042,7 @@ describe('replies', () => {
+     expect(() => h.engine.reply({ purpose: 'attention', ticketId: quiet, text: 'Anything to send.' })).toThrow(new UserError('notAttention'))
+     expect(() => h.engine.reply({ purpose: 'attention', ticketId: quiet, question: '', text: 'Anything to send.' })).toThrow(new UserError('notAttention'))
+     const attention = h.repo.tickets.get(ticketId)!.attention!
+-    expect(h.engine.reply({ purpose: 'attention', ticketId, question: 'Which color?', text: 'Which color?' }).id).toBe(key('attention-reply', attention.id))
++    expect(h.engine.reply({ purpose: 'attention', ticketId, question: 'Which color?', text: 'Which color?' }).id).toBe(attentionReplyId(attention.id))
+     // A question goes where the message that raised it was written.
+     expect(h.outbox.at(-1)!.channel).toEqual(asked.channel)
+     h.engine.report(ticketId, { state: 'ready', summary: 'Done' })
+@@ -1217,7 +1218,7 @@ describe('Evals across Policy versions, revoked Mandates and mixed batches', ()
+     expect(h.requests.at(-1)!.triggers.map(item => item.id)).toEqual(['1', '2'])
+     const decision = h.decide(h.requests.at(-1)!, { kind: 'accept', title: 'Fix', scope: 'small', reason: 'r', acknowledgement: 'ok' })
+     expect(h.repo.tickets.get(decision.ticketId!)!.origin).toEqual({ triggerId: '1', triggerIds: ['1', '2'] })
+-    expect(h.outbox).toEqual([expect.objectContaining({ id: key('ack', '1'), channel: trigger('1').channel })])
++    expect(h.outbox).toEqual([expect.objectContaining({ id: acknowledgementId('1'), channel: trigger('1').channel })])
+   })
+ })
+ describe('gaps', () => {
+diff --git a/tests/runtime.spec.ts b/tests/runtime.spec.ts
+index fd737f2..892cb1b 100644
+--- a/tests/runtime.spec.ts
++++ b/tests/runtime.spec.ts
+@@ -1,4 +1,5 @@
+ import { Context } from '@deepseek-ai/cordis'
++import { acknowledgementId } from '../src/core/replies.ts'
+ import { bindScopeParent } from '@deepseek-ai/dsh-scope'
+ import { mkdtempSync, rmSync } from 'node:fs'
+ import { tmpdir } from 'node:os'
+@@ -229,7 +230,7 @@ it('relays an explicit member mention as a candidate and creates the ticket, ack
+   expect(ticket.assignments).toEqual([expect.objectContaining({ state: 'running', startedAt: expect.any(String) })])
+   expect(sessionId).toBe(`worker-${ticket.id}`)
+   expect(runtime.store.threads.get(`feishu:${CHAT}:om_1`)?.subscriptions).toEqual([ticket.id])
+-  expect(runtime.store.replyStatus(key('ack', trigger.id))).toBe('sent')
++  expect(runtime.store.replyStatus(acknowledgementId(trigger.id))).toBe('sent')
+   const larkCalls = vi.mocked(Commands.prototype.lark).mock.calls.map(([args]) => args)
+   expect(larkCalls.find(args => args[1] === '+messages-reply')).toEqual(expect.arrayContaining(['--message-id', 'om_1', '--markdown', '收到，修复回归。']))
+   // The first message holds the request itself: an explicit ticket has no assignment text beyond it, and nothing to read first.
+@@ -288,7 +289,7 @@ it('assesses a proactive observation in the orchestrator Session and creates the
+   expect(accepted).toMatchObject({ decision: 'accept', ticket: { ticket_id: expect.any(String) } })
+   const ticket = runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!
+   expect(ticket.mandate).toMatchObject({ strength: 'inferred', basis: expect.objectContaining({ via: 'admission', rules: ['copy'], observation: { mode: 'auto' } }) })
+-  expect(runtime.store.replyStatus(key('ack', again.id))).toBeDefined()
++  expect(runtime.store.replyStatus(acknowledgementId(again.id))).toBeDefined()
+   expect(await runTool(`worker-${ticket.id}`, 'orchestrator_read', { resource: `ticket/${ticket.id}/assignment` })).toMatchObject({ text: expect.stringContaining('Proactively accepted under copy') })
+ })
+ 
+@@ -304,7 +305,7 @@ it('accepts silently under a rule that says so, gives the worker the rule proced
+     rule_assessments: [{ rule_id: 'copy', matched: false, reason: 'no' }, { rule_id: 'visual', matched: false, reason: 'no' }, { rule_id: 'silent-bugfix', matched: true, reason: 'bug report' }],
+     direction: { implementation_requested: true, target_basis: 'existing-standard', requires_design_decision: false, evidence: 'expected colour is the light palette' } })
+   const ticket = runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!
+-  expect(runtime.store.replyStatus(key('ack', trigger.id))).toBeUndefined()
++  expect(runtime.store.replyStatus(acknowledgementId(trigger.id))).toBeUndefined()
+   await runtime.idle()
+   expect(sections.get(`worker-${ticket.id}`)!.text({})).toContain(mandateInstructions({ strength: 'inferred' }))
+   expect(await runTool(`worker-${ticket.id}`, 'orchestrator_read', { resource: `ticket/${ticket.id}/assignment` })).toMatchObject({ text: expect.stringContaining('沉默地复现和修复 (silent-bugfix): Reproduce minimally first; accept silently.') })
+@@ -1294,7 +1295,7 @@ it('reports a dropped acknowledgement as dropped, with its Ticket on the Source
+   expect(await runTool(sessionId, 'orchestrator_ack', { trigger_id: followup.id, text: '收到，也处理这个。' })).toMatchObject({ acknowledgement: 'dropped' })
+   expect(await runTool(runtime.masterId, 'orchestrator_read', { resource: `trigger/${followup.id}` })).toMatchObject({ acknowledgement: 'dropped' })
+   const dropped = ((await api('GET', 'sources')).body as unknown as { dropped: unknown[] }[]).flatMap(source => source.dropped)
+-  expect(dropped).toMatchObject([{ id: key('ack', followup.id), ticket: { id: ticket.id, title: ticket.title } }])
++  expect(dropped).toMatchObject([{ id: acknowledgementId(followup.id), ticket: { id: ticket.id, title: ticket.title } }])
+   expect(overviewOf(runtime).flow.dropped).toBe(1)
+ })
+ 
+diff --git a/tests/workspace.spec.ts b/tests/workspace.spec.ts
+new file mode 100644
+index 0000000..90f3b97
+--- /dev/null
++++ b/tests/workspace.spec.ts
+@@ -0,0 +1,151 @@
++import { afterEach, describe, expect, it, vi } from 'vitest'
++import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
++import { apply, messageKindOf, repliedTriggerId, sendWorkspace, WorkspaceConfigSchema, workspaceAddress, workspaceKind,
++  workspaceThreadContext } from '../src/sources/workspace.ts'
++import type { OutboundMessage, Trigger } from '../src/core/index.ts'
++import { testDeployment } from './fixtures/deployment.ts'
++
++/** A workspace Trigger as the Bridge builds it (`src/app/bridge.ts`). */
++function trigger(overrides: Partial<Trigger> = {}): Trigger {
++  return {
++    id: 'workspace:m1', source: 'workspace', threads: [{ source: 'workspace', id: 'workspace:c1' }],
++    actor: { source: 'workspace', id: '11111111-2222-3333-4444-555555555555' }, human: true, addressed: 'direct',
++    at: '2026-11-03T12:00:00.000Z', text: 'Fix the margin', channel: { source: 'workspace', thread: 'workspace:c1', address: { conversationId: 'c1', messageId: 'm1' } },
++    meta: { conversationId: 'c1', messageId: 'm1', replyToMessageId: 'm0', triggerId: 'workspace:m1', parentText: 'The earlier message',
++      spec: { repository: 'acme/widgets', baseBranch: 'main', baseCommit: 'abc123', model: { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash', reasoningEffort: 'high' }, mode: 'execute' } },
++    ...overrides,
++  }
++}
++const message = (id: string, overrides: Partial<OutboundMessage> = {}): OutboundMessage => ({
++  id, channel: { source: 'workspace', thread: 'workspace:c1', address: { conversationId: 'c1', messageId: 'm1' } },
++  text: 'On it', kind: 'reply', ticketId: 't1', ...overrides })
++
++const servers: Server[] = []
++afterEach(async () => {
++  await Promise.all(servers.splice(0).map(server => new Promise<void>(resolve => { server.close(() => resolve()) })))
++  vi.unstubAllEnvs()
++})
++/** Starts a platform stand-in on a loopback port and returns its origin plus the requests it received. */
++async function platform(answer: (req: IncomingMessage, res: ServerResponse) => void): Promise<{ url: string; requests: { headers: IncomingMessage['headers']; body: Record<string, unknown> }[] }> {
++  const requests: { headers: IncomingMessage['headers']; body: Record<string, unknown> }[] = []
++  const server = createServer(async (req, res) => {
++    const chunks: Buffer[] = []
++    for await (const chunk of req) chunks.push(Buffer.from(chunk))
++    requests.push({ headers: req.headers, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown> })
++    answer(req, res)
++  })
++  servers.push(server)
++  await new Promise<void>(resolve => { server.listen(0, '127.0.0.1', () => { resolve() }) })
++  const address = server.address()
++  if (!address || typeof address === 'string') throw new Error('no port')
++  return { url: `http://127.0.0.1:${address.port}`, requests }
++}
++const answer = (status: number) => (_req: IncomingMessage, res: ServerResponse) => { res.writeHead(status); res.end('{}') }
++const configure = (url: string) => { vi.stubEnv('MOYU_PLATFORM_URL', url); vi.stubEnv('MOYU_PLATFORM_TOKEN', 'platform-token') }
++
++describe('the workspace Source kind', () => {
++  it('stores only non-secret configuration and listens to every delivered message', () => {
++    expect(WorkspaceConfigSchema.parse({})).toEqual({ repository: '' })
++    expect(WorkspaceConfigSchema.parse({ repository: 'acme/widgets' })).toEqual({ repository: 'acme/widgets' })
++    expect(() => WorkspaceConfigSchema.parse({ token: 'secret' })).toThrow()
++    expect(workspaceKind.kind).toBe('workspace')
++    expect(workspaceKind.health).toEqual(['workspace'])
++    expect(workspaceKind.scope!({ meta: {} }, { repository: '' })).toEqual({ listened: true, observed: false, row: 'web' })
++    expect(workspaceKind.fields.map(field => field.key)).toEqual(['repository'])
++    const policy = workspaceKind.policy!
++    expect(policy.schema.parse({ allowed: [{ id: '11111111-2222-3333-4444-555555555555' }] }))
++      .toEqual({ allowed: [{ id: '11111111-2222-3333-4444-555555555555' }] })
++    expect(policy.schema.parse({})).toEqual({ allowed: [] })
++    expect(policy.fields[0]!.key).toBe('allowed')
++    expect('bots' in policy).toBe(false)
++  })
++
++  it('registers the kind and reports health from the plugin entry, without owning the Bridge', () => {
++    const registered: unknown[] = []
++    const report = vi.fn()
++    const effect = vi.fn((run: () => () => void) => { run(); return () => {} })
++    const ctx = { orchestrator: { sources: { register: (kind: unknown) => { registered.push(kind); return () => {} } },
++      context: () => ({ report }) }, effect }
++    apply(ctx as never)
++    expect(registered).toEqual([workspaceKind])
++    expect(report).toHaveBeenCalledWith('workspace', expect.objectContaining({ state: 'ready' }))
++  })
++
++  it('reads one page with the Trigger message and the replied-to message it was given, inventing nothing', async () => {
++    const commands = {} as never
++    expect(workspaceThreadContext.messageId(trigger())).toBe('m1')
++    const thread = await workspaceThreadContext.read(commands, trigger(), 'thread', undefined, { repository: '' })
++    expect(thread).toMatchObject({ messages: [{ id: 'm1', from: '11111111-2222-3333-4444-555555555555', at: '2026-11-03T12:00:00.000Z', text: 'Fix the margin' }], body: {} })
++    expect(thread.next).toBeUndefined()
++    expect(await workspaceThreadContext.read(commands, trigger(), 'root', undefined, { repository: '' })).toEqual(thread)
++    expect((await workspaceThreadContext.read(commands, trigger(), 'parent', undefined, { repository: '' })).messages)
++      .toEqual([{ id: 'm0', from: '11111111-2222-3333-4444-555555555555', at: '2026-11-03T12:00:00.000Z', text: 'The earlier message' }])
++    const orphan = trigger({ meta: { conversationId: 'c1', messageId: 'm1', spec: {} } })
++    expect(await workspaceThreadContext.read(commands, orphan, 'parent', undefined, { repository: '' })).toEqual({ messages: [], body: {} })
++  })
++
++  it('publishes the frozen execution spec in its environment, never credentials', () => {
++    const deployment = testDeployment()
++    const values = workspaceKind.environment!.values({ deployment, config: { repository: '' }, trigger: trigger() })
++    expect(values).toEqual({
++      DSH_SUPERAGENT_WORKSPACE_REPOSITORY: 'acme/widgets',
++      DSH_SUPERAGENT_WORKSPACE_ACCOUNT: 'agent-bot',
++      DSH_SUPERAGENT_WORKSPACE_COMMIT_EMAIL: '7+agent-bot@users.noreply.github.com',
++      DSH_SUPERAGENT_WORKSPACE_BASE_BRANCH: 'main',
++      DSH_SUPERAGENT_WORKSPACE_BASE_COMMIT: 'abc123',
++      DSH_SUPERAGENT_WORKSPACE_MODEL: 'commandcode/deepseek/deepseek-v4.1-flash',
++      DSH_SUPERAGENT_WORKSPACE_CONVERSATION: 'c1',
++    })
++    expect(Object.keys(values).some(key => /TOKEN|KEY|SECRET/i.test(key))).toBe(false)
++    // Without a Trigger the deployment repository and empty frozen values stand in, so a prepare command still runs.
++    expect(workspaceKind.environment!.values({ deployment, config: { repository: '' } }))
++      .toMatchObject({ DSH_SUPERAGENT_WORKSPACE_REPOSITORY: 'acme/widgets', DSH_SUPERAGENT_WORKSPACE_BASE_BRANCH: '',
++        DSH_SUPERAGENT_WORKSPACE_BASE_COMMIT: '', DSH_SUPERAGENT_WORKSPACE_MODEL: '', DSH_SUPERAGENT_WORKSPACE_CONVERSATION: '' })
++  })
++
++  it('derives address, message kind and answered Trigger from the message id', () => {
++    expect(workspaceAddress(trigger())).toEqual({ conversationId: 'c1', messageId: 'm1' })
++    expect(messageKindOf({ id: 'ack:workspace:m1', kind: 'acknowledgement' })).toBe('acknowledgement')
++    expect(messageKindOf({ id: 'attention-reply:abc', kind: 'reply' })).toBe('question')
++    expect(messageKindOf({ id: 'abc', kind: 'notice' })).toBe('notice')
++    expect(messageKindOf({ id: 'abc', kind: 'reply' })).toBe('reply')
++    expect(repliedTriggerId('ack:workspace:m1')).toBe('workspace:m1')
++    expect(repliedTriggerId('attention-reply:abc')).toBeUndefined()
++    expect(repliedTriggerId('abc')).toBeUndefined()
++  })
++})
++
++describe('the workspace Channel', () => {
++  it('posts the machine body and confirms only after a 2xx', async () => {
++    const { url, requests } = await platform(answer(200))
++    configure(url)
++    await expect(workspaceKind.channel!.send({ commands: {} as never }, message('ack:workspace:m1', { kind: 'acknowledgement' }))).resolves.toBe('sent')
++    expect(requests[0]!.headers.authorization).toBe('Bearer platform-token')
++    expect(requests[0]!.headers['content-type']).toBe('application/json')
++    expect(requests[0]!.body).toMatchObject({ sourceEventId: 'ack:workspace:m1', type: 'channel.message', conversationId: 'c1',
++      ticketId: 't1', triggerId: 'workspace:m1', messageKind: 'acknowledgement', text: 'On it' })
++    expect(Date.parse(String(requests[0]!.body.at))).not.toBeNaN()
++  })
++
++  it('settles a permanent rejection as gone and retries a passing one', async () => {
++    configure((await platform(answer(404))).url)
++    await expect(sendWorkspace(message('reply-1'))).resolves.toBe('gone')
++    configure((await platform(answer(400))).url)
++    await expect(sendWorkspace(message('reply-2'))).resolves.toBe('gone')
++    for (const status of [408, 429, 500, 503]) {
++      configure((await platform(answer(status))).url)
++      await expect(sendWorkspace(message(`reply-${status}`))).rejects.toThrow(String(status))
++    }
++  })
++
++  it('throws while the platform is unreachable or unconfigured', async () => {
++    const { url } = await platform(answer(200))
++    configure(url)
++    servers.splice(0).forEach(server => server.close())
++    await expect(sendWorkspace(message('reply-offline'))).rejects.toThrow()
++    vi.unstubAllEnvs()
++    await expect(sendWorkspace(message('reply-unset'))).rejects.toThrow(/MOYU_PLATFORM_URL/)
++    vi.stubEnv('MOYU_PLATFORM_URL', 'http://127.0.0.1:1')
++    await expect(sendWorkspace(message('reply-token'))).rejects.toThrow(/MOYU_PLATFORM_TOKEN/)
++  })
++})
+diff --git a/tsdown.config.ts b/tsdown.config.ts
+index 0aabd00..29055b2 100644
+--- a/tsdown.config.ts
++++ b/tsdown.config.ts
+@@ -7,7 +7,7 @@ const raw = { name: 'raw',
+   load: (id: string) => id.endsWith('?raw') ? { code: `export default ${JSON.stringify(readFileSync(id.slice(0, -4), 'utf8'))}`, moduleType: 'js' as const }
+     : undefined }
+ export default defineConfig([
+-  { entry: { index: 'src/index.ts', 'github-watch': 'src/sources/github.ts', 'feishu-watch': 'src/sources/feishu.ts' }, outDir: 'lib', format: 'esm', fixedExtension: false, platform: 'node', target: 'es2024', dts: true, clean: true, deps: { neverBundle: [/^@deepseek-ai\//, 'zod', 'proper-lockfile'] } },
++  { entry: { index: 'src/index.ts', 'github-watch': 'src/sources/github.ts', 'feishu-watch': 'src/sources/feishu.ts', 'workspace-watch': 'src/sources/workspace.ts' }, outDir: 'lib', format: 'esm', fixedExtension: false, platform: 'node', target: 'es2024', dts: true, clean: true, deps: { neverBundle: [/^@deepseek-ai\//, 'zod', 'proper-lockfile'] } },
+   { entry: { client: 'src/client/index.tsx' }, outDir: 'lib', format: 'cjs', platform: 'browser', dts: false, clean: false, plugins: [raw],
+     deps: { neverBundle: ['react', 'react/jsx-runtime', 'react-dom'] },
+     outputOptions: { entryFileNames: 'client.js', banner: 'window.__ModuleLoader__.load({ id: "dsh-superagent", factory: (require) => {', footer: 'return module.exports; } });', intro: 'var module = { exports: {} }; var exports = module.exports;' } },

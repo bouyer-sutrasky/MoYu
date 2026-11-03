@@ -1,16 +1,13 @@
 import { sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 
-import {
-  workspaceEventSchema,
-  workspaceEventTypeSchema,
-  type WorkspaceEvent,
-} from '@moyu/contracts';
-import { events, type Event, type Database } from '@moyu/db';
+import { type WorkspaceEvent } from '@moyu/contracts';
+import { events, type Database } from '@moyu/db';
 
 import type { Authenticate } from '../auth/guards';
 import type { SessionService } from '../auth/sessions';
 import type { AppEventBus } from '../events/bus';
+import { eventToWorkspaceEvent } from '../events/format';
 import { ApiProblem } from '../lib/errors';
 
 export interface EventRouteDependencies {
@@ -21,26 +18,8 @@ export interface EventRouteDependencies {
 }
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
+const POLL_INTERVAL_MS = 1_000;
 const REPLAY_LIMIT = 500;
-
-function toWorkspaceEvent(row: Event): WorkspaceEvent | null {
-  const type = workspaceEventTypeSchema.safeParse(row.type);
-  if (!type.success) {
-    return null;
-  }
-  const candidate = {
-    id: row.id,
-    seq: row.seq.toString(),
-    type: type.data,
-    repositoryId: row.repositoryId ?? undefined,
-    conversationId: row.conversationId ?? undefined,
-    taskId: row.taskId ?? undefined,
-    occurredAt: row.occurredAt.toISOString(),
-    data: row.payload,
-  };
-  const parsed = workspaceEventSchema.safeParse(candidate);
-  return parsed.success ? parsed.data : null;
-}
 
 function parseCursor(value: string | undefined): bigint {
   if (!value) {
@@ -53,9 +32,10 @@ function parseCursor(value: string | undefined): bigint {
 }
 
 /**
- * Single shared owner event stream. Durable rows are replayed first, then live
- * in-process events are appended. Revoking the session closes this stream
- * immediately and the client must re-authenticate before reconnecting.
+ * Single shared owner event stream. Durable rows are replayed first, then new
+ * rows are polled from PostgreSQL. Polling (rather than only the in-process bus)
+ * is what makes dispatcher-written events reach open connections and what lets a
+ * reconnecting client fill the gap with `Last-Event-ID`.
  */
 export function registerEventRoutes(
   app: FastifyInstance,
@@ -82,13 +62,6 @@ export function registerEventRoutes(
       typeof headerCursor === 'string' ? headerCursor : (query.after ?? undefined),
     );
 
-    const history = await database
-      .select()
-      .from(events)
-      .where(sql`${events.seq} > ${cursor.toString()}`)
-      .orderBy(events.seq)
-      .limit(REPLAY_LIMIT);
-
     reply.hijack();
     reply.raw.writeHead(200, {
       'content-type': 'text/event-stream; charset=utf-8',
@@ -98,17 +71,69 @@ export function registerEventRoutes(
     });
     reply.raw.flushHeaders?.();
 
-    let lastSeq = cursor;
+    let lastWritten = cursor;
     let closed = false;
-    const timers: { heartbeat?: NodeJS.Timeout } = {};
+    let flushing = false;
+    let flushAgain = false;
     let unsubscribeWorkspace = () => {};
     let unsubscribeRevocation = () => {};
+    // Assigned after `close` is defined; the closures read the assigned timers.
+    // eslint-disable-next-line prefer-const
+    let pollTimer: NodeJS.Timeout | undefined;
+    // eslint-disable-next-line prefer-const
+    let heartbeat: NodeJS.Timeout | undefined;
 
     const writeEvent = (event: WorkspaceEvent) => {
-      lastSeq = BigInt(event.seq);
+      const seq = BigInt(event.seq);
+      if (seq <= lastWritten) {
+        return;
+      }
+      lastWritten = seq;
       reply.raw.write(
         `id: ${event.seq}\nevent: workspaceEvent\ndata: ${JSON.stringify(event)}\n\n`,
       );
+    };
+
+    const flush = async (): Promise<void> => {
+      if (closed) {
+        return;
+      }
+      if (flushing) {
+        flushAgain = true;
+        return;
+      }
+      flushing = true;
+      try {
+        for (;;) {
+          flushAgain = false;
+          const rows = await database
+            .select()
+            .from(events)
+            .where(sql`${events.seq} > ${lastWritten.toString()}`)
+            .orderBy(events.seq)
+            .limit(REPLAY_LIMIT);
+          if (closed) {
+            return;
+          }
+          for (const row of rows) {
+            const event = eventToWorkspaceEvent(row);
+            if (event) {
+              writeEvent(event);
+            }
+          }
+          if (closed || (rows.length < REPLAY_LIMIT && !flushAgain)) {
+            return;
+          }
+        }
+      } catch {
+        // A transient database error must not kill an otherwise healthy stream;
+        // the interval retries and the client's Last-Event-ID still covers a gap.
+      } finally {
+        flushing = false;
+        if (flushAgain && !closed) {
+          void flush();
+        }
+      }
     };
 
     const close = () => {
@@ -116,8 +141,11 @@ export function registerEventRoutes(
         return;
       }
       closed = true;
-      if (timers.heartbeat) {
-        clearInterval(timers.heartbeat);
+      if (heartbeat) {
+        clearInterval(heartbeat);
+      }
+      if (pollTimer) {
+        clearInterval(pollTimer);
       }
       unsubscribeRevocation();
       unsubscribeWorkspace();
@@ -127,19 +155,19 @@ export function registerEventRoutes(
       }
     };
 
-    for (const row of history) {
-      const event = toWorkspaceEvent(row);
-      if (event) {
-        writeEvent(event);
-      }
-    }
+    await flush();
 
-    unsubscribeWorkspace = bus.onWorkspaceEvent((event) => {
-      if (closed || BigInt(event.seq) <= lastSeq) {
-        return;
-      }
-      writeEvent(event);
+    // The bus only wakes the stream; the durable table is read in sequence
+    // order. Writing the notified event directly could skip a row whose larger
+    // sequence committed first in the producer, leaving a permanent gap.
+    unsubscribeWorkspace = bus.onWorkspaceEvent(() => {
+      void flush();
     });
+
+    pollTimer = setInterval(() => {
+      void flush();
+    }, POLL_INTERVAL_MS);
+    pollTimer.unref?.();
 
     unsubscribeRevocation = bus.onSessionRevoked(auth.session.id, () => {
       if (closed) {
@@ -149,7 +177,7 @@ export function registerEventRoutes(
       close();
     });
 
-    timers.heartbeat = setInterval(() => {
+    heartbeat = setInterval(() => {
       void (async () => {
         try {
           const active = await sessions.isActive(auth.session.id);
@@ -165,7 +193,7 @@ export function registerEventRoutes(
         }
       })();
     }, HEARTBEAT_INTERVAL_MS);
-    timers.heartbeat.unref?.();
+    heartbeat.unref?.();
 
     streams.add(close);
     request.raw.on('close', close);

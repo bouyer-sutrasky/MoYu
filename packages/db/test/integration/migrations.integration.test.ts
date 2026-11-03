@@ -9,12 +9,14 @@ const EXPECTED_TABLES = [
   'auth_challenges',
   'bootstrap_codes',
   'conversations',
+  'deferred_bridge_events',
   'deliveries',
   'events',
   'messages',
   'owners',
   'passkey_credentials',
   'repositories',
+  'runtime_cursors',
   'runtime_leases',
   'sessions',
   'task_links',
@@ -38,7 +40,9 @@ const EXPECTED_INDEXES = [
   'bootstrap_codes_token_hash_uq',
   'deliveries_message_uq',
   'events_seq_uq',
+  'conversations_owner_client_request_uq',
   'messages_conversation_client_message_uq',
+  'messages_conversation_source_event_uq',
   'passkey_credentials_credential_id_uq',
   'runtime_leases_active_repository_uq',
   'runtime_leases_fencing_token_uq',
@@ -65,7 +69,7 @@ describe('initial migration on an empty PostgreSQL database', () => {
     }
   });
 
-  it('creates all M1 and M2 tables', async () => {
+  it('creates all M1, M2 and M3 tables', async () => {
     const tables = await stringColumn(
       testDatabase,
       sql`select table_name from information_schema.tables where table_schema = 'public' order by table_name`,
@@ -106,6 +110,27 @@ describe('initial migration on an empty PostgreSQL database', () => {
     expect(definition).toContain('UNIQUE INDEX');
     expect(definition).toContain('(conversation_id, client_message_id)');
     expect(definition).toContain('WHERE (client_message_id IS NOT NULL)');
+  });
+
+  it('keeps the M3 idempotency indexes unique and partial', async () => {
+    const rows = await testDatabase.db.execute(
+      sql`select indexname, indexdef from pg_indexes where schemaname = 'public'
+           and indexname in ('conversations_owner_client_request_uq', 'messages_conversation_source_event_uq')`,
+    );
+    const definitions = new Map(
+      rows.rows.map((row) => [String(row.indexname), String(row.indexdef)]),
+    );
+    expect(definitions.get('conversations_owner_client_request_uq')).toContain('UNIQUE INDEX');
+    expect(definitions.get('conversations_owner_client_request_uq')).toContain(
+      '(owner_id, client_request_id)',
+    );
+    expect(definitions.get('conversations_owner_client_request_uq')).toContain(
+      'WHERE (client_request_id IS NOT NULL)',
+    );
+    expect(definitions.get('messages_conversation_source_event_uq')).toContain('UNIQUE INDEX');
+    expect(definitions.get('messages_conversation_source_event_uq')).toContain(
+      '(conversation_id, source_event_id)',
+    );
   });
 
   it('is idempotent when the migration folder is applied twice', async () => {

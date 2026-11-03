@@ -7,11 +7,14 @@
     "build": "tsup",
     "dev": "tsx watch src/main.ts",
     "start": "node dist/main.js",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "test": "vitest run --exclude \"test/integration/**\"",
+    "typecheck": "tsc --noEmit",
+    "test:integration": "vitest run test/integration"
   },
   "dependencies": {
+    "@moyu/contracts": "workspace:*",
     "@moyu/db": "workspace:*",
+    "@moyu/runtime-client": "workspace:*",
     "drizzle-orm": "0.44.7",
     "pg": "8.23.1",
     "zod": "4.6.7"

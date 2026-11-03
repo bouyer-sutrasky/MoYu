@@ -1,0 +1,160 @@
+{
+  "ok": true,
+  "checks": [
+    {
+      "name": "private test repository is bound through the Bridge config",
+      "ok": true,
+      "repository": "Bouyer12/m3-loop-r3-68fa5d90"
+    },
+    {
+      "name": "web created a conversation with a pending task",
+      "ok": true,
+      "conversationId": "61632ee0-eb4d-46df-a330-317f1eae189e",
+      "messageId": "19185048-4aea-4783-9a1e-f77b0a3b4f23"
+    },
+    {
+      "name": "superagent accepted the task and linked its Ticket",
+      "ok": true,
+      "ticketId": "c46147d8c102515393b66a45e0145c4c",
+      "baseCommit": "bad7eac5174a3090078cbf687e76c41af1dc1b98"
+    },
+    {
+      "name": "worker question reached the web conversation",
+      "ok": true,
+      "question": "README.md 第 5 行里的 “teh” 应改成 “the” 还是 “this”？请确认用词，我收到后再只改这一处、在当前分支提交并开 PR。"
+    },
+    {
+      "name": "reply delivery reached read from worker session evidence",
+      "ok": true,
+      "messageId": "66ce4e09-ee48-4560-b97e-40184fe2b776",
+      "readAt": "2026-11-03T15:20:39.163Z"
+    },
+    {
+      "name": "worker delivered a pull request",
+      "ok": true,
+      "prUrl": "https://github.com/Bouyer12/m3-loop-r3-68fa5d90/pull/1",
+      "prNumber": 1,
+      "state": "awaiting_review"
+    },
+    {
+      "name": "pull request exists in the private test repository",
+      "ok": true,
+      "stdout": "{\"baseRefName\":\"main\",\"headRefName\":\"agent/fix-readme-typo-c46147d8c102\",\"mergedAt\":null,\"state\":\"OPEN\",\"url\":\"https://github.com/Bouyer12/m3-loop-r3-68fa5d90/pull/1\"}\n",
+      "stderr": ""
+    },
+    {
+      "name": "all concurrent retries of one clientMessageId returned a result",
+      "ok": true,
+      "okCount": 5
+    },
+    {
+      "name": "same clientMessageId produced exactly one message",
+      "ok": true,
+      "duplicateId": "e2e-duplicate-fda48531-b205-4842-871f-3d14fef35c5a"
+    },
+    {
+      "name": "duplicate retries produced exactly one upstream Trigger",
+      "ok": true,
+      "triggerId": "workspace:2f1a287d-efb4-4f53-ad3e-e709f41a9724"
+    },
+    {
+      "name": "duplicate retries did not create another Ticket",
+      "ok": true
+    },
+    {
+      "name": "SSE replay delivered the durable event history in order, once each",
+      "ok": true,
+      "eventCount": 17,
+      "firstIds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17
+      ]
+    },
+    {
+      "name": "SSE reconnect filled the gap in order, without duplicates or omissions",
+      "ok": true,
+      "lastId": "17",
+      "replayIds": [
+        18,
+        19
+      ]
+    },
+    {
+      "name": "SSE reconnect carried the expected message events",
+      "ok": true,
+      "liveMessageId": "ec386a53-0856-4143-a655-1d7e9a9f121b"
+    },
+    {
+      "name": "redelivery after a lost receipt stayed deduplicated upstream",
+      "ok": true,
+      "triggerId": "workspace:2f1a287d-efb4-4f53-ad3e-e709f41a9724"
+    },
+    {
+      "name": "redelivery did not create another Ticket",
+      "ok": true
+    },
+    {
+      "name": "redelivery kept the first frozen base commit",
+      "ok": true,
+      "frozenBeforeLostReceipt": "bad7eac5174a3090078cbf687e76c41af1dc1b98",
+      "frozenAfterLostReceipt": "bad7eac5174a3090078cbf687e76c41af1dc1b98"
+    },
+    {
+      "name": "API accepted the message before restart",
+      "ok": true
+    },
+    {
+      "name": "API restart kept the accepted message and its pending delivery",
+      "ok": true,
+      "messageCount": 1
+    },
+    {
+      "name": "API restart delivered exactly one upstream Trigger",
+      "ok": true,
+      "triggerId": "workspace:84fbbfdc-e3e0-4f9b-a497-16212016d7d0",
+      "triggerCount": 1
+    },
+    {
+      "name": "Bridge outage kept the message and delivery, not yet delivered",
+      "ok": true,
+      "state": "stored",
+      "persistedState": "pending",
+      "deliveredAt": null
+    },
+    {
+      "name": "Bridge restart delivered the message once",
+      "ok": true,
+      "trigger": "workspace:231d5499-b033-4f66-8b82-6a1f1a6f206d"
+    },
+    {
+      "name": "first successful Bridge receipt was lost at the HTTP response and retried once",
+      "ok": true,
+      "droppedResponses": 1,
+      "trigger": "workspace:19185048-4aea-4783-9a1e-f77b0a3b4f23"
+    },
+    {
+      "name": "platform and Ticket froze the same base commit",
+      "ok": true,
+      "platformBase": "bad7eac5174a3090078cbf687e76c41af1dc1b98",
+      "ticketBase": "bad7eac5174a3090078cbf687e76c41af1dc1b98"
+    }
+  ],
+  "conversationId": "61632ee0-eb4d-46df-a330-317f1eae189e",
+  "repository": "Bouyer12/m3-loop-r3-68fa5d90",
+  "runAt": "2026-11-03T15-18-10-024Z"
+}

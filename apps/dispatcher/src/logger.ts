@@ -1,5 +1,6 @@
 export interface DispatcherLogger {
   info: (fields: Record<string, unknown>, message: string) => void;
+  warn: (fields: Record<string, unknown>, message: string) => void;
   error: (fields: Record<string, unknown>, message: string) => void;
 }
 
@@ -9,7 +10,11 @@ export interface DispatcherLogger {
  * machine-readable in systemd/journald as well.
  */
 export function createConsoleLogger(service: string): DispatcherLogger {
-  const write = (level: 'info' | 'error', fields: Record<string, unknown>, message: string) => {
+  const write = (
+    level: 'info' | 'warn' | 'error',
+    fields: Record<string, unknown>,
+    message: string,
+  ) => {
     const line = JSON.stringify({
       level,
       time: new Date().toISOString(),
@@ -26,6 +31,7 @@ export function createConsoleLogger(service: string): DispatcherLogger {
 
   return {
     info: (fields, message) => write('info', fields, message),
+    warn: (fields, message) => write('warn', fields, message),
     error: (fields, message) => write('error', fields, message),
   };
 }

@@ -1,0 +1,110 @@
+diff --git a/src/app/bridge.ts b/src/app/bridge.ts
+index 7b187f6..b3d5c5c 100644
+--- a/src/app/bridge.ts
++++ b/src/app/bridge.ts
+@@ -218,6 +218,14 @@ type TriggerRequest = z.infer<typeof TriggerRequestSchema>
+ const CommitSchema = z.object({ sha: z.string().min(1) })
+ 
+ /** Builds the stable workspace Trigger the Router delivers; the resolved `baseCommit` replaces the request's. */
++/** The base commit a stored workspace Trigger froze; null only for legacy rows without a spec. */
++function storedSpecBase(trigger: Trigger | undefined): string | null {
++  const spec = trigger?.meta.spec
++  if (!spec || typeof spec !== 'object') return null
++  const commit = (spec as Record<string, unknown>).baseCommit
++  return typeof commit === 'string' && commit ? commit : null
++}
++
+ export function workspaceTrigger(request: TriggerRequest, baseCommit: string, frozen: FrozenModel): Trigger {
+   const thread = `workspace:${request.conversationId}`
+   const channel: ChannelRef = { source: 'workspace', thread, address: { conversationId: request.conversationId, ...request.messageId ? { messageId: request.messageId } : {} } }
+@@ -464,6 +472,17 @@ export class Bridge {
+     if (request.executionSpec.repository !== deployment.repository) {
+       return json(res, 409, { error: `The instance serves ${deployment.repository}, not ${request.executionSpec.repository}` })
+     }
++    // A duplicate returns what the first delivery froze and stores, before any
++    // model or branch is consulted: a retry after a lost receipt must not move
++    // the base commit when the branch advanced, and must not fail when the
++    // original model was removed later. The Store's Trigger id is the record.
++    const existing = this.host.store.triggers.get(request.triggerId)
++    if (existing) {
++      if (existing.source !== 'workspace') {
++        return json(res, 409, { error: `Trigger ${request.triggerId} belongs to another Source` })
++      }
++      return this.duplicate(res, request.triggerId)
++    }
+     if (request.executionSpec.mode === 'discuss') return json(res, 422, { error: 'discuss mode is not supported in this phase' })
+     // An explicitly requested model must resolve, and a delivery that names none freezes the instance's Executor model
+     // instead, so a later settings change cannot move an accepted task. When the instance has none either, the ticket
+@@ -484,9 +503,24 @@ export class Bridge {
+     let result: ReceiveResult
+     try { result = this.host.receive(trigger) }
+     catch (error) { return json(res, 503, { error: `The runtime did not accept the trigger: ${error instanceof Error ? error.message : String(error)}` }) }
+-    // `duplicate` means the Store already had this Trigger id: return the ticket it produced, if any, and never create one here.
+-    const ticketId = result === 'duplicate' ? this.ticketOfTrigger(request.triggerId) : null
+-    json(res, 200, { result, triggerId: trigger.id, baseCommit, ticketId })
++    // A concurrent first delivery may have stored the same id between the check
++    // above and `receive`; report the persisted first result, not this attempt's
++    // freshly resolved branch.
++    if (result === 'duplicate') return this.duplicate(res, request.triggerId)
++    json(res, 200, { result, triggerId: trigger.id, baseCommit, ticketId: null })
++  }
++
++  /** The first delivery's persisted outcome: filtered, or the stored base commit and Ticket it produced. */
++  private duplicate(res: ServerResponse, triggerId: string): void {
++    // A filtered Trigger is stored by intake with a filtered disposition and no
++    // Ticket. Replaying it must keep returning `filtered`, or the platform
++    // would treat a lost receipt as a successful delivery.
++    if (this.host.store.triggers.disposition(triggerId)?.filtered) {
++      json(res, 200, { result: 'filtered', triggerId, baseCommit: null, ticketId: null })
++      return
++    }
++    const stored = this.host.store.triggers.get(triggerId)
++    json(res, 200, { result: 'duplicate', triggerId, baseCommit: storedSpecBase(stored), ticketId: this.ticketOfTrigger(triggerId) })
+   }
+ 
+   /** Verifies a supplied commit, or resolves the branch head when the platform froze none. */
+diff --git a/tests/bridge.spec.ts b/tests/bridge.spec.ts
+index 0efb51b..8c66b5d 100644
+--- a/tests/bridge.spec.ts
++++ b/tests/bridge.spec.ts
+@@ -176,6 +176,40 @@ describe('POST /bridge/v1/triggers', () => {
+     expect(await call('POST', '/bridge/v1/triggers', body())).toMatchObject({ status: 200, body: { result: 'duplicate', ticketId: 't1' } })
+   })
+ 
++  it('returns the first frozen result for a duplicate after the branch moved and the model disappeared', async () => {
++    const h = harness()
++    const { call } = await serve(h)
++    expect(await call('POST', '/bridge/v1/triggers', body())).toMatchObject({ status: 200,
++      body: { result: 'stored', baseCommit: 'branch-sha', ticketId: null } })
++    h.repo.tickets.save(frozen({ ...ticket('t1'), base: { repository: 'acme/widgets', branch: 'main', commit: 'branch-sha' } }))
++
++    // The branch advanced and the model is gone: a lost-receipt retry must still
++    // report the first delivery's persisted result and never resolve either again.
++    h.commands.api.mockImplementation(async (_schema: unknown, path: string) => ({ sha: path === 'commits/main' ? 'advanced-sha' : 'other-sha' }))
++    h.host.verifyModel = async () => { throw new Error('model removed') }
++
++    expect(await call('POST', '/bridge/v1/triggers', body())).toEqual({ status: 200,
++      body: { result: 'duplicate', triggerId: 'workspace:m1', baseCommit: 'branch-sha', ticketId: 't1' } })
++    expect(h.commands.api).toHaveBeenCalledTimes(1)
++    expect(h.received).toHaveLength(1)
++    expect(h.repo.triggers.get('workspace:m1')?.meta.spec).toMatchObject({ baseCommit: 'branch-sha' })
++  })
++
++  it('replays the persisted filtered disposition for a duplicate Trigger', async () => {
++    const h = harness()
++    const { call } = await serve(h)
++    const first = trigger()
++    h.repo.triggers.save(first)
++    h.repo.triggers.saveDisposition(first.id, { filtered: { code: 'not_addressed' }, fanout: [], at: first.at })
++    h.commands.api.mockClear()
++    h.host.verifyModel = async () => { throw new Error('model removed') }
++
++    expect(await call('POST', '/bridge/v1/triggers', body())).toEqual({ status: 200,
++      body: { result: 'filtered', triggerId: 'workspace:m1', baseCommit: null, ticketId: null } })
++    expect(h.commands.api).not.toHaveBeenCalled()
++    expect(h.host.store.tickets.list()).toHaveLength(0)
++  })
++
+   it('reports filtered without a ticket', async () => {
+     const h = harness()
+     h.host.receive = trigger => { h.received.push(trigger); return 'filtered' }

@@ -23,6 +23,10 @@ export const messages = pgTable(
     replyToMessageId: uuid('reply_to_message_id').references((): AnyPgColumn => messages.id, {
       onDelete: 'set null',
     }),
+    /** 'user' for messages typed on the web, otherwise the Channel reply kind. */
+    kind: text('kind').notNull().default('user'),
+    /** Stable upstream reply id, used to deduplicate repeated Bridge callbacks. */
+    sourceEventId: text('source_event_id'),
     source: text('source').notNull().default('web'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -30,6 +34,9 @@ export const messages = pgTable(
     uniqueIndex('messages_conversation_client_message_uq')
       .on(table.conversationId, table.clientMessageId)
       .where(sql`${table.clientMessageId} is not null`),
+    uniqueIndex('messages_conversation_source_event_uq')
+      .on(table.conversationId, table.sourceEventId)
+      .where(sql`${table.sourceEventId} is not null`),
     index('messages_conversation_created_idx').on(table.conversationId, table.createdAt),
   ],
 );

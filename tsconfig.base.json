@@ -21,7 +21,8 @@
     "baseUrl": ".",
     "paths": {
       "@moyu/contracts": ["packages/contracts/src/index.ts"],
-      "@moyu/db": ["packages/db/src/index.ts"]
+      "@moyu/db": ["packages/db/src/index.ts"],
+      "@moyu/runtime-client": ["packages/runtime-client/src/index.ts"]
     }
   }
 }

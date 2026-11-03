@@ -1,4 +1,5 @@
-import { index, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { index, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 
 import { conversationMode, executionMode } from './enums';
 import { owners } from './owners';
@@ -23,12 +24,22 @@ export const conversations = pgTable(
     baseBranch: text('base_branch').notNull(),
     baseCommit: text('base_commit'),
     modelId: text('model_id'),
+    /** Short title derived from the first user message; null until one arrives. */
+    title: text('title'),
+    modelReasoningEffort: text('model_reasoning_effort'),
+    /** Client-supplied idempotency key for conversation creation. */
+    clientRequestId: text('client_request_id'),
+    /** Hash of the creation payload, so reusing the key with a different payload is a conflict. */
+    requestFingerprint: text('request_fingerprint'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index('conversations_repository_idx').on(table.repositoryId),
     index('conversations_owner_idx').on(table.ownerId),
+    uniqueIndex('conversations_owner_client_request_uq')
+      .on(table.ownerId, table.clientRequestId)
+      .where(sql`${table.clientRequestId} is not null`),
   ],
 );
 

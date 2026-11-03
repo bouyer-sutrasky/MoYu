@@ -28,8 +28,31 @@ const environmentSchema = z
 
     ARTIFACT_STORAGE_DIR: z.string().min(1).optional(),
     WEB_DIST_DIR: z.string().min(1).optional(),
+
+    // Repository runtime binding (M3). The Bridge is loopback-only; tokens are
+    // machine credentials and are never exposed to the browser.
+    BRIDGE_REPOSITORY: z
+      .string()
+      .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, 'must be owner/name')
+      .optional(),
+    BRIDGE_URL: z.string().url().optional(),
+    BRIDGE_TOKEN: z.string().min(16).optional(),
+    BRIDGE_CALLBACK_TOKEN: z.string().min(16).optional(),
+    BRIDGE_CREDENTIAL_REF: z
+      .string()
+      .regex(/^[A-Z][A-Z0-9_]*$/)
+      .optional(),
+    BRIDGE_DEFAULT_BRANCH: z.string().trim().min(1).max(255).default('main'),
+    BRIDGE_TIMEOUT_MS: z.coerce.number().int().min(1000).max(60_000).default(15_000),
   })
   .superRefine((value, context) => {
+    if (value.BRIDGE_URL && !value.BRIDGE_TOKEN) {
+      context.addIssue({
+        code: 'custom',
+        path: ['BRIDGE_TOKEN'],
+        message: 'is required when BRIDGE_URL is set',
+      });
+    }
     let host: string;
     try {
       host = new URL(value.WEBAUTHN_ORIGIN).hostname;
@@ -65,6 +88,13 @@ export type ApiConfig = {
   cookieSecure: boolean;
   artifactStorageDir?: string;
   webDistDir?: string;
+  bridgeRepository?: string;
+  bridgeUrl?: string;
+  bridgeToken?: string;
+  bridgeCallbackToken?: string;
+  bridgeCredentialRef?: string;
+  bridgeDefaultBranch: string;
+  bridgeTimeoutMs: number;
 };
 
 /**
@@ -99,5 +129,12 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     cookieSecure: data.AUTH_COOKIE_SECURE ?? originIsHttps,
     artifactStorageDir: data.ARTIFACT_STORAGE_DIR,
     webDistDir: data.WEB_DIST_DIR ?? 'apps/web/dist',
+    bridgeRepository: data.BRIDGE_REPOSITORY,
+    bridgeUrl: data.BRIDGE_URL,
+    bridgeToken: data.BRIDGE_TOKEN,
+    bridgeCallbackToken: data.BRIDGE_CALLBACK_TOKEN,
+    bridgeCredentialRef: data.BRIDGE_CREDENTIAL_REF,
+    bridgeDefaultBranch: data.BRIDGE_DEFAULT_BRANCH,
+    bridgeTimeoutMs: data.BRIDGE_TIMEOUT_MS,
   };
 }

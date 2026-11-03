@@ -1,4 +1,5 @@
 import {
+  bigint,
   check,
   index,
   integer,
@@ -35,7 +36,15 @@ export const taskLinks = pgTable(
     baseBranch: text('base_branch').notNull(),
     baseCommit: text('base_commit'),
     modelId: text('model_id'),
+    modelReasoningEffort: text('model_reasoning_effort'),
     executionMode: executionMode('execution_mode').notNull().default('execute'),
+    /** Current question the worker asked a person, when the ticket waits for input. */
+    question: text('question'),
+    questionMessageId: uuid('question_message_id'),
+    /** Pull request the ticket delivered, when the runtime reported or bound one. */
+    prUrl: text('pr_url'),
+    prNumber: integer('pr_number'),
+    lastEventSeq: bigint('last_event_seq', { mode: 'bigint' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
