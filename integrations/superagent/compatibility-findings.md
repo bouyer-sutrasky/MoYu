@@ -246,10 +246,11 @@ DSH rc.2 的权威声明：
 
 ### 7.2 实测
 
-详见 environment-baseline §5.2。要点：
+详见 environment-baseline §5.2 与 `probes/github-notification-probe.md`。要点：
 
 - A 仓库 3 条真实 bot 评论（含停机期间 1 条）→ A 3 个 Trigger，3 个 `ignore/not_human` Decision；B 仓库启动前 1 条未读（新实例不补历史），启动后 1 条 → B 1 个 Trigger，1 个 Decision。
 - 两个实例的 Trigger URL 只指向自己仓库；没有交叉。
+- 本轮通知由 `github-actions[bot]` 产生，验证的是通知路由/隔离；没有第二个人类账号在隔离仓库制造人工 @。人工 explicit 的实例行为由 bootstrap 接到 `sutrasky` 的 issue #1 证明（本 ticket 的来源）。
 - A 停机期间的通知在重启后补收，且没有重复 Trigger。
 - 轮询后账号级 `gh api notifications` 仍有 3 条未读（两个测试仓库 + MoYu），证明实例不标记已读。
 - 通知相对评论有约 15–25 秒延迟；本次 5 秒回退覆盖了实验中的边界，但没有证明更长延迟/限流下不丢事件。

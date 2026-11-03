@@ -9,6 +9,7 @@
 | `upstream.lock.json` | 可追溯版本、commit/tarball 摘要、安装清单摘要、构建结果与已知失败 |
 | `compatibility-findings.md` | Source / Session / stop-retry / 模型 / 执行准入的真实差异与补丁落点 |
 | `verify-lock.sh` | 只读核对现场安装制品是否仍与锁定值一致 |
+| `probes/` | 可复现的两实例 GitHub 通知探针步骤 |
 | `patches/`（后续） | 按顺序应用的补丁；`git apply` 失败即停止构建，不模糊套用 |
 
 环境、隔离 profile、两实例通知实验与清理步骤见 [`docs/environment-baseline.md`](../../docs/environment-baseline.md)。

@@ -119,7 +119,7 @@ env -i ... corepack pnpm@11.7.0 test
 | 运行方式 | systemd + tmux（原有） | tmux，独立 profile | tmux，独立 profile |
 | 使用的 bundle | `/root/dsh-superagent` | 固定 commit 的新构建目录 | 同 A |
 
-测试实例由支持的 profile 模板创建，没有复制 bootstrap 的 profile、state 或凭据：
+测试实例由支持的 profile 模板创建（第二个 profile 由第一个复制并改端口/state），没有复制 bootstrap 的 profile、state 或凭据：
 
 ```bash
 env DSH_HOME=/root/.dsh-m0 dsh --profile m0a --from-default-profile web --dump-config >/dev/null
@@ -131,7 +131,7 @@ env DSH_HOME=/root/.dsh-m0 dsh plugin --profile m0a \
 
 ### 5.2 通知实验（真实 GitHub，非 mock）
 
-测试仓库为 `Bouyer12` 下的两个私有临时仓库，各有一个 Issue #1。工作流由 `github-actions[bot]` 在 Issue 下写入 `@Bouyer12` 的评论，产生真实通知；两个实例都使用专用账号 `Bouyer12` 的 CLI。测试实例的 Policy 故意设为 `allowed: []`，因此 bot 评论被记录为 Trigger，但决策是 `not_human`，不会进入 worker，也不会调用模型。
+测试仓库为 `Bouyer12` 下的两个私有临时仓库，各有一个 Issue #1。工作流由 `github-actions[bot]` 在 Issue 下写入 `@Bouyer12` 的评论，产生真实通知；两个实例都使用专用账号 `Bouyer12` 的 CLI。测试实例的 Policy 故意设为 `allowed: []`，因此 bot 评论被记录为 Trigger，但决策是 `not_human`，不会进入 worker，也不会调用模型。本轮隔离实验使用 `github-actions[bot]` 评论验证通知路由；人工 @ 的显式准入由 bootstrap 接到 `sutrasky` 的 issue #1 证明（本 ticket 即由此产生），但没有在隔离测试仓库用第二个人类账号重复。
 
 | 时间（UTC） | 事件 | 实例 A（仓库 A） | 实例 B（仓库 B） |
 | --- | --- | --- | --- |
@@ -190,7 +190,8 @@ Expected: { state: 'error', detail: containing 'JSON' }
 7. **非 root 运行**：测试实例仍在 root 下，只做到独立 `DSH_HOME`/state/端口/仓库；生产必须按开发指南使用专用非 root 身份，本 M0 没有验证该隔离强度。
 8. **资源预算**：只测了本次取证的空闲/构建峰值，没有代表性构建、worker 子进程、持续任务和 6 GB/8 GB 边界测量。
 9. **旧实例的账号授权与允许名单**：沿用现场记录；本次没有重新做 GitHub 权限审计，也没有改动旧实例的监听仓库。
-10. **网页/Passkey/数据库/Compose/Nginx 站点**：属于后续阶段，本阶段未实现或验证。
+10. **隔离通知实验中的人工授权**：使用 bot 评论验证路由与过滤；没有第二个人类账号在隔离测试仓库制造人工 @。人工 explicit 只在 bootstrap 的真实 issue #1 上发生。
+11. **网页/Passkey/数据库/Compose/Nginx 站点**：属于后续阶段，本阶段未实现或验证。
 
 ## 8. 变更、迁移与回滚
 
