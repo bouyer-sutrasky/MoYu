@@ -134,7 +134,16 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm test:integ
 - `pnpm test:integration`：退出码 0（2 个文件、9 个测试通过）。
 - 在干净目录创建空库 `moyu_clean` 后执行 `pnpm db:migrate` 成功；从干净目录启动构建产物，`GET /healthz` 与 `GET /readyz` 均返回 200。
 
-### 8. 缺少依赖时的明确失败
+### 8. CI
+
+PR #4 的 GitHub Actions 运行（head `cd9623f`）：[run 41606821622](https://github.com/sutrasky/MoYu/actions/runs/41606821622)
+
+| Job | 结果 | 用时 |
+| --- | --- | --- |
+| `check (lint, format, types, unit tests, build)` | 通过 | 52s |
+| `integration (real PostgreSQL)` | 通过（`postgres:16` service） | 47s |
+
+### 9. 缺少依赖时的明确失败
 
 - 未设置 `DATABASE_URL` 执行 `pnpm db:migrate`：输出 `migrate.config_error`，退出码 1。
 - 未设置 `TEST_DATABASE_ADMIN_URL` 执行 `pnpm test:integration`：2 个测试文件因缺少管理连接失败，9 个测试跳过，退出码 1；未输出成功。
@@ -148,7 +157,7 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm test:integ
 | 锁定 Node 与 pnpm 并提交 lockfile | 完成 | `.node-version`、`packageManager`、`engines`、`pnpm-lock.yaml` |
 | 最小 Web 页面 | 完成 | `apps/web`，构建成功；见 `docs/evidence/m1/` |
 | API 健康检查与结构化日志 | 完成 | `/healthz`、`/readyz`、JSON 日志 |
-| CI | 完成（待工作流运行结果） | `.github/workflows/ci.yml` |
+| CI | 完成 | `.github/workflows/ci.yml`；PR #4 run [41606821622](https://github.com/sutrasky/MoYu/actions/runs/41606821622) 两个 job 均通过 |
 | Drizzle schema 覆盖所有者、凭据、会话、challenge、仓库、消息、任务、投递、事件、租约、交付物 | 完成 | 12 张表 + 9 个枚举 |
 | 空库迁移 | 完成 | 手工迁移 + 集成测试 |
 | 消息与投递记录事务原子性 | 完成 | 集成测试（成功与回滚） |
@@ -162,7 +171,7 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm test:integ
 
 - **HTTP 幂等响应**：Issue 明确随 M3 消息接口实现；M1 只证明数据库唯一约束与事务原语。
 - **浏览器端到端测试**：`test:e2e` 在 M1 不可用并明确失败；Passkey 流程在 M2 引入。
-- **CI 实际运行结果**：工作流已提交；PR 事件上的 GitHub Actions 运行结果需以 PR 页面为准。若私有仓库 Actions 未启用或额度不足，本项将保持“未执行”而不是标记通过。
+- **CI 后续提交**：上述运行覆盖 `cd9623f`；若在审阅中新增提交，需以 PR checks 上对应 head 的运行结果为准。
 - **生产迁移回滚**：只验证了前向迁移；没有自动 down 迁移，生产回滚依赖迁移前备份。备份与恢复演练属于 M6。
 - **部署、容器、Nginx、两实例资源控制**：不在 M1 范围。
 - **Web 视觉基线**：默认分支此前没有 Web 应用，无法截取“修改前页面”；替代证据与限制见 `docs/evidence/m1/README.md`。
