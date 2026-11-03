@@ -74,7 +74,7 @@ node scripts/m3/e2e.mjs
 4. Agent 通过平台提问 `README.md 第 5 行的 “teh” 要改成 “the” 还是 “this”？`，网页显示问题并回复 `用 'the'，只改 README，不用改 CHANGELOG。`。
 5. worker 只修改 `README.md`，运行 `npm test`（`README.md copy check passed`），推送 `agent/fix-readme-typo-95faa6d62098` 并创建
    [测试 PR #1](https://github.com/Bouyer12/m3-loop-final-68fa5d90/pull/1)；平台显示 `awaiting_review` 与 PR 链接。
-6. 上游 Ticket 的三个 trigger input 都记录了 `readAt`；平台消息状态按证据推进：`stored` → `delivered`（Bridge `receive` 返回 `stored`）→ `read`（session `user/message` + `Ticket.inputs[].readAt`）。
+6. 上游 Ticket 的三个 trigger input 都记录了 `readAt`（运行后只读快照见 [`upstream-state-snapshot.json`](evidence/m3/upstream-state-snapshot.json)）；平台消息状态按证据推进：`stored` → `delivered`（Bridge `receive` 返回 `stored`）→ `read`（session `user/message` + `Ticket.inputs[].readAt`）。
 
 ## 截图
 

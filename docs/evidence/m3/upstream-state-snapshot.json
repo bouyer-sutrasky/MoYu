@@ -1,0 +1,103 @@
+{
+  "tickets": [
+    {
+      "ticketId": "95faa6d62098ea25897debd3b62254fe",
+      "title": "修正 README.md 第 5 行拼写错误（先确认用词）",
+      "base": {
+        "repository": "Bouyer12/m3-loop-final-68fa5d90",
+        "branch": "main",
+        "commit": "7d1fa6924dae34319a9fe83491e8f277b7959851"
+      },
+      "model": {
+        "provider": "commandcode",
+        "model": "deepseek/deepseek-v4.1-flash",
+        "reasoningEffort": "high"
+      },
+      "modelSource": "spec",
+      "ended": null,
+      "follows": [
+        {
+          "thread": "github:1",
+          "own": true
+        }
+      ],
+      "inputs": [
+        {
+          "triggerId": "workspace:2426d9a2-931b-4d23-ad6b-1d5f59f1abb9",
+          "kind": "trigger",
+          "deliveredAt": null,
+          "readAt": "2026-11-03T13:22:56.145Z"
+        },
+        {
+          "triggerId": "workspace:cda8a22a-951e-462e-bd94-2324fbe7a517",
+          "kind": "trigger",
+          "deliveredAt": null,
+          "readAt": "2026-11-03T13:25:47.631Z"
+        },
+        {
+          "triggerId": "workspace:e2ee1238-1d5a-4cc3-9196-801e260f0db2",
+          "kind": "trigger",
+          "deliveredAt": null,
+          "readAt": "2026-11-03T13:25:56.025Z"
+        }
+      ],
+      "assignmentReports": [
+        {
+          "state": "running",
+          "report": "waiting",
+          "summary": "PR #1 已完成并通过检查，仍等待人工合并；无其他待办。"
+        }
+      ]
+    }
+  ],
+  "triggers": [
+    {
+      "id": "workspace:9e6bbd12-88fb-4e57-ae32-261f094af264",
+      "source": "workspace",
+      "human": true,
+      "addressed": "direct",
+      "messageId": "9e6bbd12-88fb-4e57-ae32-261f094af264",
+      "conversationId": "fd749c36-aa65-474f-86bd-1021886fb7e1"
+    },
+    {
+      "id": "workspace:2426d9a2-931b-4d23-ad6b-1d5f59f1abb9",
+      "source": "workspace",
+      "human": true,
+      "addressed": "direct",
+      "messageId": "2426d9a2-931b-4d23-ad6b-1d5f59f1abb9",
+      "conversationId": "fd749c36-aa65-474f-86bd-1021886fb7e1"
+    },
+    {
+      "id": "workspace:cda8a22a-951e-462e-bd94-2324fbe7a517",
+      "source": "workspace",
+      "human": true,
+      "addressed": "direct",
+      "messageId": "cda8a22a-951e-462e-bd94-2324fbe7a517",
+      "conversationId": "fd749c36-aa65-474f-86bd-1021886fb7e1"
+    },
+    {
+      "id": "workspace:e2ee1238-1d5a-4cc3-9196-801e260f0db2",
+      "source": "workspace",
+      "human": true,
+      "addressed": "direct",
+      "messageId": "e2ee1238-1d5a-4cc3-9196-801e260f0db2",
+      "conversationId": "fd749c36-aa65-474f-86bd-1021886fb7e1"
+    },
+    {
+      "id": "workspace:53843158-fd70-4f26-bdfb-3a842c9b7fa4",
+      "source": "workspace",
+      "human": true,
+      "addressed": "direct",
+      "messageId": "53843158-fd70-4f26-bdfb-3a842c9b7fa4",
+      "conversationId": "d440cc7a-613d-4d8b-bd97-40ee5ae735f1"
+    },
+    {
+      "id": "workspace:abc60872-cb2c-4055-aedb-7fce27b204e9",
+      "source": "workspace",
+      "human": true,
+      "addressed": "direct",
+      "messageId": "abc60872-cb2c-4055-aedb-7fce27b204e9",
+      "conversationId": "761a2b0a-2d85-4824-b071-7ec819ec5d60"
+    }
+  ]
+}

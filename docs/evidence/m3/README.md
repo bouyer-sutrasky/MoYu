@@ -14,6 +14,7 @@
 | `after-question-light.png` | Agent 提问出现在网页会话（任务状态 `waiting_input`） |
 | `after-review-light.png` | Agent 交付 PR 后的会话与右侧详情（`awaiting_review`） |
 | `e2e-result.json` | 19 项自动化检查及结果（无令牌、Cookie、绑定码或私钥） |
+| `upstream-state-snapshot.json` | 运行结束后从隔离实例 state 只读导出的 Ticket/Trigger 投影：冻结仓库/分支/commit/模型、PR follow、每个 input 的 `readAt` |
 | `run.log` | 运行时间线（命令、检查、错误） |
 | `api.log` / `dispatcher.log` / `dsh-instance.log` | 进程日志；DSH 本地 Web token 已脱敏；机器令牌不写入日志/仓库 |
 
