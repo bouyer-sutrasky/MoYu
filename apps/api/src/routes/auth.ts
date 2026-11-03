@@ -37,6 +37,7 @@ import {
   setBootstrapCookie,
   setSessionCookie,
 } from '../auth/cookies';
+import { lockAuthState } from '../auth/locks';
 import {
   generateAuthenticationOptionsFor,
   generateRegistrationOptionsFor,
@@ -312,7 +313,7 @@ export function registerAuthRoutes(
     let credential: PasskeyCredential;
     try {
       credential = await database.transaction(async (transaction) => {
-        await transaction.execute(sql`select pg_advisory_xact_lock(918273645)`);
+        await lockAuthState(transaction);
 
         let resolvedOwnerId = ownerId;
         if (!resolvedOwnerId) {
@@ -610,31 +611,47 @@ export function registerAuthRoutes(
       const params = request.params as { id?: string };
       const credentialId = parseInput(uuidSchema, params.id);
 
-      const count = await sessions.countActiveCredentials(auth.owner.id);
-      if (count <= 1) {
-        throw ApiProblem.conflict(
-          'Cannot revoke the last active passkey; add another passkey before revoking this one',
+      const revoked = await database.transaction(async (transaction) => {
+        // Count and revoke in one transaction while holding the auth-state lock.
+        // Without the lock, two API processes can both read two active
+        // credentials and then revoke one each, leaving the owner with none.
+        await lockAuthState(transaction);
+
+        const count = await sessions.countActiveCredentials(auth.owner.id, transaction);
+        if (count <= 1) {
+          throw ApiProblem.conflict(
+            'Cannot revoke the last active passkey; add another passkey before revoking this one',
+          );
+        }
+
+        const [row] = await transaction
+          .update(passkeyCredentials)
+          .set({ revokedAt: sql`now()` })
+          .where(
+            and(
+              eq(passkeyCredentials.id, credentialId),
+              eq(passkeyCredentials.ownerId, auth.owner.id),
+              isNull(passkeyCredentials.revokedAt),
+            ),
+          )
+          .returning();
+        if (!row) {
+          throw ApiProblem.notFound('Passkey not found');
+        }
+
+        const revokedSessionIds = await sessions.markSessionsRevokedForCredential(
+          transaction,
+          auth.owner.id,
+          row.id,
         );
-      }
+        return { row, revokedSessionIds };
+      });
 
-      const [revoked] = await database
-        .update(passkeyCredentials)
-        .set({ revokedAt: sql`now()` })
-        .where(
-          and(
-            eq(passkeyCredentials.id, credentialId),
-            eq(passkeyCredentials.ownerId, auth.owner.id),
-            isNull(passkeyCredentials.revokedAt),
-          ),
-        )
-        .returning();
-      if (!revoked) {
-        throw ApiProblem.notFound('Passkey not found');
-      }
-
-      await sessions.revokeSessionsForCredential(auth.owner.id, revoked.id);
+      // Wake live streams only after the transaction committed, so a rollback
+      // cannot leave a still-valid session's SSE stream closed.
+      sessions.announceRevokedSessions(revoked.revokedSessionIds);
       request.log.info(
-        { event: 'auth.credential_revoked', credentialId: revoked.id },
+        { event: 'auth.credential_revoked', credentialId: revoked.row.id },
         'passkey revoked',
       );
       return sendData(reply, request, { revoked: true as const });
