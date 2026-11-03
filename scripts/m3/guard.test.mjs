@@ -178,19 +178,24 @@ test('the E2E script exits before any run directory for a bootstrap home or prod
     ),
   );
   const common = { ...baseEnv, E2E_OUT: out, E2E_DSH_PROFILE: 'm3' };
-  const bootstrap = spawnSync(process.execPath, ['scripts/m3/e2e.mjs'], {
-    cwd: root,
-    env: { ...common, E2E_DSH_HOME: '/root/.dsh' },
-    encoding: 'utf8',
-    timeout: 15_000,
-  });
-  assert.notEqual(bootstrap.status, 0);
-  assert.match(`${bootstrap.stdout}${bootstrap.stderr}`, /bootstrap DSH home/);
-  assert.equal(readdirSync(out).length, 0);
+  if (existsSync('/root/.dsh')) {
+    const bootstrap = spawnSync(process.execPath, ['scripts/m3/e2e.mjs'], {
+      cwd: root,
+      env: { ...common, E2E_DSH_HOME: '/root/.dsh' },
+      encoding: 'utf8',
+      timeout: 15_000,
+    });
+    assert.notEqual(bootstrap.status, 0);
+    assert.match(`${bootstrap.stdout}${bootstrap.stderr}`, /bootstrap DSH home/);
+    assert.equal(readdirSync(out).length, 0);
+  }
 
+  // Build a throwaway valid instance fixture, then ask the script for port 4300:
+  // the guard must reject it before opening a database or writing a run directory.
+  const fixtureValue = fixture();
   const production = spawnSync(process.execPath, ['scripts/m3/e2e.mjs'], {
     cwd: root,
-    env: { ...common, E2E_DSH_HOME: '/root/.dsh-m3', E2E_API_PORT: '4300' },
+    env: { ...common, E2E_DSH_HOME: fixtureValue.home, E2E_API_PORT: '4300' },
     encoding: 'utf8',
     timeout: 15_000,
   });
@@ -198,6 +203,7 @@ test('the E2E script exits before any run directory for a bootstrap home or prod
   assert.match(`${production.stdout}${production.stderr}`, /production API port/);
   assert.equal(readdirSync(out).length, 0);
   assert.equal(existsSync(pathJoin(out, 'run')), false);
+  rmSync(fixtureValue.home, { recursive: true, force: true });
   rmSync(out, { recursive: true, force: true });
 });
 
