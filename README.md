@@ -9,7 +9,8 @@
 - [接口契约](docs/API-CONTRACTS.md)：浏览器 API、事件流、Bridge 及上游差异。
 - [管理员引导步骤](docs/BOOTSTRAP-RUNBOOK.md)：现有 agent 不能跨仓库或管理服务时的并列入口。
 - [产品决策](docs/DESIGN.md)：已经确认的范围和行为。
-- [M1 验证记录](docs/M1-VERIFICATION.md)：实际命令、结果、未验证项与迁移回滚。
+- [M1 验证记录](docs/M1-VERIFICATION.md)：实际命令、结果、干净 checkout、未验证项与迁移回滚。
+- [M1 Web 视觉证据](docs/evidence/m1/README.md)：Before/After 截图、基线说明与复现命令。
 - [环境与接口调研](docs/research/)：现场快照与未验证项。
 - [M0 上游锁文件](integrations/superagent/upstream.lock.json)：固定上游制品与兼容性基线。
 

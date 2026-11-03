@@ -111,7 +111,30 @@ DATABASE_URL=postgres://moyu@127.0.0.1:55432/moyu_dev \
 
 结果：输出 `dispatcher.ready`（含 `deliveryLoop: "not-implemented-until-m3"`），收到 `SIGTERM` 后输出 `dispatcher.stopped` 并退出。M1 不伪造投递行为。
 
-### 7. 缺少依赖时的明确失败
+### 7. 干净 checkout
+
+从 GitHub 重新 clone 本 PR 分支（不是本地工作区），验证提交内容自包含：
+
+```bash
+git clone --depth 1 --branch agent/engineering-storage-m1-d43804e68d37 \
+  ssh://git@ssh.github.com:443/sutrasky/MoYu.git /tmp/moyu-clean
+cd /tmp/moyu-clean
+pnpm install --frozen-lockfile
+pnpm check
+pnpm build
+TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm test:integration
+```
+
+结果：
+
+- HEAD：`7a35fd4d32dfe736bd7890c5156b108ce75bcaec`；tracked files：102。
+- Node 24.22.2 / pnpm 11.7.0；`pnpm install --frozen-lockfile` 成功（复用 store 后 1.5s）。
+- `pnpm check`：退出码 0（lint、格式、5 包类型检查、17 个单元测试通过）。
+- `pnpm build`：退出码 0（Web/API/dispatcher 全部产物）。
+- `pnpm test:integration`：退出码 0（2 个文件、9 个测试通过）。
+- 在干净目录创建空库 `moyu_clean` 后执行 `pnpm db:migrate` 成功；从干净目录启动构建产物，`GET /healthz` 与 `GET /readyz` 均返回 200。
+
+### 8. 缺少依赖时的明确失败
 
 - 未设置 `DATABASE_URL` 执行 `pnpm db:migrate`：输出 `migrate.config_error`，退出码 1。
 - 未设置 `TEST_DATABASE_ADMIN_URL` 执行 `pnpm test:integration`：2 个测试文件因缺少管理连接失败，9 个测试跳过，退出码 1；未输出成功。
@@ -132,13 +155,14 @@ DATABASE_URL=postgres://moyu@127.0.0.1:55432/moyu_dev \
 | 同会话重复 `clientMessageId` 的数据库唯一约束 | 完成 | 集成测试（23505 + 约束名） |
 | HTTP 幂等响应留待 M3 | 按范围未实现 | 仅数据库原语，README 已注明 |
 | README、脱敏配置示例、check 与 test:integration 区分 | 完成 | `README.md`、`.env.example`、根 scripts |
-| PR 附干净 checkout 构建步骤、实际命令与结果 | 见 PR 描述与本文件后续更新 | 推送后从 GitHub 全新 clone 执行 |
+| PR 附干净 checkout 构建步骤、实际命令与结果 | 完成 | 见 PR 描述与本文第 7 节（GitHub 全新 clone，check/build/integration 均退出码 0） |
+| Web Before/After 视觉证据 | 完成（基线无旧界面，见说明） | `docs/evidence/m1/`：同 URL、1440×900、浅色；Before 记录基线无应用的连接拒绝，After 为构建产物实际页面 |
 
 ## 未验证项与限制
 
 - **HTTP 幂等响应**：Issue 明确随 M3 消息接口实现；M1 只证明数据库唯一约束与事务原语。
 - **浏览器端到端测试**：`test:e2e` 在 M1 不可用并明确失败；Passkey 流程在 M2 引入。
-- **CI 实际运行结果**：工作流已提交，但需推送后在 GitHub Actions 上运行；若私有仓库 Actions 未启用，本项将保持“未执行”而不是标记通过。
+- **CI 实际运行结果**：工作流已提交；PR 事件上的 GitHub Actions 运行结果需以 PR 页面为准。若私有仓库 Actions 未启用或额度不足，本项将保持“未执行”而不是标记通过。
 - **生产迁移回滚**：只验证了前向迁移；没有自动 down 迁移，生产回滚依赖迁移前备份。备份与恢复演练属于 M6。
 - **部署、容器、Nginx、两实例资源控制**：不在 M1 范围。
 - **Web 视觉基线**：默认分支此前没有 Web 应用，无法截取“修改前页面”；替代证据与限制见 `docs/evidence/m1/README.md`。
