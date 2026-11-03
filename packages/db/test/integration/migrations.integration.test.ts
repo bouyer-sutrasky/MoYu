@@ -1,0 +1,118 @@
+import { sql } from 'drizzle-orm';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+import { migrateDatabase } from '../../src/migrate';
+import { createTestDatabase, type TestDatabase } from './helpers';
+
+const EXPECTED_TABLES = [
+  'artifacts',
+  'auth_challenges',
+  'conversations',
+  'deliveries',
+  'events',
+  'messages',
+  'owners',
+  'passkey_credentials',
+  'repositories',
+  'runtime_leases',
+  'sessions',
+  'task_links',
+];
+
+const EXPECTED_ENUMS = [
+  'artifact_type',
+  'auth_challenge_kind',
+  'conversation_mode',
+  'delivery_state',
+  'execution_mode',
+  'message_direction',
+  'repository_status',
+  'runtime_lease_state',
+  'task_state',
+];
+
+const EXPECTED_INDEXES = [
+  'deliveries_message_uq',
+  'events_seq_uq',
+  'messages_conversation_client_message_uq',
+  'passkey_credentials_credential_id_uq',
+  'runtime_leases_active_repository_uq',
+  'runtime_leases_fencing_token_uq',
+  'sessions_token_hash_uq',
+  'task_links_conversation_uq',
+  'task_links_repository_upstream_ticket_uq',
+];
+
+async function stringColumn(database: TestDatabase, query: ReturnType<typeof sql>, column: string) {
+  const result = await database.db.execute(query);
+  return result.rows.map((row) => String(row[column]));
+}
+
+describe('initial migration on an empty PostgreSQL database', () => {
+  let testDatabase: TestDatabase;
+
+  beforeAll(async () => {
+    testDatabase = await createTestDatabase();
+  }, 60_000);
+
+  afterAll(async () => {
+    if (testDatabase) {
+      await testDatabase.drop();
+    }
+  });
+
+  it('creates all M1 tables', async () => {
+    const tables = await stringColumn(
+      testDatabase,
+      sql`select table_name from information_schema.tables where table_schema = 'public' order by table_name`,
+      'table_name',
+    );
+
+    expect(tables).toEqual(EXPECTED_TABLES);
+  });
+
+  it('creates the M1 enums', async () => {
+    const enums = await stringColumn(
+      testDatabase,
+      sql`select typname from pg_type where typtype = 'e' order by typname`,
+      'typname',
+    );
+
+    expect(enums).toEqual(EXPECTED_ENUMS);
+  });
+
+  it('creates the uniqueness and lease indexes used by the acceptance checks', async () => {
+    const indexes = await stringColumn(
+      testDatabase,
+      sql`select indexname from pg_indexes where schemaname = 'public'`,
+      'indexname',
+    );
+
+    for (const expected of EXPECTED_INDEXES) {
+      expect(indexes).toContain(expected);
+    }
+  });
+
+  it('keeps the clientMessageId index unique and partial', async () => {
+    const result = await testDatabase.db.execute(
+      sql`select indexdef from pg_indexes where schemaname = 'public' and indexname = 'messages_conversation_client_message_uq'`,
+    );
+    const definition = String(result.rows[0]?.indexdef ?? '');
+
+    expect(definition).toContain('UNIQUE INDEX');
+    expect(definition).toContain('(conversation_id, client_message_id)');
+    expect(definition).toContain('WHERE (client_message_id IS NOT NULL)');
+  });
+
+  it('is idempotent when the migration folder is applied twice', async () => {
+    await migrateDatabase(testDatabase.db);
+
+    const tables = await stringColumn(
+      testDatabase,
+      sql`select table_name from information_schema.tables where table_schema = 'public' order by table_name`,
+      'table_name',
+    );
+
+    expect(tables).toEqual(EXPECTED_TABLES);
+  });
+});
