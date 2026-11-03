@@ -21,14 +21,17 @@
     "format:check": "prettier --check \"**/*.{ts,tsx,mjs,cjs,json,yml,yaml,css,html}\"",
     "lint": "eslint .",
     "test": "pnpm -r --if-present test",
-    "test:integration": "pnpm --filter @moyu/db test:integration",
-    "test:e2e": "node scripts/test-e2e.mjs",
-    "typecheck": "pnpm -r --if-present typecheck"
+    "test:integration": "pnpm --filter @moyu/db test:integration && pnpm --filter @moyu/api test:integration",
+    "test:e2e": "node scripts/e2e.mjs",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "auth:bootstrap": "pnpm --filter @moyu/api auth:bootstrap"
   },
   "devDependencies": {
     "@eslint/js": "9.39.5",
     "eslint": "9.39.5",
     "eslint-config-prettier": "10.1.8",
+    "pg": "8.23.1",
+    "playwright": "1.56.1",
     "prettier": "3.6.2",
     "typescript": "5.9.3",
     "typescript-eslint": "8.72.1"

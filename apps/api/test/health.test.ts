@@ -8,7 +8,7 @@ import { loadConfig } from '../src/config';
 let app: FastifyInstance | undefined;
 
 function createApp(): FastifyInstance {
-  const config = loadConfig({ NODE_ENV: 'test' });
+  const config = loadConfig({ NODE_ENV: 'test', LOG_LEVEL: 'fatal' });
   app = buildApp({ config });
   return app;
 }

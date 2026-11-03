@@ -2,6 +2,8 @@ import { pgEnum } from 'drizzle-orm/pg-core';
 
 export const authChallengeKind = pgEnum('auth_challenge_kind', ['registration', 'authentication']);
 
+export const bootstrapCodePurpose = pgEnum('bootstrap_code_purpose', ['initial', 'recovery']);
+
 export const repositoryStatus = pgEnum('repository_status', [
   'provisioning',
   'active',

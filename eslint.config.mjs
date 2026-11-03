@@ -27,5 +27,30 @@ export default tseslint.config(
       },
     },
   },
+  {
+    files: ['apps/web/public/**/*.js'],
+    languageOptions: {
+      globals: {
+        window: 'readonly',
+        document: 'readonly',
+        localStorage: 'readonly',
+      },
+    },
+  },
+  {
+    files: ['scripts/e2e.mjs'],
+    languageOptions: {
+      globals: {
+        window: 'readonly',
+        document: 'readonly',
+        EventSource: 'readonly',
+        fetch: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        URL: 'readonly',
+        Buffer: 'readonly',
+      },
+    },
+  },
   prettier,
 );

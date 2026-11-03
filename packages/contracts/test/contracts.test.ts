@@ -2,11 +2,16 @@ import { describe, expect, it } from 'vitest';
 
 import {
   apiErrorResponseSchema,
+  authMeDataSchema,
+  authStateDataSchema,
+  bootstrapExchangeInputSchema,
+  ceremonyOptionsSchema,
   createMessageInputSchema,
   errorResponse,
   eventSeqSchema,
   healthDataSchema,
   healthResponseSchema,
+  repositoryListDataSchema,
   successResponse,
   uuidSchema,
   workspaceEventSchema,
@@ -97,5 +102,63 @@ describe('event contract', () => {
 describe('ids', () => {
   it('rejects non-UUID identifiers', () => {
     expect(() => uuidSchema.parse('not-a-uuid')).toThrow();
+  });
+});
+
+describe('M2 authentication contracts', () => {
+  it('parses auth state and session summaries', () => {
+    const state = authStateDataSchema.parse({
+      initialized: true,
+      activeCredentialCount: 1,
+      setupOpen: false,
+      recoveryOpen: false,
+      rpId: 'moyu.sutrasky.com',
+      origin: 'https://moyu.sutrasky.com',
+    });
+    expect(state.setupOpen).toBe(false);
+
+    const me = authMeDataSchema.parse({
+      owner: { id: '00000000-0000-4000-8000-000000000001', displayName: 'MoYu Owner' },
+      session: {
+        id: '00000000-0000-4000-8000-000000000002',
+        userAgent: null,
+        createdAt: '2026-11-03T08:00:00.000Z',
+        lastUsedAt: '2026-11-03T08:00:00.000Z',
+        expiresAt: '2027-02-01T08:00:00.000Z',
+        current: true,
+      },
+      credentials: [],
+    });
+    expect(me.session.current).toBe(true);
+  });
+
+  it('requires a sufficiently long binding code', () => {
+    expect(() => bootstrapExchangeInputSchema.parse({ code: 'short' })).toThrow();
+    expect(() => bootstrapExchangeInputSchema.parse({ code: 'ABCD-EFGH-JKMN' })).not.toThrow();
+  });
+
+  it('parses a ceremony envelope without fixing the WebAuthn options shape', () => {
+    const ceremony = ceremonyOptionsSchema.parse({
+      ceremonyId: '00000000-0000-4000-8000-000000000003',
+      optionsJSON: { challenge: 'abc', rp: { id: 'moyu.sutrasky.com' } },
+    });
+    expect(ceremony.optionsJSON.challenge).toBe('abc');
+  });
+
+  it('parses the read-only repository inventory', () => {
+    const list = repositoryListDataSchema.parse({
+      repositories: [
+        {
+          id: '00000000-0000-4000-8000-000000000004',
+          fullName: 'bouyer-sutrasky/MoYu',
+          githubRepositoryId: 123,
+          defaultBranch: 'main',
+          status: 'provisioning',
+          createdAt: '2026-11-03T08:00:00.000Z',
+          updatedAt: '2026-11-03T08:00:00.000Z',
+        },
+      ],
+    });
+    expect(list.repositories[0]?.status).toBe('provisioning');
   });
 });

@@ -1,0 +1,284 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  min-height: 100dvh;
+  padding: 48px 24px;
+  background:
+    radial-gradient(
+      circle at 50% -10%,
+      color-mix(in srgb, var(--dsw-alias-state-business-primary) 13%, transparent),
+      transparent 46%
+    ),
+    var(--dsw-alias-bg-base);
+}
+
+.card {
+  width: min(460px, 100%);
+  padding: 32px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-xl);
+  background: var(--dsw-alias-bg-layer-1);
+  box-shadow: var(--dsw-elevation-panel);
+}
+
+.brandRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+.mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-brand-primary);
+  color: var(--dsw-alias-label-primary-foreground);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xs-strong-13);
+}
+
+.phase {
+  margin: 2px 0 0;
+  color: var(--dsw-alias-label-tertiary);
+  font: var(--dsw-font-xxxs-11);
+}
+
+.title {
+  margin: 0 0 10px;
+  color: var(--dsw-alias-label-primary);
+  font: var(--dsw-font-xl-24);
+  letter-spacing: -0.02em;
+}
+
+.lead {
+  margin: 0 0 24px;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-s-14);
+  line-height: 1.7;
+}
+
+.primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-button-primary-fill);
+  color: var(--dsw-alias-label-primary-foreground);
+  font: var(--dsw-font-s-strong-14);
+  transition:
+    background-color var(--ds-transition-duration-fast) var(--ds-ease-in-out),
+    opacity var(--ds-transition-duration-fast) var(--ds-ease-in-out);
+}
+
+.primary:hover:not(:disabled) {
+  background: var(--dsw-alias-button-primary-hover);
+}
+
+.primary:disabled {
+  opacity: 0.55;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.fieldLabel {
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xs-strong-13);
+}
+
+.codeInput,
+.input {
+  width: 100%;
+  min-height: 44px;
+  padding: 9px 12px;
+  border: 1px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
+  outline: none;
+  transition: border-color var(--ds-transition-duration-fast) var(--ds-ease-in-out);
+}
+
+.codeInput {
+  font-family: var(--ds-font-family-code);
+  font-size: 18px;
+  letter-spacing: 0.16em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.codeInput:focus,
+.input:focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-business-primary) 18%, transparent);
+}
+
+.codeInput::placeholder,
+.input::placeholder {
+  color: var(--dsw-alias-label-caption);
+  letter-spacing: 0.08em;
+}
+
+.steps {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 22px;
+  padding: 0;
+  list-style: none;
+}
+
+.steps li {
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md);
+  color: var(--dsw-alias-label-tertiary);
+  font: var(--dsw-font-xs-13);
+}
+
+.steps li span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+}
+
+.stepActive {
+  border-color: color-mix(
+    in srgb,
+    var(--dsw-alias-state-business-primary) 52%,
+    transparent
+  ) !important;
+  color: var(--dsw-alias-label-primary) !important;
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 8%, transparent);
+}
+
+.stepActive span {
+  background: var(--dsw-alias-state-business-primary) !important;
+  color: var(--dsw-alias-label-primary-foreground);
+}
+
+.stepDone {
+  color: var(--dsw-alias-label-secondary) !important;
+}
+
+.success {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: var(--dsw-radius-md);
+  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 12%, transparent);
+  color: var(--dsw-alias-state-success-primary);
+  font: var(--dsw-font-xs-13);
+}
+
+.warning {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: var(--dsw-radius-md);
+  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 14%, transparent);
+  color: var(--dsw-alias-state-warn-label);
+  font: var(--dsw-font-xs-13);
+}
+
+.error {
+  margin: 16px 0 0;
+  padding: 12px 14px;
+  border-radius: var(--dsw-radius-md);
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent);
+  color: var(--dsw-alias-state-error-primary);
+  font: var(--dsw-font-xs-13);
+}
+
+.hint {
+  margin: 0;
+  color: var(--dsw-alias-label-tertiary);
+  font: var(--dsw-font-xs-13);
+  line-height: 1.65;
+}
+
+.meta {
+  display: grid;
+  gap: 8px;
+  margin: 24px 0 0;
+  padding: 14px 0 0;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+
+.meta div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.meta dt {
+  color: var(--dsw-alias-label-tertiary);
+  font: var(--dsw-font-xxxs-11);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.meta dd {
+  margin: 0;
+  overflow: hidden;
+  color: var(--dsw-alias-label-secondary);
+  font-family: var(--ds-font-family-code);
+  font-size: 11px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.footer {
+  max-width: 460px;
+  margin: 0;
+  color: var(--dsw-alias-label-tertiary);
+  font: var(--dsw-font-xxxs-11);
+  text-align: center;
+  line-height: 1.7;
+}
+
+@media (max-width: 520px) {
+  .page {
+    justify-content: flex-start;
+    padding: 24px 16px 40px;
+  }
+
+  .card {
+    padding: 24px 20px;
+  }
+
+  .title {
+    font-size: 22px;
+    line-height: 30px;
+  }
+}
