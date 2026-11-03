@@ -157,13 +157,10 @@ export function registerEventRoutes(
 
     await flush();
 
-    unsubscribeWorkspace = bus.onWorkspaceEvent((event) => {
-      if (closed) {
-        return;
-      }
-      if (BigInt(event.seq) > lastWritten) {
-        writeEvent(event);
-      }
+    // The bus only wakes the stream; the durable table is read in sequence
+    // order. Writing the notified event directly could skip a row whose larger
+    // sequence committed first in the producer, leaving a permanent gap.
+    unsubscribeWorkspace = bus.onWorkspaceEvent(() => {
       void flush();
     });
 

@@ -57,6 +57,7 @@
   （`modelSource:'executor'`）；若实例也没有可表示的 Executor 模型，则记录 `model:null, modelSource:'instance'`，
   后续配置变化不会改变已开始任务。
 - 同一 `triggerId` 重发只入库一次（上游 `Store` 主键 + `Engine.receive` 返回 `duplicate`）；Bridge 不做应用层“先查再写”的唯一防线。
+  重复请求在模型/分支校验之前读取已持久化的第一份 Trigger，返回首次冻结的 `baseCommit` 与 Ticket；分支前进或原模型被移除都不会改变结果或返回 422。
 
 ### `GET /bridge/v1/capabilities`
 
@@ -142,6 +143,7 @@
 
 - Bridge 的 workspace Channel `send` 只有在平台 **提交成功** 后才向上游返回 `sent`；网络错误/5xx 抛出，交给上游 Outbox 重试。
   重复回调返回原成功（`{ data: { messageId, duplicate: true } }`），不重复写消息。
+- 上游补丁按 `0001`–`0004` 有序应用；`0004` 只修正重复 Trigger 的首次结果语义。
 - 上游 OutboundMessage id 在 M3 补丁中固定为 `ack:<triggerId>`、`attention-reply:<attentionId>` 或 `reply:<...>`；
   Channel 用该前缀区分问题与回执，并把同一 id 作为 `sourceEventId`。
 - 平台在数据库以 `(conversation_id, source_event_id)` 唯一索引兜底；重复回调不产生第二条消息。

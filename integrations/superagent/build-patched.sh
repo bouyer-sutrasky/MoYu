@@ -4,7 +4,7 @@
 #
 # Usage: build-patched.sh [source-tree] [output-dir]
 #   source tree   a pristine dsh-superagent 6337fc8… checkout; also read from $UPSTREAM_SRC
-#   output dir    default: <this directory>/build
+#   output dir    a NEW directory; the script refuses to overwrite an existing artifact
 #
 # The patches are applied with `git apply --check` and then `git apply` in order. Any failure stops the
 # build with a non-zero exit: a patch is never fuzzed, forced, or partially applied. Node and pnpm are
@@ -28,6 +28,53 @@ fi
 if [ -e "$UPSTREAM_SRC/src/app/bridge.ts" ] || [ -e "$UPSTREAM_SRC/src/sources/workspace.ts" ]; then
   echo "error: $UPSTREAM_SRC already contains the M3 patches; point at the pristine tree" >&2
   exit 2
+fi
+
+# The output is published only into a new directory, never into an existing artifact. The profile
+# that consumes it is switched deliberately after the build.
+if [ -z "$OUT" ] || [ "$OUT" = "/" ] || [ "$OUT" = "." ]; then
+  echo "error: refusing unsafe output directory $OUT" >&2
+  exit 2
+fi
+if [ -e "$OUT" ]; then
+  echo "error: output directory already exists: $OUT (refusing to overwrite an artifact)" >&2
+  exit 2
+fi
+OUT_PARENT=$(dirname "$OUT")
+if [ ! -d "$OUT_PARENT" ]; then
+  echo "error: output parent directory does not exist: $OUT_PARENT" >&2
+  exit 2
+fi
+if [[ "$(cd "$OUT_PARENT" && pwd)" == "$(cd "$UPSTREAM_SRC" && pwd)"* ]]; then
+  echo "error: refusing to publish inside the source tree: $OUT" >&2
+  exit 2
+fi
+
+# Verify the source is the pinned upstream artifact, not just a directory with the right name.
+LOCK="$HERE/upstream.lock.json"
+if [ -f "$LOCK" ]; then
+  command -v node >/dev/null 2>&1 || { echo "error: node is required to read $LOCK" >&2; exit 2; }
+  lock_value() { node -e 'const lock=require(process.argv[1]);const path=process.argv[2].split(".");let v=lock;for(const p of path)v=v[p];if(typeof v!=="string"&&typeof v!=="number"){console.error("missing lock field "+process.argv[2]);process.exit(2)}process.stdout.write(String(v))' "$LOCK" "$1"; }
+  source_name=$(node -p "require('$UPSTREAM_SRC/package.json').name")
+  source_version=$(node -p "require('$UPSTREAM_SRC/package.json').version")
+  if [ "$source_name" != "$(lock_value superagent.package)" ] || [ "$source_version" != "$(lock_value superagent.version)" ]; then
+    echo "error: source package is $source_name@$source_version, not the locked $(lock_value superagent.package)@$(lock_value superagent.version)" >&2
+    exit 2
+  fi
+  source_manifest() {
+    ( cd "$UPSTREAM_SRC" && find . -type f -not -path './node_modules/*' -not -path './lib/*' -not -path './.artifacts/*' -print0 \
+      | sort -z | xargs -0 sha256sum | sed 's#  \./#  #' | sha256sum | cut -d' ' -f1 )
+  }
+  actual_files=$(cd "$UPSTREAM_SRC" && find . -type f -not -path './node_modules/*' -not -path './lib/*' -not -path './.artifacts/*' | wc -l | tr -d ' ')
+  if [ "$actual_files" != "$(lock_value superagent.install.sourceFiles)" ]; then
+    echo "error: source file count $actual_files does not match the lock ($(lock_value superagent.install.sourceFiles))" >&2
+    exit 2
+  fi
+  if [ "$(source_manifest)" != "$(lock_value superagent.install.sourceFilesManifestSha256)" ]; then
+    echo "error: source manifest does not match the pinned upstream artifact" >&2
+    exit 2
+  fi
+  echo "==> pinned source verified: $(lock_value superagent.package)@$(lock_value superagent.version) ($(lock_value superagent.upstream.commit))"
 fi
 
 PATCHES=()
@@ -86,14 +133,13 @@ for artifact in lib/index.js lib/workspace-watch.js; do
     exit 1
   fi
 done
-if ! grep -q "MOYU_BRIDGE_TOKEN" "$BUILD_DIR/lib/index.js"; then
-  echo "error: lib/index.js does not contain the patched Runtime (no MOYU_BRIDGE_TOKEN)" >&2
+if ! grep -q "MOYU_BRIDGE_TOKEN" "$BUILD_DIR/lib/index.js" || ! grep -q "moyu-bridge/1" "$BUILD_DIR/lib/index.js"; then
+  echo "error: lib/index.js does not contain the patched Runtime Bridge" >&2
   exit 1
 fi
 
-echo "==> copying the built package to $OUT"
-mkdir -p "$OUT"
-rm -rf "$OUT/lib" "$OUT/node_modules"
+echo "==> publishing the built package to new directory $OUT"
+mkdir "$OUT"
 for item in lib package.json cordis.patch.yml prompts skills locale; do
   if [ -e "$BUILD_DIR/$item" ]; then cp -a "$BUILD_DIR/$item" "$OUT/"; fi
 done

@@ -41,6 +41,8 @@ import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { chromium } from 'playwright';
 
+import { assertE2EIsolation, assertInstanceIdentity } from './guard.mjs';
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const API_PORT = Number(process.env.E2E_API_PORT ?? 4301);
 const API_URL = `http://127.0.0.1:${API_PORT}`;
@@ -49,6 +51,7 @@ const DSH_PROFILE = process.env.E2E_DSH_PROFILE ?? 'm3';
 const DSH_PORT = Number(process.env.E2E_DSH_PORT ?? 3192);
 const DSH_URL = `http://127.0.0.1:${DSH_PORT}`;
 const BRIDGE_URL = process.env.E2E_BRIDGE_URL ?? 'http://127.0.0.1:3191';
+const BRIDGE_PORT = Number(new URL(BRIDGE_URL).port || 80);
 const REPOSITORY = process.env.E2E_REPOSITORY ?? 'Bouyer12/m3-loop-68fa5d90';
 const OUT = resolve(ROOT, process.env.E2E_OUT ?? 'docs/evidence/m3');
 const STAMP = new Date().toISOString().replace(/[:.]/g, '-');
@@ -304,7 +307,7 @@ async function startInstance() {
   child.unref();
   const entry = { name: 'dsh', child };
   processes.push(entry);
-  await waitFor(
+  const state = await waitFor(
     'DSH instance ready',
     async () => {
       const response = await fetch(`${DSH_URL}/orchestrator/api/state`, {
@@ -320,6 +323,7 @@ async function startInstance() {
     120_000,
     1000,
   );
+  assertInstanceIdentity(state, join(DSH_HOME, 'state', DSH_PROFILE));
   log('isolated DSH instance ready', { port: DSH_PORT });
   return entry;
 }
@@ -507,6 +511,21 @@ async function listMessages(conversation) {
   return apiFetch(`/api/v1/conversations/${conversation}/messages?limit=100`);
 }
 
+/** Reads a delivery row from the platform database for an outage assertion. */
+async function deliveryRow(messageId) {
+  const client = new pg.Client({ connectionString: databaseUrl });
+  await client.connect();
+  try {
+    const result = await client.query(
+      `select state, delivered_at from deliveries where message_id = $1 limit 1`,
+      [messageId],
+    );
+    return result.rows[0] ?? null;
+  } finally {
+    await client.end();
+  }
+}
+
 function sqliteScalar(sql, params = []) {
   const script = `import sqlite3, json, sys\ncon=sqlite3.connect('file:/root/.dsh-m3/state/m3/orchestrator.sqlite?mode=ro', uri=True)\nprint(json.dumps(con.execute(sys.argv[1], json.loads(sys.argv[2])).fetchall()))`;
   const result = spawnSync('python3', ['-c', script, sql, JSON.stringify(params)], {
@@ -587,6 +606,8 @@ async function captureOverview(label, webDist) {
     for (const [theme, viewport] of [
       ['light', DESKTOP],
       ['light', MOBILE],
+      ['dark', DESKTOP],
+      ['dark', MOBILE],
     ]) {
       const context = await browser.newContext({
         viewport,
@@ -608,7 +629,7 @@ async function captureOverview(label, webDist) {
       await page.goto('/');
       await page.locator('main').first().waitFor({ timeout: 30_000 });
       await delay(1500);
-      const suffix = viewport === DESKTOP ? 'desktop-light' : 'mobile-light';
+      const suffix = `${viewport === DESKTOP ? 'desktop' : 'mobile'}-${theme}`;
       await screenshot(page, `${label}-${suffix}.png`, viewport);
       await context.close();
     }
@@ -621,6 +642,19 @@ async function captureOverview(label, webDist) {
 async function main() {
   mkdirSync(RUN_DIR, { recursive: true });
   log('run directory', { RUN_DIR });
+  const isolated = await assertE2EIsolation({
+    dshHome: DSH_HOME,
+    profile: DSH_PROFILE,
+    dshPort: DSH_PORT,
+    apiPort: API_PORT,
+    bridgePort: BRIDGE_PORT,
+    envFile: join(DSH_HOME, 'env'),
+  });
+  log('isolation guard passed', {
+    dshHome: isolated.dshHome,
+    profile: isolated.profile,
+    stateDir: isolated.stateDir,
+  });
   await createDatabase();
   log('temporary database created', { databaseName });
 
@@ -643,8 +677,8 @@ async function main() {
     // workspace path. Removing them keeps a fresh run from reusing the main
     // Session's old transcript (which would make the assessor treat a fresh
     // repository's request as a duplicate of an earlier run).
-    rmSync(join(DSH_HOME, 'state', DSH_PROFILE), { recursive: true, force: true });
-    rmSync(join(DSH_HOME, 'sessions'), { recursive: true, force: true });
+    rmSync(isolated.stateDir, { recursive: true, force: true });
+    rmSync(isolated.sessionsDir, { recursive: true, force: true });
   }
   const instance = await startInstance();
   await configureInstance();
@@ -703,6 +737,38 @@ async function main() {
     await delay(800);
     await screenshot(mobilePage, 'after-mobile-light.png', MOBILE);
     await mobileContext.close();
+
+    for (const [theme, viewport] of [
+      ['dark', DESKTOP],
+      ['dark', MOBILE],
+    ]) {
+      const darkContext = await browser.newContext({
+        viewport,
+        colorScheme: theme,
+        baseURL: API_URL,
+      });
+      await darkContext.addCookies([
+        {
+          name: 'moyu_session',
+          value: sessionToken,
+          domain: '127.0.0.1',
+          path: '/',
+          httpOnly: true,
+          secure: false,
+          sameSite: 'Lax',
+        },
+      ]);
+      const darkPage = await darkContext.newPage();
+      await darkPage.goto('/');
+      await darkPage.locator('main').first().waitFor({ timeout: 30_000 });
+      await delay(1200);
+      await screenshot(
+        darkPage,
+        `after-${viewport === DESKTOP ? 'desktop' : 'mobile'}-dark.png`,
+        viewport,
+      );
+      await darkContext.close();
+    }
 
     // New task through the real UI.
     await page.getByRole('button', { name: '新建任务' }).first().click();
@@ -767,15 +833,41 @@ async function main() {
     record('worker question reached the web conversation', true, {
       question: questionState.question,
     });
-    await page
-      .getByText(questionState.question, { exact: false })
-      .first()
-      .waitFor({ timeout: 15_000 })
-      .catch(() => undefined);
+    await page.getByText(questionState.question, { exact: false }).first().waitFor({
+      timeout: 30_000,
+    });
     await screenshot(page, 'after-question-light.png', DESKTOP);
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await screenshot(page, 'after-question-dark.png', DESKTOP);
+    await page.emulateMedia({ colorScheme: 'light' });
 
     await composer.fill("用 'the'，只改 README，不用改 CHANGELOG。");
     await composer.press('Enter');
+
+    const replyMessage = await waitFor(
+      'reply message stored',
+      async () => {
+        const messages = (await listMessages(conversationId)).messages;
+        return messages.find(
+          (message) => message.direction === 'inbound' && message.body.includes("用 'the'"),
+        );
+      },
+      30_000,
+    );
+    const readReply = await waitFor(
+      'reply delivery reaches read with executor evidence',
+      async () => {
+        const message = (await listMessages(conversationId)).messages.find(
+          (item) => item.id === replyMessage.id,
+        );
+        return message?.delivery?.state === 'read' ? message : false;
+      },
+      120_000,
+    );
+    record('reply delivery reached read from worker session evidence', true, {
+      messageId: readReply.id,
+      readAt: readReply.delivery?.readAt,
+    });
 
     const reviewState = await waitFor(
       'task reaches awaiting review with a PR',
@@ -794,17 +886,18 @@ async function main() {
     });
     const detailToggle = page.getByRole('button', { name: /展开右侧详情|收起右侧详情/ });
     if ((await detailToggle.count()) > 0) {
-      await detailToggle
-        .first()
-        .click()
-        .catch(() => undefined);
+      await detailToggle.first().click();
     }
     await page
       .getByText(new RegExp(`PR #${reviewState.prNumber}`))
       .first()
-      .waitFor({ timeout: 15_000 })
-      .catch(() => undefined);
+      .waitFor({
+        timeout: 30_000,
+      });
     await screenshot(page, 'after-review-light.png', DESKTOP);
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await screenshot(page, 'after-review-dark.png', DESKTOP);
+    await page.emulateMedia({ colorScheme: 'light' });
 
     const prView = spawnSync(
       'gh',
@@ -871,24 +964,49 @@ async function main() {
       (await ticketCount()) === ticketsBefore,
     );
 
-    // SSE: replay after a reconnect, then a live event created after the last id.
+    // SSE: the replay is ordered and duplicate-free, and a real Last-Event-ID
+    // reconnect backfills the gap contiguously with the expected event types.
     const firstStream = await openSse(undefined, 3000);
-    record('SSE replay delivered the durable event history', firstStream.length > 0, {
-      eventCount: firstStream.length,
-    });
+    const firstIds = firstStream.map((event) => Number(event.id));
+    record(
+      'SSE replay delivered the durable event history in order, once each',
+      firstIds.length > 0 &&
+        firstIds.every((id, index) => index === 0 || id > firstIds[index - 1]) &&
+        new Set(firstIds).size === firstIds.length,
+      { eventCount: firstStream.length, firstIds },
+    );
     const lastId = firstStream.at(-1).id;
     const liveClientId = `e2e-sse-${randomUUID()}`;
-    await postMessage(conversationId, liveClientId, '确认，继续即可。');
-    const replayed = await openSse(lastId, 4000);
+    const liveMessage = await postMessage(conversationId, liveClientId, '确认，继续即可。');
+    const replayed = await openSse(lastId, 6000);
     const replayIds = replayed.map((event) => Number(event.id));
+    const contiguousFrom = Number(lastId) + 1;
     record(
-      'SSE reconnect filled the gap without duplicates',
-      replayIds.length > 0 && replayIds.every((id) => id > Number(lastId)),
+      'SSE reconnect filled the gap in order, without duplicates or omissions',
+      replayIds.length > 0 &&
+        replayIds[0] === contiguousFrom &&
+        replayIds.every((id, index) => index === 0 || id === replayIds[index - 1] + 1) &&
+        new Set(replayIds).size === replayIds.length,
       { lastId, replayIds },
+    );
+    record(
+      'SSE reconnect carried the expected message events',
+      replayed.some(
+        (event) =>
+          event.data?.type === 'message.created' &&
+          event.data?.data?.messageId === liveMessage.message.id,
+      ) &&
+        replayed.some(
+          (event) =>
+            event.data?.type === 'message.delivery_changed' &&
+            event.data?.data?.messageId === liveMessage.message.id,
+        ),
+      { liveMessageId: liveMessage.message.id },
     );
 
     // Lost receipt: force an already delivered row back to pending; the Bridge
     // deduplicates the same Trigger id and the platform marks it delivered once.
+    const frozenBeforeLostReceipt = (await getConversation(conversationId)).conversation.baseCommit;
     const lostReceiptMessage = (await listMessages(conversationId)).messages.find(
       (message) => message.id === duplicateMessageId,
     );
@@ -926,6 +1044,12 @@ async function main() {
       { triggerId },
     );
     record('redelivery did not create another Ticket', (await ticketCount()) === ticketsBefore);
+    const frozenAfterLostReceipt = (await getConversation(conversationId)).conversation.baseCommit;
+    record(
+      'redelivery kept the first frozen base commit',
+      Boolean(frozenBeforeLostReceipt) && frozenAfterLostReceipt === frozenBeforeLostReceipt,
+      { frozenBeforeLostReceipt, frozenAfterLostReceipt },
+    );
 
     // API restart: stop the dispatcher, accept a message, restart the API, then
     // start the dispatcher again; the message is still delivered exactly once.
@@ -979,8 +1103,10 @@ async function main() {
       },
       90_000,
     );
-    record('API restart delivered the message once', true, {
-      triggerCount: triggerCount(`workspace:${restartMessage.id}`),
+    const restartTriggerCount = triggerCount(`workspace:${restartMessage.id}`);
+    record('API restart delivered exactly one upstream Trigger', restartTriggerCount === 1, {
+      triggerId: `workspace:${restartMessage.id}`,
+      triggerCount: restartTriggerCount,
     });
 
     // Bridge restart: a message accepted while the runtime is down is retried
@@ -1013,9 +1139,22 @@ async function main() {
     const pending = (await listMessages(bridgeConversation.id)).messages.find(
       (message) => message.clientMessageId === bridgeClientId,
     );
-    record('Bridge outage left the delivery pending instead of losing it', Boolean(pending), {
-      state: pending?.delivery?.state,
-    });
+    if (!pending) {
+      throw new Error('Bridge outage fixture message is missing');
+    }
+    const persistedDelivery = await deliveryRow(pending.id);
+    record(
+      'Bridge outage kept the message and delivery, not yet delivered',
+      Boolean(pending) &&
+        persistedDelivery !== null &&
+        persistedDelivery.state !== 'delivered' &&
+        persistedDelivery.delivered_at === null,
+      {
+        state: pending?.delivery?.state,
+        persistedState: persistedDelivery?.state ?? null,
+        deliveredAt: persistedDelivery?.delivered_at ?? null,
+      },
+    );
     const restartedInstance = await startInstance();
     await waitFor(
       'message delivered after Bridge restart',

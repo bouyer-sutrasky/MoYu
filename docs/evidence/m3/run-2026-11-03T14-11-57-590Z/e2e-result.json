@@ -1,0 +1,149 @@
+{
+  "ok": true,
+  "checks": [
+    {
+      "name": "private test repository is bound through the Bridge config",
+      "ok": true,
+      "repository": "Bouyer12/m3-loop-r2-68fa5d90"
+    },
+    {
+      "name": "web created a conversation with a pending task",
+      "ok": true,
+      "conversationId": "3d4115fb-5af9-4330-b380-b5eb2991a036"
+    },
+    {
+      "name": "superagent accepted the task and linked its Ticket",
+      "ok": true
+    },
+    {
+      "name": "worker question reached the web conversation",
+      "ok": true,
+      "question": "README.md 第 5 行 \"jumps over teh lazy dog\" 中的 \"teh\" 要改成 \"the\" 还是 \"this\"？"
+    },
+    {
+      "name": "reply delivery reached read from worker session evidence",
+      "ok": true,
+      "messageId": "51e57cb9-6384-4bf3-ac15-a77463ddf1c5",
+      "readAt": "2026-11-03T14:13:34.111Z"
+    },
+    {
+      "name": "worker delivered a pull request",
+      "ok": true,
+      "prUrl": "https://github.com/Bouyer12/m3-loop-r2-68fa5d90/pull/1",
+      "prNumber": 1,
+      "state": "awaiting_review"
+    },
+    {
+      "name": "pull request exists in the private test repository",
+      "ok": true,
+      "stdout": "{\"baseRefName\":\"main\",\"headRefName\":\"agent/fix-readme-typo-1e96a5d92728\",\"mergedAt\":null,\"state\":\"OPEN\",\"url\":\"https://github.com/Bouyer12/m3-loop-r2-68fa5d90/pull/1\"}\n",
+      "stderr": ""
+    },
+    {
+      "name": "all concurrent retries of one clientMessageId returned a result",
+      "ok": true,
+      "okCount": 5
+    },
+    {
+      "name": "same clientMessageId produced exactly one message",
+      "ok": true,
+      "duplicateId": "e2e-duplicate-76a2a198-7374-46de-9498-c35b896b6409"
+    },
+    {
+      "name": "duplicate retries produced exactly one upstream Trigger",
+      "ok": true,
+      "triggerId": "workspace:a96ec3b4-7885-4a12-b228-fa32843a55f8"
+    },
+    {
+      "name": "duplicate retries did not create another Ticket",
+      "ok": true
+    },
+    {
+      "name": "SSE replay delivered the durable event history in order, once each",
+      "ok": true,
+      "eventCount": 19,
+      "firstIds": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ]
+    },
+    {
+      "name": "SSE reconnect filled the gap in order, without duplicates or omissions",
+      "ok": true,
+      "lastId": "19",
+      "replayIds": [
+        20,
+        21,
+        22,
+        23
+      ]
+    },
+    {
+      "name": "SSE reconnect carried the expected message events",
+      "ok": true,
+      "liveMessageId": "d379056e-05d8-4d31-9db2-0a385a0a7045"
+    },
+    {
+      "name": "redelivery after a lost receipt stayed deduplicated upstream",
+      "ok": true,
+      "triggerId": "workspace:a96ec3b4-7885-4a12-b228-fa32843a55f8"
+    },
+    {
+      "name": "redelivery did not create another Ticket",
+      "ok": true
+    },
+    {
+      "name": "redelivery kept the first frozen base commit",
+      "ok": true,
+      "frozenBeforeLostReceipt": "a52e86a5e98b930d20f101b64b079e78521f7977",
+      "frozenAfterLostReceipt": "a52e86a5e98b930d20f101b64b079e78521f7977"
+    },
+    {
+      "name": "API accepted the message before restart",
+      "ok": true
+    },
+    {
+      "name": "API restart kept the accepted message and its pending delivery",
+      "ok": true,
+      "messageCount": 1
+    },
+    {
+      "name": "API restart delivered exactly one upstream Trigger",
+      "ok": true,
+      "triggerId": "workspace:5cbaf332-f344-4585-ba4f-84ddaecab247",
+      "triggerCount": 1
+    },
+    {
+      "name": "Bridge outage kept the message and delivery, not yet delivered",
+      "ok": true,
+      "state": "stored",
+      "persistedState": "pending",
+      "deliveredAt": null
+    },
+    {
+      "name": "Bridge restart delivered the message once",
+      "ok": true,
+      "trigger": "workspace:ec3b98c9-7e5d-41e0-9f8a-ef601d9806de"
+    }
+  ],
+  "conversationId": "3d4115fb-5af9-4330-b380-b5eb2991a036",
+  "repository": "Bouyer12/m3-loop-r2-68fa5d90",
+  "runAt": "2026-11-03T14-11-57-590Z"
+}

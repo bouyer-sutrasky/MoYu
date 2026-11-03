@@ -14,7 +14,7 @@ import { createAuthenticate } from './auth/guards';
 import { createMachineAuthenticate } from './auth/machine';
 import { SessionService } from './auth/sessions';
 import type { ApiConfig } from './config';
-import { createAppEventBus } from './events/bus';
+import { createAppEventBus, type AppEventBus } from './events/bus';
 import { ApiProblem } from './lib/errors';
 import { createLoggerOptions } from './logger';
 import { registerAttachmentRoutes } from './routes/attachments';
@@ -29,6 +29,8 @@ import { SERVICE_NAME, SERVICE_VERSION } from './version';
 export interface BuildAppOptions {
   config: ApiConfig;
   database?: Database;
+  /** Test seam: inject the in-process wakeup bus while durable events still come from PostgreSQL. */
+  eventBus?: AppEventBus;
 }
 
 const SECURITY_HEADERS: Record<string, string> = {
@@ -40,7 +42,11 @@ const SECURITY_HEADERS: Record<string, string> = {
     "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'",
 };
 
-export function buildApp({ config, database }: BuildAppOptions): FastifyInstance {
+export function buildApp({
+  config,
+  database,
+  eventBus: injectedEventBus,
+}: BuildAppOptions): FastifyInstance {
   const app = Fastify({
     logger: createLoggerOptions(config),
     // nginx is the only public listener and proxies from loopback. Trust its
@@ -55,9 +61,12 @@ export function buildApp({ config, database }: BuildAppOptions): FastifyInstance
     },
   });
 
-  const eventBus = createAppEventBus();
+  const eventBus = injectedEventBus ?? createAppEventBus();
+  const ownsEventBus = injectedEventBus === undefined;
   app.addHook('onClose', async () => {
-    eventBus.close();
+    if (ownsEventBus) {
+      eventBus.close();
+    }
   });
 
   app.addHook('onSend', async (request, reply) => {

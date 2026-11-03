@@ -20,13 +20,14 @@ reconfigured. No service, nginx site, database, profile, or GitHub repository wa
 | Build Node/pnpm environment | `env -i HOME=/root/src/upstream/m0-home PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin COREPACK_HOME=/root/src/upstream/.corepack CI=1` |
 
 The scratch repository whose first commit is the pristine tree (excluding `node_modules`, `lib`, `.artifacts`) lives at
-`/root/src/m3-upstream-work/work`; the patches are `git diff` between its three consecutive commits:
+`/root/src/m3-upstream-work/work`; the patches are `git diff` between its four consecutive commits:
 
 ```
 ce3533e pristine dsh-superagent 6337fc823ce20251c8de8085948165c81aaa701e
 fb0ab2e 0001 workspace Source and prefixed outbound reply ids
 feb8669 0002 machine Bridge with durable event projection
 79adfd8 0003 freeze the execution spec on the ticket and its worker
+38ce60c 0004 return the first frozen result for duplicate triggers
 ```
 
 ## 2. Patches
@@ -39,7 +40,9 @@ Ordered patches in `integrations/superagent/patches/`:
 | 0002 | `0002-machine-bridge.patch` | `9d505908a150d4be647942262e9576cafdc9cdb5dd620cc23dc572804145de3a` | New `src/app/bridge.ts` (loopback server, timing-safe bearer, capabilities/models/triggers/events/tickets, 501 pause/resume/retry, unauthenticated `/healthz`, fsynced append-only `EventLog`, once-a-second Ticket projection, `task.progress` from `assistant/message`); `src/app/runtime.ts` construction/startup/shutdown wiring; `tests/bridge.spec.ts` |
 | 0003 | `0003-ticket-freeze.patch` | `ea1ebeff91170acceb94935b4fff5eef72653bbe43a3a8b57b8fcd5a382dc8ca` | `Ticket.model` / `modelSource` / `base` / `mode` and `frozenSpec` in `src/core/model.ts`; freeze from `meta.spec` in `Tickets.create`; optional frozen model in `Sessions.ensure`; `verifyTicketModel` in `src/app/role-models.ts`; launch-time validation and frozen-model pass-through in `src/executor/dsh.ts`; null-model resolution in `src/app/bridge.ts` / `runtime.ts`; `tests/ticket-freeze.spec.ts`; `docs/007-architecture.md` tables and the `bundle-patch` expectation (documentation bookkeeping for 0001/0002) |
 
-The patches are plain `git diff --binary` output; they are applied with `git apply`, never fuzzed or forced.
+| 0004 | `0004-bridge-duplicate-first-result.patch` | `16dc3f5e9eed47e511a2fc0976375c833bba9f48f8a54edfaf8c982f2c5076cd` | `POST /bridge/v1/triggers` returns the persisted first Trigger's `baseCommit`/Ticket for a repeated `triggerId` before model or branch validation; a concurrent receive duplicate reports the stored base instead of the freshly resolved one. Adds a regression test for a moved branch plus a removed model. |
+
+The patches are plain `git diff` output; they are applied with `git apply`, never fuzzed or forced.
 
 ## 3. Fresh-tree application and checks
 
@@ -70,15 +73,14 @@ Build complete in 4734ms
 exit 0
 lib/index.js, lib/workspace-watch.js, lib/workspace-watch.d.ts present
 
-$ env -i … corepack pnpm@11.7.0 vitest run tests/workspace.spec.ts tests/bridge.spec.ts tests/ticket-freeze.spec.ts \
-    tests/core-engine.spec.ts tests/runtime.spec.ts tests/bundle-patch.spec.ts tests/docs.spec.ts tests/class-docs.spec.ts
-Test Files  8 passed (8)
-Tests       246 passed (246)
+$ env -i … corepack pnpm@11.7.0 vitest run tests/workspace.spec.ts tests/bridge.spec.ts tests/ticket-freeze.spec.ts
+Test Files  3 passed (3)
+Tests       34 passed (34)
 exit 0
 
 $ env -i … corepack pnpm@11.7.0 vitest run
 Test Files  1 failed | 61 passed (62)
-Tests       1 failed | 1229 passed (1230)
+Tests       1 failed | 1230 passed (1231)
 exit 1
 ```
 
