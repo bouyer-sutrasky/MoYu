@@ -9,6 +9,7 @@ export * from './events';
 export * from './messages';
 export * from './owners';
 export * from './repositories';
+export * from './runtime-cursors';
 export * from './runtime-leases';
 export * from './sessions';
 export * from './task-links';

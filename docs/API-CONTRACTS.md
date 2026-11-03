@@ -45,18 +45,21 @@ M2 实际 Cookie：https origin 使用 `__Host-moyu_session` 与 `__Host-moyu_bo
 | --- | --- |
 | GET /api/v1/github/repositories | 专用账号当前可访问仓库，分页；没有全量可见性时支持输入owner/name检查 |
 | POST /api/v1/repositories | `{fullName}` → repositoryId；校验repo存在与所需读写权限，异步准备配置 |
-| GET /api/v1/repositories | **M2 已实现只读列表**：状态、默认分支、实例状态；添加/唤醒/分支/模型仍为后续阶段 |
+| GET /api/v1/repositories | **M2 已实现只读列表**：状态、默认分支、实例状态；M3 启动时按 `BRIDGE_REPOSITORY` 绑定一行（不存秘密） |
+| GET /api/v1/repositories/:id/models | **M3 已实现**：经仓库 Bridge 读取 Harness 已配置模型白名单（provider/model/displayName/reasoningEfforts），不返回 API Key；运行时不可达返回 503 |
 | POST /api/v1/repositories/:id/wake | 返回调度operationId，忙时queued，不承诺立即在线 |
 | GET /api/v1/repositories/:id/branches | 分页分支列表 |
 | GET /api/v1/repositories/:id/models | Harness已配置且可用的模型标识，不返回API Key |
-| POST /api/v1/conversations | `{repositoryId,mode:'work',executionMode:'execute'|'discuss',baseBranch,modelId?,clientRequestId}` |
-| POST /api/v1/conversations/:id/messages | `{clientMessageId,text,replyToMessageId?,attachmentIds?}` → messageId/deliveryState |
-| GET /api/v1/conversations/:id/messages | cursor分页，包含回复关联、来源和投递状态 |
+| POST /api/v1/conversations | **M3 已实现**：`{repositoryId,mode:'work',executionMode:'execute',baseBranch,model:{provider,model,reasoningEffort?}\|null,clientRequestId}`；同一 `clientRequestId` 相同 payload 返回原会话，不同 payload 409；`discuss` 在 M3 返回 422 |
+| GET /api/v1/conversations | **M3 已实现**：按仓库列出会话与任务投影 |
+| GET /api/v1/conversations/:id | **M3 已实现**：会话、冻结字段与任务投影 |
+| POST /api/v1/conversations/:id/messages | **M3 已实现**：`{clientMessageId,text,replyToMessageId?}` → 202 `{message,duplicate:false}`；相同幂等键与 payload 返回 200 原结果，不同 payload 409；message 与 delivery 同事务写入 |
+| GET /api/v1/conversations/:id/messages | **M3 已实现**：`before` 游标分页，包含方向/kind、回复关联、来源与投递状态 |
 | POST /api/v1/tasks/:id/start | `{planRevision,expectedVersion,clientCommandId}`；只读讨论→允许执行 |
 | POST /api/v1/tasks/:id/stop | `{expectedVersion,clientCommandId}`；幂等进入stopping；不是上游终态stop |
 | POST /api/v1/tasks/:id/resume | `{expectedVersion,clientCommandId}`；只允许可恢复状态，进入队列并取得租约 |
 | POST /api/v1/tasks/:id/retry | 失败/受阻重试，与人工停止的resume分开 |
-| GET /api/v1/tasks/:id/artifacts | diff、检查结果、PR引用等鉴权数据 |
+| GET /api/v1/tasks/:id/artifacts | **M3 已实现 PR 引用**：Bridge 投影的 `pull_request` 产物；diff/检查结果留待后续阶段 |
 | POST /api/v1/conversations/:id/attachments | multipart；限制大小/type，返回attachmentId，不自动执行 |
 | GET /api/v1/attachments/:id | **M2 已实现**鉴权下载，安全Content-Disposition与MIME，不内联执行上传HTML；上传属于 M3/M6 |
 
@@ -83,7 +86,9 @@ type WorkspaceEvent = {
 
 任务展示状态：pending_admission / discussing / queued / running / waiting_input / awaiting_review / stopping / stopped / blocked / failed / completed / closed_unmerged / not_accepted。消息状态：stored / delivering / delivered / read / failed；delivered和read均要求实际执行器证据，缺证据停留在前态。
 
-`GET /api/v1/events` 在 M2 已实现：先按 `Last-Event-ID`/`after` 回放持久事件，再接收进程内实时事件；每 15 秒心跳。SSE 失效时重新校验登录；服务端主动撤销会立即中断流，不只依赖首次连接检查。M2 尚无任务事件生产者，主要验证连接、回放边界与撤销关闭；浏览器通知消费同一事件，按eventId去重，正文展示默认适度摘要，点击定位任务（M3/M6）。
+M3 实际映射：`stored`=平台消息与 delivery 同事务写入；`delivering`=dispatcher 已领取租约；`delivered`=Bridge `POST /bridge/v1/triggers` 返回 `stored|duplicate`（执行器已接收 Trigger）；`read`=worker Session 的 `user/message` 已落盘且 `Ticket.inputs[].readAt` 经 `message.read` 回报；`failed`=平台侧永久拒绝。HTTP 202 与 Trigger 入库都不会推进到 `read`。
+
+`GET /api/v1/events` 在 M3 已实现：先按 `Last-Event-ID`/`after` 回放持久事件，再以 PostgreSQL 轮询（1 秒）补齐跨进程事件，进程内 bus 只用于即时唤醒；每 15 秒心跳。断线重连按 event id 补齐，不依赖进程内 EventEmitter 作为唯一存储。SSE 失效时重新校验登录；服务端主动撤销会立即中断流，不只依赖首次连接检查。M2 尚无任务事件生产者，主要验证连接、回放边界与撤销关闭；浏览器通知消费同一事件，按eventId去重，正文展示默认适度摘要，点击定位任务（M3/M6）。
 
 ## Bridge 机器协议
 
@@ -100,11 +105,13 @@ Bridge位于受控superagent fork中，只对回环/私网开放，并校验机�
 | POST /bridge/v1/tickets/:id/retry | 调用已验证的上游失败重试逻辑 |
 | GET /bridge/v1/operations/:id | queued/running/succeeded/failed及完成证据 |
 | GET /bridge/v1/models | 可配置模型，避免泄露供应商密钥 |
-| POST /api/internal/v1/runtime-events | Bridge向平台推送Channel回复/事件，独立机器认证、sourceEventId去重 |
+| POST /api/internal/v1/runtime-events | **M3 已实现**：Bridge 向平台推送 Channel 回复/问题；独立机器 Bearer 认证，`(conversation_id, source_event_id)` 唯一索引去重，重复回调返回原成功 |
 
 executionSpec只接受平台已授权和冻结的modelId/baseCommit/mode。人工暂停期间自动来源事件可记录但不唤醒；显式resume重新校验授权。旧上游stop不作为可恢复暂停的别名。
 
 平台内消息+delivery同事务写；Bridge receive去重；回调平台提交成功才返回sent。网络超时抛出以便上游Outbox重试，重复回调返回原成功。ticket映射尚未产生时保留pending，不循环创建新Trigger。
+
+M3 实现细节见 [`M3-BRIDGE-PROTOCOL.md`](M3-BRIDGE-PROTOCOL.md)：trigger id 为 `workspace:<平台消息 id>`；平台 dispatcher 用 `FOR UPDATE SKIP LOCKED` 领取并重试；Bridge 事件日志 append-only、fsync、单调 seq；平台 cursor 与事件投影同事务提交。
 
 ## 上游真实接入点与差异
 

@@ -5,10 +5,12 @@ import { repositoryListDataSchema } from '@moyu/contracts';
 import { repositories, type Database } from '@moyu/db';
 
 import type { Authenticate } from '../auth/guards';
+import { ensureConfiguredRepository } from '../domain/repositories';
 import { ApiProblem } from '../lib/errors';
 import { sendData } from '../lib/http';
 
 export interface RepositoryRouteDependencies {
+  config: import('../config').ApiConfig;
   database: Database;
   authenticate: Authenticate;
 }
@@ -21,13 +23,15 @@ export function registerRepositoryRoutes(
   app: FastifyInstance,
   dependencies: RepositoryRouteDependencies,
 ): void {
-  const { database, authenticate } = dependencies;
+  const { config, database, authenticate } = dependencies;
 
   app.get('/api/v1/repositories', { preHandler: authenticate }, async (request, reply) => {
     const auth = request.auth;
     if (!auth) {
       throw ApiProblem.unauthorized();
     }
+
+    await ensureConfiguredRepository(database, config);
 
     const rows = await database
       .select()

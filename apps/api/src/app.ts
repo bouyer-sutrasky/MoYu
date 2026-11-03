@@ -11,14 +11,18 @@ import Fastify, { type FastifyError, type FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
 import { createAuthenticate } from './auth/guards';
+import { createMachineAuthenticate } from './auth/machine';
 import { SessionService } from './auth/sessions';
 import type { ApiConfig } from './config';
 import { createAppEventBus } from './events/bus';
 import { ApiProblem } from './lib/errors';
 import { createLoggerOptions } from './logger';
 import { registerAttachmentRoutes } from './routes/attachments';
+import { ensureConfiguredRepository } from './domain/repositories';
 import { registerAuthRoutes } from './routes/auth';
+import { registerConversationRoutes } from './routes/conversations';
 import { registerEventRoutes } from './routes/events';
+import { registerRuntimeRoutes } from './routes/runtime';
 import { registerRepositoryRoutes } from './routes/repositories';
 import { SERVICE_NAME, SERVICE_VERSION } from './version';
 
@@ -100,15 +104,45 @@ export function buildApp({ config, database }: BuildAppOptions): FastifyInstance
 
   if (database && sessionService) {
     const authenticate = createAuthenticate({ config, sessions: sessionService });
+    const machineAuthenticate = createMachineAuthenticate(config);
     registerAuthRoutes(app, { config, database, sessions: sessionService });
-    registerRepositoryRoutes(app, { database, authenticate });
+    registerRepositoryRoutes(app, { config, database, authenticate });
     registerEventRoutes(app, {
       database,
       sessions: sessionService,
       events: eventBus,
       authenticate,
     });
+    registerConversationRoutes(app, { config, database, authenticate, events: eventBus });
+    registerRuntimeRoutes(app, {
+      config,
+      database,
+      authenticate,
+      machineAuthenticate,
+      events: eventBus,
+    });
     registerAttachmentRoutes(app, { config, database, authenticate });
+
+    // Bind the configured repository once the owner exists; a first boot before
+    // Passkey registration simply waits for a later call (list, conversation,
+    // model catalog) to bind it again.
+    app.addHook('onReady', async () => {
+      try {
+        const repository = await ensureConfiguredRepository(database, config);
+        if (repository) {
+          app.log.info(
+            {
+              event: 'repository.bound',
+              repository: repository.fullName,
+              bridge: Boolean(repository.bridgeUrl),
+            },
+            'repository runtime binding is active',
+          );
+        }
+      } catch (error) {
+        app.log.warn({ err: error, event: 'repository.bind_failed' }, 'repository binding failed');
+      }
+    });
   }
 
   app.get('/healthz', async (request) =>

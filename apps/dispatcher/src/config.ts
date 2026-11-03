@@ -8,18 +8,40 @@ const environmentSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   DATABASE_URL: postgresUrlSchema,
+  BRIDGE_REPOSITORY: z
+    .string()
+    .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, 'must be owner/name')
+    .optional(),
+  BRIDGE_URL: z.string().url().optional(),
+  BRIDGE_TOKEN: z.string().min(16).optional(),
+  BRIDGE_CREDENTIAL_REF: z
+    .string()
+    .regex(/^[A-Z][A-Z0-9_]*$/)
+    .optional(),
+  DELIVERY_INTERVAL_MS: z.coerce.number().int().min(100).max(60_000).default(500),
+  DELIVERY_LEASE_MS: z.coerce.number().int().min(5_000).max(300_000).default(60_000),
+  DELIVERY_RETRY_CAP_MS: z.coerce.number().int().min(1_000).max(600_000).default(60_000),
+  EVENT_SYNC_INTERVAL_MS: z.coerce.number().int().min(100).max(60_000).default(1000),
 });
 
 export type DispatcherConfig = {
   nodeEnv: 'development' | 'test' | 'production';
   logLevel: 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace';
   databaseUrl: string;
+  bridgeRepository?: string;
+  bridgeUrl?: string;
+  bridgeToken?: string;
+  bridgeCredentialRef?: string;
+  deliveryIntervalMs: number;
+  deliveryLeaseMs: number;
+  deliveryRetryCapMs: number;
+  eventSyncIntervalMs: number;
 };
 
 /**
- * The dispatcher owns delivery polling and runtime admission. M1 wires the
- * process, database connection and structured logging; the delivery loop is part
- * of the M3 message path, so this config only parses what M1 needs.
+ * The dispatcher owns durable delivery and Bridge event catch-up. All Bridge
+ * settings are optional overrides; a repository row supplies its own loopback
+ * endpoint and credential reference, so secrets stay out of the database.
  */
 export function loadDispatcherConfig(
   env: Record<string, string | undefined> = process.env,
@@ -37,5 +59,13 @@ export function loadDispatcherConfig(
     nodeEnv: parsed.data.NODE_ENV,
     logLevel: parsed.data.LOG_LEVEL,
     databaseUrl: parsed.data.DATABASE_URL,
+    bridgeRepository: parsed.data.BRIDGE_REPOSITORY,
+    bridgeUrl: parsed.data.BRIDGE_URL,
+    bridgeToken: parsed.data.BRIDGE_TOKEN,
+    bridgeCredentialRef: parsed.data.BRIDGE_CREDENTIAL_REF,
+    deliveryIntervalMs: parsed.data.DELIVERY_INTERVAL_MS,
+    deliveryLeaseMs: parsed.data.DELIVERY_LEASE_MS,
+    deliveryRetryCapMs: parsed.data.DELIVERY_RETRY_CAP_MS,
+    eventSyncIntervalMs: parsed.data.EVENT_SYNC_INTERVAL_MS,
   };
 }

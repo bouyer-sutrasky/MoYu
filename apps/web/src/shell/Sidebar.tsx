@@ -1,22 +1,31 @@
 import clsx from 'clsx';
 
-import type { RepositorySummary } from '@moyu/contracts';
+import type { ConversationSummary, RepositorySummary } from '@moyu/contracts';
 
 import { Icon } from '../components/Icon';
+import { formatUpdatedAt, taskStateLabel } from '../lib/format';
 import type { ThemeMode } from '../theme/ThemeProvider';
 import styles from './WorkspaceShell.module.css';
 
 type Mode = 'work' | 'chat';
+type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
 
 interface SidebarProps {
   mode: Mode;
   onModeChange: (mode: Mode) => void;
   repositories: RepositorySummary[];
-  repositoriesStatus: 'loading' | 'ready' | 'error';
+  repositoriesStatus: LoadStatus;
   repositoriesError: string | null;
   selectedRepositoryId: string | null;
   onSelectRepository: (id: string) => void;
   onReloadRepositories: () => void;
+  conversations: ConversationSummary[];
+  conversationsStatus: LoadStatus;
+  conversationsError: string | null;
+  selectedConversationId: string | null;
+  onSelectConversation: (id: string) => void;
+  onReloadConversations: () => void;
+  onNewTask: () => void;
   onOpenActivity: () => void;
   onOpenSettings: () => void;
   ownerName: string;
@@ -36,6 +45,13 @@ export function Sidebar({
   selectedRepositoryId,
   onSelectRepository,
   onReloadRepositories,
+  conversations,
+  conversationsStatus,
+  conversationsError,
+  selectedConversationId,
+  onSelectConversation,
+  onReloadConversations,
+  onNewTask,
   onOpenActivity,
   onOpenSettings,
   ownerName,
@@ -118,7 +134,7 @@ export function Sidebar({
           <div className={styles.emptyCard}>
             <Icon name="cloud" />
             <p>尚未添加仓库</p>
-            <span>仓库添加与实例准备在 M3/M4 接入。</span>
+            <span>仓库添加与实例准备在 M4 接入。</span>
           </div>
         ) : (
           <label className={styles.repositorySelect}>
@@ -137,23 +153,91 @@ export function Sidebar({
           </label>
         )}
 
-        <button type="button" className={styles.disabledAction} disabled title="M3/M4 接入">
+        <button type="button" className={styles.disabledAction} disabled title="仓库添加在 M4 接入">
           <Icon name="plus" size={15} />
           添加仓库
-          <span className={styles.phaseTag}>M3/M4</span>
+          <span className={styles.phaseTag}>M4</span>
         </button>
       </section>
 
-      <section className={styles.sidebarSection} aria-labelledby="history-heading">
+      <section className={styles.sidebarSection} aria-labelledby="conversation-heading">
         <div className={styles.sectionHeading}>
-          <h2 id="history-heading">任务历史</h2>
-          <span className={styles.count}>0</span>
+          <h2 id="conversation-heading">会话</h2>
+          <div className={styles.sectionHeadingActions}>
+            <span className={styles.count}>{conversations.length}</span>
+            <button
+              type="button"
+              className={styles.iconButton}
+              onClick={onReloadConversations}
+              aria-label="刷新会话列表"
+              title="刷新会话列表"
+              disabled={!selectedRepositoryId}
+            >
+              <Icon name="session" size={15} />
+            </button>
+          </div>
         </div>
-        <div className={styles.emptyList}>
-          <Icon name="task" />
-          <p>还没有任务会话</p>
-          <span>M3 接入消息闭环后，任务会按仓库汇总在这里。</span>
-        </div>
+
+        {!selectedRepositoryId ? (
+          <p className={styles.sectionHint}>先选择仓库，再查看该仓库的会话。</p>
+        ) : conversationsStatus === 'loading' && conversations.length === 0 ? (
+          <p className={styles.sectionHint}>正在读取会话…</p>
+        ) : conversationsStatus === 'error' ? (
+          <div className={styles.sectionError}>
+            <p>{conversationsError ?? '会话列表不可用'}</p>
+            <button type="button" className={styles.textButton} onClick={onReloadConversations}>
+              重试
+            </button>
+          </div>
+        ) : conversations.length === 0 ? (
+          <div className={styles.emptyList}>
+            <Icon name="task" />
+            <p>还没有任务会话</p>
+            <span>新建任务后，会话会按仓库汇总在这里。</span>
+          </div>
+        ) : (
+          <ul className={styles.conversationList}>
+            {conversations.map((conversation) => {
+              const state = conversation.task?.state ?? null;
+              return (
+                <li key={conversation.id}>
+                  <button
+                    type="button"
+                    className={clsx(
+                      styles.conversationItem,
+                      conversation.id === selectedConversationId && styles.conversationItemActive,
+                    )}
+                    onClick={() => onSelectConversation(conversation.id)}
+                    aria-current={conversation.id === selectedConversationId ? 'true' : undefined}
+                  >
+                    <span className={styles.conversationItemTop}>
+                      <span className={styles.conversationTitle}>
+                        {conversation.title ?? '未命名任务'}
+                      </span>
+                      <span className={styles.conversationState} data-state={state ?? 'unknown'}>
+                        {taskStateLabel(state)}
+                      </span>
+                    </span>
+                    <span className={styles.conversationTime}>
+                      {formatUpdatedAt(conversation.updatedAt)}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+
+        <button
+          type="button"
+          className={styles.newTaskButton}
+          onClick={onNewTask}
+          disabled={!selectedRepositoryId}
+          title={selectedRepositoryId ? '在当前仓库新建任务' : '先选择仓库'}
+        >
+          <Icon name="plus" size={15} />
+          新建任务
+        </button>
       </section>
 
       <nav className={styles.sidebarNav} aria-label="工作台入口">

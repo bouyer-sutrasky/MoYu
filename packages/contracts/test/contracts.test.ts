@@ -92,7 +92,10 @@ describe('event contract', () => {
       seq: '42',
       type: 'message.created',
       occurredAt: '2026-11-03T08:00:00.000Z',
-      data: { messageId: '00000000-0000-4000-8000-000000000000' },
+      data: {
+        messageId: '00000000-0000-4000-8000-000000000000',
+        direction: 'inbound',
+      },
     });
 
     expect(event.seq).toBe('42');

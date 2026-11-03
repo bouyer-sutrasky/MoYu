@@ -1,0 +1,951 @@
+diff --git a/src/app/bridge.ts b/src/app/bridge.ts
+new file mode 100644
+index 0000000..47cd0c9
+--- /dev/null
++++ b/src/app/bridge.ts
+@@ -0,0 +1,521 @@
++/**
++ * Machine Bridge: the loopback HTTP surface the MoYu platform uses to deliver workspace Triggers, pull the durable event
++ * log, and read authoritative Ticket snapshots.
++ *
++ * This is deliberately not the management panel's `/orchestrator/api` surface: that one is same-origin with the browser
++ * session and must never be reachable by a machine credential. The Bridge listens on its own loopback port, authenticates
++ * every request with `MOYU_BRIDGE_TOKEN`, and reads only what the Runtime passes in. It never writes a Ticket: triggers go
++ * through the Engine's intake, and events are a projection of what the Engine stored.
++ */
++import { timingSafeEqual } from 'node:crypto'
++import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, writeFileSync, writeSync } from 'node:fs'
++import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
++import { dirname, join } from 'node:path'
++import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
++import { z } from 'zod'
++import { latestAssignment, latestReport, waitsForPerson, type ChannelRef, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
++import type { RoleModel } from '../policy.ts'
++import type { Deployment } from '../deployment.ts'
++import type { Commands } from '../infra/commands.ts'
++import { ticketOfSession } from '../executor/dsh.ts'
++import type { Store } from './store.ts'
++
++/** Protocol version this Bridge speaks; the platform refuses a different major version. */
++export const PROTOCOL_VERSION = 'moyu-bridge/1'
++/** Upstream artifact identity, from `docs/M3-BRIDGE-PROTOCOL.md` §2 and `integrations/superagent/upstream.lock.json`. */
++export const UPSTREAM = { package: 'dsh-superagent', version: '0.1.0', commit: '6337fc823ce20251c8de8085948165c81aaa701e' } as const
++const DEFAULT_HOST = '127.0.0.1', DEFAULT_PORT = 3190
++const REQUEST_LIMIT = 256 * 1024
++const EVENTS_DEFAULT_LIMIT = 100, EVENTS_MAX_LIMIT = 200
++const TICK_MS = 1000
++const PROGRESS_CHARS = 4000
++const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost'])
++
++/** Where the platform's message came from, as far as the Bridge needs it. */
++type FrozenTicket = Ticket & { model?: RoleModel; base?: { repository: string; branch: string; commit: string } }
++/** The platform task_state a stored Ticket projects to (`docs/M3-BRIDGE-PROTOCOL.md` §3). */
++export type BridgeTicketState = 'waiting_input' | 'running' | 'queued' | 'blocked' | 'failed' | 'awaiting_review' | 'completed'
++  | 'closed_unmerged' | 'stopped'
++
++/**
++ * Projects an upstream Ticket onto the platform's task_state. The order follows upstream `ticketStage` (`src/core/stage.ts`):
++ * an open question first, then the latest report's waiting state (a blocked, failed, or ready report arrives while its
++ * Assignment is still `running`, so the report wins over the Assignment state), then a running turn, then a pending launch.
++ * A blocked or failed report whose person has already written again is queued for the worker's next turn.
++ */
++export function projectTicketState(ticket: Ticket): BridgeTicketState {
++  if (ticket.ended) {
++    switch (ticket.ended.outcome) {
++      case 'merged': case 'completed': case 'dropped': return 'completed'
++      case 'closed': return 'closed_unmerged'
++      case 'stopped': return 'stopped'
++    }
++  }
++  if (ticket.attention) return 'waiting_input'
++  const report = latestReport(ticket)
++  if (report?.state === 'ready') return 'awaiting_review'
++  if (report?.state === 'blocked') return waitsForPerson(ticket) ? 'blocked' : 'queued'
++  if (report?.state === 'failed') return waitsForPerson(ticket) ? 'failed' : 'queued'
++  const assignment = latestAssignment(ticket)
++  if (assignment?.state === 'running') return 'running'
++  if (assignment?.state === 'pending') return 'queued'
++  // An idle worker between turns, or a just-accepted ticket, still belongs to the queue of running work.
++  return ticket.assignments.length ? 'running' : 'queued'
++}
++
++/** One append-only event as the platform reads it. */
++export interface BridgeEvent { seq: number; id: string; type: string; at: string; data: Record<string, unknown> }
++
++/**
++ * Append-only event log under `<stateDir>/bridge/events.jsonl`. `seq` is monotonic from the last line on startup, every
++ * append is fsynced before the event is readable, and ids are deterministic so a restart (or a repeated projection tick)
++ * never appends the same business event twice. A truncated last line from a crash before the fsync is dropped on open.
++ */
++export class EventLog {
++  private fd: number | undefined
++  private last = 0
++  private readonly events: BridgeEvent[] = []
++  private readonly ids = new Set<string>()
++  private readonly states = new Map<string, string>()
++  constructor(readonly file: string) {}
++
++  /** Reads the existing log, repairs a truncated final line, and opens the file for appending. */
++  open(): void {
++    if (this.fd !== undefined) return
++    mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 })
++    let text = ''
++    try { text = readFileSync(this.file, 'utf8') }
++    catch (error) { if ((error as { code?: string }).code !== 'ENOENT') throw error }
++    if (text && !text.endsWith('\n')) {
++      // Drop a partial trailing line: it was never fsynced and cannot be parsed, and appending after it would corrupt the file.
++      text = text.slice(0, text.lastIndexOf('\n') + 1)
++      writeFileSync(this.file, text, { mode: 0o600 })
++    }
++    for (const line of text.split('\n')) {
++      if (!line) continue
++      let event: BridgeEvent
++      try { event = JSON.parse(line) as BridgeEvent } catch { continue }
++      if (!event || typeof event.seq !== 'number' || typeof event.id !== 'string') continue
++      this.events.push(event)
++      this.ids.add(event.id)
++      this.remember(event)
++      this.last = Math.max(this.last, event.seq)
++    }
++    this.fd = openSync(this.file, 'a', 0o600)
++  }
++
++  /** Appends one event unless its id was already logged; returns the appended event, or undefined for a duplicate. */
++  append(id: string, type: string, at: string, data: Record<string, unknown>): BridgeEvent | undefined {
++    if (this.fd === undefined) throw new Error('The bridge event log is not open')
++    if (this.ids.has(id)) return undefined
++    const event: BridgeEvent = { seq: ++this.last, id, type, at, data }
++    writeSync(this.fd, `${JSON.stringify(event)}\n`)
++    // The platform may pull right after this call, so the line must survive a crash before it is served.
++    fsyncSync(this.fd)
++    this.events.push(event)
++    this.ids.add(id)
++    this.remember(event)
++    return event
++  }
++
++  /** Whether an event id was already logged (including ones read from disk on startup). */
++  has(id: string): boolean { return this.ids.has(id) }
++
++  /** The last state this log reported for a ticket, or undefined when it never linked it. */
++  previousState(ticketId: string): string | undefined { return this.states.get(ticketId) }
++
++  /** Events with `seq > after`, oldest first, at most `limit`; `next` is the cursor to continue from. */
++  read(after: number, limit: number): { events: BridgeEvent[]; next: number; hasMore: boolean } {
++    const page = this.events.filter(event => event.seq > after).slice(0, limit)
++    const next = page.length ? page[page.length - 1]!.seq : after
++    return { events: page, next, hasMore: this.events.some(event => event.seq > next) }
++  }
++
++  /** The highest sequence number logged so far (0 while empty). */
++  get lastSeq(): number { return this.last }
++
++  close(): void {
++    if (this.fd === undefined) return
++    closeSync(this.fd)
++    this.fd = undefined
++  }
++
++  private remember(event: BridgeEvent): void {
++    if (event.type !== 'ticket.linked' && event.type !== 'ticket.state_changed') return
++    const { ticketId, state } = event.data
++    if (typeof ticketId === 'string' && typeof state === 'string') this.states.set(ticketId, state)
++  }
++}
++
++/** What the Bridge needs from the Runtime, kept narrow so it does not widen the public `orchestrator` service. */
++export interface BridgeHost {
++  readonly stateDir: string
++  readonly store: Pick<Store, 'tickets' | 'triggers'>
++  readonly commands: Pick<Commands, 'api'>
++  /** Whether deployment setup finished; a Trigger posted before that is answered 503. */
++  configured(): boolean
++  /** The resolved deployment; throws while setup is pending. */
++  readonly deployment: Deployment
++  /** Hands a Trigger to the Engine's intake synchronously, so `duplicate` is decided by the Store's key. */
++  receive(trigger: Trigger): ReceiveResult
++  /** `ctx.sessionController.modelCatalog()`, whose whitelisted fields are all the platform may see. */
++  models(): Promise<ModelCatalog>
++  /** Resolves a frozen model through the live provider; throws when it is unavailable. Never falls back. */
++  verifyModel(model: RoleModel): Promise<void>
++  /** Whether the workspace Source kind is installed and enabled. */
++  workspaceEnabled(): boolean
++  /** Subscribes to DSH session events for `task.progress`; returns its disposer. */
++  subscribeSessionEvents(listener: (sessionId: string, event: { type: string; data: unknown }) => void): () => void
++  /** Reports a projection or listener failure without taking the Bridge down. */
++  onError?(error: unknown): void
++}
++
++/** The Bridge's own environment: all three are read at startup and never written to disk. */
++export interface BridgeConfig { host: string; port: number; token: string }
++/**
++ * Reads `MOYU_BRIDGE_HOST`, `MOYU_BRIDGE_PORT`, and `MOYU_BRIDGE_TOKEN`.
++ * A missing token means the Bridge does not listen at all; a non-loopback host is refused, because the machine protocol
++ * must never be reachable beyond the host.
++ */
++export function bridgeConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig | undefined {
++  const token = env.MOYU_BRIDGE_TOKEN ?? ''
++  if (!token) return undefined
++  const host = env.MOYU_BRIDGE_HOST || DEFAULT_HOST
++  if (!LOOPBACK.has(host)) throw new Error(`MOYU_BRIDGE_HOST must be a loopback address, not ${host}`)
++  const port = env.MOYU_BRIDGE_PORT === undefined || env.MOYU_BRIDGE_PORT === '' ? DEFAULT_PORT : Number(env.MOYU_BRIDGE_PORT)
++  if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new Error(`MOYU_BRIDGE_PORT must be an integer port, not ${String(env.MOYU_BRIDGE_PORT)}`)
++  return { host, port, token }
++}
++
++/** The trigger request of `docs/M3-BRIDGE-PROTOCOL.md` §2; the shapes are the machine contract, so unknown keys are refused. */
++const ModelSchema = z.object({ provider: z.string().trim().min(1), model: z.string().trim().min(1), reasoningEffort: z.string().trim().min(1).optional() }).strict()
++const ExecutionSpecSchema = z.object({
++  repository: z.string().trim().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, 'owner/name'),
++  baseBranch: z.string().trim().regex(/^[A-Za-z0-9._/-]+$/, 'a branch name').default('main'),
++  baseCommit: z.string().trim().regex(/^[0-9a-fA-F]{7,64}$/, 'a commit sha').nullable().default(null),
++  model: ModelSchema,
++  // `discuss` is refused by the route (422), not by the schema, so the platform gets the protocol's own answer.
++  mode: z.enum(['execute', 'discuss']),
++}).strict()
++const TriggerRequestSchema = z.object({
++  triggerId: z.string().trim().min(1).max(200),
++  conversationId: z.string().trim().min(1).max(200),
++  messageId: z.string().trim().min(1).max(200),
++  replyToMessageId: z.string().trim().min(1).max(200).nullable().optional(),
++  actor: z.object({ id: z.string().trim().min(1).max(200), name: z.string().trim().max(200).optional() }).strict(),
++  text: z.string().max(64 * 1024),
++  at: z.string().trim().min(1).refine(value => Number.isFinite(Date.parse(value)), 'an ISO timestamp'),
++  // Not part of the platform body today; the Source keeps it so an assessment can read the replied-to message without a fetch.
++  parentText: z.string().max(64 * 1024).optional(),
++  executionSpec: ExecutionSpecSchema,
++}).strict()
++type TriggerRequest = z.infer<typeof TriggerRequestSchema>
++const CommitSchema = z.object({ sha: z.string().min(1) })
++
++/** Builds the stable workspace Trigger the Router delivers; the resolved `baseCommit` replaces the request's. */
++export function workspaceTrigger(request: TriggerRequest, baseCommit: string): Trigger {
++  const thread = `workspace:${request.conversationId}`
++  const channel: ChannelRef = { source: 'workspace', thread, address: { conversationId: request.conversationId, ...request.messageId ? { messageId: request.messageId } : {} } }
++  return {
++    id: request.triggerId,
++    source: 'workspace',
++    threads: [{ source: 'workspace', id: thread }],
++    actor: { source: 'workspace', id: request.actor.id },
++    human: true,
++    addressed: 'direct',
++    at: request.at,
++    text: request.text,
++    channel,
++    meta: {
++      conversationId: request.conversationId,
++      messageId: request.messageId,
++      replyToMessageId: request.replyToMessageId ?? null,
++      triggerId: request.triggerId,
++      spec: {
++        repository: request.executionSpec.repository,
++        baseBranch: request.executionSpec.baseBranch,
++        baseCommit,
++        model: request.executionSpec.model,
++        mode: request.executionSpec.mode,
++      },
++      ...request.parentText ? { parentText: request.parentText } : {},
++    },
++  }
++}
++
++const modelLabel = (model: RoleModel | undefined): string => model ? `${model.provider}/${model.model}` : ''
++const json = (res: ServerResponse, status: number, value: unknown): void => {
++  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
++  res.end(JSON.stringify(value))
++}
++/** A request the Bridge refuses before routing it, with the HTTP status to answer. */
++class RequestError extends Error { constructor(readonly status: number, message: string) { super(message) } }
++async function readJson(req: IncomingMessage, maxBytes = REQUEST_LIMIT): Promise<unknown> {
++  let size = 0
++  const chunks: Buffer[] = []
++  for await (const chunk of req) {
++    const bytes = Buffer.from(chunk)
++    size += bytes.length
++    if (size > maxBytes) throw new RequestError(400, `Request exceeds ${maxBytes} bytes`)
++    chunks.push(bytes)
++  }
++  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown }
++  catch { throw new RequestError(400, 'The request body is not JSON') }
++}
++
++/**
++ * Serves the machine protocol on a loopback port. The Runtime starts it after the Store, Engine, Sessions, and Commands
++ * exist, projects tickets every second, and stops it before the Store closes.
++ */
++export class Bridge {
++  private server?: Server
++  private timer?: ReturnType<typeof setInterval>
++  private unsubscribe?: () => void
++  private running = false
++  private port?: number
++  private readonly log: EventLog
++  constructor(private readonly host: BridgeHost) { this.log = new EventLog(join(host.stateDir, 'bridge', 'events.jsonl')) }
++
++  /** Whether the Bridge is listening (false when `MOYU_BRIDGE_TOKEN` is unset). */
++  get listening(): boolean { return this.server !== undefined }
++  /** The bound port while listening, which is how tests reach an ephemeral port. */
++  get boundPort(): number | undefined { return this.port }
++  /** The event log, exposed for tests and for a shutdown flush. */
++  get events(): EventLog { return this.log }
++  /** The token this Bridge demands, for tests; undefined while not listening. */
++  private token = ''
++
++  /** Opens the event log, subscribes to session progress, projects once, and listens. Without a token it does nothing. */
++  async start(env: NodeJS.ProcessEnv = process.env): Promise<void> {
++    if (this.running) return
++    const config = bridgeConfig(env)
++    if (!config) return
++    this.log.open()
++    try {
++      // An unreadable stored Ticket must not keep the machine endpoint down; the ticker reports the same failure later.
++      try { this.project() } catch (error) { this.host.onError?.(error) }
++      this.unsubscribe = this.host.subscribeSessionEvents((sessionId, event) => { this.sessionEvent(sessionId, event) })
++      this.timer = setInterval(() => {
++        try { this.project() } catch (error) { this.host.onError?.(error) }
++      }, TICK_MS)
++      this.timer.unref()
++      const server = this.server = createServer((req, res) => { void this.handle(req, res) })
++      await new Promise<void>((resolve, reject) => {
++        server.once('error', reject)
++        server.listen(config.port, config.host, () => { server.off('error', reject); resolve() })
++      })
++      const address = server.address()
++      this.port = address && typeof address !== 'string' ? address.port : config.port
++      this.token = config.token
++      this.running = true
++    } catch (error) {
++      // A failed start must leave nothing listening or open, so a later attempt (or the test) starts clean.
++      if (this.timer) clearInterval(this.timer)
++      this.timer = undefined
++      this.unsubscribe?.()
++      this.unsubscribe = undefined
++      this.server?.close()
++      this.server = undefined
++      this.log.close()
++      throw error
++    }
++  }
++
++  /** Stops the ticker and the session subscription, closes the server, and closes the event log. */
++  async stop(): Promise<void> {
++    this.running = false
++    if (this.timer) clearInterval(this.timer)
++    this.timer = undefined
++    this.unsubscribe?.()
++    this.unsubscribe = undefined
++    const server = this.server
++    this.server = undefined
++    this.port = undefined
++    if (server) {
++      await new Promise<void>(resolve => { server.close(() => { resolve() }); server.closeAllConnections() })
++    }
++    this.log.close()
++  }
++
++  /** Projects every stored Ticket to events; the ticker runs it once a second, and tests call it directly. */
++  project(): void {
++    const repository = this.host.configured() ? this.host.deployment.repository : ''
++    for (const ticket of this.host.store.tickets.list()) {
++      const origin = this.host.store.triggers.get(ticket.origin.triggerId)
++      const workspace = origin?.source === 'workspace' || ticket.channels.some(channel => channel.source === 'workspace')
++      if (!workspace) continue
++      const frozen = ticket as FrozenTicket
++      const state = projectTicketState(ticket)
++      if (!this.log.has(`ticket-linked:${ticket.id}`)) {
++        const meta = origin?.meta ?? {}
++        this.log.append(`ticket-linked:${ticket.id}`, 'ticket.linked', ticket.createdAt, {
++          triggerId: ticket.origin.triggerId, ticketId: ticket.id,
++          conversationId: typeof meta.conversationId === 'string' ? meta.conversationId : '',
++          messageId: typeof meta.messageId === 'string' ? meta.messageId : '',
++          state, title: ticket.title,
++          base: { branch: frozen.base?.branch ?? '', commit: frozen.base?.commit ?? '', model: modelLabel(frozen.model) },
++        })
++      }
++      for (const input of ticket.inputs) {
++        if (input.kind !== 'trigger') continue
++        const meta = this.host.store.triggers.get(input.triggerId)?.meta
++        const messageId = typeof meta?.messageId === 'string' ? meta.messageId : ''
++        if (input.deliveredAt) this.log.append(`message-delivered:${input.triggerId}:worker_inbox`, 'message.delivered', input.deliveredAt,
++          { triggerId: input.triggerId, messageId, stage: 'worker_inbox', at: input.deliveredAt })
++        if (input.readAt) this.log.append(`message-read:${input.triggerId}`, 'message.read', input.readAt,
++          { triggerId: input.triggerId, messageId, at: input.readAt })
++      }
++      if (ticket.attention) this.log.append(`ticket-question:${ticket.attention.id}`, 'ticket.question', ticket.updatedAt,
++        { ticketId: ticket.id, question: ticket.attention.question, attentionId: ticket.attention.id })
++      if (repository) for (const follow of ticket.follows ?? []) {
++        const match = /^github:(\d+)$/.exec(follow.thread)
++        if (!match) continue
++        const number = Number(match[1])
++        const url = `https://github.com/${repository}/pull/${number}`
++        this.log.append(`artifact:${ticket.id}:${url}`, 'artifact.created', ticket.updatedAt,
++          { ticketId: ticket.id, type: 'pull_request', url, number, at: ticket.updatedAt })
++      }
++      const previous = this.log.previousState(ticket.id)
++      if (previous !== undefined && previous !== state) {
++        this.log.append(`ticket-state:${ticket.id}:${ticket.updatedAt}:${state}`, 'ticket.state_changed', ticket.updatedAt,
++          { ticketId: ticket.id, previousState: previous, state, ...ticket.attention ? { question: ticket.attention.question } : {}, at: ticket.updatedAt })
++      }
++      if (ticket.ended) this.log.append(`ticket-ended:${ticket.id}`, 'ticket.ended', ticket.ended.at,
++        { ticketId: ticket.id, by: ticket.ended.by, outcome: ticket.ended.outcome, ...ticket.ended.reason ? { reason: ticket.ended.reason } : {} })
++    }
++  }
++
++  /** Turns one worker `assistant/message` into a `task.progress` event; streaming chunks never become events. */
++  sessionEvent(sessionId: string, event: { type: string; data: unknown }): void {
++    if (!this.running || event.type !== 'assistant/message') return
++    const ticketId = ticketOfSession(sessionId)
++    if (!ticketId || !this.host.store.tickets.get(ticketId)) return
++    const data = event.data as { message?: { id?: unknown; content?: unknown } } | undefined
++    const id = typeof data?.message?.id === 'string' ? data.message.id : undefined
++    if (!id || !Array.isArray(data?.message?.content)) return
++    const text = data.message.content.flatMap(block => {
++      if (!block || typeof block !== 'object') return []
++      const { type, text: value } = block as { type?: unknown; text?: unknown }
++      return type === 'text' && typeof value === 'string' ? [value] : []
++    }).join('\n').trim()
++    if (!text) return
++    const at = new Date().toISOString()
++    this.log.append(`progress:${sessionId}:${id}`, 'task.progress', at, { ticketId, text: text.slice(0, PROGRESS_CHARS), at, sessionId })
++  }
++
++  private authorized(req: IncomingMessage): boolean {
++    const header = req.headers.authorization ?? ''
++    const expected = `Bearer ${this.token}`
++    const given = Buffer.from(header), wanted = Buffer.from(expected)
++    return given.length === wanted.length && timingSafeEqual(given, wanted)
++  }
++
++  private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
++    try {
++      const url = new URL(req.url ?? '/', 'http://127.0.0.1')
++      // Readiness for tests and the instance supervisor; it reveals nothing beyond whether setup finished.
++      if (req.method === 'GET' && url.pathname === '/healthz') return json(res, 200, { ok: true, configured: this.host.configured() })
++      if (!this.authorized(req)) return json(res, 401, { error: 'Unauthorized' })
++      const segments = url.pathname.split('/').filter(segment => segment !== '')
++      if (segments[0] !== 'bridge' || segments[1] !== 'v1' || segments.length < 3) return json(res, 404, { error: 'Unknown operation' })
++      const [, , name, ...rest] = segments
++      if (name === 'capabilities' && req.method === 'GET' && rest.length === 0) return this.capabilities(res)
++      if (name === 'models' && req.method === 'GET' && rest.length === 0) return await this.models(res)
++      if (name === 'triggers' && req.method === 'POST' && rest.length === 0) return await this.triggers(req, res)
++      if (name === 'events' && req.method === 'GET' && rest.length === 0) return this.eventsRoute(url, res)
++      if (name === 'tickets' && rest.length === 1 && req.method === 'GET') return this.ticket(decodeURIComponent(rest[0]!), res)
++      if (name === 'tickets' && rest.length === 2 && ['pause', 'resume', 'retry'].includes(rest[1]!) && req.method === 'POST')
++        return json(res, 501, { error: `unsupported: ${rest[1]} is a phase 4 operation` })
++      return json(res, 404, { error: 'Unknown operation' })
++    } catch (error) {
++      if (error instanceof RequestError) return json(res, error.status, { error: error.message })
++      if (error instanceof z.ZodError) {
++        return json(res, 400, { error: 'Invalid request', issues: error.issues.map(issue => ({ path: issue.path.join('.'), message: issue.message })) })
++      }
++      return json(res, 500, { error: error instanceof Error ? error.message : String(error) })
++    }
++  }
++
++  private capabilities(res: ServerResponse): void {
++    json(res, 200, {
++      protocolVersion: PROTOCOL_VERSION,
++      upstream: { ...UPSTREAM },
++      capabilities: { trigger: true, events: true, tickets: true, models: true, pause: false, resume: false, retry: false, readOnlyDiscussion: false },
++      source: { kind: 'workspace', enabled: this.host.workspaceEnabled() },
++    })
++  }
++
++  private async models(res: ServerResponse): Promise<void> {
++    const catalog = await this.host.models()
++    json(res, 200, { models: catalog.groups.flatMap(group => group.models.map(model => ({ provider: group.id, model: model.id,
++      displayName: model.name, reasoningEfforts: model.reasoning?.efforts.map(effort => effort.id) ?? [] }))) })
++  }
++
++  private async triggers(req: IncomingMessage, res: ServerResponse): Promise<void> {
++    const request = TriggerRequestSchema.parse(await readJson(req))
++    if (!this.host.configured()) return json(res, 503, { error: 'The runtime is not ready' })
++    const deployment = this.host.deployment
++    if (request.executionSpec.repository !== deployment.repository) {
++      return json(res, 409, { error: `The instance serves ${deployment.repository}, not ${request.executionSpec.repository}` })
++    }
++    if (request.executionSpec.mode === 'discuss') return json(res, 422, { error: 'discuss mode is not supported in this phase' })
++    try { await this.host.verifyModel(request.executionSpec.model) }
++    catch (error) { return json(res, 422, { error: `The model is unavailable: ${error instanceof Error ? error.message : String(error)}` }) }
++    let baseCommit: string
++    try { baseCommit = await this.resolveCommit(request.executionSpec.baseBranch, request.executionSpec.baseCommit) }
++    catch (error) { return json(res, 422, { error: `Cannot resolve the base commit: ${error instanceof Error ? error.message : String(error)}` }) }
++    const trigger = workspaceTrigger(request, baseCommit)
++    let result: ReceiveResult
++    try { result = this.host.receive(trigger) }
++    catch (error) { return json(res, 503, { error: `The runtime did not accept the trigger: ${error instanceof Error ? error.message : String(error)}` }) }
++    // `duplicate` means the Store already had this Trigger id: return the ticket it produced, if any, and never create one here.
++    const ticketId = result === 'duplicate' ? this.ticketOfTrigger(request.triggerId) : null
++    json(res, 200, { result, triggerId: trigger.id, baseCommit, ticketId })
++  }
++
++  /** Verifies a supplied commit, or resolves the branch head when the platform froze none. */
++  private async resolveCommit(branch: string, commit: string | null): Promise<string> {
++    const resolved = await this.host.commands.api(CommitSchema, `commits/${commit ?? branch}`)
++    return resolved.sha
++  }
++
++  private ticketOfTrigger(triggerId: string): string | null {
++    return this.host.store.tickets.list().find(ticket => ticket.origin.triggerId === triggerId)?.id ?? null
++  }
++
++  private eventsRoute(url: URL, res: ServerResponse): void {
++    const after = z.coerce.number().int().nonnegative().catch(0).parse(url.searchParams.get('after') ?? '0')
++    const limit = Math.min(z.coerce.number().int().positive().catch(EVENTS_DEFAULT_LIMIT).parse(url.searchParams.get('limit') ?? ''), EVENTS_MAX_LIMIT)
++    json(res, 200, this.log.read(after, limit))
++  }
++
++  private ticket(id: string, res: ServerResponse): void {
++    const ticket = this.host.store.tickets.get(id)
++    if (!ticket) return json(res, 404, { error: 'Ticket not found' })
++    const frozen = ticket as FrozenTicket
++    const pr = this.pullRequest(ticket)
++    json(res, 200, {
++      ticketId: ticket.id,
++      title: ticket.title,
++      state: projectTicketState(ticket),
++      question: ticket.attention?.question ?? null,
++      attentionId: ticket.attention?.id ?? null,
++      model: frozen.model ?? null,
++      base: frozen.base ?? null,
++      assignmentId: latestAssignment(ticket)?.id ?? null,
++      report: latestReport(ticket) ?? null,
++      ...pr ? { pr } : {},
++      ended: ticket.ended ?? null,
++    })
++  }
++
++  /** The pull request a workspace ticket opened, from the GitHub Thread it follows. */
++  private pullRequest(ticket: Ticket): { number: number; url: string } | undefined {
++    if (!this.host.configured()) return undefined
++    for (const follow of ticket.follows ?? []) {
++      const match = /^github:(\d+)$/.exec(follow.thread)
++      if (match) return { number: Number(match[1]), url: `https://github.com/${this.host.deployment.repository}/pull/${match[1]}` }
++    }
++    return undefined
++  }
++}
+diff --git a/src/app/runtime.ts b/src/app/runtime.ts
+index a8cfe52..696ef07 100644
+--- a/src/app/runtime.ts
++++ b/src/app/runtime.ts
+@@ -30,6 +30,8 @@ import { TextCache } from './cache.ts'
+ import { Effects } from './effects.ts'
+ import { Prompts } from './prompts.ts'
+ import { registerHttp, type HttpHost } from './http.ts'
++import { Bridge } from './bridge.ts'
++import { resolveRoleModel } from './role-models.ts'
+ import type { LinkTarget } from './views/records.ts'
+ import { candidateCard, repliedTo, sourceLink, type LinkHost } from './links.ts'
+ import { eventNotice, followupNotice } from './notices.ts'
+@@ -70,6 +72,7 @@ export class Runtime extends Service implements SourceHost {
+   readonly outbox: Outbox
+   readonly engine: Engine
+   readonly passes: Passes
++  private readonly bridge: Bridge
+   readonly ready: Promise<void>
+   private readonly board = new HealthBoard()
+   private readonly runtimeHealth = this.board.claim('runtime', { state: 'starting', detail: '' })
+@@ -163,6 +166,21 @@ export class Runtime extends Service implements SourceHost {
+         get github() { return runtime.context({ kind: 'github', health: ['github'] }) },
+         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),
+         quietly: run => { this.quiet++; try { return run() } finally { this.quiet-- } } }
++      // The machine Bridge is created only after the Store, Engine, Sessions, and Commands exist, and listens from
++      // `initialize` (it answers 503 until setup resolves the deployment). It is not part of the public `orchestrator` service.
++      this.bridge = new Bridge({
++        stateDir: machine.stateDir, store, commands,
++        configured: () => setup.configured(),
++        get deployment() { return setup.deployment },
++        receive: trigger => passes.receive(trigger),
++        models: () => ctx.sessionController.modelCatalog(),
++        verifyModel: async model => { await resolveRoleModel(ctx, model) },
++        workspaceEnabled: () => this.sources.instance('workspace')?.enabled ?? false,
++        subscribeSessionEvents: listener => ctx.on('session/event', (session, event) => {
++          listener(session.id, { type: event.type, data: event.data })
++        }),
++        onError: error => { ctx.logger.warn('dsh-superagent bridge projection failed: %s', String(error)) },
++      })
+       this.ready = this.initialize()
+     } catch (error) {
+       // Release the database and state lock if initialization fails so an in-process restart can reacquire them.
+@@ -201,6 +219,11 @@ export class Runtime extends Service implements SourceHost {
+   private async initialize(): Promise<void> {
+     // Register management HTTP routes before setup completes so operators can fix setup problems in the UI.
+     this.disposers.push(registerHttp(this.ctx, this.httpHost()))
++    // Listen before setup completes: the platform can then see the machine endpoint and receives 503 from /triggers until
++    // the deployment is resolved. A bridge that cannot start (no token, a taken port) must not keep the runtime from running.
++    await this.bridge.start().catch((error: unknown) => {
++      this.ctx.logger.warn('dsh-superagent bridge did not start: %s', String(error))
++    })
+     if (!await this.setup.run(this.store.settings())) {
+       this.runtimeHealth.set({ ...health('paused', 'setupPending'), at: now() })
+       return
+@@ -230,6 +253,8 @@ export class Runtime extends Service implements SourceHost {
+   private async shutdown(): Promise<void> {
+     this.closingFlag = true; const passes = this.passes.stop(); this.stopped.abort()
+     try {
++      // Stop accepting machine requests and fsync the event log before the Store closes.
++      await this.bridge.stop()
+       this.assessor.stop()
+       const ids = [this.masterId, ...this.store.tickets.list().map(ticket => workerSessionId(ticket.id))]
+       const agents = ids.map(id => this.ctx.agents.get(id as SessionId)).filter((agent): agent is Agent => agent !== undefined)
+diff --git a/tests/bridge.spec.ts b/tests/bridge.spec.ts
+new file mode 100644
+index 0000000..c78f886
+--- /dev/null
++++ b/tests/bridge.spec.ts
+@@ -0,0 +1,354 @@
++import { afterEach, describe, expect, it, vi } from 'vitest'
++import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import { MemoryRepositories, type Ticket, type Trigger } from '../src/core/index.ts'
++import { Bridge, bridgeConfig, EventLog, projectTicketState, workspaceTrigger, type BridgeHost } from '../src/app/bridge.ts'
++import { testDeployment } from './fixtures/deployment.ts'
++
++const stateDirs: string[] = []
++const bridges: Bridge[] = []
++afterEach(async () => {
++  await Promise.all(bridges.splice(0).map(bridge => bridge.stop()))
++  for (const dir of stateDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
++})
++const stateDir = (): string => {
++  const dir = mkdtempSync(join(tmpdir(), 'bridge-'))
++  stateDirs.push(dir)
++  return dir
++}
++
++/** A Trigger as the platform delivers it. */
++const trigger = (id = 'workspace:m1', meta: Record<string, unknown> = {}): Trigger => ({
++  id, source: 'workspace', threads: [{ source: 'workspace', id: 'workspace:c1' }], actor: { source: 'workspace', id: 'owner' },
++  human: true, addressed: 'direct', at: '2026-11-03T12:00:00.000Z', text: 'Fix the margin',
++  channel: { source: 'workspace', thread: 'workspace:c1', address: { conversationId: 'c1' } },
++  meta: { conversationId: 'c1', messageId: 'm1', replyToMessageId: null, triggerId: id, spec: {}, ...meta },
++})
++
++/** A ticket that the workspace Source started. */
++const ticket = (id: string, overrides: Partial<Ticket> = {}): Ticket => ({
++  id, title: `Fix ${id}`, decisionId: 'd1',
++  mandate: { strength: 'explicit', policyVersion: 'v1', basis: { via: 'listed' }, actor: { source: 'workspace', id: 'owner' }, scope: 'web' },
++  channels: [{ source: 'workspace', thread: 'workspace:c1', address: { conversationId: 'c1' } }],
++  assignments: [], inputs: [], undelivered: [], createdAt: '2026-11-03T12:00:00.000Z', updatedAt: '2026-11-03T12:00:00.000Z',
++  origin: { triggerId: 'workspace:m1', triggerIds: ['workspace:m1'] }, ...overrides,
++})
++/** Adds the frozen fields this Bridge projects from `meta.spec` (patch 0003 owns them on the domain model). */
++const frozen = (value: Ticket): Ticket => ({ ...value,
++  model: { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash', reasoningEffort: 'high' },
++  base: { repository: 'acme/widgets', branch: 'main', commit: 'abc123' } } as Ticket)
++
++interface Harness {
++  host: BridgeHost
++  repo: MemoryRepositories
++  received: Trigger[]
++  commands: { api: ReturnType<typeof vi.fn> }
++}
++function harness(overrides: Partial<BridgeHost> = {}): Harness {
++  const repo = new MemoryRepositories()
++  const received: Trigger[] = []
++  const commands = { api: vi.fn(async (_schema: unknown, path: string) => ({ sha: path === 'commits/main' ? 'branch-sha' : 'commit-sha' })) }
++  const host: BridgeHost = {
++    stateDir: stateDir(), store: repo, commands: commands as never,
++    configured: () => true, deployment: testDeployment(),
++    // Mirrors the Engine's intake contract: a stored Trigger id is a duplicate, never a second write.
++    receive: trigger => { received.push(trigger); const seen = repo.triggers.get(trigger.id) !== undefined; repo.triggers.save(trigger); return seen ? 'duplicate' : 'stored' },
++    models: async () => ({ default: { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash' }, routableProviders: ['commandcode'],
++      groups: [{ id: 'commandcode', name: 'Command Code', models: [{ id: 'deepseek/deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash',
++        reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }] } }] }], failures: [] }),
++    verifyModel: async () => {},
++    workspaceEnabled: () => true,
++    subscribeSessionEvents: () => () => {},
++    ...overrides,
++  }
++  return { host, repo, received, commands }
++}
++
++let token = 'bridge-token'
++/** Starts a Bridge on an ephemeral loopback port and returns a request helper with the machine bearer. */
++async function serve(h: Harness, env: NodeJS.ProcessEnv = {}) {
++  const bridge = new Bridge(h.host)
++  bridges.push(bridge)
++  await bridge.start({ MOYU_BRIDGE_HOST: '127.0.0.1', MOYU_BRIDGE_PORT: '0', MOYU_BRIDGE_TOKEN: token, ...env })
++  const origin = `http://127.0.0.1:${bridge.boundPort}`
++  const call = async (method: string, path: string, body?: unknown, headers: Record<string, string> = { authorization: `Bearer ${token}` }) => {
++    const response = await fetch(`${origin}${path}`, { method, headers: { 'content-type': 'application/json', ...headers },
++      ...body === undefined ? {} : { body: JSON.stringify(body) } })
++    return { status: response.status, body: await response.json() as Record<string, unknown> }
++  }
++  return { bridge, call, origin }
++}
++
++describe('the machine Bridge boundary', () => {
++  it('does not listen without MOYU_BRIDGE_TOKEN and refuses a non-loopback host', async () => {
++    const bridge = new Bridge(harness().host)
++    await bridge.start({ MOYU_BRIDGE_HOST: '127.0.0.1', MOYU_BRIDGE_PORT: '0' })
++    expect(bridge.listening).toBe(false)
++    expect(bridge.boundPort).toBeUndefined()
++    expect(bridgeConfig({})).toBeUndefined()
++    expect(() => bridgeConfig({ MOYU_BRIDGE_TOKEN: 't', MOYU_BRIDGE_HOST: '0.0.0.0' })).toThrow(/loopback/)
++    expect(() => bridgeConfig({ MOYU_BRIDGE_TOKEN: 't', MOYU_BRIDGE_PORT: 'nope' })).toThrow(/integer port/)
++  })
++
++  it('authenticates the machine bearer in constant time and leaves /healthz open', async () => {
++    const { call, bridge } = await serve(harness())
++    expect(bridge.listening).toBe(true)
++    expect(await call('GET', '/healthz', undefined, {})).toEqual({ status: 200, body: { ok: true, configured: true } })
++    expect(await call('GET', '/bridge/v1/capabilities', undefined, {})).toMatchObject({ status: 401 })
++    expect(await call('GET', '/bridge/v1/capabilities', undefined, { authorization: 'Bearer wrong' })).toMatchObject({ status: 401 })
++    const capabilities = await call('GET', '/bridge/v1/capabilities')
++    expect(capabilities).toMatchObject({ status: 200, body: { protocolVersion: 'moyu-bridge/1',
++      upstream: { package: 'dsh-superagent', version: '0.1.0', commit: '6337fc823ce20251c8de8085948165c81aaa701e' },
++      capabilities: { trigger: true, events: true, tickets: true, models: true, pause: false, resume: false, retry: false, readOnlyDiscussion: false },
++      source: { kind: 'workspace', enabled: true } } })
++  })
++
++  it('lists the model catalog without provider secrets', async () => {
++    const { call } = await serve(harness())
++    expect(await call('GET', '/bridge/v1/models')).toEqual({ status: 200, body: { models: [{ provider: 'commandcode',
++      model: 'deepseek/deepseek-v4.1-flash', displayName: 'DeepSeek V4.1 Flash', reasoningEfforts: ['low', 'high'] }] } })
++  })
++
++  it('answers 501 for pause, resume, and retry', async () => {
++    const { call } = await serve(harness())
++    for (const operation of ['pause', 'resume', 'retry']) {
++      expect(await call('POST', `/bridge/v1/tickets/t1/${operation}`)).toMatchObject({ status: 501 })
++    }
++    expect(await call('GET', '/bridge/v1/tickets/missing')).toMatchObject({ status: 404 })
++  })
++})
++
++describe('POST /bridge/v1/triggers', () => {
++  const body = (overrides: Record<string, unknown> = {}) => ({
++    triggerId: 'workspace:m1', conversationId: 'c1', messageId: 'm1', replyToMessageId: null,
++    actor: { id: 'owner', name: 'MoYu Owner' }, text: 'Fix the margin', at: '2026-11-03T12:00:00.000Z',
++    executionSpec: { repository: 'acme/widgets', baseBranch: 'main', baseCommit: null,
++      model: { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash', reasoningEffort: 'high' }, mode: 'execute' }, ...overrides,
++  })
++
++  it('freezes the spec, resolves the base commit, and hands the Engine a stable Trigger', async () => {
++    const h = harness()
++    const { call } = await serve(h)
++    expect(await call('POST', '/bridge/v1/triggers', body())).toEqual({ status: 200,
++      body: { result: 'stored', triggerId: 'workspace:m1', baseCommit: 'branch-sha', ticketId: null } })
++    expect(h.commands.api).toHaveBeenCalledWith(expect.anything(), 'commits/main')
++    const received = h.received[0]!
++    expect(received).toMatchObject({ id: 'workspace:m1', source: 'workspace', threads: [{ source: 'workspace', id: 'workspace:c1' }],
++      actor: { source: 'workspace', id: 'owner' }, human: true, addressed: 'direct', at: '2026-11-03T12:00:00.000Z', text: 'Fix the margin',
++      channel: { source: 'workspace', thread: 'workspace:c1', address: { conversationId: 'c1', messageId: 'm1' } } })
++    expect(received.meta).toMatchObject({ conversationId: 'c1', messageId: 'm1', replyToMessageId: null, triggerId: 'workspace:m1',
++      spec: { repository: 'acme/widgets', baseBranch: 'main', baseCommit: 'branch-sha', mode: 'execute',
++        model: { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash', reasoningEffort: 'high' } } })
++  })
++
++  it('verifies a supplied baseCommit instead of resolving the branch', async () => {
++    const h = harness()
++    const { call } = await serve(h)
++    const response = await call('POST', '/bridge/v1/triggers', body({ executionSpec: { ...body().executionSpec as object,
++      baseCommit: 'deadbeefdeadbeef' } }))
++    expect(response).toMatchObject({ status: 200, body: { baseCommit: 'commit-sha' } })
++    expect(h.commands.api).toHaveBeenCalledWith(expect.anything(), 'commits/deadbeefdeadbeef')
++  })
++
++  it('returns the existing ticket of a duplicate instead of creating one', async () => {
++    const h = harness()
++    h.repo.triggers.save(trigger())
++    h.repo.tickets.save(ticket('t1'))
++    const { call } = await serve(h)
++    expect(await call('POST', '/bridge/v1/triggers', body())).toMatchObject({ status: 200, body: { result: 'duplicate', ticketId: 't1' } })
++  })
++
++  it('reports filtered without a ticket', async () => {
++    const h = harness()
++    h.host.receive = trigger => { h.received.push(trigger); return 'filtered' }
++    const { call } = await serve(h)
++    expect(await call('POST', '/bridge/v1/triggers', body())).toMatchObject({ status: 200, body: { result: 'filtered', ticketId: null } })
++  })
++
++  it('refuses a repository mismatch, discuss mode, an unavailable model, a bad commit, and a pending runtime', async () => {
++    const h = harness()
++    const { call } = await serve(h)
++    expect(await call('POST', '/bridge/v1/triggers', body({ executionSpec: { ...body().executionSpec as object, repository: 'acme/other' } })))
++      .toMatchObject({ status: 409 })
++    expect(await call('POST', '/bridge/v1/triggers', body({ executionSpec: { ...body().executionSpec as object, mode: 'discuss' } })))
++      .toMatchObject({ status: 422 })
++    h.host.verifyModel = async () => { throw new Error('no such route') }
++    expect(await call('POST', '/bridge/v1/triggers', body())).toMatchObject({ status: 422, body: { error: expect.stringContaining('unavailable') } })
++    h.host.verifyModel = async () => {}
++    h.commands.api.mockRejectedValueOnce(new Error('Not Found'))
++    expect(await call('POST', '/bridge/v1/triggers', body({ triggerId: 'workspace:m2' }))).toMatchObject({ status: 422 })
++    h.host.configured = () => false
++    expect(await call('POST', '/bridge/v1/triggers', body())).toMatchObject({ status: 503 })
++    expect(await call('POST', '/bridge/v1/triggers', { nope: true })).toMatchObject({ status: 400 })
++    expect(h.received).toHaveLength(0)
++  })
++})
++
++describe('the event log and its projection', () => {
++  it('keeps deterministic ids and a monotonic sequence across a restart', () => {
++    const file = join(stateDir(), 'bridge', 'events.jsonl')
++    const first = new EventLog(file)
++    first.open()
++    expect(first.append('ticket-linked:t1', 'ticket.linked', 'at1', { ticketId: 't1', state: 'queued' })?.seq).toBe(1)
++    expect(first.append('ticket-state:t1:at2:running', 'ticket.state_changed', 'at2', { ticketId: 't1', state: 'running' })).toBeDefined()
++    expect(first.append('ticket-linked:t1', 'ticket.linked', 'at1', { ticketId: 't1', state: 'queued' })).toBeUndefined()
++    expect(first.previousState('t1')).toBe('running')
++    first.close()
++    expect(readFileSync(file, 'utf8').trim().split('\n')).toHaveLength(2)
++
++    const second = new EventLog(file)
++    second.open()
++    expect(second.lastSeq).toBe(2)
++    expect(second.has('ticket-linked:t1')).toBe(true)
++    expect(second.append('ticket-linked:t1', 'ticket.linked', 'at1', { ticketId: 't1', state: 'queued' })).toBeUndefined()
++    expect(second.append('message-read:workspace:m1', 'message.read', 'at3', { triggerId: 'workspace:m1' })?.seq).toBe(3)
++    expect(second.read(0, 100)).toMatchObject({ next: 3, hasMore: false })
++    second.close()
++  })
++
++  it('projects linked, read, delivered, question, state, artifact, and ended events exactly once', async () => {
++    const h = harness()
++    const origin = trigger()
++    h.repo.triggers.save(origin)
++    const inputs: Ticket['inputs'] = [{ id: 'i1', kind: 'trigger', triggerId: 'workspace:m1', at: '2026-11-03T12:00:01.000Z',
++      deliveredAt: '2026-11-03T12:00:02.000Z', readAt: '2026-11-03T12:00:03.000Z' }]
++    h.repo.tickets.save(frozen(ticket('t1', { inputs, follows: [{ thread: 'github:7', own: true }] })))
++    const { bridge, call } = await serve(h)
++    // The first tick links the ticket as queued; the second sees the worker's question and reports both the question and the change.
++    bridge.project()
++    h.repo.tickets.save(frozen(ticket('t1', { inputs, follows: [{ thread: 'github:7', own: true }], updatedAt: '2026-11-03T12:05:00.000Z',
++      attention: { id: 'a1', question: 'Which margin?' } })))
++    bridge.project()
++    bridge.project()
++    const events = (await call('GET', '/bridge/v1/events?after=0&limit=200')).body.events as { id: string; type: string; data: Record<string, unknown> }[]
++    expect(events.map(event => event.id)).toEqual([
++      'ticket-linked:t1', 'message-delivered:workspace:m1:worker_inbox', 'message-read:workspace:m1',
++      'artifact:t1:https://github.com/acme/widgets/pull/7', 'ticket-question:a1', 'ticket-state:t1:2026-11-03T12:05:00.000Z:waiting_input',
++    ])
++    expect(events[0]!.data).toMatchObject({ triggerId: 'workspace:m1', ticketId: 't1', conversationId: 'c1', messageId: 'm1',
++      state: 'queued', title: 'Fix t1', base: { branch: 'main', commit: 'abc123', model: 'commandcode/deepseek/deepseek-v4.1-flash' } })
++    expect(events[5]!.data).toMatchObject({ ticketId: 't1', previousState: 'queued', state: 'waiting_input', question: 'Which margin?' })
++  })
++
++  it('appends nothing twice when the Bridge restarts on the same state directory', async () => {
++    const dir = stateDir()
++    const first = harness({ stateDir: dir })
++    first.repo.triggers.save(trigger())
++    first.repo.tickets.save(ticket('t1'))
++    const before = await serve(first)
++    before.bridge.project()
++    expect((await before.call('GET', '/bridge/v1/events')).body.events).toHaveLength(1)
++    await before.bridge.stop()
++
++    // A new process: same state directory and event log, an empty in-memory projection, the same stored Ticket.
++    const second = harness({ stateDir: dir })
++    second.repo.triggers.save(trigger())
++    second.repo.tickets.save(ticket('t1'))
++    const after = await serve(second)
++    after.bridge.project()
++    after.bridge.project()
++    expect((await after.call('GET', '/bridge/v1/events')).body.events).toHaveLength(1)
++
++    // Only a real state change after the restart appends, and it continues the sequence from disk.
++    second.repo.tickets.save(ticket('t1', { updatedAt: '2026-11-03T12:10:00.000Z', attention: { id: 'a1', question: 'Which margin?' } }))
++    after.bridge.project()
++    const events = (await after.call('GET', '/bridge/v1/events?after=1')).body.events as { seq: number; type: string; data: Record<string, unknown> }[]
++    expect(events).toHaveLength(2)
++    expect(events[0]).toMatchObject({ seq: 2, type: 'ticket.question', data: { ticketId: 't1', attentionId: 'a1' } })
++    expect(events[1]).toMatchObject({ seq: 3, type: 'ticket.state_changed', data: { previousState: 'queued', state: 'waiting_input' } })
++  })
++
++  it('pages events with a cursor and clamps the limit', async () => {
++    const h = harness()
++    h.repo.triggers.save(trigger())
++    h.repo.tickets.save(ticket('t1'))
++    const { bridge, call } = await serve(h)
++    bridge.project()
++    expect(await call('GET', '/bridge/v1/events?limit=500')).toMatchObject({ status: 200, body: { next: 1, hasMore: false } })
++    expect(await call('GET', '/bridge/v1/events?after=1')).toMatchObject({ status: 200, body: { events: [], next: 1, hasMore: false } })
++    expect(await call('GET', '/bridge/v1/events?after=0&limit=1')).toMatchObject({ status: 200,
++      body: { next: 1, hasMore: false, events: [{ seq: 1, type: 'ticket.linked' }] } })
++  })
++})
++
++describe('task.progress from worker session events', () => {
++  it('takes assistant text (no reasoning), truncates to 4000 characters, and ignores chunks', async () => {
++    const h = harness()
++    h.repo.triggers.save(trigger())
++    h.repo.tickets.save(ticket('t1'))
++    const listeners: ((sessionId: string, event: { type: string; data: unknown }) => void)[] = []
++    h.host.subscribeSessionEvents = listener => { listeners.push(listener); return () => {} }
++    const { bridge, call } = await serve(h)
++    const content = [{ type: 'reasoning', text: 'internal reasoning' }, { type: 'text', text: 'Working on it' }]
++    for (const listener of listeners) {
++      listener('worker-t1', { type: 'assistant/message', data: { message: { id: 'msg1', content } } })
++      listener('worker-t1', { type: 'assistant/message', data: { message: { id: 'msg1', content } } })
++      listener('worker-t1', { type: 'assistant/delta', data: { text: 'chunk' } })
++      listener('worker-missing', { type: 'assistant/message', data: { message: { id: 'msg2', content } } })
++      listener('main-session', { type: 'assistant/message', data: { message: { id: 'msg3', content } } })
++    }
++    const events = (await call('GET', '/bridge/v1/events?after=0')).body.events as { id: string; type: string; data: Record<string, unknown> }[]
++    const progress = events.filter(event => event.type === 'task.progress')
++    expect(progress).toHaveLength(1)
++    expect(progress[0]).toMatchObject({ id: 'progress:worker-t1:msg1', data: { ticketId: 't1', sessionId: 'worker-t1', text: 'Working on it' } })
++    const long = 'x'.repeat(5000)
++    for (const listener of listeners) listener('worker-t1', { type: 'assistant/message', data: { message: { id: 'msg4', content: [{ type: 'text', text: long }] } } })
++    const again = (await call('GET', '/bridge/v1/events?after=2')).body.events as { type: string; data: Record<string, unknown> }[]
++    expect(again.at(-1)).toMatchObject({ type: 'task.progress', data: { text: 'x'.repeat(4000) } })
++  })
++})
++
++describe('GET /bridge/v1/tickets/:id', () => {
++  it('returns the authoritative snapshot', async () => {
++    const h = harness()
++    h.repo.triggers.save(trigger())
++    h.repo.tickets.save(frozen(ticket('t1', {
++      assignments: [{ id: 'as1', state: 'running', createdAt: '2026-11-03T12:00:00.000Z', report: { state: 'progress', summary: 'working', at: '2026-11-03T12:00:04.000Z' } }],
++      follows: [{ thread: 'github:7', own: true }],
++    })))
++    const { call } = await serve(h)
++    expect(await call('GET', '/bridge/v1/tickets/t1')).toEqual({ status: 200, body: {
++      ticketId: 't1', title: 'Fix t1', state: 'running', question: null, attentionId: null,
++      model: { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash', reasoningEffort: 'high' },
++      base: { repository: 'acme/widgets', branch: 'main', commit: 'abc123' },
++      assignmentId: 'as1', report: { state: 'progress', summary: 'working', at: '2026-11-03T12:00:04.000Z' },
++      pr: { number: 7, url: 'https://github.com/acme/widgets/pull/7' }, ended: null,
++    } })
++  })
++})
++
++describe('state projection', () => {
++  const state = (value: Ticket) => projectTicketState(value)
++  it('maps every upstream situation to the platform task_state', () => {
++    expect(state(ticket('a'))).toBe('queued')
++    expect(state(ticket('b', { assignments: [{ id: 'x', state: 'running', createdAt: '' }] }))).toBe('running')
++    expect(state(ticket('c', { assignments: [{ id: 'x', state: 'pending', createdAt: '' }] }))).toBe('queued')
++    expect(state(ticket('d', { assignments: [{ id: 'x', state: 'running', createdAt: '', report: { state: 'blocked', summary: 'q', at: 't' } }], attention: { id: 'a', question: 'q' } }))).toBe('waiting_input')
++    expect(state(ticket('e', { assignments: [{ id: 'x', state: 'running', createdAt: '', report: { state: 'blocked', summary: 'q', at: '2026-11-03T13:00:00.000Z' } }] }))).toBe('blocked')
++    expect(state(ticket('f', { assignments: [{ id: 'x', state: 'running', createdAt: '', report: { state: 'failed', summary: 'q', at: '2026-11-03T13:00:00.000Z' } }] }))).toBe('failed')
++    expect(state(ticket('g', { assignments: [{ id: 'x', state: 'ended', createdAt: '', report: { state: 'ready', summary: 'done', at: 't' } }] }))).toBe('awaiting_review')
++    expect(state(ticket('h', { assignments: [{ id: 'x', state: 'running', createdAt: '', report: { state: 'progress', summary: 'p', at: 't' } }] }))).toBe('running')
++    for (const [outcome, expected] of [['merged', 'completed'], ['completed', 'completed'], ['dropped', 'completed'],
++      ['closed', 'closed_unmerged'], ['stopped', 'stopped']] as const) {
++      expect(state(ticket('ended', { ended: { at: 't', by: 'executor', outcome } }))).toBe(expected)
++    }
++    // A person wrote again after a blocked report: the worker's next turn is queued, not blocked.
++    expect(state(ticket('i', { assignments: [{ id: 'x', state: 'ended', createdAt: '', report: { state: 'blocked', summary: 'q', at: '2026-11-03T13:00:00.000Z' } }],
++      inputs: [{ id: 'in', kind: 'trigger', triggerId: 'workspace:m2', at: '2026-11-03T14:00:00.000Z', human: true }] }))).toBe('queued')
++  })
++})
++
++describe('workspaceTrigger', () => {
++  it('builds the stable Trigger from the request and the resolved commit', () => {
++    const built = workspaceTrigger({ triggerId: 'workspace:m9', conversationId: 'c9', messageId: 'm9', replyToMessageId: 'm8',
++      actor: { id: 'owner', name: 'MoYu Owner' }, text: 'hello', at: '2026-11-03T12:00:00.000Z', parentText: 'earlier',
++      executionSpec: { repository: 'acme/widgets', baseBranch: 'main', baseCommit: null,
++        model: { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash' }, mode: 'execute' } }, 'sha9')
++    expect(built).toMatchObject({ id: 'workspace:m9', threads: [{ source: 'workspace', id: 'workspace:c9' }],
++      actor: { source: 'workspace', id: 'owner' }, human: true, addressed: 'direct',
++      channel: { source: 'workspace', thread: 'workspace:c9', address: { conversationId: 'c9', messageId: 'm9' } },
++      meta: { conversationId: 'c9', messageId: 'm9', replyToMessageId: 'm8', triggerId: 'workspace:m9', parentText: 'earlier',
++        spec: { repository: 'acme/widgets', baseBranch: 'main', baseCommit: 'sha9', mode: 'execute' } } })
++  })
++})

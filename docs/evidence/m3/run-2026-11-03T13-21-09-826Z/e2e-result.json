@@ -1,0 +1,106 @@
+{
+  "ok": true,
+  "checks": [
+    {
+      "name": "private test repository is bound through the Bridge config",
+      "ok": true,
+      "repository": "Bouyer12/m3-loop-final-68fa5d90"
+    },
+    {
+      "name": "web created a conversation with a pending task",
+      "ok": true,
+      "conversationId": "fd749c36-aa65-474f-86bd-1021886fb7e1"
+    },
+    {
+      "name": "superagent accepted the task and linked its Ticket",
+      "ok": true
+    },
+    {
+      "name": "worker question reached the web conversation",
+      "ok": true,
+      "question": "README.md 第 5 行的 “teh” 要改成 “the” 还是 “this”？"
+    },
+    {
+      "name": "worker delivered a pull request",
+      "ok": true,
+      "prUrl": "https://github.com/Bouyer12/m3-loop-final-68fa5d90/pull/1",
+      "prNumber": 1,
+      "state": "awaiting_review"
+    },
+    {
+      "name": "pull request exists in the private test repository",
+      "ok": true,
+      "stdout": "{\"baseRefName\":\"main\",\"headRefName\":\"agent/fix-readme-typo-95faa6d62098\",\"mergedAt\":null,\"state\":\"OPEN\",\"url\":\"https://github.com/Bouyer12/m3-loop-final-68fa5d90/pull/1\"}\n",
+      "stderr": ""
+    },
+    {
+      "name": "all concurrent retries of one clientMessageId returned a result",
+      "ok": true,
+      "okCount": 5
+    },
+    {
+      "name": "same clientMessageId produced exactly one message",
+      "ok": true,
+      "duplicateId": "e2e-duplicate-6938db9b-167d-407e-bc01-ccbcf45685f8"
+    },
+    {
+      "name": "duplicate retries produced exactly one upstream Trigger",
+      "ok": true,
+      "triggerId": "workspace:cda8a22a-951e-462e-bd94-2324fbe7a517"
+    },
+    {
+      "name": "duplicate retries did not create another Ticket",
+      "ok": true
+    },
+    {
+      "name": "SSE replay delivered the durable event history",
+      "ok": true,
+      "eventCount": 19
+    },
+    {
+      "name": "SSE reconnect filled the gap without duplicates",
+      "ok": true,
+      "lastId": "19",
+      "replayIds": [
+        20,
+        21
+      ]
+    },
+    {
+      "name": "redelivery after a lost receipt stayed deduplicated upstream",
+      "ok": true,
+      "triggerId": "workspace:cda8a22a-951e-462e-bd94-2324fbe7a517"
+    },
+    {
+      "name": "redelivery did not create another Ticket",
+      "ok": true
+    },
+    {
+      "name": "API accepted the message before restart",
+      "ok": true
+    },
+    {
+      "name": "API restart kept the accepted message and its pending delivery",
+      "ok": true,
+      "messageCount": 1
+    },
+    {
+      "name": "API restart delivered the message once",
+      "ok": true,
+      "triggerCount": 1
+    },
+    {
+      "name": "Bridge outage left the delivery pending instead of losing it",
+      "ok": true,
+      "state": "stored"
+    },
+    {
+      "name": "Bridge restart delivered the message once",
+      "ok": true,
+      "trigger": "workspace:abc60872-cb2c-4055-aedb-7fce27b204e9"
+    }
+  ],
+  "conversationId": "fd749c36-aa65-474f-86bd-1021886fb7e1",
+  "repository": "Bouyer12/m3-loop-final-68fa5d90",
+  "runAt": "2026-11-03T13-21-09-826Z"
+}

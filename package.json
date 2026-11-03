@@ -21,7 +21,7 @@
     "format:check": "prettier --check \"**/*.{ts,tsx,mjs,cjs,json,yml,yaml,css,html}\"",
     "lint": "eslint .",
     "test": "pnpm -r --if-present test",
-    "test:integration": "pnpm --filter @moyu/db test:integration && pnpm --filter @moyu/api test:integration",
+    "test:integration": "pnpm --filter @moyu/db test:integration && pnpm --filter @moyu/api test:integration && pnpm --filter @moyu/dispatcher test:integration",
     "test:e2e": "node scripts/e2e.mjs",
     "typecheck": "pnpm -r --if-present typecheck",
     "auth:bootstrap": "pnpm --filter @moyu/api auth:bootstrap"

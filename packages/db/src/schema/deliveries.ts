@@ -2,6 +2,7 @@ import {
   check,
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -29,6 +30,17 @@ export const deliveries = pgTable(
     nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).notNull().defaultNow(),
     leaseOwner: text('lease_owner'),
     leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
+    /** The stable runtime Trigger id used for the delivery; retries reuse it. */
+    upstreamTriggerId: text('upstream_trigger_id'),
+    /** When the runtime recorded the Trigger (executor received it). Never set by an HTTP 202 alone. */
+    deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+    /** When the runtime handed the message to the worker Session inbox. */
+    handedToWorkerAt: timestamp('handed_to_worker_at', { withTimezone: true }),
+    /** When the worker Session history proved the model could read the message. */
+    readAt: timestamp('read_at', { withTimezone: true }),
+    lastAttemptAt: timestamp('last_attempt_at', { withTimezone: true }),
+    /** Runtime response evidence kept for audit (result, ticketId, http status). */
+    evidence: jsonb('evidence').$type<Record<string, unknown>>().notNull().default({}),
     lastError: text('last_error'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

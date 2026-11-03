@@ -4,8 +4,13 @@ import {
   authStateDataSchema,
   bootstrapExchangeDataSchema,
   ceremonyOptionsSchema,
+  conversationDetailDataSchema,
+  conversationListDataSchema,
+  createMessageDataSchema,
   credentialListDataSchema,
   loginVerifyDataSchema,
+  messageListDataSchema,
+  modelListDataSchema,
   registrationVerifyDataSchema,
   repositoryListDataSchema,
   revokeSessionDataSchema,
@@ -14,6 +19,13 @@ import {
   type AuthStateData,
   type BootstrapExchangeData,
   type CeremonyOptions,
+  type ConversationDetailData,
+  type ConversationListData,
+  type CreateConversationInput,
+  type CreateMessageData,
+  type CreateMessageInput,
+  type MessageListData,
+  type ModelListData,
   type PasskeyCredentialSummary,
   type RepositorySummary,
   type SessionSummary,
@@ -153,5 +165,51 @@ export const api = {
   },
   repositories(): Promise<{ repositories: RepositorySummary[] }> {
     return request('/api/v1/repositories', repositoryListDataSchema);
+  },
+  conversations(repositoryId: string, limit = 50): Promise<ConversationListData> {
+    return request(
+      `/api/v1/conversations?repositoryId=${encodeURIComponent(repositoryId)}&limit=${limit}`,
+      conversationListDataSchema,
+    );
+  },
+  createConversation(input: CreateConversationInput): Promise<ConversationDetailData> {
+    return request('/api/v1/conversations', conversationDetailDataSchema, {
+      method: 'POST',
+      body: input,
+    });
+  },
+  conversation(id: string): Promise<ConversationDetailData> {
+    return request(`/api/v1/conversations/${encodeURIComponent(id)}`, conversationDetailDataSchema);
+  },
+  messages(
+    id: string,
+    options: { before?: string; limit?: number } = {},
+  ): Promise<MessageListData> {
+    const query = new URLSearchParams();
+    if (options.before) {
+      query.set('before', options.before);
+    }
+    if (options.limit) {
+      query.set('limit', String(options.limit));
+    }
+    const queryString = query.toString();
+    const suffix = queryString.length > 0 ? `?${queryString}` : '';
+    return request(
+      `/api/v1/conversations/${encodeURIComponent(id)}/messages${suffix}`,
+      messageListDataSchema,
+    );
+  },
+  sendMessage(id: string, input: CreateMessageInput): Promise<CreateMessageData> {
+    return request(
+      `/api/v1/conversations/${encodeURIComponent(id)}/messages`,
+      createMessageDataSchema,
+      { method: 'POST', body: input },
+    );
+  },
+  models(repositoryId: string): Promise<ModelListData> {
+    return request(
+      `/api/v1/repositories/${encodeURIComponent(repositoryId)}/models`,
+      modelListDataSchema,
+    );
   },
 };
