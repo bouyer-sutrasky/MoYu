@@ -147,6 +147,7 @@ env DSH_HOME=/root/.dsh-m0 dsh plugin --profile m0a \
 - B 启动前已存在的评论没有被补收；这符合“新实例从首次轮询开始”的行为。A 停机期间产生的评论在重启后被补收，证明持久化 `github-since` 游标和稳定 Trigger ID 能在重启后补收且不重复。
 - 实例轮询后，账号级 `gh api notifications` 仍有 3 条未读（两个测试仓库 + `sutrasky/MoYu`）；实例没有把通知标为已读。两个实例的 `github-since`、`github-cursor:<n>` 分别保存在自己的 state 数据库。
 - GitHub Source 的 `notifications?all=true` 经 `Commands.api` 被限定为 `repos/<repository>/notifications`，因此两个不同仓库的实例实际使用**仓库级**通知流，不会相互消费；账号级列表只用于外部核对。
+- 原始值快照见 [`integrations/superagent/evidence/notification-run-2026-11-03.md`](../integrations/superagent/evidence/notification-run-2026-11-03.md)；测试仓库为私有，审阅者可能无权访问，以快照为准。
 
 ### 5.3 资源观测
 

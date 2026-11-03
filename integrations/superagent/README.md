@@ -10,6 +10,7 @@
 | `compatibility-findings.md` | Source / Session / stop-retry / 模型 / 执行准入的真实差异与补丁落点 |
 | `verify-lock.sh` | 只读核对现场安装制品是否仍与锁定值一致 |
 | `probes/` | 可复现的两实例 GitHub 通知探针步骤 |
+| `evidence/` | 本次真实通知实验的原始值快照（测试仓库可能不可访问） |
 | `patches/`（后续） | 按顺序应用的补丁；`git apply` 失败即停止构建，不模糊套用 |
 
 环境、隔离 profile、两实例通知实验与清理步骤见 [`docs/environment-baseline.md`](../../docs/environment-baseline.md)。

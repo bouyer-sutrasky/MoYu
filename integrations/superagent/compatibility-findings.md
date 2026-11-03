@@ -246,7 +246,7 @@ DSH rc.2 的权威声明：
 
 ### 7.2 实测
 
-详见 environment-baseline §5.2 与 `probes/github-notification-probe.md`。要点：
+详见 environment-baseline §5.2、`probes/github-notification-probe.md` 与 `evidence/notification-run-2026-11-03.md`。要点：
 
 - A 仓库 3 条真实 bot 评论（含停机期间 1 条）→ A 3 个 Trigger，3 个 `ignore/not_human` Decision；B 仓库启动前 1 条未读（新实例不补历史），启动后 1 条 → B 1 个 Trigger，1 个 Decision。
 - 两个实例的 Trigger URL 只指向自己仓库；没有交叉。
