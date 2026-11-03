@@ -35,6 +35,12 @@ DSH_TARBALL=/path/to/dsh-0.2.1-rc.2.tgz \
 integrations/superagent/verify-lock.sh
 ```
 
+回归检查用临时制品覆盖普通、含空格和含单引号的目录，并验证修改制品后返回非零：
+
+```bash
+node --test integrations/superagent/tests/verify-lock.test.mjs
+```
+
 ## 约束
 
 - 不把 `/root/dsh-superagent` 当作可编辑发布物；补丁在固定 commit 的 checkout 上生成，并作为有序 patch 提交。

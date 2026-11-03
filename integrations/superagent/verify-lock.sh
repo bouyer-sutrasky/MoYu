@@ -20,6 +20,13 @@ lock_value() {
   node -e 'const lock = require(process.argv[1]); const path = process.argv[2].split("."); let value = lock; for (const part of path) value = value[part]; if (typeof value !== "string" && typeof value !== "number") { console.error("missing lock field: " + process.argv[2]); process.exit(2) } process.stdout.write(String(value))' "$lock" "$1"
 }
 
+package_version() {
+  # Pass the directory as an argument instead of interpolating it into the
+  # JavaScript source: paths may contain spaces or quotes. Resolve it inside
+  # Node so relative directories keep working with require().
+  node -p 'require(require("node:path").resolve(process.argv[1], "package.json")).version' "$1"
+}
+
 manifest() {
   local dir=$1; shift
   local excludes=()
@@ -43,8 +50,8 @@ check() {
 
 harness_version=$(lock_value harness.version)
 superagent_version=$(lock_value superagent.version)
-check 'Harness package version' "$harness_version" "$(node -p "require('$dsh_dir/package.json').version")"
-check 'superagent package version' "$superagent_version" "$(node -p "require('$superagent_dir/package.json').version")"
+check 'Harness package version' "$harness_version" "$(package_version "$dsh_dir")"
+check 'superagent package version' "$superagent_version" "$(package_version "$superagent_dir")"
 
 dsh_manifest=$(manifest "$dsh_dir" './node_modules/*')
 check 'Harness package files manifest' "$(lock_value harness.install.packageFilesManifestSha256)" "$dsh_manifest"
