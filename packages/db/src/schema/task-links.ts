@@ -4,6 +4,7 @@ import {
   foreignKey,
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -15,6 +16,7 @@ import { sql } from 'drizzle-orm';
 import { conversations } from './conversations';
 import { executionMode, taskState } from './enums';
 import { repositories } from './repositories';
+import { runtimeLeases } from './runtime-leases';
 
 /**
  * One conversation owns at most one task. The upstream ticket id is filled only
@@ -39,6 +41,18 @@ export const taskLinks = pgTable(
     modelId: text('model_id'),
     modelReasoningEffort: text('model_reasoning_effort'),
     executionMode: executionMode('execution_mode').notNull().default('execute'),
+    /** Plan revision the owner approved when a discussion became execution. */
+    planRevision: integer('plan_revision'),
+    /** When a human pause was requested; the task shows `stopping` until evidence arrives. */
+    stopRequestedAt: timestamp('stop_requested_at', { withTimezone: true }),
+    /** When the runtime proved the worker and its background work ended; only then is the task `stopped`. */
+    stoppedAt: timestamp('stopped_at', { withTimezone: true }),
+    /** Runtime evidence for the stop (PID/cgroup, session idle, jobs before/after). */
+    stopEvidence: jsonb('stop_evidence').$type<Record<string, unknown>>().notNull().default({}),
+    /** Execution admission lease held while a resumed task runs. */
+    runtimeLeaseId: uuid('runtime_lease_id').references(() => runtimeLeases.id, {
+      onDelete: 'set null',
+    }),
     /** Current question the worker asked a person, when the ticket waits for input. */
     question: text('question'),
     questionMessageId: uuid('question_message_id'),

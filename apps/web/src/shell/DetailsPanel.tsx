@@ -53,7 +53,7 @@ export function DetailsPanel({ open, repository, conversation, onClose }: Detail
               <Icon name="task" size={15} />
               任务
             </span>
-            <span className={styles.phaseTag}>M3</span>
+            <span className={styles.phaseTag}>M4</span>
           </div>
           <dl className={styles.detailList}>
             <div className={styles.detailRow}>
@@ -81,6 +81,64 @@ export function DetailsPanel({ open, repository, conversation, onClose }: Detail
             <div className={styles.detailRow}>
               <dt>模型</dt>
               <dd>{conversation ? formatModel(task?.model ?? conversation.model) : '—'}</dd>
+            </div>
+            <div className={styles.detailRow}>
+              <dt>来源</dt>
+              <dd>
+                {conversation?.source === 'github'
+                  ? `GitHub 汇入 · ${conversation.externalKey ?? '未知编号'}`
+                  : '网页新建'}
+              </dd>
+            </div>
+            <div className={styles.detailRow}>
+              <dt>执行方式</dt>
+              <dd>
+                {task?.executionMode === 'discuss' ? '先讨论（只读）' : task ? '直接执行' : '—'}
+              </dd>
+            </div>
+            <div className={styles.detailRow}>
+              <dt>计划版本</dt>
+              <dd>{task?.planRevision ? `v${task.planRevision}` : '尚未确认执行方案'}</dd>
+            </div>
+            <div className={styles.detailRow}>
+              <dt>最近命令</dt>
+              <dd>
+                {task?.lastOperation
+                  ? `${task.lastOperation.kind} · ${task.lastOperation.state}`
+                  : '—'}
+              </dd>
+            </div>
+            <div className={styles.detailRow}>
+              <dt>停止时间</dt>
+              <dd>
+                {task?.stoppedAt
+                  ? new Date(task.stoppedAt).toLocaleString()
+                  : task?.stopRequestedAt
+                    ? '停止请求处理中'
+                    : '—'}
+              </dd>
+            </div>
+            <div className={`${styles.detailRow} ${styles.detailRowStack}`}>
+              <dt>停止证据</dt>
+              <dd>
+                {task && Object.keys(task.stopEvidence).length > 0 ? (
+                  <p className={styles.detailQuestion}>
+                    {typeof task.stopEvidence.agentStatus === 'string'
+                      ? `worker ${task.stopEvidence.agentStatus}`
+                      : '已记录运行时停止证据'}
+                    {typeof task.stopEvidence.harnessPid === 'number'
+                      ? ` · PID ${task.stopEvidence.harnessPid}`
+                      : ''}
+                    {Array.isArray(task.stopEvidence.jobsAfter)
+                      ? ` · 剩余后台作业 ${task.stopEvidence.jobsAfter.length}`
+                      : ''}
+                  </p>
+                ) : (
+                  <span className={styles.detailMuted}>
+                    只有运行时证明执行与后台作业已结束才显示已停止
+                  </span>
+                )}
+              </dd>
             </div>
             <div className={styles.detailRow}>
               <dt>PR 链接</dt>
@@ -129,8 +187,8 @@ export function DetailsPanel({ open, repository, conversation, onClose }: Detail
         <div className={styles.detailsNote}>
           <Icon name="panel" size={15} />
           <p>
-            右侧详情默认收起。M3 展示真实任务字段、PR 链接与待回复问题；diff 与检查结果在 M6
-            接入，不会用占位数据冒充成功。
+            右侧详情默认收起。M4 展示真实任务字段、讨论/执行状态、停止证据、PR
+            链接与待回复问题；diff 与检查结果在 M6 接入，不会用占位数据冒充成功。
           </p>
         </div>
       </div>

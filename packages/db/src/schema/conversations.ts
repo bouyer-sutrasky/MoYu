@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
-import { index, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import { index, integer, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 
-import { conversationMode, executionMode } from './enums';
+import { conversationMode, conversationSource, executionMode } from './enums';
 import { owners } from './owners';
 import { repositories } from './repositories';
 
@@ -21,6 +21,13 @@ export const conversations = pgTable(
       .references(() => repositories.id, { onDelete: 'restrict' }),
     mode: conversationMode('mode').notNull().default('work'),
     executionMode: executionMode('execution_mode').notNull().default('execute'),
+    /** `web` for a composer conversation, `github` for an imported GitHub ticket. */
+    source: conversationSource('source').notNull().default('web'),
+    /** Stable identity of an imported ticket (`github:<number>`); null for web conversations. */
+    externalKey: text('external_key'),
+    externalUrl: text('external_url'),
+    /** Plan revision the owner approved when a discussion became execution. */
+    planRevision: integer('plan_revision'),
     baseBranch: text('base_branch').notNull(),
     baseCommit: text('base_commit'),
     modelId: text('model_id'),
@@ -43,6 +50,11 @@ export const conversations = pgTable(
     uniqueIndex('conversations_owner_client_request_uq')
       .on(table.ownerId, table.clientRequestId)
       .where(sql`${table.clientRequestId} is not null`),
+    // One Work conversation per imported GitHub thread; the import projection and a
+    // repeated Bridge event both resolve to this row instead of creating another task.
+    uniqueIndex('conversations_repository_external_uq')
+      .on(table.repositoryId, table.source, table.externalKey)
+      .where(sql`${table.externalKey} is not null`),
   ],
 );
 

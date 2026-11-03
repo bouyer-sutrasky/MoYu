@@ -20,6 +20,7 @@ const EXPECTED_TABLES = [
   'runtime_leases',
   'sessions',
   'task_links',
+  'task_operations',
 ];
 
 const EXPECTED_ENUMS = [
@@ -27,11 +28,14 @@ const EXPECTED_ENUMS = [
   'auth_challenge_kind',
   'bootstrap_code_purpose',
   'conversation_mode',
+  'conversation_source',
   'delivery_state',
   'execution_mode',
   'message_direction',
   'repository_status',
   'runtime_lease_state',
+  'task_operation_kind',
+  'task_operation_state',
   'task_state',
 ];
 
@@ -51,6 +55,11 @@ const EXPECTED_INDEXES = [
   'sessions_token_hash_uq',
   'task_links_conversation_uq',
   'task_links_repository_upstream_ticket_uq',
+  'conversations_repository_external_uq',
+  'task_operations_task_client_command_uq',
+  'task_operations_active_task_uq',
+  'task_operations_state_next_attempt_idx',
+  'task_operations_repository_idx',
 ];
 
 async function stringColumn(database: TestDatabase, query: ReturnType<typeof sql>, column: string) {

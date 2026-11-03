@@ -50,16 +50,17 @@ M2 实际 Cookie：https origin 使用 `__Host-moyu_session` 与 `__Host-moyu_bo
 | POST /api/v1/repositories/:id/wake | 返回调度operationId，忙时queued，不承诺立即在线 |
 | GET /api/v1/repositories/:id/branches | 分页分支列表 |
 | GET /api/v1/repositories/:id/models | Harness已配置且可用的模型标识，不返回API Key |
-| POST /api/v1/conversations | **M3 已实现**：`{repositoryId,mode:'work',executionMode:'execute',baseBranch,model:{provider,model,reasoningEffort?}\|null,clientRequestId}`；同一 `clientRequestId` 相同 payload 返回原会话，不同 payload 409；`discuss` 在 M3 返回 422 |
+| POST /api/v1/conversations | **M4 已实现**：`{repositoryId,mode:'work',executionMode:'execute'\|'discuss',baseBranch,model:{provider,model,reasoningEffort?}\|null,clientRequestId}`；同一 `clientRequestId` 相同 payload 返回原会话，不同 payload 409；`discuss` 创建只读讨论任务 |
 | GET /api/v1/conversations | **M3 已实现**：按仓库列出会话与任务投影 |
 | GET /api/v1/conversations/:id | **M3 已实现**：会话、冻结字段与任务投影 |
 | POST /api/v1/conversations/:id/messages | **M3 已实现**：`{clientMessageId,text,replyToMessageId?}` → 202 `{message,duplicate:false}`；相同幂等键与 payload 返回 200 原结果，不同 payload 409；message 与 delivery 同事务写入 |
 | GET /api/v1/conversations/:id/messages | **M3 已实现**：`before` 游标分页，包含方向/kind、回复关联、来源与投递状态 |
-| POST /api/v1/tasks/:id/start | `{planRevision,expectedVersion,clientCommandId}`；只读讨论→允许执行 |
-| POST /api/v1/tasks/:id/stop | `{expectedVersion,clientCommandId}`；幂等进入stopping；不是上游终态stop |
-| POST /api/v1/tasks/:id/resume | `{expectedVersion,clientCommandId}`；只允许可恢复状态，进入队列并取得租约 |
-| POST /api/v1/tasks/:id/retry | 失败/受阻重试，与人工停止的resume分开 |
+| POST /api/v1/tasks/:id/start | **M4 已实现**：`{planRevision,expectedVersion,clientCommandId}`；同一会话/工作目录/PR 只读讨论→执行；记录 `planRevision` 与已冻结 `baseCommit`；202 返回 operation |
+| POST /api/v1/tasks/:id/stop | **M4 已实现**：`{expectedVersion,clientCommandId}`；幂等进入 `stopping`，经 Bridge `pause`，有停止证据后才变 `stopped`；不是上游终态 stop |
+| POST /api/v1/tasks/:id/resume | **M4 已实现**：`{expectedVersion,clientCommandId}`；只允许 `stopped`，dispatcher 重新取得仓库租约并核验现场后调用 Bridge `resume` |
+| POST /api/v1/tasks/:id/retry | **M4 已实现**：失败/受阻重试，经 Bridge `retry`，与人工停止的 resume 分开 |
 | GET /api/v1/tasks/:id/artifacts | **M3 已实现 PR 引用**：Bridge 投影的 `pull_request` 产物；diff/检查结果留待后续阶段 |
+| GitHub 汇入 | **M4 已实现**：Bridge `ticket.imported` 事件按 `(repository, source='github', external_id)` 建立/复用 Work conversation，并按 `(repository, upstream_ticket_id)` 绑定唯一 task；重复事件不重复建单 |
 | POST /api/v1/conversations/:id/attachments | multipart；限制大小/type，返回attachmentId，不自动执行 |
 | GET /api/v1/attachments/:id | **M2 已实现**鉴权下载，安全Content-Disposition与MIME，不内联执行上传HTML；上传属于 M3/M6 |
 
@@ -85,6 +86,8 @@ type WorkspaceEvent = {
 ```
 
 任务展示状态：pending_admission / discussing / queued / running / waiting_input / awaiting_review / stopping / stopped / blocked / failed / completed / closed_unmerged / not_accepted。消息状态：stored / delivering / delivered / read / failed；delivered和read均要求实际执行器证据，缺证据停留在前态。
+
+M4 新增的枚举与投影保持在上述集合内：讨论态 `discussing`；人工暂停 `stopping`（意图已记录）→ `stopped`（运行时已给出停止证据）；暂停期间新消息保留 `stored`，resume 后投递。conversation 增加 `source`（`web|github`）、`externalKey`、`externalUrl`、`planRevision`；task 增加 `planRevision`、`stopRequestedAt`、`stoppedAt`、`stopEvidence`、`lastOperation`。完整语义见 [`M4-EXECUTION-CONTROL.md`](M4-EXECUTION-CONTROL.md)。
 
 M3 实际映射：`stored`=平台消息与 delivery 同事务写入；`delivering`=dispatcher 已领取租约；`delivered`=Bridge `POST /bridge/v1/triggers` 返回 `stored|duplicate`（执行器已接收 Trigger）；`read`=worker Session 的 `user/message` 已落盘且 `Ticket.inputs[].readAt` 经 `message.read` 回报；`failed`=平台侧永久拒绝。HTTP 202 与 Trigger 入库都不会推进到 `read`。
 
@@ -112,6 +115,8 @@ executionSpec只接受平台已授权和冻结的modelId/baseCommit/mode。人�
 平台内消息+delivery同事务写；Bridge receive去重；回调平台提交成功才返回sent。网络超时抛出以便上游Outbox重试，重复回调返回原成功。ticket映射尚未产生时保留pending，不循环创建新Trigger。
 
 M3 实现细节见 [`M3-BRIDGE-PROTOCOL.md`](M3-BRIDGE-PROTOCOL.md)：trigger id 为 `workspace:<平台消息 id>`；平台 dispatcher 用 `FOR UPDATE SKIP LOCKED` 领取并重试；Bridge 事件日志 append-only、fsync、单调 seq；平台 cursor 与事件投影同事务提交。
+
+M4 机器协议增量见 [`M4-EXECUTION-CONTROL.md`](M4-EXECUTION-CONTROL.md)：`tickets/:id/{pause,resume,start,retry}`、`GET /operations/:id`、`ticket.paused` / `ticket.imported` 事件、`targetTicketId` 续接和讨论只读执行约束。
 
 ## 上游真实接入点与差异
 

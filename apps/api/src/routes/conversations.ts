@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { and, desc, eq, lt } from 'drizzle-orm';
+import { and, desc, eq, inArray, lt } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 
 import {
@@ -21,10 +21,12 @@ import {
   deliveries,
   messages,
   taskLinks,
+  taskOperations,
   type Database,
   type Delivery,
   type Message as MessageRow,
   type TaskLink,
+  type TaskOperation,
 } from '@moyu/db';
 
 import type { Authenticate } from '../auth/guards';
@@ -109,6 +111,35 @@ async function taskByConversation(
     .where(eq(taskLinks.conversationId, conversationId))
     .limit(1);
   return task ?? null;
+}
+
+/**
+ * The newest owner command for each task, so a conversation shows a pending
+ * stop/start without a second request per row.
+ */
+async function latestOperations(
+  database: Database,
+  taskIds: string[],
+): Promise<Map<string, TaskOperation>> {
+  const result = new Map<string, TaskOperation>();
+  if (taskIds.length === 0) {
+    return result;
+  }
+  const rows = await database
+    .select()
+    .from(taskOperations)
+    .where(inArray(taskOperations.taskId, taskIds))
+    .orderBy(desc(taskOperations.createdAt), desc(taskOperations.id));
+  for (const row of rows) {
+    if (!result.has(row.taskId)) {
+      result.set(row.taskId, row);
+    }
+  }
+  return result;
+}
+
+async function latestOperation(database: Database, taskId: string): Promise<TaskOperation | null> {
+  return (await latestOperations(database, [taskId])).get(taskId) ?? null;
 }
 
 /**
@@ -205,8 +236,17 @@ export function registerConversationRoutes(
       .orderBy(desc(conversations.updatedAt))
       .limit(limit);
 
+    const operations = await latestOperations(
+      database,
+      rows.flatMap((row) => (row.task ? [row.task.id] : [])),
+    );
     const items: ConversationSummary[] = rows.map((row) =>
-      toConversationSummary(row.conversation, row.task ?? null, row.conversation.title),
+      toConversationSummary(
+        row.conversation,
+        row.task ?? null,
+        row.conversation.title,
+        row.task ? (operations.get(row.task.id) ?? null) : null,
+      ),
     );
     return sendData(reply, request, conversationListDataSchema.parse({ conversations: items }));
   });
@@ -218,10 +258,7 @@ export function registerConversationRoutes(
     }
     const input = parseInput(createConversationInputSchema, request.body);
     if (input.mode !== 'work') {
-      throw ApiProblem.invalid('Chat conversations are not part of M3');
-    }
-    if (input.executionMode !== 'execute') {
-      throw ApiProblem.invalid('The read-only discussion mode is delivered in M4, not M3');
+      throw ApiProblem.invalid('Chat conversations are not part of Work');
     }
     await ensureConfiguredRepository(database, config);
     const repository = await findOwnedRepository(database, auth.owner.id, input.repositoryId);
@@ -240,7 +277,7 @@ export function registerConversationRoutes(
             ownerId: auth.owner.id,
             repositoryId: repository.id,
             mode: 'work',
-            executionMode: 'execute',
+            executionMode: input.executionMode,
             baseBranch: input.baseBranch,
             modelId,
             modelReasoningEffort: reasoningEffort,
@@ -260,7 +297,7 @@ export function registerConversationRoutes(
             baseBranch: input.baseBranch,
             modelId,
             modelReasoningEffort: reasoningEffort,
-            executionMode: 'execute',
+            executionMode: input.executionMode,
           })
           .returning();
         if (!task) {
@@ -304,11 +341,12 @@ export function registerConversationRoutes(
         );
       }
       const task = await taskByConversation(database, existing.id);
+      const operation = task ? await latestOperation(database, task.id) : null;
       return sendData(
         reply,
         request,
         conversationDetailDataSchema.parse({
-          conversation: toConversationSummary(existing, task, existing.title),
+          conversation: toConversationSummary(existing, task, existing.title, operation),
         }),
         200,
       );
@@ -326,11 +364,12 @@ export function registerConversationRoutes(
       auth.owner.id,
       params.id ?? '',
     );
+    const operation = task ? await latestOperation(database, task.id) : null;
     return sendData(
       reply,
       request,
       conversationDetailDataSchema.parse({
-        conversation: toConversationSummary(conversation, task, conversation.title),
+        conversation: toConversationSummary(conversation, task, conversation.title, operation),
       }),
     );
   });
@@ -380,6 +419,18 @@ export function registerConversationRoutes(
       );
       if (!task) {
         throw ApiProblem.conflict('Conversation has no task');
+      }
+      // A completed or closed-unmerged task keeps its conversation and worktree,
+      // but M4 does not silently reopen it for a new message: the owner starts a
+      // linked task or explicitly resumes a stopped one.
+      if (
+        task.state === 'completed' ||
+        task.state === 'closed_unmerged' ||
+        task.state === 'not_accepted'
+      ) {
+        throw ApiProblem.conflict(
+          'This conversation has ended; create a linked task or resume it explicitly',
+        );
       }
       const input = parseInput(createMessageInputSchema, request.body);
       await assertReplyTargetBelongsToConversation(

@@ -14,3 +14,4 @@ export * from './runtime-cursors';
 export * from './runtime-leases';
 export * from './sessions';
 export * from './task-links';
+export * from './task-operations';

@@ -3,10 +3,17 @@ import type {
   DeliverySummary,
   Message,
   ModelSelection,
+  TaskOperationSummary,
   TaskSummary,
 } from '@moyu/contracts';
 import { decodeModelId } from '@moyu/runtime-client';
-import type { Conversation, Delivery, Message as MessageRow, TaskLink } from '@moyu/db';
+import type {
+  Conversation,
+  Delivery,
+  Message as MessageRow,
+  TaskLink,
+  TaskOperation,
+} from '@moyu/db';
 
 export function toDeliverySummary(delivery: Delivery | null): DeliverySummary | null {
   if (!delivery) {
@@ -50,7 +57,23 @@ export function toModelSelection(conversation: Conversation): ModelSelection | n
   };
 }
 
-export function toTaskSummary(task: TaskLink): TaskSummary {
+export function toTaskOperationSummary(row: TaskOperation): TaskOperationSummary {
+  return {
+    id: row.id,
+    taskId: row.taskId,
+    kind: row.kind,
+    state: row.state,
+    evidence: row.evidence,
+    error: row.error,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+export function toTaskSummary(
+  task: TaskLink,
+  lastOperation: TaskOperation | null = null,
+): TaskSummary {
   const identity = decodeModelId(task.modelId);
   return {
     id: task.id,
@@ -73,6 +96,11 @@ export function toTaskSummary(task: TaskLink): TaskSummary {
     questionMessageId: task.questionMessageId,
     prUrl: task.prUrl,
     prNumber: task.prNumber,
+    planRevision: task.planRevision,
+    stopRequestedAt: task.stopRequestedAt?.toISOString() ?? null,
+    stoppedAt: task.stoppedAt?.toISOString() ?? null,
+    stopEvidence: task.stopEvidence,
+    lastOperation: lastOperation ? toTaskOperationSummary(lastOperation) : null,
     version: task.version,
     createdAt: task.createdAt.toISOString(),
     updatedAt: task.updatedAt.toISOString(),
@@ -83,18 +111,23 @@ export function toConversationSummary(
   conversation: Conversation,
   task: TaskLink | null,
   title: string | null,
+  lastOperation: TaskOperation | null = null,
 ): ConversationSummary {
   return {
     id: conversation.id,
     repositoryId: conversation.repositoryId,
     mode: conversation.mode,
     executionMode: conversation.executionMode,
+    source: conversation.source,
+    externalKey: conversation.externalKey,
+    externalUrl: conversation.externalUrl,
+    planRevision: conversation.planRevision,
     baseBranch: conversation.baseBranch,
     baseCommit: conversation.baseCommit,
     model: toModelSelection(conversation),
     title,
     createdAt: conversation.createdAt.toISOString(),
     updatedAt: conversation.updatedAt.toISOString(),
-    task: task ? toTaskSummary(task) : null,
+    task: task ? toTaskSummary(task, lastOperation) : null,
   };
 }

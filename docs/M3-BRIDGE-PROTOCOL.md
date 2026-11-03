@@ -67,7 +67,8 @@
   "protocolVersion": "moyu-bridge/1",
   "upstream": { "package": "dsh-superagent", "version": "0.1.0", "commit": "6337fc8…" },
   "capabilities": { "trigger": true, "events": true, "tickets": true, "models": true,
-                   "pause": false, "resume": false, "retry": false, "readOnlyDiscussion": false },
+                   "pause": true, "resume": true, "retry": true, "readOnlyDiscussion": true,
+                   "start": true },
   "source": { "kind": "workspace", "enabled": true }
 }
 ```
@@ -122,8 +123,8 @@
 权威快照：`{ ticketId, title, state, question, attentionId, model, base, assignmentId, report, pr?, ended }`。
 面板/平台不以本地投影反向修改上游 SQLite。
 
-`POST /bridge/v1/tickets/:id/{pause,resume,retry}` 在本阶段返回 `501 unsupported`；`capabilities` 同步为 `false`。
-人工停止/继续属于阶段 4，不能用上游终态 stop 冒充。
+M4 已实现 `POST /bridge/v1/tickets/:id/{pause,resume,retry,start}` 与 `GET /bridge/v1/operations/:id`；
+请求/响应、状态机与停止证据见 [`M4-EXECUTION-CONTROL.md`](M4-EXECUTION-CONTROL.md)。人工停止/继续不能用上游终态 stop 冒充。
 
 ## 4. Channel 回调（Bridge → 平台）
 
@@ -166,6 +167,7 @@
 ## 6. 幂等、重试与重启
 
 - 平台消息：`(conversation_id, client_message_id)` 部分唯一索引；并发重复提交只有一个事务成功，其余读取既有结果。
+M4 中 `stopping`/`stopped`/`completed`/`closed_unmerged`/`not_accepted` 的任务不投递新消息；暂停期间消息保留 `stored`，resume 后继续。
 - 平台投递：`deliveries` 每个消息一行；dispatcher 用 `FOR UPDATE SKIP LOCKED` 领取并写租约；崩溃后过期租约被回收。
 - Bridge 接收：Trigger 主键幂等；重复投递返回 `duplicate`，不重复建单。
 - Bridge 事件：append-only 日志 + 单调 seq；平台 cursor 与事件处理同事务；重复事件被唯一索引吞掉。

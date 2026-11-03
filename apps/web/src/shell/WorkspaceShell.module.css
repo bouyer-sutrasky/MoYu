@@ -1114,6 +1114,27 @@
   min-width: 0;
 }
 
+.conversationActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.operationHint {
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xs-13);
+}
+
+.operationHint[data-kind='error'] {
+  color: var(--dsw-alias-label-error, #b42318);
+}
+
 .conversationTitleRow {
   display: flex;
   align-items: center;
@@ -1874,6 +1895,10 @@
 
   .conversationHeader > button {
     align-self: flex-start;
+  }
+
+  .conversationActions {
+    justify-content: flex-start;
   }
 
   .conversationHeading {

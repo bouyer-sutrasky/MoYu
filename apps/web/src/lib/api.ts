@@ -15,6 +15,7 @@ import {
   repositoryListDataSchema,
   revokeSessionDataSchema,
   sessionListDataSchema,
+  taskCommandDataSchema,
   type AuthMeData,
   type AuthStateData,
   type BootstrapExchangeData,
@@ -29,6 +30,9 @@ import {
   type PasskeyCredentialSummary,
   type RepositorySummary,
   type SessionSummary,
+  type StartTaskInput,
+  type TaskCommandData,
+  type TaskCommandInput,
 } from '@moyu/contracts';
 import type { z } from 'zod';
 
@@ -205,6 +209,16 @@ export const api = {
       createMessageDataSchema,
       { method: 'POST', body: input },
     );
+  },
+  taskCommand(
+    taskId: string,
+    action: 'start' | 'stop' | 'resume' | 'retry',
+    input: TaskCommandInput & { planRevision?: StartTaskInput['planRevision'] },
+  ): Promise<TaskCommandData> {
+    return request(`/api/v1/tasks/${encodeURIComponent(taskId)}/${action}`, taskCommandDataSchema, {
+      method: 'POST',
+      body: input,
+    });
   },
   models(repositoryId: string): Promise<ModelListData> {
     return request(

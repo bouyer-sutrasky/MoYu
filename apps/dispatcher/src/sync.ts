@@ -6,7 +6,7 @@ import type { RuntimeBridgeClient, BridgeEvent } from '@moyu/runtime-client';
 import type { DispatcherLogger } from './logger';
 import type { RepositoryBinding } from './runtime';
 import { appendEventSql } from './events-sql';
-import { endedState, TASK_COLUMNS, taskSummary, type TaskRow } from './tasks';
+import { endedState, stateFromSnapshot, TASK_COLUMNS, taskSummary, type TaskRow } from './tasks';
 
 interface ProjectedTask {
   task: TaskRow;
@@ -429,6 +429,253 @@ async function applyArtifactEvent(
   });
 }
 
+/**
+ * A recoverable human pause. The runtime emits this when the intent is recorded
+ * and again (with `stoppedAt` and evidence) when the worker and its background
+ * work actually ended. The platform only shows `stopped` for the second form.
+ */
+async function applyPausedEvent(
+  client: pg.PoolClient,
+  repository: RepositoryBinding,
+  event: BridgeEvent,
+  logger: DispatcherLogger,
+): Promise<void> {
+  const data = asRecord(event.data);
+  const ticketId = asString(data.ticketId);
+  if (!ticketId) {
+    return;
+  }
+  const task = await taskByTicket(client, ticketId, repository.id);
+  if (!task) {
+    logger.warn(
+      { event: 'bridge.pause_unmapped', bridgeEvent: event.id, ticketId },
+      'pause evidence arrived before the platform task was linked',
+    );
+    return;
+  }
+  const stoppedAt = asString(data.stoppedAt);
+  const evidence = asRecord(data.evidence);
+  const pauseError = asString(data.error);
+  const state = stoppedAt ? 'stopped' : pauseError ? 'blocked' : 'stopping';
+  const updated = await client.query(
+    `update task_links
+        set state = $2,
+            stopped_at = $3::timestamptz,
+            stop_evidence = $4::jsonb,
+            last_event_seq = greatest(coalesce(last_event_seq, 0), $5),
+            version = version + 1,
+            updated_at = now()
+      where id = $1 and (last_event_seq is null or last_event_seq < $5)`,
+    [
+      task.id,
+      state,
+      stoppedAt,
+      JSON.stringify(pauseError ? { error: pauseError } : evidence),
+      event.seq,
+    ],
+  );
+  if ((updated.rowCount ?? 0) === 0) {
+    return;
+  }
+  // The paused event and the Bridge operation settle independently. Settle the
+  // platform operation from this evidence too, so a stop followed immediately by
+  // resume is not refused as "another command is still being processed".
+  if (stoppedAt || pauseError) {
+    await client.query(
+      `update task_operations
+          set state = $2,
+              bridge_operation_id = coalesce($3, bridge_operation_id),
+              evidence = $4::jsonb,
+              error = $5,
+              updated_at = now()
+        where task_id = $1 and kind = 'pause' and state in ('queued', 'running')`,
+      [
+        task.id,
+        stoppedAt ? 'succeeded' : 'failed',
+        asString(data.operationId),
+        JSON.stringify(evidence),
+        pauseError,
+      ],
+    );
+  }
+  const next = await taskByTicket(client, ticketId, repository.id);
+  if (next) {
+    await emit(client, repository, event, 'task.state_changed', next.conversationId, next.id, {
+      task: taskSummary(next),
+    });
+  }
+}
+
+/**
+ * Imports one GitHub-origin runtime ticket into Work. `(repository, source,
+ * external_key)` keeps one conversation and `(repository, upstream_ticket_id)`
+ * keeps one task, so a repeated Bridge event or a second entry point reuses the
+ * same work instead of executing it twice.
+ */
+async function applyImportedEvent(
+  client: pg.PoolClient,
+  repository: RepositoryBinding,
+  event: BridgeEvent,
+  logger: DispatcherLogger,
+): Promise<void> {
+  const data = asRecord(event.data);
+  const ticketId = asString(data.ticketId);
+  const externalId = asString(data.externalId);
+  if (!ticketId || !externalId) {
+    logger.warn(
+      { event: 'bridge.import_invalid', bridgeEvent: event.id },
+      'ticket.imported had no ticketId or externalId',
+    );
+    return;
+  }
+  const state = stateFromSnapshot(data.state) ?? 'queued';
+  const base = asRecord(data.base);
+  const baseBranch = asString(base.branch) ?? repository.defaultBranch;
+  const baseCommit = asString(base.commit);
+  const modelValue = base.model;
+  const modelId =
+    typeof modelValue === 'string' && modelValue.length > 0
+      ? modelValue
+      : (() => {
+          const model = asRecord(modelValue);
+          const provider = asString(model.provider);
+          const name = asString(model.model);
+          return provider && name ? `${provider}/${name}` : null;
+        })();
+  const title = asString(data.title) ?? `GitHub ${externalId}`;
+  const url = asString(data.url);
+  const number = asNumber(data.number);
+  const isPr = data.isPr === true;
+
+  const existingTask = await taskByTicket(client, ticketId, repository.id);
+  if (existingTask) {
+    const updated = await client.query(
+      `update task_links
+          set state = $2,
+              base_branch = coalesce($3, base_branch),
+              base_commit = coalesce($4, base_commit),
+              model_id = coalesce($5, model_id),
+              last_event_seq = greatest(coalesce(last_event_seq, 0), $6),
+              version = case when state is distinct from $2 then version + 1 else version end,
+              updated_at = now()
+        where id = $1 and (last_event_seq is null or last_event_seq < $6)`,
+      [existingTask.id, state, baseBranch, baseCommit, modelId, event.seq],
+    );
+    if ((updated.rowCount ?? 0) > 0) {
+      const next = await taskByTicket(client, ticketId, repository.id);
+      if (next) {
+        await emit(client, repository, event, 'task.state_changed', next.conversationId, next.id, {
+          task: taskSummary(next),
+        });
+      }
+    }
+    return;
+  }
+
+  const ownerResult = await client.query<{ owner_id: string }>(
+    `select owner_id from repositories where id = $1`,
+    [repository.id],
+  );
+  const ownerId = ownerResult.rows[0]?.owner_id;
+  if (!ownerId) {
+    return;
+  }
+
+  let conversation = (
+    await client.query<{ id: string; title: string | null }>(
+      `select id, title from conversations
+        where repository_id = $1 and source = 'github' and external_key = $2 limit 1`,
+      [repository.id, externalId],
+    )
+  ).rows[0];
+  if (!conversation) {
+    conversation = (
+      await client.query<{ id: string; title: string | null }>(
+        `insert into conversations
+           (owner_id, repository_id, mode, execution_mode, source, external_key, external_url,
+            base_branch, base_commit, model_id, title)
+         values ($1, $2, 'work', 'execute', 'github', $3, $4, $5, $6, $7, $8)
+         returning id, title`,
+        [ownerId, repository.id, externalId, url, baseBranch, baseCommit, modelId, title],
+      )
+    ).rows[0];
+  }
+  if (!conversation) {
+    return;
+  }
+
+  const insertedTask = (
+    await client.query<{ id: string }>(
+      `insert into task_links
+         (conversation_id, repository_id, upstream_ticket_id, upstream_thread_id, state,
+          base_branch, base_commit, model_id, execution_mode, last_event_seq)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, 'execute', $9)
+       on conflict (repository_id, upstream_ticket_id) where upstream_ticket_id is not null
+       do nothing
+       returning id`,
+      [
+        conversation.id,
+        repository.id,
+        ticketId,
+        externalId,
+        state,
+        baseBranch,
+        baseCommit,
+        modelId,
+        event.seq,
+      ],
+    )
+  ).rows[0];
+  const task = await taskByTicket(client, ticketId, repository.id);
+  if (!task) {
+    return;
+  }
+
+  if (insertedTask) {
+    await emit(client, repository, event, 'task.linked', conversation.id, task.id, {
+      task: taskSummary(task),
+    });
+  }
+
+  const text = asString(data.text);
+  const triggerId = asString(data.triggerId);
+  if (text && triggerId) {
+    const inserted = await client.query<{ id: string }>(
+      `insert into messages
+         (conversation_id, direction, kind, body, source, source_event_id, created_at)
+       values ($1, 'inbound', 'user', $2, 'github', $3, $4)
+       on conflict (conversation_id, source_event_id) where source_event_id is not null
+       do nothing
+       returning id`,
+      [conversation.id, text, `import:${triggerId}`, event.at],
+    );
+    const messageId = inserted.rows[0]?.id;
+    if (messageId) {
+      await emit(
+        client,
+        repository,
+        { ...event, id: `${event.id}:message` },
+        'message.created',
+        conversation.id,
+        task.id,
+        { messageId, direction: 'inbound' },
+      );
+    }
+  }
+
+  logger.info(
+    {
+      event: 'bridge.ticket_imported',
+      bridgeEvent: event.id,
+      ticketId,
+      externalId,
+      isPr,
+      number,
+    },
+    'imported a GitHub-origin ticket into Work',
+  );
+}
+
 async function applyEvent(
   client: pg.PoolClient,
   repository: RepositoryBinding,
@@ -448,6 +695,12 @@ async function applyEvent(
     case 'ticket.question':
     case 'ticket.ended':
       await applyTaskEvent(client, repository, event, logger);
+      return;
+    case 'ticket.paused':
+      await applyPausedEvent(client, repository, event, logger);
+      return;
+    case 'ticket.imported':
+      await applyImportedEvent(client, repository, event, logger);
       return;
     case 'message.read':
       await applyReadEvent(client, repository, event, logger);

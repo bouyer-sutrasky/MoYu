@@ -1,0 +1,771 @@
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { once } from 'node:events';
+
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+import type { BridgeEvent, BridgeTicketSnapshot } from '@moyu/runtime-client';
+import { RuntimeBridgeClient } from '@moyu/runtime-client';
+
+import { loadDispatcherConfig, type DispatcherConfig } from '../../src/config';
+import { deliverOnce } from '../../src/delivery';
+import { createConsoleLogger } from '../../src/logger';
+import { maintainLeases, operationsOnce, reconcileTasks } from '../../src/operations';
+import { captureReportsOnce } from '../../src/reports';
+import type { RepositoryBinding } from '../../src/runtime';
+import { syncOnce } from '../../src/sync';
+import { createTestDatabase, type TestDatabase } from './helpers';
+
+const TOKEN = 'm4-test-bridge-token-0123456789';
+
+interface OperationCall {
+  kind: 'pause' | 'resume' | 'start' | 'retry';
+  ticketId: string;
+  body: Record<string, unknown>;
+}
+
+interface FakeBridge {
+  url: string;
+  calls: OperationCall[];
+  operationState: 'queued' | 'running' | 'succeeded' | 'failed';
+  operationEvidence: Record<string, unknown>;
+  operationError: string | null;
+  snapshots: Map<string, BridgeTicketSnapshot>;
+  events: BridgeEvent[];
+  close: () => Promise<void>;
+}
+
+function readBody(request: IncomingMessage): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    request.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+    request.on('end', () => {
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      } catch (error) {
+        reject(error);
+      }
+    });
+    request.on('error', reject);
+  });
+}
+
+async function startFakeBridge(): Promise<FakeBridge> {
+  const state: Omit<FakeBridge, 'url' | 'close'> & { server?: Server } = {
+    calls: [],
+    operationState: 'succeeded',
+    operationEvidence: {},
+    operationError: null,
+    snapshots: new Map(),
+    events: [],
+  };
+  const server = createServer(async (request: IncomingMessage, response: ServerResponse) => {
+    const send = (status: number, value: unknown) => {
+      response.writeHead(status, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(value));
+    };
+    if (request.headers.authorization !== `Bearer ${TOKEN}`) {
+      send(401, { error: { code: 'unauthorized', message: 'machine token required' } });
+      return;
+    }
+    const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (
+      request.method === 'POST' &&
+      parts[0] === 'bridge' &&
+      parts[1] === 'v1' &&
+      parts[2] === 'tickets'
+    ) {
+      const ticketId = decodeURIComponent(parts[3] ?? '');
+      const kind = parts[4] as OperationCall['kind'] | undefined;
+      if (!kind || !['pause', 'resume', 'start', 'retry'].includes(kind)) {
+        send(404, { error: { code: 'not_found', message: 'route not found' } });
+        return;
+      }
+      const body = (await readBody(request)) as Record<string, unknown>;
+      state.calls.push({ kind, ticketId, body });
+      send(202, {
+        operationId: String(body.operationId ?? ''),
+        ticketId,
+        kind,
+        state: 'queued',
+      });
+      return;
+    }
+    if (
+      request.method === 'GET' &&
+      parts[0] === 'bridge' &&
+      parts[1] === 'v1' &&
+      parts[2] === 'operations'
+    ) {
+      const operationId = decodeURIComponent(parts[3] ?? '');
+      const ticket = state.calls.at(-1)?.ticketId ?? 'ticket';
+      send(200, {
+        operationId,
+        ticketId: ticket,
+        kind: state.calls.at(-1)?.kind ?? 'pause',
+        state: state.operationState,
+        ...(state.operationError ? { error: state.operationError } : {}),
+        evidence: state.operationEvidence,
+        updatedAt: new Date().toISOString(),
+      });
+      return;
+    }
+    if (
+      request.method === 'GET' &&
+      parts[0] === 'bridge' &&
+      parts[1] === 'v1' &&
+      parts[2] === 'tickets'
+    ) {
+      const ticketId = decodeURIComponent(parts[3] ?? '');
+      const snapshot = state.snapshots.get(ticketId);
+      if (!snapshot) {
+        send(404, { error: { code: 'not_found', message: 'ticket not found' } });
+        return;
+      }
+      send(200, snapshot);
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/bridge/v1/events') {
+      const after = Number(url.searchParams.get('after') ?? '0');
+      const limit = Number(url.searchParams.get('limit') ?? '100');
+      const page = state.events.filter((event) => event.seq > after).slice(0, limit);
+      send(200, {
+        events: page,
+        next: page.at(-1)?.seq ?? after,
+        hasMore: state.events.some((event) => event.seq > (page.at(-1)?.seq ?? after)),
+      });
+      return;
+    }
+    send(404, { error: { code: 'not_found', message: 'route not found' } });
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    throw new Error('fake Bridge failed to listen');
+  }
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    get calls() {
+      return state.calls;
+    },
+    get operationState() {
+      return state.operationState;
+    },
+    set operationState(value) {
+      state.operationState = value;
+    },
+    get operationEvidence() {
+      return state.operationEvidence;
+    },
+    set operationEvidence(value) {
+      state.operationEvidence = value;
+    },
+    get operationError() {
+      return state.operationError;
+    },
+    set operationError(value) {
+      state.operationError = value;
+    },
+    get snapshots() {
+      return state.snapshots;
+    },
+    get events() {
+      return state.events;
+    },
+    set events(value) {
+      state.events = value;
+    },
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      }),
+  };
+}
+
+interface Seed {
+  repository: RepositoryBinding;
+  ownerId: string;
+  conversationId: string;
+  taskId: string;
+  ticketId: string;
+}
+
+describe('M4 task operations, reconciliation and GitHub import on real PostgreSQL', () => {
+  let testDatabase: TestDatabase;
+  let fakeBridge: FakeBridge;
+  let config: DispatcherConfig;
+  let client: RuntimeBridgeClient;
+  let seedCounter = 0;
+
+  async function seed(options: {
+    state: string;
+    executionMode?: 'execute' | 'discuss';
+    stoppedAt?: Date | null;
+    stopEvidence?: Record<string, unknown>;
+    planRevision?: number | null;
+    source?: 'web' | 'github';
+    externalKey?: string | null;
+    repository?: RepositoryBinding;
+  }): Promise<Seed> {
+    seedCounter += 1;
+    const suffix = `${process.pid}-${seedCounter}-${Date.now()}`;
+    const owner = await testDatabase.pool.query<{ id: string }>(
+      `insert into owners (display_name) values ($1) returning id`,
+      [`M4 Test Owner ${suffix}`],
+    );
+    const ownerId = owner.rows[0]!.id;
+    const repo = options.repository
+      ? { rows: [{ id: options.repository.id, full_name: options.repository.fullName }] }
+      : await testDatabase.pool.query<{ id: string; full_name: string }>(
+          `insert into repositories (owner_id, full_name, default_branch, status, bridge_url)
+           values ($1, $2, 'main', 'active', $3) returning id, full_name`,
+          [ownerId, `Bouyer12/m4-ops-${suffix}`, fakeBridge.url],
+        );
+    const repositoryId = repo.rows[0]!.id;
+    const fullName = repo.rows[0]!.full_name;
+    const conversation = await testDatabase.pool.query<{ id: string }>(
+      `insert into conversations
+         (owner_id, repository_id, mode, execution_mode, source, external_key, base_branch, base_commit, model_id, title)
+       values ($1, $2, 'work', $3, $4, $5, 'main', $6, 'commandcode/deepseek/deepseek-v4.1-flash', 'M4 task')
+       returning id`,
+      [
+        ownerId,
+        repositoryId,
+        options.executionMode ?? 'execute',
+        options.source ?? 'web',
+        options.externalKey ?? null,
+        'a'.repeat(40),
+      ],
+    );
+    const conversationId = conversation.rows[0]!.id;
+    const ticketId = `ticket-${suffix}`;
+    const task = await testDatabase.pool.query<{ id: string }>(
+      `insert into task_links
+         (conversation_id, repository_id, upstream_ticket_id, upstream_thread_id, state,
+          base_branch, base_commit, model_id, execution_mode, plan_revision,
+          stopped_at, stop_evidence)
+       values ($1, $2, $3, $4, $5, 'main', $6, 'commandcode/deepseek/deepseek-v4.1-flash',
+               $7, $8, $9, $10::jsonb)
+       returning id`,
+      [
+        conversationId,
+        repositoryId,
+        ticketId,
+        `workspace:${conversationId}`,
+        options.state,
+        'a'.repeat(40),
+        options.executionMode ?? 'execute',
+        options.planRevision ?? null,
+        options.stoppedAt ?? null,
+        JSON.stringify(options.stopEvidence ?? {}),
+      ],
+    );
+    return {
+      ownerId,
+      conversationId,
+      taskId: task.rows[0]!.id,
+      ticketId,
+      repository: {
+        id: repositoryId,
+        fullName,
+        defaultBranch: 'main',
+        bridgeUrl: fakeBridge.url,
+        bridgeCredentialRef: null,
+      },
+    };
+  }
+
+  async function insertOperation(
+    seed: Seed,
+    kind: 'start' | 'pause' | 'resume' | 'retry',
+    clientCommandId: string,
+  ): Promise<string> {
+    const result = await testDatabase.pool.query<{ id: string }>(
+      `insert into task_operations (task_id, repository_id, kind, client_command_id, request_fingerprint)
+       values ($1, $2, $3, $4, 'fingerprint') returning id`,
+      [seed.taskId, seed.repository.id, kind, clientCommandId],
+    );
+    return result.rows[0]!.id;
+  }
+
+  async function makeOperationsDue(): Promise<void> {
+    await testDatabase.pool.query('update task_operations set next_attempt_at = now()');
+  }
+
+  async function readTask(taskId: string) {
+    const result = await testDatabase.pool.query(
+      `select state, execution_mode as "executionMode", stopped_at as "stoppedAt",
+              stop_evidence as "stopEvidence", runtime_lease_id as "runtimeLeaseId",
+              plan_revision as "planRevision"
+         from task_links where id = $1`,
+      [taskId],
+    );
+    return result.rows[0] as Record<string, unknown>;
+  }
+
+  beforeAll(async () => {
+    testDatabase = await createTestDatabase();
+    fakeBridge = await startFakeBridge();
+    config = loadDispatcherConfig({
+      NODE_ENV: 'test',
+      DATABASE_URL: testDatabase.url,
+      BRIDGE_TOKEN: TOKEN,
+      OPERATION_RETRY_CAP_MS: '1000',
+    });
+    client = new RuntimeBridgeClient({ baseUrl: fakeBridge.url, token: TOKEN });
+  }, 60_000);
+
+  afterAll(async () => {
+    await fakeBridge?.close();
+    await testDatabase?.drop();
+  });
+
+  it('sends a pause, then shows stopped only after the runtime supplies stop evidence', async () => {
+    const fixture = await seed({ state: 'stopping' });
+    const operationId = await insertOperation(fixture, 'pause', `cmd-${Date.now()}`);
+    const logger = createConsoleLogger('test');
+    fakeBridge.operationEvidence = {
+      ticketId: fixture.ticketId,
+      assignmentId: 'assignment-1',
+      sessionId: `worker-${fixture.taskId}`,
+      harnessPid: 4321,
+      cgroup: '0::/test.slice',
+      agentStatus: 'idle',
+      jobsBefore: [{ id: 'bash-1', name: 'npm test' }],
+      jobsAfter: [],
+      subagentsAfter: 0,
+      cancelledTurn: true,
+      stoppedAt: new Date().toISOString(),
+    };
+
+    expect(
+      await operationsOnce(testDatabase.pool, config, fixture.repository, client, logger),
+    ).toBe(true);
+    expect(fakeBridge.calls.at(-1)).toMatchObject({ kind: 'pause', ticketId: fixture.ticketId });
+    expect(await readTask(fixture.taskId)).toMatchObject({ state: 'stopping' });
+
+    await makeOperationsDue();
+    expect(
+      await operationsOnce(testDatabase.pool, config, fixture.repository, client, logger),
+    ).toBe(true);
+    const task = await readTask(fixture.taskId);
+    expect(task.state).toBe('stopped');
+    expect(task.stoppedAt).toBeInstanceOf(Date);
+    expect(task.stopEvidence).toMatchObject({ harnessPid: 4321, agentStatus: 'idle' });
+    const operation = await testDatabase.pool.query(
+      `select state, bridge_operation_id from task_operations where id = $1`,
+      [operationId],
+    );
+    expect(operation.rows[0]).toMatchObject({
+      state: 'succeeded',
+      bridge_operation_id: operationId,
+    });
+  }, 30_000);
+
+  it('does not report stopped when the runtime refuses or fails the pause', async () => {
+    const fixture = await seed({ state: 'stopping' });
+    await insertOperation(fixture, 'pause', `cmd-fail-${Date.now()}`);
+    fakeBridge.operationState = 'failed';
+    fakeBridge.operationError = 'the worker did not become idle';
+    const logger = createConsoleLogger('test');
+
+    await operationsOnce(testDatabase.pool, config, fixture.repository, client, logger);
+    await makeOperationsDue();
+    await operationsOnce(testDatabase.pool, config, fixture.repository, client, logger);
+    const task = await readTask(fixture.taskId);
+    expect(task.state).toBe('blocked');
+    expect(task.stoppedAt).toBeNull();
+    const operation = await testDatabase.pool.query(
+      `select state, error from task_operations where task_id = $1`,
+      [fixture.taskId],
+    );
+    expect(operation.rows[0]).toMatchObject({ state: 'failed' });
+    expect(String(operation.rows[0]?.error)).toContain('idle');
+    fakeBridge.operationState = 'succeeded';
+    fakeBridge.operationError = null;
+  }, 30_000);
+
+  it('settles the pause operation from the paused event before the operation poll', async () => {
+    const fixture = await seed({ state: 'stopping' });
+    const operationId = await insertOperation(fixture, 'pause', `cmd-event-${Date.now()}`);
+    await testDatabase.pool.query(
+      `update task_operations set state = 'running', bridge_operation_id = $2 where id = $1`,
+      [operationId, operationId],
+    );
+    fakeBridge.events = [
+      {
+        seq: 1,
+        id: `ticket-paused:${fixture.ticketId}:settled`,
+        type: 'ticket.paused',
+        at: '2026-11-04T03:00:00.000Z',
+        data: {
+          ticketId: fixture.ticketId,
+          operationId,
+          at: '2026-11-04T02:59:59.000Z',
+          stoppedAt: '2026-11-04T03:00:00.000Z',
+          evidence: { agentStatus: 'idle', harnessPid: 1, jobsAfter: [], subagentsAfter: 0 },
+        },
+      },
+    ];
+    const logger = createConsoleLogger('test');
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+    const operation = await testDatabase.pool.query(
+      `select state from task_operations where id = $1`,
+      [operationId],
+    );
+    expect(operation.rows[0]?.state).toBe('succeeded');
+    expect(await readTask(fixture.taskId)).toMatchObject({ state: 'stopped' });
+    // No active operation remains, so a resume command can be inserted.
+    await testDatabase.pool.query(
+      `insert into task_operations (task_id, repository_id, kind, client_command_id, request_fingerprint)
+       values ($1, $2, 'resume', $3, 'fingerprint')`,
+      [fixture.taskId, fixture.repository.id, `cmd-resume-${Date.now()}`],
+    );
+  }, 30_000);
+
+  it('does not show stopped when a succeeded pause has no stop evidence', async () => {
+    const fixture = await seed({ state: 'stopping' });
+    await insertOperation(fixture, 'pause', `cmd-no-evidence-${Date.now()}`);
+    fakeBridge.operationState = 'succeeded';
+    fakeBridge.operationError = null;
+    fakeBridge.operationEvidence = {};
+    const logger = createConsoleLogger('test');
+
+    await operationsOnce(testDatabase.pool, config, fixture.repository, client, logger);
+    await makeOperationsDue();
+    await operationsOnce(testDatabase.pool, config, fixture.repository, client, logger);
+    const task = await readTask(fixture.taskId);
+    expect(task.state).toBe('blocked');
+    expect(task.stoppedAt).toBeNull();
+    const operation = await testDatabase.pool.query(
+      `select state, error from task_operations where task_id = $1`,
+      [fixture.taskId],
+    );
+    expect(operation.rows[0]?.state).toBe('failed');
+    expect(String(operation.rows[0]?.error)).toContain('did not prove');
+  }, 30_000);
+
+  it('starts a discussion into execution without creating a new task', async () => {
+    const fixture = await seed({
+      state: 'awaiting_review',
+      executionMode: 'discuss',
+      planRevision: 2,
+    });
+    await insertOperation(fixture, 'start', `cmd-start-${Date.now()}`);
+    const logger = createConsoleLogger('test');
+
+    await operationsOnce(testDatabase.pool, config, fixture.repository, client, logger);
+    expect(fakeBridge.calls.at(-1)).toMatchObject({
+      kind: 'start',
+      ticketId: fixture.ticketId,
+      body: { planRevision: 2 },
+    });
+    await makeOperationsDue();
+    await operationsOnce(testDatabase.pool, config, fixture.repository, client, logger);
+    const task = await readTask(fixture.taskId);
+    expect(task).toMatchObject({ state: 'queued', executionMode: 'execute', planRevision: 2 });
+    const conversation = await testDatabase.pool.query(
+      `select execution_mode as "executionMode", plan_revision as "planRevision"
+         from conversations where id = $1`,
+      [fixture.conversationId],
+    );
+    expect(conversation.rows[0]).toMatchObject({ executionMode: 'execute', planRevision: 2 });
+    const count = await testDatabase.pool.query(
+      `select count(*)::int as count from task_links where conversation_id = $1`,
+      [fixture.conversationId],
+    );
+    expect(count.rows[0]?.count).toBe(1);
+  }, 30_000);
+
+  it('re-acquires a runtime lease and verifies the preserved worktree before resume', async () => {
+    const fixture = await seed({
+      state: 'stopped',
+      stoppedAt: new Date(),
+      stopEvidence: { agentStatus: 'idle', harnessPid: 99 },
+    });
+    fakeBridge.snapshots.set(fixture.ticketId, {
+      ticketId: fixture.ticketId,
+      title: 'M4 task',
+      state: 'stopped',
+      mode: 'execute',
+      paused: {
+        at: new Date().toISOString(),
+        by: 'human',
+        stoppedAt: new Date().toISOString(),
+        evidence: { agentStatus: 'idle', harnessPid: 99 },
+      },
+      execution: { name: 'm4-task', directory: '/tmp/m4-task', assignment: '' },
+    });
+    await insertOperation(fixture, 'resume', `cmd-resume-${Date.now()}`);
+    const logger = createConsoleLogger('test');
+
+    await operationsOnce(testDatabase.pool, config, fixture.repository, client, logger);
+    const resumeCall = fakeBridge.calls.at(-1);
+    expect(resumeCall).toMatchObject({ kind: 'resume', ticketId: fixture.ticketId });
+    expect(resumeCall?.body).toMatchObject({
+      admission: { leaseId: expect.any(String), fencingToken: expect.any(String) },
+    });
+    await makeOperationsDue();
+    await operationsOnce(testDatabase.pool, config, fixture.repository, client, logger);
+    const task = await readTask(fixture.taskId);
+    expect(task).toMatchObject({ state: 'queued' });
+    expect(task.stoppedAt).toBeNull();
+    expect(task.runtimeLeaseId).toEqual(expect.any(String));
+
+    await maintainLeases(testDatabase.pool, fixture.repository, 60_000);
+    const lease = await testDatabase.pool.query(
+      `select state, expires_at from runtime_leases where id = $1`,
+      [task.runtimeLeaseId],
+    );
+    expect(lease.rows[0]?.state).toBe('active');
+  }, 30_000);
+
+  it('keeps a resume queued when a different task holds the repository lease', async () => {
+    const first = await seed({ state: 'running' });
+    await insertOperation(first, 'pause', `cmd-hold-${Date.now()}`);
+    await testDatabase.pool.query(
+      `insert into runtime_leases (repository_id, holder_id, expires_at)
+       values ($1, 'another-task', now() + interval '10 minutes')`,
+      [first.repository.id],
+    );
+    const second = await seed({
+      state: 'stopped',
+      stoppedAt: new Date(),
+      repository: first.repository,
+    });
+    await insertOperation(second, 'resume', `cmd-wait-${Date.now()}`);
+    const logger = createConsoleLogger('test');
+
+    await operationsOnce(testDatabase.pool, config, first.repository, client, logger);
+    const resumeCalls = fakeBridge.calls.filter(
+      (call) => call.kind === 'resume' && call.ticketId === second.ticketId,
+    );
+    expect(resumeCalls).toHaveLength(0);
+    const operation = await testDatabase.pool.query(
+      `select state, evidence from task_operations
+        where task_id = $1 and kind = 'resume'`,
+      [second.taskId],
+    );
+    expect(operation.rows[0]?.state).toBe('queued');
+  }, 30_000);
+
+  it('imports a GitHub ticket into one Work conversation and does not duplicate a replay', async () => {
+    const owner = await testDatabase.pool.query<{ id: string }>(
+      `insert into owners (display_name) values ('M4 GitHub Owner') returning id`,
+    );
+    const ownerId = owner.rows[0]!.id;
+    const repo = await testDatabase.pool.query<{ id: string; full_name: string }>(
+      `insert into repositories (owner_id, full_name, default_branch, status, bridge_url)
+       values ($1, $2, 'main', 'active', $3) returning id, full_name`,
+      [ownerId, `Bouyer12/m4-import-${Date.now()}`, fakeBridge.url],
+    );
+    const repository: RepositoryBinding = {
+      id: repo.rows[0]!.id,
+      fullName: repo.rows[0]!.full_name,
+      defaultBranch: 'main',
+      bridgeUrl: fakeBridge.url,
+      bridgeCredentialRef: null,
+    };
+    const importedEvent = (seq: number, id: string, state = 'running'): BridgeEvent => ({
+      seq,
+      id,
+      type: 'ticket.imported',
+      at: '2026-11-04T00:00:00.000Z',
+      data: {
+        ticketId: 'github-ticket-42',
+        source: 'github',
+        externalId: 'github:42',
+        number: 42,
+        isPr: true,
+        url: 'https://github.com/Bouyer12/m4-import/pull/42',
+        title: 'Fix the GitHub issue',
+        state,
+        triggerId: 'github-comment:42:1',
+        text: 'Please fix this margin',
+        base: {
+          branch: 'main',
+          commit: 'b'.repeat(40),
+          model: 'commandcode/deepseek/deepseek-v4.1-flash',
+        },
+        at: '2026-11-04T00:00:00.000Z',
+      },
+    });
+    fakeBridge.events = [importedEvent(1, 'ticket-imported:github-ticket-42')];
+    const logger = createConsoleLogger('test');
+    expect(await syncOnce(testDatabase.pool, repository, client, logger)).toBe(true);
+
+    const conversation = await testDatabase.pool.query(
+      `select id, source, external_key as "externalKey", external_url as "externalUrl"
+         from conversations where repository_id = $1`,
+      [repository.id],
+    );
+    expect(conversation.rows).toHaveLength(1);
+    expect(conversation.rows[0]).toMatchObject({
+      source: 'github',
+      externalKey: 'github:42',
+      externalUrl: 'https://github.com/Bouyer12/m4-import/pull/42',
+    });
+    const task = await testDatabase.pool.query(
+      `select upstream_ticket_id as "ticketId", upstream_thread_id as "thread", state
+         from task_links where repository_id = $1`,
+      [repository.id],
+    );
+    expect(task.rows[0]).toMatchObject({
+      ticketId: 'github-ticket-42',
+      thread: 'github:42',
+      state: 'running',
+    });
+    const messages = await testDatabase.pool.query(
+      `select body, source from messages where conversation_id = $1`,
+      [conversation.rows[0]!.id],
+    );
+    expect(messages.rows[0]).toMatchObject({ body: 'Please fix this margin', source: 'github' });
+
+    // A second import with a new event id but the same external identity must
+    // reuse the conversation and task.
+    fakeBridge.events = [
+      importedEvent(1, 'ticket-imported:github-ticket-42'),
+      importedEvent(2, 'ticket-imported:github-ticket-42:again', 'awaiting_review'),
+    ];
+    expect(await syncOnce(testDatabase.pool, repository, client, logger)).toBe(true);
+    const again = await testDatabase.pool.query(
+      `select count(*)::int as conversations from conversations where repository_id = $1`,
+      [repository.id],
+    );
+    expect(again.rows[0]?.conversations).toBe(1);
+    const tasks = await testDatabase.pool.query(
+      `select count(*)::int as tasks from task_links where repository_id = $1`,
+      [repository.id],
+    );
+    expect(tasks.rows[0]?.tasks).toBe(1);
+    const state = await testDatabase.pool.query(
+      `select state from task_links where repository_id = $1`,
+      [repository.id],
+    );
+    expect(state.rows[0]?.state).toBe('awaiting_review');
+  }, 30_000);
+
+  it('copies a ready runtime report into the conversation exactly once', async () => {
+    const fixture = await seed({ state: 'awaiting_review', executionMode: 'discuss' });
+    fakeBridge.snapshots.set(fixture.ticketId, {
+      ticketId: fixture.ticketId,
+      title: 'M4 task',
+      state: 'awaiting_review',
+      mode: 'discuss',
+      report: {
+        state: 'ready',
+        summary: 'Plan: fix README.md line 5 (teh -> the).',
+        at: '2026-11-04T02:00:00.000Z',
+      },
+    });
+    const logger = createConsoleLogger('test');
+    expect(await captureReportsOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(
+      true,
+    );
+    expect(await captureReportsOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(
+      false,
+    );
+    const messages = await testDatabase.pool.query(
+      `select kind, body, source_event_id as "sourceEventId" from messages where conversation_id = $1`,
+      [fixture.conversationId],
+    );
+    expect(messages.rows).toHaveLength(1);
+    expect(messages.rows[0]).toMatchObject({
+      kind: 'result',
+      body: 'Plan: fix README.md line 5 (teh -> the).',
+      sourceEventId: `report:${fixture.ticketId}:2026-11-04T02:00:00.000Z`,
+    });
+  }, 30_000);
+
+  it('maps a closed PR event to closed_unmerged and holds later deliveries', async () => {
+    const fixture = await seed({ state: 'awaiting_review' });
+    fakeBridge.events = [
+      {
+        seq: 1,
+        id: `ticket-ended:${fixture.ticketId}`,
+        type: 'ticket.ended',
+        at: '2026-11-04T01:00:00.000Z',
+        data: { ticketId: fixture.ticketId, by: 'human', outcome: 'closed' },
+      },
+    ];
+    const logger = createConsoleLogger('test');
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+    expect(await readTask(fixture.taskId)).toMatchObject({ state: 'closed_unmerged' });
+
+    const message = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, client_message_id, body)
+       values ($1, 'inbound', 'user', 'closed-message', 'continue anyway') returning id`,
+      [fixture.conversationId],
+    );
+    await testDatabase.pool.query(
+      `insert into deliveries (message_id, upstream_trigger_id) values ($1, $2)`,
+      [message.rows[0]!.id, `workspace:${message.rows[0]!.id}`],
+    );
+    expect(await deliverOnce(testDatabase.pool, config, fixture.repository, client, logger)).toBe(
+      false,
+    );
+    const delivery = await testDatabase.pool.query(
+      `select state from deliveries where message_id = $1`,
+      [message.rows[0]!.id],
+    );
+    expect(delivery.rows[0]?.state).toBe('pending');
+  }, 30_000);
+
+  it('keeps a stopped task delivery stored until resume', async () => {
+    const fixture = await seed({
+      state: 'stopped',
+      stoppedAt: new Date(),
+      stopEvidence: { agentStatus: 'idle' },
+    });
+    const message = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, client_message_id, body)
+       values ($1, 'inbound', 'user', 'stopped-message', 'queued until resume') returning id`,
+      [fixture.conversationId],
+    );
+    await testDatabase.pool.query(
+      `insert into deliveries (message_id, upstream_trigger_id) values ($1, $2)`,
+      [message.rows[0]!.id, `workspace:${message.rows[0]!.id}`],
+    );
+    const logger = createConsoleLogger('test');
+    expect(await deliverOnce(testDatabase.pool, config, fixture.repository, client, logger)).toBe(
+      false,
+    );
+    const delivery = await testDatabase.pool.query(
+      `select state from deliveries where message_id = $1`,
+      [message.rows[0]!.id],
+    );
+    expect(delivery.rows[0]?.state).toBe('pending');
+  }, 30_000);
+
+  it('reconciles a running task from a paused snapshot and blocks one the runtime cannot confirm', async () => {
+    const paused = await seed({ state: 'running' });
+    fakeBridge.snapshots.set(paused.ticketId, {
+      ticketId: paused.ticketId,
+      title: 'M4 task',
+      state: 'stopped',
+      mode: 'execute',
+      paused: {
+        at: new Date().toISOString(),
+        by: 'human',
+        stoppedAt: new Date().toISOString(),
+        evidence: { agentStatus: 'idle', harnessPid: 1234, jobsAfter: [] },
+      },
+    });
+    const unconfirmed = await seed({ state: 'running' });
+    // No snapshot for this ticket: the fake Bridge answers 404.
+    const logger = createConsoleLogger('test');
+    await reconcileTasks(testDatabase.pool, paused.repository, client, logger);
+    expect(await readTask(paused.taskId)).toMatchObject({ state: 'stopped' });
+    const evidence = (await readTask(paused.taskId)).stopEvidence as Record<string, unknown>;
+    expect(evidence).toMatchObject({ harnessPid: 1234, agentStatus: 'idle' });
+
+    // Reconcile the second repository too; its missing snapshot must block it.
+    await reconcileTasks(testDatabase.pool, unconfirmed.repository, client, logger);
+    const blocked = await readTask(unconfirmed.taskId);
+    expect(blocked.state).toBe('blocked');
+    expect(blocked.stopEvidence).toMatchObject({
+      reconciliationError: expect.stringContaining('not found'),
+    });
+  }, 30_000);
+});

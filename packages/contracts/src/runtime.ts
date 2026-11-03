@@ -50,6 +50,8 @@ export const bridgeCapabilitiesSchema = z.object({
     resume: z.boolean(),
     retry: z.boolean(),
     readOnlyDiscussion: z.boolean(),
+    /** M4: discussion tickets can be started into execution; absent on an M3 runtime. */
+    start: z.boolean().optional(),
   }),
   source: z.object({ kind: z.string(), enabled: z.boolean() }),
 });
@@ -76,6 +78,12 @@ export const bridgeTriggerInputSchema = z
     actor: z.object({ id: z.string().min(1), name: z.string().optional() }),
     text: z.string().min(1).max(20_000),
     at: isoTimestampSchema,
+    /**
+     * Continues an existing ticket (an imported GitHub conversation) instead of
+     * opening the message in a new one. The Bridge uses that ticket's origin
+     * thread and frozen model/base, and replies go back to this workspace Channel.
+     */
+    targetTicketId: z.string().min(1).max(200).optional(),
     executionSpec: z.object({
       repository: z.string().regex(/^[^/\s]+\/[^/\s]+$/),
       baseBranch: z.string().min(1),
@@ -122,3 +130,134 @@ export const bridgeEventPageSchema = z.object({
 
 export type BridgeEvent = z.infer<typeof bridgeEventSchema>;
 export type BridgeEventPage = z.infer<typeof bridgeEventPageSchema>;
+
+/** Frozen model of a runtime ticket snapshot. */
+export const bridgeTicketModelSchema = z.object({
+  provider: z.string().min(1),
+  model: z.string().min(1),
+  reasoningEffort: z.string().nullable().optional(),
+});
+
+/** Repository and starting commit frozen on a runtime ticket. */
+export const bridgeTicketBaseSchema = z.object({
+  repository: z.string().optional(),
+  branch: z.string(),
+  commit: z.string(),
+});
+
+export const bridgeTicketReportSchema = z.object({
+  state: z.string().min(1),
+  summary: z.string(),
+  at: isoTimestampSchema,
+});
+
+/** A recoverable human pause, as the runtime persists it. */
+export const bridgeTicketPausedSchema = z.object({
+  at: isoTimestampSchema,
+  by: z.literal('human'),
+  operationId: z.string().min(1).optional(),
+  stoppedAt: isoTimestampSchema.optional(),
+  evidence: z.record(z.string(), z.unknown()).optional(),
+  error: z.string().nullable().optional(),
+});
+
+export const bridgeTicketExecutionSchema = z.object({
+  name: z.string(),
+  directory: z.string(),
+  assignment: z.string(),
+});
+
+/**
+ * Authoritative runtime ticket snapshot. M3 fields stay; M4 adds mode,
+ * planRevision, paused, execution. Fields an M3 runtime does not send are
+ * optional so the same client can read both.
+ */
+export const bridgeTicketSnapshotSchema = z.object({
+  ticketId: z.string().min(1),
+  title: z.string(),
+  state: z.string().min(1),
+  question: z.string().nullable().optional(),
+  attentionId: z.string().nullable().optional(),
+  model: bridgeTicketModelSchema.nullable().optional(),
+  base: bridgeTicketBaseSchema.nullable().optional(),
+  assignmentId: z.string().nullable().optional(),
+  report: bridgeTicketReportSchema.nullable().optional(),
+  pr: z.object({ number: z.number().int().positive(), url: z.string() }).optional(),
+  ended: z
+    .object({
+      at: isoTimestampSchema,
+      by: z.string(),
+      outcome: z.string(),
+      reason: z.string().optional(),
+    })
+    .nullable()
+    .optional(),
+  mode: z.enum(['execute', 'discuss']).optional(),
+  planRevision: z.number().int().positive().nullable().optional(),
+  paused: bridgeTicketPausedSchema.nullable().optional(),
+  execution: bridgeTicketExecutionSchema.nullable().optional(),
+});
+
+export type BridgeTicketSnapshot = z.infer<typeof bridgeTicketSnapshotSchema>;
+
+export const bridgeOperationKindSchema = z.enum(['start', 'pause', 'resume', 'retry']);
+
+export type BridgeOperationKind = z.infer<typeof bridgeOperationKindSchema>;
+
+export const bridgeOperationStateSchema = z.enum(['queued', 'running', 'succeeded', 'failed']);
+
+export type BridgeOperationState = z.infer<typeof bridgeOperationStateSchema>;
+
+export const bridgeOperationSchema = z.object({
+  operationId: z.string().min(1),
+  ticketId: z.string().min(1),
+  kind: bridgeOperationKindSchema,
+  state: bridgeOperationStateSchema,
+  error: z.string().nullable().optional(),
+  evidence: z.record(z.string(), z.unknown()).optional(),
+  updatedAt: isoTimestampSchema,
+});
+
+export type BridgeOperation = z.infer<typeof bridgeOperationSchema>;
+
+export const bridgeOperationAcceptedSchema = z.object({
+  operationId: z.string().min(1),
+  ticketId: z.string().min(1),
+  kind: bridgeOperationKindSchema,
+  state: bridgeOperationStateSchema,
+});
+
+export type BridgeOperationAccepted = z.infer<typeof bridgeOperationAcceptedSchema>;
+
+export const bridgePauseInputSchema = z
+  .object({ operationId: z.string().min(1).max(200), reason: z.string().max(1000).optional() })
+  .strict();
+
+export type BridgePauseInput = z.infer<typeof bridgePauseInputSchema>;
+
+export const bridgeResumeInputSchema = z
+  .object({
+    operationId: z.string().min(1).max(200),
+    admission: z
+      .object({
+        leaseId: uuidSchema,
+        /** Decimal string because the fencing token is a bigint. */
+        fencingToken: z.string().regex(/^(0|[1-9][0-9]*)$/),
+      })
+      .strict(),
+  })
+  .strict();
+
+export type BridgeResumeInput = z.infer<typeof bridgeResumeInputSchema>;
+
+export const bridgeStartInputSchema = z
+  .object({ operationId: z.string().min(1).max(200), planRevision: z.number().int().positive() })
+  .strict();
+
+export type BridgeStartInput = z.infer<typeof bridgeStartInputSchema>;
+
+export const bridgeRetryInputSchema = z
+  .object({ operationId: z.string().min(1).max(200) })
+  .strict();
+
+export type BridgeRetryInput = z.infer<typeof bridgeRetryInputSchema>;

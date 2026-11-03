@@ -48,6 +48,7 @@ export function NewTaskPanel({
   const [modelsAttempt, setModelsAttempt] = useState(0);
   const [modelKeyValue, setModelKeyValue] = useState('');
   const [reasoningEffort, setReasoningEffort] = useState('');
+  const [executionMode, setExecutionMode] = useState<'execute' | 'discuss'>('execute');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requestRef = useRef<PendingRequest | null>(null);
@@ -56,6 +57,7 @@ export function NewTaskPanel({
     setBaseBranch(repository.defaultBranch);
     setModelKeyValue('');
     setReasoningEffort('');
+    setExecutionMode('execute');
     setError(null);
     requestRef.current = null;
   }, [repository.id, repository.defaultBranch]);
@@ -120,7 +122,7 @@ export function NewTaskPanel({
     const payload = {
       repositoryId: repository.id,
       mode: 'work' as const,
-      executionMode: 'execute' as const,
+      executionMode,
       baseBranch: branchValue,
       model,
     };
@@ -249,23 +251,36 @@ export function NewTaskPanel({
           <fieldset className={styles.modeGroup}>
             <legend className={styles.fieldLabel}>执行方式</legend>
             <div className={styles.modeOptions}>
-              <label className={styles.modeOptionActive}>
-                <input type="radio" name="execution-mode" checked readOnly />
+              <label
+                className={
+                  executionMode === 'execute' ? styles.modeOptionActive : styles.modeOptionDisabled
+                }
+              >
+                <input
+                  type="radio"
+                  name="execution-mode"
+                  checked={executionMode === 'execute'}
+                  onChange={() => setExecutionMode('execute')}
+                />
                 <span>
                   <strong>直接执行</strong>
-                  <em>创建后可直接发送任务并投递。</em>
+                  <em>创建后可发送任务并投递，执行器可修改工作目录并创建 PR。</em>
                 </span>
               </label>
               <label
-                className={styles.modeOptionDisabled}
-                title="先讨论属于 M4：只读讨论与按方案开始执行尚未接入"
+                className={
+                  executionMode === 'discuss' ? styles.modeOptionActive : styles.modeOptionDisabled
+                }
               >
-                <input type="radio" name="execution-mode" disabled />
+                <input
+                  type="radio"
+                  name="execution-mode"
+                  checked={executionMode === 'discuss'}
+                  onChange={() => setExecutionMode('discuss')}
+                />
                 <span>
-                  <strong>
-                    先讨论 <span className={styles.phaseTag}>M4</span>
-                  </strong>
-                  <em>只读讨论与“按此方案开始执行”在 M4 接入，当前不可选。</em>
+                  <strong>先讨论</strong>
+                  <em>只读讨论：没有写工具、shell 或写凭据；确认方案后才转执行。</em>
                 </span>
               </label>
             </div>
@@ -296,7 +311,9 @@ export function NewTaskPanel({
             <Icon name="work" size={14} />
             <span>
               {blockedReason ??
-                '创建后进入待接单，发送第一条消息后由执行器接收。创建请求使用稳定幂等键重试。'}
+                (executionMode === 'discuss'
+                  ? '讨论态由运行时权限约束为只读；发送方案后点“按此方案开始执行”才转执行态。'
+                  : '创建后进入待接单，发送第一条消息后由执行器接收。创建请求使用稳定幂等键重试。')}
             </span>
           </div>
           <button

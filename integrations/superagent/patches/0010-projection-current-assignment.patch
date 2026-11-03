@@ -1,0 +1,54 @@
+diff --git a/src/app/bridge.ts b/src/app/bridge.ts
+index 0e02951..361a229 100644
+--- a/src/app/bridge.ts
++++ b/src/app/bridge.ts
+@@ -58,13 +58,16 @@ export function projectTicketState(ticket: Ticket): BridgeTicketState {
+   // A pause is authoritative: the platform shows stopping until the evidence lands, and never guesses that it stopped.
+   if (ticket.paused) return ticket.paused.stoppedAt ? 'stopped' : 'stopping'
+   if (ticket.attention) return 'waiting_input'
+-  const report = latestReport(ticket)
++  // Only the current Assignment's report describes the Ticket now. An older
++  // Assignment's ready report is history once start, resume or retry created a
++  // newer Assignment; keeping it would show awaiting_review while the worker runs.
++  const assignment = latestAssignment(ticket)
++  const report = assignment?.report
+   if (report?.state === 'ready') return 'awaiting_review'
+   // Discussion is read-only work in progress; its owner's question and a ready plan take precedence above.
+   if (ticket.mode === 'discuss') return 'discussing'
+   if (report?.state === 'blocked') return waitsForPerson(ticket) ? 'blocked' : 'queued'
+   if (report?.state === 'failed') return waitsForPerson(ticket) ? 'failed' : 'queued'
+-  const assignment = latestAssignment(ticket)
+   if (assignment?.state === 'running') return 'running'
+   if (assignment?.state === 'pending') return 'queued'
+   // An idle worker between turns, or a just-accepted ticket, still belongs to the queue of running work.
+diff --git a/tests/discussion.spec.ts b/tests/discussion.spec.ts
+index 5d29b26..acc4377 100644
+--- a/tests/discussion.spec.ts
++++ b/tests/discussion.spec.ts
+@@ -90,6 +90,26 @@ function harness(): Harness {
+ const ensure = (h: Harness, id: string, mode?: 'execute' | 'discuss') =>
+   h.sessions.ensure(id, `/tmp/${id}`, `Work ${id}`, 'worker', null, mode)
+ 
++describe('ticket state projection', () => {
++  it('shows running after start creates a newer Assignment even with an older ready plan report', () => {
++    const discussed = ticket('t1', {
++      mode: 'execute',
++      assignments: [
++        { id: 'a1', state: 'ended', createdAt: '2026-11-03T12:00:00.000Z', endedAt: '2026-11-03T12:05:00.000Z',
++          report: { state: 'ready', summary: 'plan', at: '2026-11-03T12:04:00.000Z' } },
++        { id: 'a2', state: 'running', createdAt: '2026-11-03T12:06:00.000Z' },
++      ],
++    })
++    expect(projectTicketState(discussed)).toBe('running')
++    const pending = ticket('t2', { assignments: [discussed.assignments[0]!, { id: 'a3', state: 'pending', createdAt: '2026-11-03T12:07:00.000Z' }] })
++    expect(projectTicketState(pending)).toBe('queued')
++    // The current Assignment's own ready report is still the review state.
++    const reviewed = ticket('t3', { assignments: [{ id: 'a4', state: 'ended', createdAt: '2026-11-03T12:00:00.000Z',
++      report: { state: 'ready', summary: 'done', at: '2026-11-03T12:08:00.000Z' } }] })
++    expect(projectTicketState(reviewed)).toBe('awaiting_review')
++  })
++})
++
+ describe('discussion tool boundary', () => {
+   it('offers only read-only tools: no write, shell, job, subagent, or message tool', () => {
+     expect(DISCUSS_TOOLS).toEqual(['read', 'read_image', 'glob', 'grep', 'web_search', 'web_fetch', 'skill', 'todo_write'])
