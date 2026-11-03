@@ -1,6 +1,6 @@
 # 第 0 阶段环境基线（M0）
 
-取证时间：2026-11-03 05:56–06:26 UTC（浏览器/服务器本地时间为 UTC+8）。
+取证时间：2026-11-03 05:56–06:35 UTC（浏览器/服务器本地时间为 UTC+8；主体取证在 06:26 前完成）。
 范围：`sutrasky/MoYu` 的 M0 兼容性取证，为后续网页、调度服务和受控 superagent 补丁建立可复现基线。
 结论：**可继续开发，但必须先按本文件固定上游制品，并保留下列未验证项；不得把现场安装目录直接当作可追溯发布物。**
 
@@ -101,7 +101,7 @@ env -i ... corepack pnpm@11.7.0 test
 # 1196 passed, 1 failed；见 §6
 ```
 
-重建后的 `lib/` 与现场安装 `/root/dsh-superagent/lib/` 的 12 个文件 SHA-256 完全一致；两份清单的摘要都是 `c2ca910f…`。因此可以确认现场运行的就是这个 commit 构建出来的 bundle，而不是“版本号相同”的近似物。
+重建后的 `lib/` 与现场安装 `/root/dsh-superagent/lib/` 的 12 个文件 SHA-256 完全一致；两份清单的摘要都是 `c2ca910f…`。因此可以确认现场运行的 bundle 可由这个 commit 精确重建，而不是“版本号相同”的近似物。
 
 **环境陷阱（很重要）**：在由 dsh worker 启动的 shell 里直接跑 `pnpm check`，会继承 `GIT_CONFIG_GLOBAL=/root/.dsh/state/superagent/worker-gitconfig` 和 worker-bin 的 `PATH`，导致 `tests/runtime.spec.ts` 的两条环境测试失败（连同 Feishu 测试共 3 条）。复现时必须使用上面的 `env -i` 干净环境，否则会把测试环境污染误判为版本不兼容。
 
