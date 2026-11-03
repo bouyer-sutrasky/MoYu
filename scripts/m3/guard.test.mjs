@@ -68,6 +68,8 @@ test('accepts a dedicated profile linked to the patched build', async () => {
   const result = await assertE2EIsolation(await options(fixtureValue));
   assert.equal(result.stateDir, join(fixtureValue.home, 'state', 'm3'));
   assert.equal(result.sessionsDir, join(fixtureValue.home, 'sessions'));
+  // The harness deletes exactly these validated paths, never a resolved link target.
+  assert.equal(result.stateDir, join(result.dshHome, 'state', result.profile));
   rmSync(fixtureValue.home, { recursive: true, force: true });
 });
 
@@ -153,11 +155,53 @@ test('rejects a symlinked state parent and leaves the other instance untouched',
   symlinkSync(victim, join(fixtureValue.home, 'state'));
   await assert.rejects(
     assertE2EIsolation(await options(fixtureValue)),
-    /state directory resolves outside/,
+    /traverses a symbolic link/,
   );
   assert.equal(readFileSync(join(victim, 'm3', 'keep.txt'), 'utf8'), 'keep');
   rmSync(fixtureValue.home, { recursive: true, force: true });
   rmSync(victim, { recursive: true, force: true });
+});
+
+test('rejects state/<profile> linked to another profile in the same home', async () => {
+  const fixtureValue = fixture();
+  const another = join(fixtureValue.home, 'state', 'another-profile');
+  mkdirSync(another, { recursive: true });
+  writeFileSync(join(another, 'keep.txt'), 'keep');
+  symlinkSync(another, join(fixtureValue.home, 'state', 'm3'));
+  await assert.rejects(
+    assertE2EIsolation(await options(fixtureValue)),
+    /traverses a symbolic link/,
+  );
+  assert.equal(readFileSync(join(another, 'keep.txt'), 'utf8'), 'keep');
+  rmSync(fixtureValue.home, { recursive: true, force: true });
+});
+
+test('rejects sessions linked to another directory in the same home', async () => {
+  const fixtureValue = fixture();
+  const other = join(fixtureValue.home, 'other-sessions');
+  mkdirSync(other, { recursive: true });
+  writeFileSync(join(other, 'keep.txt'), 'keep');
+  symlinkSync(other, join(fixtureValue.home, 'sessions'));
+  await assert.rejects(
+    assertE2EIsolation(await options(fixtureValue)),
+    /traverses a symbolic link/,
+  );
+  assert.equal(readFileSync(join(other, 'keep.txt'), 'utf8'), 'keep');
+  rmSync(fixtureValue.home, { recursive: true, force: true });
+});
+
+test('rejects a cleanup target whose parent link stays inside the same home', async () => {
+  const fixtureValue = fixture();
+  const otherState = join(fixtureValue.home, 'other-state');
+  mkdirSync(join(otherState, 'm3'), { recursive: true });
+  writeFileSync(join(otherState, 'm3', 'keep.txt'), 'keep');
+  symlinkSync(otherState, join(fixtureValue.home, 'state'));
+  await assert.rejects(
+    assertE2EIsolation(await options(fixtureValue)),
+    /traverses a symbolic link/,
+  );
+  assert.equal(readFileSync(join(otherState, 'm3', 'keep.txt'), 'utf8'), 'keep');
+  rmSync(fixtureValue.home, { recursive: true, force: true });
 });
 
 test('rejects a profile containing path separators', async () => {

@@ -76,6 +76,12 @@ node scripts/m3/e2e.mjs
    [测试 PR #1](https://github.com/Bouyer12/m3-loop-r3-68fa5d90/pull/1)；平台显示 `awaiting_review` 与 PR 链接。
 6. 回复消息的 delivery 由 worker session 证据推进到 `read`（`readAt 2026-11-03T15:20:39.163Z`）；上游 Ticket 的三个 trigger input 都记录了 `readAt`（运行后只读快照见 [`upstream-state-snapshot.json`](evidence/m3/upstream-state-snapshot.json)）；平台消息状态按证据推进：`stored` → `delivered`（Bridge `receive` 返回 `stored`）→ `read`（session `user/message` + `Ticket.inputs[].readAt`）。
 
+## 第四轮复审修复（基于 `12aedf4` 复审意见）
+
+- **清理路径不得经链接命中其他 profile**：`guard.mjs` 的 `assertNoSymlinkPath` 从隔离 home 到 `state/<profile>`、`sessions`、profile 目录逐级 `lstat`，发现任一级（含叶子）是符号链接即拒绝，即使链接目的地仍在同一 home 内；home 本身也不能是链接。E2E 清理只使用返回的规范路径（等于 `home/state/<profile>` 与 `home/sessions`），不会解析到其他 profile。
+- 回归（14 项 guard 测试）：`state/m3` 指向 `state/another-profile`、`sessions` 指向同 home 的其他目录、清理目标父目录是指向同 home 其他目录的链接，均断言拒绝且哨兵文件保留；保留跨 home、env 覆盖、生产回调 URL、端口占用和正常目录通过测试。
+- 本轮仅修改 guard 与其回归，不重跑隔离 E2E；上一轮 24/24 E2E 证据仍对应 `12aedf4` 的产品代码，最终提交会重跑两项必需 CI。
+
 ## 第三轮复审修复（基于 `7431dee` 复审意见）
 
 - **filtered Trigger 重放**：上游 `0004` 在任何模型/分支校验前读取已持久化 Trigger；Store 有 filtered disposition 时返回 `filtered`（不是 `duplicate`）。上游回归与 dispatcher 回归（delivery `failed`、无 `delivered_at`/`read_at`、无 Ticket）均通过。
@@ -133,7 +139,7 @@ Before 为 `main` @ `b08f36d` 的真实 M2 构建，经同一个隔离 API/数�
 | 重发同一 `clientMessageId` 不重复接单 | 完成 | 并发 5 次 + 唯一索引；上游 Trigger 1、Ticket 1 |
 | 投递/回执丢失后的重试 | 完成 | 503 重试与强制 pending 重投；同一 trigger id、上游去重；重复 Trigger 返回首次冻结 SHA |
 | API 与 Bridge 各自重启后消息不丢失、不重复投递 | 完成 | 两项运行检查均通过 |
-| 运行验证使用隔离实例和测试仓库，计入同机资源预算 | 完成（资源测量除外） | 独立 DSH_HOME/profile/state/端口 3192/3191、私有测试仓库；E2E 启动前校验目录/端口/profile 身份，build 只发布到新目录；未做 M5 的 6/8 GB 压力测量 |
+| 运行验证使用隔离实例和测试仓库，计入同机资源预算 | 完成（资源测量除外） | 独立 DSH_HOME/profile/state/端口 3192/3191、私有测试仓库；E2E 启动前校验目录/端口/profile 身份与清理路径无链接，build 只发布到新目录；未做 M5 的 6/8 GB 压力测量 |
 | PR 附真实 Ticket、脱敏日志或测试 PR 等可核对证据 | 完成 | 本文件、`docs/evidence/m3/`、测试 PR #1 |
 | 只完成 M3，不自行合并 | 完成 | 本 PR 未合并；未启用 auto-merge |
 

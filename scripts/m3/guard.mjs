@@ -11,8 +11,8 @@
  * against the already-validated home/profile/ports before it reaches the child.
  */
 import { createConnection } from 'node:net';
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { URL } from 'node:url';
 
 export const BOOTSTRAP_HOME = '/root/.dsh';
@@ -102,27 +102,27 @@ function validatePlatformUrl(value, apiPort) {
 }
 
 /**
- * Resolves a path that may not exist yet through its deepest existing ancestor,
- * and returns a real path that is proven to stay inside `realHome`.
+ * Rejects any symbolic link from the isolated home down to a cleanup target,
+ * including links whose destination is still inside the same home. Resolving
+ * through such a link would let `rmSync(target, {recursive:true})` delete a
+ * different profile's state. Every existing component must be a real directory
+ * (or the leaf a real file); only a not-yet-created leaf is allowed.
  */
-function safeTarget(realHome, target, label) {
-  let current = resolve(target);
-  while (!existsSync(current)) {
-    const parent = dirname(current);
-    if (parent === current) fail(`no existing ancestor for ${label}: ${target}`);
-    current = parent;
+function assertNoSymlinkPath(realHome, target, label) {
+  const lexical = resolve(target);
+  if (!isInside(realHome, lexical)) fail(`${label} escapes the isolated DSH home: ${lexical}`);
+  let cursor = realHome;
+  for (const part of relative(realHome, lexical).split(sep).filter(Boolean)) {
+    cursor = join(cursor, part);
+    try {
+      if (lstatSync(cursor).isSymbolicLink()) {
+        fail(`${label} traverses a symbolic link at ${cursor}; refusing to clean it`);
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
   }
-  const realAncestor = realpathSync(current);
-  if (!isInside(realHome, realAncestor)) {
-    fail(`${label} resolves outside the isolated DSH home: ${realAncestor}`);
-  }
-  const suffix = relative(current, resolve(target));
-  const candidate = resolve(realAncestor, suffix);
-  if (!isInside(realHome, candidate)) fail(`${label} escapes the isolated DSH home: ${candidate}`);
-  if (existsSync(candidate) && !isInside(realHome, realpathSync(candidate))) {
-    fail(`${label} resolves outside the isolated DSH home: ${candidate}`);
-  }
-  return candidate;
+  return lexical;
 }
 
 /** Resolves the only paths the harness may delete for this DSH home/profile. */
@@ -152,6 +152,9 @@ export async function assertE2EIsolation(options) {
   if (!dshHome || !isAbsolute(dshHome)) fail('E2E_DSH_HOME must be an absolute path');
   const home = resolve(dshHome);
   if (!existsSync(home)) fail(`E2E_DSH_HOME does not exist: ${home}`);
+  if (lstatSync(home).isSymbolicLink()) {
+    fail(`E2E_DSH_HOME must not be a symbolic link: ${home}`);
+  }
   const realHome = realpathSync(home);
   if (
     home === '/' ||
@@ -189,9 +192,9 @@ export async function assertE2EIsolation(options) {
     fail('DSH, API and Bridge ports must differ');
 
   const paths = isolatedPaths(realHome, profile);
-  const stateDir = safeTarget(realHome, paths.stateDir, 'state directory');
-  const sessionsDir = safeTarget(realHome, paths.sessionsDir, 'sessions directory');
-  const profileDir = safeTarget(realHome, paths.profileDir, 'profile directory');
+  const stateDir = assertNoSymlinkPath(realHome, paths.stateDir, 'state directory');
+  const sessionsDir = assertNoSymlinkPath(realHome, paths.sessionsDir, 'sessions directory');
+  const profileDir = assertNoSymlinkPath(realHome, paths.profileDir, 'profile directory');
   if (!existsSync(profileDir)) fail(`profile directory does not exist: ${profileDir}`);
 
   const link = join(profileDir, 'node_modules', 'dsh-superagent');
