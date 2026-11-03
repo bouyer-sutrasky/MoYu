@@ -110,21 +110,22 @@ function buildLock({ dsh, superagent, dshTarball, superagentTarball }) {
   };
 }
 
-function runChecker(checker, dirs) {
+function runChecker(checker, dirs, overrides = {}) {
   return spawnSync('bash', [join(checker, 'verify-lock.sh')], {
     encoding: 'utf8',
+    cwd: overrides.cwd,
     env: {
       ...process.env,
       LC_ALL: 'C',
-      DSH_DIR: dirs.dsh,
-      SUPERAGENT_DIR: dirs.superagent,
+      DSH_DIR: overrides.dshDir ?? dirs.dsh,
+      SUPERAGENT_DIR: overrides.superagentDir ?? dirs.superagent,
       DSH_TARBALL: dirs.dshTarball,
       SUPERAGENT_TARBALL: dirs.superagentTarball,
     },
   });
 }
 
-test('verify-lock.sh gives the same result for plain, spaced and quoted paths', (t) => {
+test('verify-lock.sh gives the same result for plain, spaced, quoted and relative paths', (t) => {
   const base = mkdtempSync(join(tmpdir(), 'moyu-verify-lock-'));
   t.after(() => rmSync(base, { recursive: true, force: true }));
 
@@ -145,6 +146,7 @@ test('verify-lock.sh gives the same result for plain, spaced and quoted paths', 
     cpSync(join(base, 'fixture'), root, { recursive: true });
     return {
       label,
+      root,
       dirs: {
         dsh: join(root, 'dsh'),
         superagent: join(root, 'superagent'),
@@ -172,6 +174,30 @@ test('verify-lock.sh gives the same result for plain, spaced and quoted paths', 
   }
 
   const quoted = cases.at(-1);
+
+  // The same fixture reached from the test working directory: the checker must
+  // resolve ./dsh and ./superagent the same way as their absolute paths.
+  const relativeRuns = [
+    { label: 'relative DSH_DIR', dshDir: './dsh' },
+    { label: 'relative SUPERAGENT_DIR', superagentDir: './superagent' },
+    {
+      label: 'relative DSH_DIR and SUPERAGENT_DIR',
+      dshDir: './dsh',
+      superagentDir: './superagent',
+    },
+  ];
+  for (const { label, dshDir, superagentDir } of relativeRuns) {
+    const result = runChecker(checker, quoted.dirs, { cwd: quoted.root, dshDir, superagentDir });
+    assert.equal(
+      result.status,
+      0,
+      `${label}: expected exit 0\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+    );
+    assert.match(result.stdout, /baseline ok: installed artifacts match/);
+    assert.equal(result.stderr, '', `${label}: expected no stderr`);
+    assert.equal(result.stdout, plainStdout, `${label}: expected the absolute-path result`);
+  }
+
   const tamper = (file, contents, expectedFailure) => {
     const original = readFileSync(file, 'utf8');
     writeFileSync(file, original + contents);

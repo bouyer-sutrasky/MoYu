@@ -22,8 +22,9 @@ lock_value() {
 
 package_version() {
   # Pass the directory as an argument instead of interpolating it into the
-  # JavaScript source: paths may contain spaces or quotes.
-  node -p 'require(require("node:path").join(process.argv[1], "package.json")).version' "$1"
+  # JavaScript source: paths may contain spaces or quotes. Resolve it inside
+  # Node so relative directories keep working with require().
+  node -p 'require(require("node:path").resolve(process.argv[1], "package.json")).version' "$1"
 }
 
 manifest() {
