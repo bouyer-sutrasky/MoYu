@@ -1,0 +1,186 @@
+{
+  "schemaVersion": 1,
+  "verifiedAt": "2026-11-03T06:26:00Z",
+  "scope": "M0 compatibility baseline for sutrasky/MoYu; artifacts observed on the current host, not a declaration of future versions",
+  "repository": "sutrasky/MoYu",
+  "host": {
+    "os": "Ubuntu 24.04.2 LTS",
+    "kernel": "6.8.0-53-generic",
+    "arch": "x86_64",
+    "cpuCount": 4,
+    "memoryMiB": 15989,
+    "node": "22.23.3",
+    "npm": "10.9.9",
+    "pnpm": "10.34.7",
+    "corepack": "0.36.0",
+    "git": "2.43.0"
+  },
+  "harness": {
+    "package": "@deepseek-ai/dsh",
+    "version": "0.2.1-rc.2",
+    "npm": {
+      "tarball": "https://registry.npmmirror.com/@deepseek-ai/dsh/-/dsh-0.2.1-rc.2.tgz",
+      "sha256": "40e3d025c0240c4316ff42dee9bedc7709c0fb38aea10543b47076ed2af52e1d",
+      "shasum": "a502d1551aabc881020e3cb7961c38901565731a",
+      "integrity": "sha512-tvY+yhfKRifthbqPe/OK0AYxM5ZkvqfYq/jMYgJcEUxiRRL1Vwra3Ti5TB6AXgSWQdiPHYh/Vp6SJa9yHwMNuw==",
+      "fileCount": 20,
+      "unpackedSize": 75972
+    },
+    "upstream": {
+      "repository": "https://github.com/deepseek-ai/deepseek-harness",
+      "tag": "dsh-v0.2.1-rc.2",
+      "commit": "687f282e8625c6b8d11ff58211a90524be2e4317",
+      "commitDate": "2026-10-17T07:22:43Z",
+      "license": "MIT"
+    },
+    "install": {
+      "path": "/usr/lib/node_modules/@deepseek-ai/dsh",
+      "entry": "lib/bin.js",
+      "entrySha256": "80112efe368efb1a39720c7ada0af00442e5131fb2744edaaff8a3e8bb499e6f",
+      "packageFiles": 20,
+      "packageFilesManifestSha256": "1e001a9d058149eb84a8646dc547789aa370d541f98b0ab2d368bf6b13f0fd34",
+      "matchesNpmTarball": true
+    },
+    "notes": [
+      "The package has no gitHead metadata. The npm version and the dsh-v0.2.1-rc.2 tag are the traceable identities; the tag commit is the release merge.",
+      "The deployment document in the superagent checkout names 0.2.1-rc.3. The host runs rc.2; do not silently substitute one for the other."
+    ]
+  },
+  "superagent": {
+    "package": "dsh-superagent",
+    "version": "0.1.0",
+    "private": true,
+    "license": "MIT",
+    "upstream": {
+      "repository": "https://github.com/deepseek-ai/dsh-superagent-prototype",
+      "branch": "main",
+      "commit": "6337fc823ce20251c8de8085948165c81aaa701e",
+      "commitDate": "2026-10-31T12:05:39Z",
+      "tree": "3efbb036e5a56183c6bf642e2e1856a1f64e7be3"
+    },
+    "tarball": {
+      "url": "https://codeload.github.com/deepseek-ai/dsh-superagent-prototype/tar.gz/6337fc823ce20251c8de8085948165c81aaa701e",
+      "sha256": "31402e86aed27ef173d47d1eb8e36fd7baaf818050dbcdf8ebb8c59caf083659"
+    },
+    "install": {
+      "path": "/root/dsh-superagent",
+      "sourceFiles": 216,
+      "sourceFilesManifestSha256": "d50cacb9be5acd49553a44af48df6b4774e5428bf036e204811ed40e2f3c6711",
+      "libFiles": 12,
+      "libFilesManifestSha256": "c2ca910f54b990455ed3ded026d858a7b480ad1ffdb562e50ad4f0b9bf0d1047",
+      "excludedFromSourceManifest": [
+        "node_modules/**",
+        "lib/**",
+        ".artifacts/**"
+      ],
+      "matchesUpstreamCommit": true
+    },
+    "build": {
+      "node": "22.23.3",
+      "pnpm": "11.7.0",
+      "installCommand": "corepack pnpm@11.7.0 install --frozen-lockfile",
+      "typecheck": "pass",
+      "buildCommand": "corepack pnpm@11.7.0 build",
+      "build": "pass; 11 files; lib manifest equals the installed lib manifest",
+      "test": "1196 passed, 1 failed of 1197 tests in 59 files",
+      "knownFailure": {
+        "file": "tests/sources.spec.ts",
+        "test": "feishu event consumer > takes in the event lines it reads, records each chat as direct or not, and reports a malformed line without stopping",
+        "detail": "expected health.feishu { state: 'error', detail: contains 'JSON' }, received { state: 'ready', detail: 'Listening for bot events' }; repeatable in a full check and three repeated single-test runs"
+      },
+      "environmentNote": "Run checks in a clean environment. A shell spawned by a dsh worker inherits GIT_CONFIG_GLOBAL and the worker-bin PATH, which makes 3 tests fail (2 runtime environment tests plus the Feishu test)."
+    },
+    "runtimeDependencyGraph": {
+      "declared": {
+        "node": "^22.19.0 || >=24.0.0",
+        "dsh": "^0.2.1-alpha.2",
+        "packageManager": "pnpm@11.7.0"
+      },
+      "directRuntimeImportsResolvedFromBundleNodeModules": [
+        {
+          "name": "@deepseek-ai/cordis",
+          "version": "4.0.5-alpha.1"
+        },
+        {
+          "name": "@deepseek-ai/dsh-llm",
+          "version": "0.2.1-alpha.2"
+        },
+        {
+          "name": "@deepseek-ai/dsh-scope",
+          "version": "0.2.1-alpha.2"
+        },
+        {
+          "name": "zod",
+          "version": "4.4.3"
+        },
+        {
+          "name": "proper-lockfile",
+          "version": "4.1.2"
+        }
+      ],
+      "hostProvides": [
+        {
+          "name": "@deepseek-ai/cordis",
+          "version": "4.0.5"
+        },
+        {
+          "name": "@deepseek-ai/dsh-llm",
+          "version": "0.2.1-rc.2"
+        },
+        {
+          "name": "@deepseek-ai/dsh-scope",
+          "version": "0.2.1-rc.2"
+        }
+      ],
+      "finding": "The built bundle keeps @deepseek-ai/* external and resolves some direct imports from its own alpha.2 node_modules while the host is rc.2. This mixed graph loaded and polled in the isolated profile; it is not proof that every rc.2 API path is compatible. Keep new direct imports to a minimum, or align the bundle's dependency set before patch work."
+    }
+  },
+  "reproduction": {
+    "bootstrap": {
+      "dshHome": "/root/.dsh",
+      "profile": "superagent",
+      "stateDir": "/root/.dsh/state/superagent",
+      "port": 3082,
+      "service": "dsh-superagent.service",
+      "repository": "sutrasky/MoYu",
+      "changedByM0": false
+    },
+    "testProfiles": [
+      {
+        "dshHome": "/root/.dsh-m0",
+        "profile": "m0a",
+        "stateDir": "/root/.dsh-m0/state/m0a",
+        "port": 3182,
+        "repository": "Bouyer12/m0-compat-a-5b173b63"
+      },
+      {
+        "dshHome": "/root/.dsh-m0",
+        "profile": "m0b",
+        "stateDir": "/root/.dsh-m0/state/m0b",
+        "port": 3183,
+        "repository": "Bouyer12/m0-compat-b-5b173b63"
+      }
+    ],
+    "bundleLinkedByTestProfiles": "/root/src/upstream/superagent-tar/dsh-superagent-prototype-6337fc823ce2",
+    "testRepositoriesArePrivate": true,
+    "testRepositoriesAreDisposable": true
+  },
+  "verification": {
+    "commands": [
+      "sha256sum /root/src/upstream/superagent-6337fc823ce2.tar.gz",
+      "git ls-remote https://github.com/deepseek-ai/dsh-superagent-prototype.git refs/heads/main",
+      "gh api repos/deepseek-ai/dsh-superagent-prototype/commits/6337fc823ce20251c8de8085948165c81aaa701e",
+      "gh api repos/deepseek-ai/deepseek-harness/git/refs/tags/dsh-v0.2.1-rc.2",
+      "diff -rq --exclude=node_modules --exclude=.git --exclude=lib --exclude=.artifacts /root/dsh-superagent <pinned-tarball>",
+      "env -i HOME=<clean-home> PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin COREPACK_HOME=<corepack-home> CI=1 corepack pnpm@11.7.0 install --frozen-lockfile",
+      "env -i ... corepack pnpm@11.7.0 typecheck",
+      "env -i ... corepack pnpm@11.7.0 build",
+      "env -i ... corepack pnpm@11.7.0 test",
+      "curl -H 'x-orchestrator-request: 1' http://127.0.0.1:3182/orchestrator/api/state",
+      "gh api 'notifications?per_page=50'"
+    ],
+    "manifestMethod": "sha256sum of the sorted sha256sum lines after removing the './' prefix; paths are relative to the directory named by the lock entry",
+    "evidenceDocument": "docs/environment-baseline.md",
+    "findingsDocument": "integrations/superagent/compatibility-findings.md"
+  }
+}
