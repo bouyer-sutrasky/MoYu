@@ -1,0 +1,12 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# esbuild is the only dependency with an install script; allow its verified
+# platform binary so tsup, Vite and Vitest can run. Keep all other build scripts
+# blocked (the default in pnpm 11).
+allowBuilds:
+  esbuild: true
+
+minimumReleaseAgeExclude:
+  - fastify@5.12.8
