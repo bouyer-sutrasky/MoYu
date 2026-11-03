@@ -33,14 +33,24 @@ export class SessionService {
     private readonly events: AppEventBus,
   ) {}
 
-  async create(input: {
-    ownerId: string;
-    credentialId?: string | null;
-    userAgent?: string | null;
-  }): Promise<CreatedSession> {
+  /**
+   * Creates a session, optionally inside the caller's transaction. Credential
+   * login passes the transaction that holds the auth-state lock, so the
+   * credential liveness check and this insert commit as one unit: a concurrent
+   * revocation either revokes the credential first (login fails) or observes
+   * this session in its revocation sweep (the session is revoked).
+   */
+  async create(
+    input: {
+      ownerId: string;
+      credentialId?: string | null;
+      userAgent?: string | null;
+    },
+    executor: Pick<Database, 'insert'> = this.database,
+  ): Promise<CreatedSession> {
     const token = randomToken(32);
     const expiresAt = new Date(Date.now() + this.sessionTtlMs);
-    const [session] = await this.database
+    const [session] = await executor
       .insert(sessions)
       .values({
         ownerId: input.ownerId,
