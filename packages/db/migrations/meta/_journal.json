@@ -22,6 +22,13 @@
       "when": 1793708298281,
       "tag": "0002_brief_war_machine",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793718481436,
+      "tag": "0003_robust_the_renegades",
+      "breakpoints": true
     }
   ]
 }

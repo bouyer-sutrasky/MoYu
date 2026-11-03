@@ -19,6 +19,7 @@ interface FakeBridge {
   events: BridgeEvent[];
   failNextTrigger: boolean;
   slowNextTrigger: boolean;
+  filterNextTrigger: boolean;
   server: Server;
   close: () => Promise<void>;
 }
@@ -44,6 +45,7 @@ async function startFakeBridge(events: BridgeEvent[]): Promise<FakeBridge> {
     events,
     failNextTrigger: false,
     slowNextTrigger: false,
+    filterNextTrigger: false,
   };
   const server = createServer(async (request: IncomingMessage, response: ServerResponse) => {
     const send = (status: number, value: unknown) => {
@@ -66,6 +68,16 @@ async function startFakeBridge(events: BridgeEvent[]): Promise<FakeBridge> {
       if (state.slowNextTrigger) {
         state.slowNextTrigger = false;
         await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      if (state.filterNextTrigger) {
+        state.filterNextTrigger = false;
+        send(200, {
+          result: 'filtered',
+          triggerId: body.triggerId,
+          baseCommit: null,
+          ticketId: null,
+        });
+        return;
       }
       send(200, {
         result: state.triggerCalls.length > 1 ? 'duplicate' : 'stored',
@@ -107,6 +119,9 @@ async function startFakeBridge(events: BridgeEvent[]): Promise<FakeBridge> {
     },
     set slowNextTrigger(value: boolean) {
       state.slowNextTrigger = value;
+    },
+    set filterNextTrigger(value: boolean) {
+      state.filterNextTrigger = value;
     },
     server,
     close: () =>
@@ -372,5 +387,129 @@ describe('dispatcher delivery and Bridge event catch-up on real PostgreSQL', () 
     );
     expect(artifacts.rows).toHaveLength(1);
     expect(artifacts.rows[0]?.type).toBe('pull_request');
+  });
+
+  it('keeps a progress event that arrives before its ticket link and projects it once after linking', async () => {
+    const conversation = await testDatabase.pool.query<{ id: string }>(
+      `insert into conversations (owner_id, repository_id, mode, execution_mode, base_branch, title)
+       values ($1, $2, 'work', 'execute', 'main', 'early progress') returning id`,
+      [ownerId, repository.id],
+    );
+    const earlyConversationId = conversation.rows[0]!.id;
+    await testDatabase.pool.query(
+      `insert into task_links (conversation_id, repository_id, state, base_branch)
+       values ($1, $2, 'pending_admission', 'main')`,
+      [earlyConversationId, repository.id],
+    );
+    fakeBridge.events.push(
+      {
+        seq: 10,
+        id: 'early-progress-1',
+        type: 'task.progress',
+        at: '2026-11-03T12:01:00.000Z',
+        data: {
+          ticketId: 'ticket-early',
+          text: 'Started before the link projection',
+          at: '2026-11-03T12:01:00.000Z',
+        },
+      },
+      {
+        seq: 11,
+        id: 'early-linked-1',
+        type: 'ticket.linked',
+        at: '2026-11-03T12:01:01.000Z',
+        data: {
+          triggerId: `workspace:${earlyConversationId}`,
+          ticketId: 'ticket-early',
+          conversationId: earlyConversationId,
+          messageId: 'placeholder-early',
+          state: 'running',
+          title: 'early progress',
+          base: { branch: 'main', commit: 'b'.repeat(40) },
+        },
+      },
+    );
+
+    const logger = createConsoleLogger('test');
+    expect(await syncOnce(testDatabase.pool, repository, client, logger)).toBe(true);
+
+    const linked = await testDatabase.pool.query(
+      `select upstream_ticket_id, base_commit from task_links where conversation_id = $1`,
+      [earlyConversationId],
+    );
+    expect(linked.rows[0]).toMatchObject({
+      upstream_ticket_id: 'ticket-early',
+      base_commit: 'b'.repeat(40),
+    });
+    const projected = await testDatabase.pool.query<{ type: string; source_event_id: string }>(
+      `select type, source_event_id from events
+        where conversation_id = $1 and source = 'bridge' order by seq`,
+      [earlyConversationId],
+    );
+    expect(projected.rows.map((row) => row.type)).toEqual(['task.linked', 'task.progress']);
+    expect(projected.rows[1]?.source_event_id).toBe('early-progress-1');
+
+    const deferred = await testDatabase.pool.query(
+      `select count(*)::int as count from deferred_bridge_events where repository_id = $1`,
+      [repository.id],
+    );
+    expect(deferred.rows[0]?.count).toBe(0);
+
+    // Replaying the same page must not project the deferred progress twice.
+    await testDatabase.pool.query(
+      `update runtime_cursors set cursor = 9 where repository_id = $1`,
+      [repository.id],
+    );
+    expect(await syncOnce(testDatabase.pool, repository, client, logger)).toBe(true);
+    const repeated = await testDatabase.pool.query(
+      `select count(*)::int as count from events
+        where conversation_id = $1 and source_event_id = 'early-progress-1'`,
+      [earlyConversationId],
+    );
+    expect(repeated.rows[0]?.count).toBe(1);
+  });
+
+  it('marks a filtered Trigger failed instead of delivered or read and creates no ticket', async () => {
+    const conversation = await testDatabase.pool.query<{ id: string }>(
+      `insert into conversations (owner_id, repository_id, mode, execution_mode, base_branch, title)
+       values ($1, $2, 'work', 'execute', 'main', 'filtered') returning id`,
+      [ownerId, repository.id],
+    );
+    const filteredConversationId = conversation.rows[0]!.id;
+    const message = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, client_message_id, body)
+       values ($1, 'inbound', 'user', 'client-filtered', 'filtered by scope') returning id`,
+      [filteredConversationId],
+    );
+    const filteredMessageId = message.rows[0]!.id;
+    await testDatabase.pool.query(
+      `insert into deliveries (message_id, upstream_trigger_id) values ($1, $2)`,
+      [filteredMessageId, `workspace:${filteredMessageId}`],
+    );
+    await testDatabase.pool.query(
+      `insert into task_links (conversation_id, repository_id, state, base_branch)
+       values ($1, $2, 'pending_admission', 'main')`,
+      [filteredConversationId, repository.id],
+    );
+
+    fakeBridge.filterNextTrigger = true;
+    expect(
+      await deliverOnce(testDatabase.pool, config, repository, client, createConsoleLogger('test')),
+    ).toBe(true);
+
+    const delivery = await testDatabase.pool.query(
+      `select state, delivered_at, read_at from deliveries where message_id = $1`,
+      [filteredMessageId],
+    );
+    expect(delivery.rows[0]).toMatchObject({
+      state: 'failed',
+      delivered_at: null,
+      read_at: null,
+    });
+    const task = await testDatabase.pool.query(
+      `select upstream_ticket_id from task_links where conversation_id = $1`,
+      [filteredConversationId],
+    );
+    expect(task.rows[0]?.upstream_ticket_id).toBeNull();
   });
 });

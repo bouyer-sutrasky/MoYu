@@ -23,6 +23,7 @@
  *   E2E_OUT                      evidence directory (default docs/evidence/m3)
  */
 import { spawn, spawnSync } from 'node:child_process';
+import { createServer as createHttpServer, request as httpRequest } from 'node:http';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   createWriteStream,
@@ -50,8 +51,9 @@ const DSH_HOME = process.env.E2E_DSH_HOME ?? '/root/.dsh-m3';
 const DSH_PROFILE = process.env.E2E_DSH_PROFILE ?? 'm3';
 const DSH_PORT = Number(process.env.E2E_DSH_PORT ?? 3192);
 const DSH_URL = `http://127.0.0.1:${DSH_PORT}`;
-const BRIDGE_URL = process.env.E2E_BRIDGE_URL ?? 'http://127.0.0.1:3191';
-const BRIDGE_PORT = Number(new URL(BRIDGE_URL).port || 80);
+const BRIDGE_TARGET_URL = process.env.E2E_BRIDGE_URL ?? 'http://127.0.0.1:3191';
+const BRIDGE_PORT = Number(new URL(BRIDGE_TARGET_URL).port || 80);
+let BRIDGE_URL = BRIDGE_TARGET_URL;
 const REPOSITORY = process.env.E2E_REPOSITORY ?? 'Bouyer12/m3-loop-68fa5d90';
 const OUT = resolve(ROOT, process.env.E2E_OUT ?? 'docs/evidence/m3');
 const STAMP = new Date().toISOString().replace(/[:.]/g, '-');
@@ -67,11 +69,23 @@ let databaseUrl = '';
 let databaseName = '';
 let conversationId = '';
 const NEW_WEB_DIST = resolve(ROOT, 'apps/web/dist');
+// Never let the bootstrap shell's DSH_*/MOYU_* variables reach a child or the
+// guard. The validated instance env is the only source of MOYU_* values.
+const BASE_ENV = Object.fromEntries(
+  Object.entries(process.env).filter(
+    ([key]) => !key.startsWith('DSH_') && !key.startsWith('MOYU_'),
+  ),
+);
 
 function log(message, fields = {}) {
   const line = JSON.stringify({ at: new Date().toISOString(), message, ...fields });
   console.log(line);
-  createWriteStream(join(RUN_DIR, 'run.log'), { flags: 'a' }).write(`${line}\n`);
+  const path = join(RUN_DIR, 'run.log');
+  if (existsSync(dirname(path))) {
+    createWriteStream(path, { flags: 'a' })
+      .on('error', () => {})
+      .write(`${line}\n`);
+  }
 }
 
 function record(name, ok, details = {}) {
@@ -161,7 +175,7 @@ async function createDatabase() {
 
 function apiEnv(webDist) {
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     NODE_ENV: 'test',
     LOG_LEVEL: 'info',
     API_HOST: '127.0.0.1',
@@ -185,7 +199,7 @@ function apiEnv(webDist) {
 
 function dispatcherEnv() {
   const env = {
-    ...process.env,
+    ...BASE_ENV,
     NODE_ENV: 'test',
     LOG_LEVEL: 'info',
     DATABASE_URL: databaseUrl,
@@ -285,17 +299,10 @@ async function startDispatcher() {
   });
 }
 
-async function startInstance() {
-  const envFile = join(DSH_HOME, 'env');
-  const env = { ...process.env, DSH_HOME };
-  for (const line of readFileSync(envFile, 'utf8').split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) {
-      continue;
-    }
-    const index = trimmed.indexOf('=');
-    env[trimmed.slice(0, index)] = trimmed.slice(index + 1);
-  }
+async function startInstance(isolated) {
+  // Only the already-validated home and the whitelisted instance env reach the
+  // child; the env file is never re-read here and cannot override DSH_HOME.
+  const env = { ...BASE_ENV, DSH_HOME: isolated.dshHome, ...isolated.env };
   mkdirSync(join(RUN_DIR, 'dsh'), { recursive: true });
   const fd = openSync(join(RUN_DIR, 'dsh-instance.log'), 'a');
   const child = spawn('dsh', ['--profile', DSH_PROFILE, '--no-open'], {
@@ -599,6 +606,60 @@ async function screenshot(page, name, viewport) {
   return file;
 }
 
+/**
+ * A loopback HTTP proxy used once to lose the first successful trigger
+ * response: the Bridge has already persisted the Trigger when it replies, but
+ * the dispatcher sees the connection die and must retry with the same id.
+ */
+async function startBridgeFaultProxy(targetUrl) {
+  const target = new URL(targetUrl);
+  let dropped = 0;
+  const server = createHttpServer((request, response) => {
+    const upstream = httpRequest(
+      {
+        hostname: target.hostname,
+        port: Number(target.port || 80),
+        path: request.url,
+        method: request.method,
+        headers: { ...request.headers, host: `${target.hostname}:${target.port}` },
+      },
+      (upstreamResponse) => {
+        if (dropped === 0 && request.method === 'POST' && request.url === '/bridge/v1/triggers') {
+          dropped += 1;
+          // Drain the Bridge response (it already committed) and drop the
+          // downstream response, so the platform never receives the receipt.
+          upstreamResponse.resume();
+          upstreamResponse.on('end', () => response.destroy());
+          return;
+        }
+        response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
+        upstreamResponse.pipe(response);
+      },
+    );
+    upstream.on('error', () => response.destroy());
+    request.pipe(upstream);
+  });
+  await new Promise((resolvePromise, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolvePromise);
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    throw new Error('Bridge fault proxy did not bind');
+  }
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    get dropped() {
+      return dropped;
+    },
+    close: () =>
+      new Promise((resolvePromise) => {
+        server.closeAllConnections();
+        server.close(() => resolvePromise());
+      }),
+  };
+}
+
 async function captureOverview(label, webDist) {
   const api = await startApi(webDist);
   const browser = await chromium.launch({ headless: true });
@@ -640,8 +701,8 @@ async function captureOverview(label, webDist) {
 }
 
 async function main() {
-  mkdirSync(RUN_DIR, { recursive: true });
-  log('run directory', { RUN_DIR });
+  // Validate the instance configuration before creating a run directory,
+  // deleting anything, starting a process, or touching the panel.
   const isolated = await assertE2EIsolation({
     dshHome: DSH_HOME,
     profile: DSH_PROFILE,
@@ -649,12 +710,18 @@ async function main() {
     apiPort: API_PORT,
     bridgePort: BRIDGE_PORT,
     envFile: join(DSH_HOME, 'env'),
+    processEnv: BASE_ENV,
   });
+  mkdirSync(RUN_DIR, { recursive: true });
+  log('run directory', { RUN_DIR });
   log('isolation guard passed', {
     dshHome: isolated.dshHome,
     profile: isolated.profile,
     stateDir: isolated.stateDir,
   });
+  const bridgeProxy = await startBridgeFaultProxy(BRIDGE_TARGET_URL);
+  BRIDGE_URL = bridgeProxy.url;
+  log('Bridge fault proxy ready', { url: BRIDGE_URL, target: BRIDGE_TARGET_URL });
   await createDatabase();
   log('temporary database created', { databaseName });
 
@@ -680,7 +747,7 @@ async function main() {
     rmSync(isolated.stateDir, { recursive: true, force: true });
     rmSync(isolated.sessionsDir, { recursive: true, force: true });
   }
-  const instance = await startInstance();
+  const instance = await startInstance(isolated);
   await configureInstance();
   await resolveRepositoryId();
   record('private test repository is bound through the Bridge config', true, {
@@ -807,9 +874,19 @@ async function main() {
       30_000,
     );
     conversationId = conversations[0].id;
-    record('web created a conversation with a pending task', true, { conversationId });
+    const taskMessage = (await listMessages(conversationId)).messages.find(
+      (message) => message.direction === 'inbound',
+    );
+    if (!taskMessage) {
+      throw new Error('the new conversation has no inbound task message');
+    }
+    const mainTriggerId = `workspace:${taskMessage.id}`;
+    record('web created a conversation with a pending task', true, {
+      conversationId,
+      messageId: taskMessage.id,
+    });
 
-    await waitFor(
+    const linkedTask = await waitFor(
       'task linked to an upstream Ticket',
       async () => {
         const data = await getConversation(conversationId);
@@ -818,7 +895,11 @@ async function main() {
       5 * 60_000,
       2000,
     );
-    record('superagent accepted the task and linked its Ticket', true);
+    const frozenBaseCommit = linkedTask.baseCommit;
+    record('superagent accepted the task and linked its Ticket', true, {
+      ticketId: linkedTask.upstreamTicketId,
+      baseCommit: frozenBaseCommit,
+    });
 
     const questionState = await waitFor(
       'worker asks a question',
@@ -1155,7 +1236,7 @@ async function main() {
         deliveredAt: persistedDelivery?.delivered_at ?? null,
       },
     );
-    const restartedInstance = await startInstance();
+    const restartedInstance = await startInstance(isolated);
     await waitFor(
       'message delivered after Bridge restart',
       async () => {
@@ -1174,6 +1255,36 @@ async function main() {
       { trigger: `workspace:${pending.id}` },
     );
 
+    record(
+      'first successful Bridge receipt was lost at the HTTP response and retried once',
+      bridgeProxy.dropped === 1 && triggerCount(mainTriggerId) === 1,
+      { droppedResponses: bridgeProxy.dropped, trigger: mainTriggerId },
+    );
+    const finalConversation = await getConversation(conversationId);
+    const platformTicketId = finalConversation.conversation.task?.upstreamTicketId;
+    if (!platformTicketId) {
+      throw new Error('task lost its upstream ticket');
+    }
+    const ticketResponse = await fetch(
+      `${BRIDGE_TARGET_URL}/bridge/v1/tickets/${encodeURIComponent(platformTicketId)}`,
+      { headers: { authorization: `Bearer ${process.env.E2E_BRIDGE_TOKEN}` } },
+    );
+    if (!ticketResponse.ok) {
+      throw new Error(`Bridge ticket read failed: ${ticketResponse.status}`);
+    }
+    const bridgeTicket = await ticketResponse.json();
+    record(
+      'platform and Ticket froze the same base commit',
+      Boolean(frozenBaseCommit) &&
+        finalConversation.conversation.task?.baseCommit === frozenBaseCommit &&
+        bridgeTicket.base?.commit === frozenBaseCommit,
+      {
+        platformBase: finalConversation.conversation.task?.baseCommit,
+        ticketBase: bridgeTicket.base?.commit,
+      },
+    );
+
+    await bridgeProxy.close();
     await writeFile(
       join(RUN_DIR, 'e2e-result.json'),
       `${JSON.stringify({ ok: true, checks, conversationId, repository: REPOSITORY, runAt: STAMP }, null, 2)}\n`,

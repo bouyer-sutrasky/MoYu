@@ -9,6 +9,7 @@ const EXPECTED_TABLES = [
   'auth_challenges',
   'bootstrap_codes',
   'conversations',
+  'deferred_bridge_events',
   'deliveries',
   'events',
   'messages',

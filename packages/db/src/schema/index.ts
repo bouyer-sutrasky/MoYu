@@ -3,6 +3,7 @@ export * from './auth-challenges';
 export * from './bootstrap-codes';
 export * from './conversations';
 export * from './credentials';
+export * from './deferred-bridge-events';
 export * from './deliveries';
 export * from './enums';
 export * from './events';

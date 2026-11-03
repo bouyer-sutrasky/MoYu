@@ -58,6 +58,7 @@
   后续配置变化不会改变已开始任务。
 - 同一 `triggerId` 重发只入库一次（上游 `Store` 主键 + `Engine.receive` 返回 `duplicate`）；Bridge 不做应用层“先查再写”的唯一防线。
   重复请求在模型/分支校验之前读取已持久化的第一份 Trigger，返回首次冻结的 `baseCommit` 与 Ticket；分支前进或原模型被移除都不会改变结果或返回 422。
+  首次处置为 `filtered` 的 Trigger（Store 中同一 id 有 filtered disposition）重试仍返回 `filtered`，平台将 delivery 标为 `failed`，不会进入 `delivered`/`read`，也不会有 Ticket。
 
 ### `GET /bridge/v1/capabilities`
 
@@ -186,3 +187,4 @@
 - `message.delivery_changed` 的 `delivered` 只由 Bridge `receive` 的 `stored|duplicate` 触发；`read` 只由
   `Ticket.inputs[].readAt` 经 `message.read` 回报；HTTP 202/200 不推进。
 - Bridge 事件日志为 append-only、fsync、单调 seq；平台 cursor 与事件投影在同一事务提交，投影失败回滚整页并重试。
+- 早于 `ticket.linked` 到达的 `task.progress` 先写入 `deferred_bridge_events`；关联事务完成后按序投影并删除，重放同一页也不会重复。

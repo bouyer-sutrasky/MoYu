@@ -1,6 +1,6 @@
 # M3「单仓库消息闭环」验证记录
 
-日期：2026-11-03（复审修订）。范围：`docs/DEVELOPMENT-GUIDE.md` 第 3 阶段与 Issue #9 的 M3 验收。只记录实际执行过的命令与结果；未执行项单列。
+日期：2026-11-03（第三轮复审修订）。范围：`docs/DEVELOPMENT-GUIDE.md` 第 3 阶段与 Issue #9 的 M3 验收。只记录实际执行过的命令与结果；未执行项单列。
 
 ## 验证环境
 
@@ -11,7 +11,7 @@
 | PostgreSQL | 16.15，系统实例 `127.0.0.1:5432`；每次验收创建临时库并在结束时删除 |
 | 平台 | 构建产物 `apps/api/dist/server.js` + `apps/dispatcher/dist/main.js`，隔离端口 4301 |
 | 被测 runtime | 独立 `DSH_HOME=/root/.dsh-m3`、profile `m3`、state `/root/.dsh-m3/state/m3`、Web 3192、Bridge 3191；上游固定 commit `6337fc823ce20251c8de8085948165c81aaa701e` + 三个有序补丁 |
-| 测试仓库 | 私有 `Bouyer12/m3-loop-r2-68fa5d90`，基线 commit `a52e86a5e98b930d20f101b64b079e78521f7977` |
+| 测试仓库 | 私有 `Bouyer12/m3-loop-r3-68fa5d90`，基线 commit `bad7eac5174a3090078cbf687e76c41af1dc1b98` |
 | bootstrap | 3082 未重启、未改配置、未替换 runtime；4300 线上实例未改动 |
 | 浏览器 | Playwright 1.56.1 Chromium，1440×900 / 390×844，浅色 |
 
@@ -26,7 +26,7 @@ integrations/superagent/build-patched.sh /root/src/upstream/superagent-tar/dsh-s
 
 - 四个补丁按序 `git apply --check` / `git apply`：`0001-workspace-source.patch`、`0002-machine-bridge.patch`、`0003-ticket-freeze.patch`、`0004-bridge-duplicate-first-result.patch`；补丁失败即停止，不做模糊套用。
 - 在干净环境用固定 Node/pnpm 运行：`pnpm typecheck` exit 0、`pnpm build` exit 0，产物包含 `lib/workspace-watch.js` 与 `lib/index.js`。
-- 复审补丁的定向测试 34 通过；完整套件 1230 通过 / 1 失败，唯一失败是 M0 已记录的 Feishu `sources.spec.ts` 可选测试（在 pristine 上同样失败），与 M3 路径无关。
+- 复审补丁的定向测试 20 个 Bridge 测试通过；完整套件 1231 通过 / 1 失败，唯一失败是 M0 已记录的 Feishu `sources.spec.ts` 可选测试（在 pristine 上同样失败），与 M3 路径无关。
 - 证据与命令见 [`integrations/superagent/evidence/m3-upstream-build.md`](../integrations/superagent/evidence/m3-upstream-build.md)。
 
 ## 平台检查
@@ -47,19 +47,19 @@ corepack pnpm@11.7.0 exec prettier --check "**/*.{ts,tsx,mjs,cjs,json,yml,yaml,c
 
 TEST_DATABASE_ADMIN_URL=postgres://moyu:moyu_test@127.0.0.1:5432/postgres \
   corepack pnpm@11.7.0 --filter @moyu/db --filter @moyu/api --filter @moyu/dispatcher test:integration
-# exit 0：db 10、api 18、dispatcher 2，全部在真实 PostgreSQL 上
+# exit 0：db 10、api 18、dispatcher 4，全部在真实 PostgreSQL 上
 ```
 
 集成测试覆盖：迁移与 M3 唯一索引、消息+delivery 同事务、同一 `clientMessageId` 并发（8 路，1×202 + 7×200、1 条消息/1 条 delivery）、不同 payload 409、会话 `clientRequestId` 幂等/409、Channel 回调 `source_event_id` 幂等与首条回调补 Ticket 关联、跨 Ticket 409、dispatcher 503 重试使用同一 trigger id、Bridge 事件投影/游标/重复同步，以及 SSE 在只有较晚事件唤醒时按序补读且真实 `Last-Event-ID` 重连不重复。
 
 ## 真实链路（隔离实例 + 私有测试仓库）
 
-运行目录：[`docs/evidence/m3/run-2026-11-03T14-11-57-590Z`](evidence/m3/run-2026-11-03T14-11-57-590Z)；结果文件 `e2e-result.json` **22/22 通过**。命令：
+运行目录：[`docs/evidence/m3/run-2026-11-03T15-18-10-024Z`](evidence/m3/run-2026-11-03T15-18-10-024Z)；结果文件 `e2e-result.json` **24/24 通过**。命令：
 
 ```bash
 set -a; . /root/.dsh-m3/env; set +a
 export E2E_BRIDGE_TOKEN="$MOYU_BRIDGE_TOKEN" E2E_CALLBACK_TOKEN="$MOYU_PLATFORM_TOKEN"
-export E2E_REPOSITORY=Bouyer12/m3-loop-r2-68fa5d90
+export E2E_REPOSITORY=Bouyer12/m3-loop-r3-68fa5d90
 export E2E_BASELINE_WEB_DIST=/root/src/m3-before/apps/web/dist
 export TEST_DATABASE_ADMIN_URL=postgres://moyu:moyu_test@127.0.0.1:5432/postgres
 node scripts/m3/e2e.mjs
@@ -68,13 +68,22 @@ node scripts/m3/e2e.mjs
 
 链路：
 
-1. Playwright 在网页新建 Work 会话并发送任务（会话 `3d4115fb-5af9-4330-b380-b5eb2991a036`）。仓库、`main` 起点与模型由会话冻结。
+1. Playwright 在网页新建 Work 会话并发送任务（会话 `61632ee0-eb4d-46df-a330-317f1eae189e`）。仓库、`main` 起点与模型由会话冻结。
 2. 平台在**同一事务**写入 message + delivery；dispatcher 以 `workspace:<messageId>` 投递到 Bridge；Bridge 将 Trigger 入库，Superagent 接单。
-3. 上游 Ticket `1e96a5d92728f9adc75df3b9af57a9b9`，冻结 `Bouyer12/m3-loop-r2-68fa5d90@main@a52e86a…` 与 `commandcode/deepseek/deepseek-v4.1-flash`（high）；worker 使用该模型。
-4. Agent 通过平台提问 `README.md 第 5 行 "jumps over teh lazy dog" 中的 "teh" 要改成 "the" 还是 "this"？`，网页显示问题并回复 `用 'the'，只改 README，不用改 CHANGELOG。`。
-5. worker 只修改 `README.md`，运行 `npm test`（`README.md copy check passed`），推送 `agent/fix-readme-typo-1e96a5d92728` 并创建
-   [测试 PR #1](https://github.com/Bouyer12/m3-loop-r2-68fa5d90/pull/1)；平台显示 `awaiting_review` 与 PR 链接。
-6. 回复消息的 delivery 由 worker session 证据推进到 `read`（`readAt 2026-11-03T14:13:34.111Z`）；上游 Ticket 的三个 trigger input 都记录了 `readAt`（运行后只读快照见 [`upstream-state-snapshot.json`](evidence/m3/upstream-state-snapshot.json)）；平台消息状态按证据推进：`stored` → `delivered`（Bridge `receive` 返回 `stored`）→ `read`（session `user/message` + `Ticket.inputs[].readAt`）。
+3. 上游 Ticket `c46147d8c102515393b66a45e0145c4c`，冻结 `Bouyer12/m3-loop-r3-68fa5d90@main@bad7eac…` 与 `commandcode/deepseek/deepseek-v4.1-flash`（high）；worker 使用该模型。
+4. Agent 通过平台提问 `README.md 第 5 行里的 “teh” 应改成 “the” 还是 “this”？…`，网页显示问题并回复 `用 'the'，只改 README，不用改 CHANGELOG。`。
+5. worker 只修改 `README.md`，运行 `npm test`（`README.md copy check passed`），推送 `agent/fix-readme-typo-c46147d8c102` 并创建
+   [测试 PR #1](https://github.com/Bouyer12/m3-loop-r3-68fa5d90/pull/1)；平台显示 `awaiting_review` 与 PR 链接。
+6. 回复消息的 delivery 由 worker session 证据推进到 `read`（`readAt 2026-11-03T15:20:39.163Z`）；上游 Ticket 的三个 trigger input 都记录了 `readAt`（运行后只读快照见 [`upstream-state-snapshot.json`](evidence/m3/upstream-state-snapshot.json)）；平台消息状态按证据推进：`stored` → `delivered`（Bridge `receive` 返回 `stored`）→ `read`（session `user/message` + `Ticket.inputs[].readAt`）。
+
+## 第三轮复审修复（基于 `7431dee` 复审意见）
+
+- **filtered Trigger 重放**：上游 `0004` 在任何模型/分支校验前读取已持久化 Trigger；Store 有 filtered disposition 时返回 `filtered`（不是 `duplicate`）。上游回归与 dispatcher 回归（delivery `failed`、无 `delivered_at`/`read_at`、无 Ticket）均通过。
+- **env 配置不可覆盖**：E2E 只解析一次 env 文件，拒绝白名单外的键（尤其 `DSH_HOME`/`DSH_PROFILE`），校验 `MOYU_PLATFORM_URL` 必须指向隔离 API、Bridge 端口一致且空闲，并拒绝与进程环境冲突的配置；启动环境只由校验后的 home 与 env 构造。测试证明 bootstrap home / 4300 会在创建 run 目录、清理、启动、重配之前退出。
+- **符号链接越界**：guard 对 home、state/sessions 父目录、profile 做 `realpath` 校验，profile 只能是单一路径组件；临时目录构造 `state` 指向另一实例时 guard 拒绝且目标 `keep.txt` 保留。
+- **早到 task.progress**：新增 `deferred_bridge_events` 表；未关联事件先持久化，`ticket.linked` 投影后在同一事务按序补投影并删除。dispatcher 回归覆盖“progress 先于 linked”，最终只投影一次，重放同一页不重复。
+- **首次回执丢失整链路**：E2E 用 loopback 故障代理在 Bridge 已持久化后丢弃首个 trigger HTTP 响应，dispatcher 同 ID 重试；断言 1 个 Trigger、1 个 Ticket，平台与 Ticket 的冻结 SHA 一致。
+- **记录修正**：验收表已改为本轮 Ticket/基线/SSE 游标；迁移回滚按 `hash` 用 down SQL 在临时库实测。
 
 ## 复审修复（基于 `a6d8004` 复审意见）
 
@@ -105,7 +114,7 @@ Before 为 `main` @ `b08f36d` 的真实 M2 构建，经同一个隔离 API/数�
 | 投递回执丢失 | 人为把已送达 delivery 改回 pending 并清空证据；dispatcher 用同一 trigger id 重投；Bridge duplicate；Trigger 仍 1、Ticket 不增加 |
 | API 重启 | 停止 dispatcher → 接受消息 → 重启 API → 消息仍在 → 启动 dispatcher → 恰好投递一次（断言 trigger count === 1） |
 | Bridge 重启 | 停止隔离实例 → 接受消息（数据库断言 delivery 仍为 pending、delivered_at 为空）→ 重启实例 → 恰好投递一次（trigger count 1） |
-| SSE 断线重连 | 首连回放 1–19（严格递增、不重复）；带 `Last-Event-ID: 19` 重连按序补发 20–23；无重复、无缺口，并包含本次消息事件 |
+| SSE 断线重连 | 首连回放 1–17（严格递增、不重复）；带 `Last-Event-ID: 17` 重连按序补发 18、19；无重复、无缺口，并包含本次消息事件 |
 | 幂等的数据库兜底 | `messages(conversation_id, client_message_id)`、`conversations(owner_id, client_request_id)`、`messages(conversation_id, source_event_id)`、`events(source, source_event_id)` 均为唯一索引；上游 Trigger 主键与 Bridge 事件 id 去重 |
 
 ## 验收对照（Issue #9）
@@ -114,10 +123,10 @@ Before 为 `main` @ `b08f36d` 的真实 M2 构建，经同一个隔离 API/数�
 | --- | --- | --- |
 | 固定版本源码实现 Workspace Source 与私有机器 Bridge | 完成 | 三个有序补丁；loopback Bridge、Bearer、capabilities/models/triggers/events/tickets；证据文档 |
 | Work 会话创建、消息与待投递同事务写入 | 完成 | API 集成测试；`e2e-result.json` |
-| Bridge 投递、Trigger 接收、Ticket 关联 | 完成 | 真实链路 + Ticket `95faa6d6…` |
+| Bridge 投递、Trigger 接收、Ticket 关联 | 完成 | 真实链路 + Ticket `c46147d8…` |
 | Channel 回复 | 完成 | ack、问题、回复均经 `POST /api/internal/v1/runtime-events` 落库；重复回调幂等 |
-| SSE 持久事件流与断线补齐 | 完成 | 19 个回放事件 + `Last-Event-ID` 补齐 20、21 |
-| 冻结仓库、分支起点与所选模型 | 完成 | 会话/Ticket 冻结 `7d1fa69…` 与指定模型；worker 使用同一模型；不可用模型 422 不回退 |
+| SSE 持久事件流与断线补齐 | 完成 | 回放 1–17（严格递增、不重复）+ `Last-Event-ID: 17` 按序补齐 18、19 |
+| 冻结仓库、分支起点与所选模型 | 完成 | 会话/Ticket 冻结 `bad7eac…` 与指定模型；worker 使用同一模型；不可用模型 422 不回退 |
 | 模型从 Harness 已配置项选择 | 完成 | `GET /api/v1/repositories/:id/models` 经 Bridge 读取 `modelCatalog()`；无密钥 |
 | 消息状态区分平台收件/执行器接收/实际读取 | 完成 | `stored`/`delivered`/`read` 映射与证据；HTTP 202、Bridge 200 不推进到 read |
 | 真实链路：网页提交任务→接单→Agent 提问→网页回复→执行验证→交付 PR | 完成 | `e2e-result.json` 前 7 项（含 read 证据）；测试 PR #1 |
@@ -143,8 +152,22 @@ Before 为 `main` @ `b08f36d` 的真实 M2 构建，经同一个隔离 API/数�
 
 ## 迁移与回滚
 
-- 新增迁移：`packages/db/migrations/0002_brief_war_machine.sql`。新增 `runtime_cursors` 表；`messages` 增加 `kind`、`source_event_id`；`deliveries` 增加 `upstream_trigger_id`、`delivered_at`、`handed_to_worker_at`、`read_at`、`last_attempt_at`、`evidence`；`conversations` 增加 `title`、`client_request_id`、`request_fingerprint`、`model_reasoning_effort`；`task_links` 增加 `question`、`question_message_id`、`pr_url`、`pr_number`、`last_event_seq`、`model_reasoning_effort`；`repositories` 增加 `bridge_url`、`bridge_credential_ref`；新增唯一索引 `conversations_owner_client_request_uq`、`messages_conversation_source_event_uq`。
-- 回滚：先停止 API/dispatcher，按 Drizzle `__drizzle_migrations` 中 `0002_brief_war_machine` 记录定位本次迁移；删除 `runtime_cursors`、新增列与两个唯一索引，并删除该迁移记录（或按备份恢复），随后可重新执行 `0002_brief_war_machine.sql` 重新部署。旧版本代码忽略新增列。上游补丁回滚：停止隔离实例，删除四个 patch 与 `integrations/superagent/build`，重新构建 pristine bundle；不原地替换已部署目录。
+- 新增迁移：`packages/db/migrations/0002_brief_war_machine.sql` 与 `0003_robust_the_renegades.sql`（`deferred_bridge_events`，保存先于 Ticket 关联到达的 Bridge 事件）。新增 `runtime_cursors` 表；`messages` 增加 `kind`、`source_event_id`；`deliveries` 增加 `upstream_trigger_id`、`delivered_at`、`handed_to_worker_at`、`read_at`、`last_attempt_at`、`evidence`；`conversations` 增加 `title`、`client_request_id`、`request_fingerprint`、`model_reasoning_effort`；`task_links` 增加 `question`、`question_message_id`、`pr_url`、`pr_number`、`last_event_seq`、`model_reasoning_effort`；`repositories` 增加 `bridge_url`、`bridge_credential_ref`；新增唯一索引 `conversations_owner_client_request_uq`、`messages_conversation_source_event_uq`。
+- 回滚（已在临时库实测）：先停止 API/dispatcher，按 SHA-256 与 Drizzle 记录核对迁移：
+
+  ```bash
+  psql "$DATABASE_URL" -c "select id, hash, created_at from drizzle.__drizzle_migrations order by created_at"
+  sha256sum packages/db/migrations/0003_robust_the_renegades.sql \
+            packages/db/migrations/0002_brief_war_machine.sql
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+    -v hash="$(sha256sum packages/db/migrations/0003_robust_the_renegades.sql | cut -d' ' -f1)" \
+    -f packages/db/migrations/rollback/0003_robust_the_renegades.down.sql
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+    -v hash="$(sha256sum packages/db/migrations/0002_brief_war_machine.sql | cut -d' ' -f1)" \
+    -f packages/db/migrations/rollback/0002_brief_war_machine.down.sql
+  ```
+
+  实测结果：回滚后 `runtime_cursors`/`deferred_bridge_events` 不存在、M3 列已删除、迁移记录回到 2 条；重新执行 `db:migrate` 成功、表与记录恢复。没有可用备份时按上述 SQL 回滚；有备份时按备份恢复。旧版本代码忽略新增列。上游补丁回滚：停止隔离实例，删除四个 patch 与 `integrations/superagent/build`，重新构建 pristine bundle；不原地替换已部署目录。
 - 部署配置：`BRIDGE_REPOSITORY`、`BRIDGE_URL`、`BRIDGE_TOKEN`、`BRIDGE_CALLBACK_TOKEN`；实例 env `MOYU_PLATFORM_URL`、`MOYU_PLATFORM_TOKEN`、`MOYU_BRIDGE_TOKEN`、`MOYU_BRIDGE_PORT`。令牌不写入仓库/数据库。
 
 ## 复核入口

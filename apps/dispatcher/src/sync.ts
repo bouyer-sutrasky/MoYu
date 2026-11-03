@@ -150,15 +150,15 @@ async function applyTaskEvent(
         [existing.conversationId, baseCommit],
       );
     }
-    if ((updated.rowCount ?? 0) === 0) {
-      return;
-    }
     next = await taskByConversation(client, existing.conversationId, repository.id);
-    if (next) {
+    if (next && (updated.rowCount ?? 0) > 0) {
       await emit(client, repository, event, 'task.linked', next.conversationId, next.id, {
         task: taskSummary(next),
       });
     }
+    // A progress event may have arrived before this link; project it now, in
+    // the same transaction that advances the page cursor.
+    await flushDeferredEvents(client, repository, ticketId);
     return;
   }
 
@@ -286,6 +286,65 @@ async function applyDeliveredEvent(client: pg.PoolClient, event: BridgeEvent): P
   );
 }
 
+/** Stores a Bridge event whose Ticket is not linked yet, so the cursor can advance safely. */
+async function deferEvent(
+  client: pg.PoolClient,
+  repository: RepositoryBinding,
+  event: BridgeEvent,
+): Promise<void> {
+  await client.query(
+    `insert into deferred_bridge_events (repository_id, source_event_id, type, payload, occurred_at)
+     values ($1, $2, $3, $4::jsonb, $5)
+     on conflict (repository_id, source_event_id) do nothing`,
+    [repository.id, event.id, event.type, JSON.stringify(event.data), event.at],
+  );
+}
+
+/** Projects and removes deferred events once their Ticket has a platform task. */
+async function flushDeferredEvents(
+  client: pg.PoolClient,
+  repository: RepositoryBinding,
+  ticketId: string,
+): Promise<void> {
+  const deferred = await client.query<{
+    id: string;
+    source_event_id: string;
+    type: string;
+    payload: Record<string, unknown>;
+    occurred_at: Date;
+  }>(
+    `select id, source_event_id, type, payload, occurred_at
+       from deferred_bridge_events
+      where repository_id = $1 and payload->>'ticketId' = $2
+      order by occurred_at, id`,
+    [repository.id, ticketId],
+  );
+  for (const row of deferred.rows) {
+    const task = await taskByTicket(client, ticketId, repository.id);
+    if (!task) {
+      return;
+    }
+    const event: BridgeEvent = {
+      seq: 0,
+      id: row.source_event_id,
+      type: row.type,
+      at: row.occurred_at.toISOString(),
+      data: row.payload,
+    };
+    if (row.type === 'task.progress') {
+      const text = asString(row.payload.text);
+      if (text) {
+        await emit(client, repository, event, 'task.progress', task.conversationId, task.id, {
+          ticketId,
+          text: text.slice(0, 4000),
+          at: asString(row.payload.at) ?? event.at,
+        });
+      }
+    }
+    await client.query(`delete from deferred_bridge_events where id = $1`, [row.id]);
+  }
+}
+
 async function applyProgressEvent(
   client: pg.PoolClient,
   repository: RepositoryBinding,
@@ -299,6 +358,7 @@ async function applyProgressEvent(
   }
   const task = await taskByTicket(client, ticketId, repository.id);
   if (!task) {
+    await deferEvent(client, repository, event);
     return;
   }
   await emit(client, repository, event, 'task.progress', task.conversationId, task.id, {

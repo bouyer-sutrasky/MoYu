@@ -4,19 +4,28 @@
  * bootstrap instance cannot destroy the wrong DSH home or point the test at a
  * production port.
  *
- * The checks are deliberately about identity, not just names: the target
- * profile must link to a built dsh-superagent artifact that contains the MoYu
- * Bridge, and the DSH home must be a dedicated `.dsh-*` directory that is not
- * the bootstrap `/root/.dsh`.
+ * The checks are about identity, not just names: the target profile must link
+ * to a built dsh-superagent artifact that contains the MoYu Bridge, the DSH home
+ * and every cleanup target must be real paths inside that home (symlinked
+ * parents are refused), and the instance env file is parsed once and validated
+ * against the already-validated home/profile/ports before it reaches the child.
  */
 import { createConnection } from 'node:net';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { isAbsolute, join, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { URL } from 'node:url';
 
 export const BOOTSTRAP_HOME = '/root/.dsh';
 export const BOOTSTRAP_PORT = 3082;
 export const PRODUCTION_PORT = 4300;
 export const BRIDGE_MARKER = 'moyu-bridge/1';
+export const INSTANCE_ENV_KEYS = new Set([
+  'MOYU_PLATFORM_URL',
+  'MOYU_PLATFORM_TOKEN',
+  'MOYU_BRIDGE_TOKEN',
+  'MOYU_BRIDGE_HOST',
+  'MOYU_BRIDGE_PORT',
+]);
 
 export class IsolationGuardError extends Error {
   constructor(message) {
@@ -49,6 +58,73 @@ function portFree(port) {
   });
 }
 
+/** Parses the instance env file once, rejecting duplicate or unexpected keys. */
+export function readInstanceEnv(envFile) {
+  const values = new Map();
+  for (const line of readFileSync(envFile, 'utf8').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const index = trimmed.indexOf('=');
+    if (index <= 0) fail(`malformed instance env line: ${trimmed}`);
+    const key = trimmed.slice(0, index).trim();
+    if (!INSTANCE_ENV_KEYS.has(key)) {
+      fail(
+        `instance env file must not set ${key}; only ${[...INSTANCE_ENV_KEYS].join(', ')} are allowed`,
+      );
+    }
+    if (values.has(key)) fail(`instance env file repeats ${key}`);
+    values.set(key, trimmed.slice(index + 1).trim());
+  }
+  return Object.fromEntries(values);
+}
+
+function validatePlatformUrl(value, apiPort) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    fail(`MOYU_PLATFORM_URL is not a URL: ${value}`);
+  }
+  if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || Number(url.port) !== apiPort) {
+    fail(
+      `MOYU_PLATFORM_URL must point at this isolated API http://127.0.0.1:${apiPort}, got ${value}`,
+    );
+  }
+  if (
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    (url.pathname !== '/' && url.pathname !== '')
+  ) {
+    fail(`MOYU_PLATFORM_URL must be the API origin, got ${value}`);
+  }
+}
+
+/**
+ * Resolves a path that may not exist yet through its deepest existing ancestor,
+ * and returns a real path that is proven to stay inside `realHome`.
+ */
+function safeTarget(realHome, target, label) {
+  let current = resolve(target);
+  while (!existsSync(current)) {
+    const parent = dirname(current);
+    if (parent === current) fail(`no existing ancestor for ${label}: ${target}`);
+    current = parent;
+  }
+  const realAncestor = realpathSync(current);
+  if (!isInside(realHome, realAncestor)) {
+    fail(`${label} resolves outside the isolated DSH home: ${realAncestor}`);
+  }
+  const suffix = relative(current, resolve(target));
+  const candidate = resolve(realAncestor, suffix);
+  if (!isInside(realHome, candidate)) fail(`${label} escapes the isolated DSH home: ${candidate}`);
+  if (existsSync(candidate) && !isInside(realHome, realpathSync(candidate))) {
+    fail(`${label} resolves outside the isolated DSH home: ${candidate}`);
+  }
+  return candidate;
+}
+
 /** Resolves the only paths the harness may delete for this DSH home/profile. */
 export function isolatedPaths(dshHome, profile) {
   const home = resolve(dshHome);
@@ -60,21 +136,49 @@ export function isolatedPaths(dshHome, profile) {
 }
 
 /**
- * Validates the target before any deletion or reconfiguration.
- * @returns {{dshHome: string, profile: string, profileDir: string, stateDir: string, sessionsDir: string}}
+ * Validates the target and the instance configuration before any deletion or
+ * reconfiguration. Returns the verified paths and the whitelisted child env.
  */
 export async function assertE2EIsolation(options) {
-  const { dshHome, profile, dshPort, apiPort, bridgePort, envFile } = options;
+  const {
+    dshHome,
+    profile,
+    dshPort,
+    apiPort,
+    bridgePort,
+    envFile,
+    processEnv = process.env,
+  } = options;
   if (!dshHome || !isAbsolute(dshHome)) fail('E2E_DSH_HOME must be an absolute path');
   const home = resolve(dshHome);
-  if (home === '/' || home === BOOTSTRAP_HOME || isInside(BOOTSTRAP_HOME, home)) {
+  if (!existsSync(home)) fail(`E2E_DSH_HOME does not exist: ${home}`);
+  const realHome = realpathSync(home);
+  if (
+    home === '/' ||
+    home === BOOTSTRAP_HOME ||
+    realHome === BOOTSTRAP_HOME ||
+    isInside(BOOTSTRAP_HOME, home) ||
+    isInside(BOOTSTRAP_HOME, realHome)
+  ) {
     fail(`refusing to use the bootstrap DSH home: ${home}`);
   }
-  const base = home.split(sep).filter(Boolean).at(-1) ?? '';
+  const base = realHome.split(sep).filter(Boolean).at(-1) ?? '';
   if (!base.startsWith('.dsh-'))
-    fail(`E2E_DSH_HOME must be a dedicated .dsh-* directory, got ${home}`);
-  if (!profile || profile === 'superagent' || profile === 'dsh-tui') {
+    fail(`E2E_DSH_HOME must be a dedicated .dsh-* directory, got ${realHome}`);
+
+  if (!/^[A-Za-z0-9._-]+$/.test(profile) || profile === '.' || profile === '..') {
+    fail(`DSH profile must be a single path component, got ${JSON.stringify(profile)}`);
+  }
+  if (profile === 'superagent' || profile === 'dsh-tui') {
     fail(`refusing to use DSH profile ${JSON.stringify(profile)}`);
+  }
+  if (processEnv.DSH_HOME && resolve(processEnv.DSH_HOME) !== home) {
+    fail(`DSH_HOME in the process env conflicts with the validated home: ${processEnv.DSH_HOME}`);
+  }
+  if (processEnv.DSH_PROFILE && processEnv.DSH_PROFILE !== profile) {
+    fail(
+      `DSH_PROFILE in the process env conflicts with the validated profile: ${processEnv.DSH_PROFILE}`,
+    );
   }
   for (const [name, port] of Object.entries({ dshPort, apiPort, bridgePort })) {
     if (!Number.isInteger(port) || port <= 0) fail(`${name} must be a positive integer`);
@@ -84,13 +188,13 @@ export async function assertE2EIsolation(options) {
   if (new Set([dshPort, apiPort, bridgePort]).size !== 3)
     fail('DSH, API and Bridge ports must differ');
 
-  const paths = isolatedPaths(home, profile);
-  for (const path of [paths.stateDir, paths.sessionsDir]) {
-    if (!isInside(home, path)) fail(`target path escapes the isolated DSH home: ${path}`);
-  }
-  if (!existsSync(paths.profileDir)) fail(`profile directory does not exist: ${paths.profileDir}`);
+  const paths = isolatedPaths(realHome, profile);
+  const stateDir = safeTarget(realHome, paths.stateDir, 'state directory');
+  const sessionsDir = safeTarget(realHome, paths.sessionsDir, 'sessions directory');
+  const profileDir = safeTarget(realHome, paths.profileDir, 'profile directory');
+  if (!existsSync(profileDir)) fail(`profile directory does not exist: ${profileDir}`);
 
-  const link = join(paths.profileDir, 'node_modules', 'dsh-superagent');
+  const link = join(profileDir, 'node_modules', 'dsh-superagent');
   if (!existsSync(link)) fail(`profile has no dsh-superagent installation: ${link}`);
   let linked;
   try {
@@ -119,15 +223,7 @@ export async function assertE2EIsolation(options) {
   if (!envFile || !existsSync(envFile)) fail(`instance env file is missing: ${envFile}`);
   const mode = statSync(envFile).mode & 0o777;
   if (mode !== 0o600) fail(`instance env file must be 0600, got ${mode.toString(8)}: ${envFile}`);
-  const env = Object.fromEntries(
-    readFileSync(envFile, 'utf8')
-      .split('\n')
-      .filter((line) => line.includes('=') && !line.trim().startsWith('#'))
-      .map((line) => {
-        const index = line.indexOf('=');
-        return [line.slice(0, index).trim(), line.slice(index + 1).trim()];
-      }),
-  );
+  const env = readInstanceEnv(envFile);
   for (const name of [
     'MOYU_PLATFORM_URL',
     'MOYU_PLATFORM_TOKEN',
@@ -136,13 +232,27 @@ export async function assertE2EIsolation(options) {
   ]) {
     if (!env[name]) fail(`instance env file lacks ${name}`);
   }
+  validatePlatformUrl(env.MOYU_PLATFORM_URL, apiPort);
+  if (env.MOYU_BRIDGE_HOST && env.MOYU_BRIDGE_HOST !== '127.0.0.1') {
+    fail(`MOYU_BRIDGE_HOST must be 127.0.0.1, got ${env.MOYU_BRIDGE_HOST}`);
+  }
   if (Number(env.MOYU_BRIDGE_PORT) !== bridgePort) {
     fail(`instance Bridge port ${env.MOYU_BRIDGE_PORT} does not match target ${bridgePort}`);
   }
-  for (const [name, port] of Object.entries({ dshPort, apiPort })) {
+  if (processEnv.MOYU_PLATFORM_URL && processEnv.MOYU_PLATFORM_URL !== env.MOYU_PLATFORM_URL) {
+    fail(
+      `MOYU_PLATFORM_URL in the process env conflicts with the instance: ${processEnv.MOYU_PLATFORM_URL}`,
+    );
+  }
+  if (processEnv.MOYU_BRIDGE_PORT && Number(processEnv.MOYU_BRIDGE_PORT) !== bridgePort) {
+    fail(
+      `MOYU_BRIDGE_PORT in the process env conflicts with the target: ${processEnv.MOYU_BRIDGE_PORT}`,
+    );
+  }
+  for (const [name, port] of Object.entries({ dshPort, apiPort, bridgePort })) {
     if (!(await portFree(port))) fail(`${name} ${port} is already in use; refusing to disturb it`);
   }
-  return { dshHome: home, profile, ...paths };
+  return { dshHome: realHome, profile, stateDir, sessionsDir, profileDir, env };
 }
 
 /** Verifies that the panel state we just reached belongs to the expected isolated machine/profile. */

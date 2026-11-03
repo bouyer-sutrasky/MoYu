@@ -1,5 +1,18 @@
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { dirname, join as pathJoin, resolve as pathResolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -26,7 +39,7 @@ function fixture({ bridge = true, mode = 0o600, envPort = 3999, withEnv = true }
     writeFileSync(
       envFile,
       [
-        'MOYU_PLATFORM_URL=http://127.0.0.1:4301',
+        'MOYU_PLATFORM_URL=http://127.0.0.1:3989',
         'MOYU_PLATFORM_TOKEN=test-platform-token',
         'MOYU_BRIDGE_TOKEN=test-bridge-token',
         `MOYU_BRIDGE_PORT=${envPort}`,
@@ -45,6 +58,7 @@ async function options(fixture, overrides = {}) {
     apiPort: 3989,
     bridgePort: 3999,
     envFile: fixture.envFile,
+    processEnv: {},
     ...overrides,
   };
 }
@@ -100,6 +114,91 @@ test('rejects a target port that is already in use', async () => {
   await assert.rejects(assertE2EIsolation(await options(fixtureValue)), /already in use/);
   await new Promise((resolve) => server.close(resolve));
   rmSync(fixtureValue.home, { recursive: true, force: true });
+});
+
+test('rejects instance env keys that could override the validated home/profile', async () => {
+  const fixtureValue = fixture();
+  writeFileSync(
+    fixtureValue.envFile,
+    'DSH_HOME=/root/.dsh\nMOYU_PLATFORM_URL=http://127.0.0.1:3989\n',
+  );
+  chmodSync(fixtureValue.envFile, 0o600);
+  await assert.rejects(assertE2EIsolation(await options(fixtureValue)), /must not set DSH_HOME/);
+  rmSync(fixtureValue.home, { recursive: true, force: true });
+});
+
+test('rejects an instance env pointing at the production API or a conflicting process env', async () => {
+  const production = fixture();
+  writeFileSync(
+    production.envFile,
+    'MOYU_PLATFORM_URL=http://127.0.0.1:4300\nMOYU_PLATFORM_TOKEN=x\nMOYU_BRIDGE_TOKEN=y\nMOYU_BRIDGE_PORT=3999\n',
+  );
+  chmodSync(production.envFile, 0o600);
+  await assert.rejects(assertE2EIsolation(await options(production)), /isolated API/);
+  rmSync(production.home, { recursive: true, force: true });
+
+  const conflict = fixture();
+  await assert.rejects(
+    assertE2EIsolation(await options(conflict, { processEnv: { DSH_HOME: '/root/.dsh' } })),
+    /DSH_HOME in the process env conflicts/,
+  );
+  rmSync(conflict.home, { recursive: true, force: true });
+});
+
+test('rejects a symlinked state parent and leaves the other instance untouched', async () => {
+  const fixtureValue = fixture();
+  const victim = mkdtempSync(join(tmpdir(), 'm3-victim-'));
+  mkdirSync(join(victim, 'm3'), { recursive: true });
+  writeFileSync(join(victim, 'm3', 'keep.txt'), 'keep');
+  symlinkSync(victim, join(fixtureValue.home, 'state'));
+  await assert.rejects(
+    assertE2EIsolation(await options(fixtureValue)),
+    /state directory resolves outside/,
+  );
+  assert.equal(readFileSync(join(victim, 'm3', 'keep.txt'), 'utf8'), 'keep');
+  rmSync(fixtureValue.home, { recursive: true, force: true });
+  rmSync(victim, { recursive: true, force: true });
+});
+
+test('rejects a profile containing path separators', async () => {
+  const fixtureValue = fixture();
+  await assert.rejects(
+    assertE2EIsolation(await options(fixtureValue, { profile: 'm3/../../other' })),
+    /single path component/,
+  );
+  rmSync(fixtureValue.home, { recursive: true, force: true });
+});
+
+test('the E2E script exits before any run directory for a bootstrap home or production API', () => {
+  const root = pathResolve(dirname(fileURLToPath(import.meta.url)), '../..');
+  const out = mkdtempSync(pathJoin(tmpdir(), 'm3-e2e-reject-'));
+  const baseEnv = Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key]) => !key.startsWith('DSH_') && !key.startsWith('MOYU_'),
+    ),
+  );
+  const common = { ...baseEnv, E2E_OUT: out, E2E_DSH_PROFILE: 'm3' };
+  const bootstrap = spawnSync(process.execPath, ['scripts/m3/e2e.mjs'], {
+    cwd: root,
+    env: { ...common, E2E_DSH_HOME: '/root/.dsh' },
+    encoding: 'utf8',
+    timeout: 15_000,
+  });
+  assert.notEqual(bootstrap.status, 0);
+  assert.match(`${bootstrap.stdout}${bootstrap.stderr}`, /bootstrap DSH home/);
+  assert.equal(readdirSync(out).length, 0);
+
+  const production = spawnSync(process.execPath, ['scripts/m3/e2e.mjs'], {
+    cwd: root,
+    env: { ...common, E2E_DSH_HOME: '/root/.dsh-m3', E2E_API_PORT: '4300' },
+    encoding: 'utf8',
+    timeout: 15_000,
+  });
+  assert.notEqual(production.status, 0);
+  assert.match(`${production.stdout}${production.stderr}`, /production API port/);
+  assert.equal(readdirSync(out).length, 0);
+  assert.equal(existsSync(pathJoin(out, 'run')), false);
+  rmSync(out, { recursive: true, force: true });
 });
 
 test('refuses a runtime whose stateDir is not the expected isolated profile', () => {
