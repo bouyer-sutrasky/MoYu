@@ -1,10 +1,10 @@
 # 用户实际操作与分阶段 Issue
 
-本文件是用户复制给 superagent 的操作步骤。本次没有自动向 GitHub 发消息。把 `<NEW_OWNER/NEW_REPO>`、`<AGENT_LOGIN>`、`<WORKSPACE_DOMAIN>` 替换成实际值；历史记录中的账号不是本次确认的当前授权。
+本文件是用户复制给 superagent 的操作步骤。本次没有自动向 GitHub 发消息。本项目取值：仓库 `sutrasky/MoYu`、agent `Bouyer12`、HTTPS 域名待定（M2 前确定）；历史记录中的账号不是本次确认的当前授权。
 
 ## 第一步：建仓库并提交资料
 
-1. 在 GitHub 新建专用仓库，建议名 superagent-workspace，启用 Issues。用户自行决定公开/私有。
+1. 仓库已建：`sutrasky/MoYu`（私有，Issues 已启用）。用户自行决定公开/私有。
 2. 在仓库 Settings → Collaborators 或组织访问设置中，给予专用 agent 账号所需写权限，并确认邀请已接受；现有token/SSH凭据也必须能访问此新仓库。
 3. 将 repo-kit 目录里的文件作为仓库根内容提交；不要把整个 E:/workplace 上传。该包含 AGENTS.md、README.md、docs 及脱敏取证，不含运行凭据和数据库。
 4. 可在 GitHub 网页使用 Add file → Upload files，上传解压后的目录内容并提交。若用 Git，clone新仓库到单独目录，复制repo-kit内容，检查 `git diff --cached` 后再commit/push；不要把设计工作目录直接变为生产仓库。
@@ -18,12 +18,12 @@
 
 ### 可复制：旧仓库引导 Issue
 
-标题：为 `<NEW_OWNER/NEW_REPO>` 准备独立 superagent 开发实例
+标题：为 `sutrasky/MoYu` 准备独立 superagent 开发实例
 
 ```text
-@<AGENT_LOGIN>
+@Bouyer12
 
-我要让你开发新的 Superagent Workspace 网页。新仓库是 <NEW_OWNER/NEW_REPO>，开发资料已提交在其 docs/ 下。
+我要让你开发新的 MoYu 网页。新仓库是 sutrasky/MoYu，开发资料已提交在其 docs/ 下。
 
 本任务明确授权的目标是为这个新仓库准备独立开发实例；现有仓库和实例继续运行，不将现有 profile 改指向新仓库。
 
@@ -45,7 +45,7 @@
 标题：M0 固定兼容版本并建立开发基线
 
 ```text
-@<AGENT_LOGIN>
+@Bouyer12
 
 请按仓库 AGENTS.md 和 docs/DEVELOPMENT-GUIDE.md 执行第0阶段的兼容性取证。目标是为本仓库的新网页建立可复现开发基线。
 
@@ -72,7 +72,7 @@ M0完成并审阅后，按顺序创建下面的Issue。每次替换阶段号与�
 ## 第四步：后续每单通用文案
 
 ```text
-@<AGENT_LOGIN>
+@Bouyer12
 
 执行 M<N>：<阶段目标>。前置阶段PR已经审阅合并，请基于当前默认分支工作。
 遵守 AGENTS.md；按 docs/DEVELOPMENT-GUIDE.md 对应阶段开发，接口以 docs/API-CONTRACTS.md 为本项目契约，产品行为以 docs/DESIGN.md 为准。

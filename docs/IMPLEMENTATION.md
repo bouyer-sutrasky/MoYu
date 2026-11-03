@@ -1,4 +1,4 @@
-# Superagent Workspace 实现方案
+# MoYu 实现方案
 
 状态：概念实现方案，已完成环境调研。产品决定见 DESIGN.md；开发执行以 DEVELOPMENT-GUIDE.md、API-CONTRACTS.md 及 BOOTSTRAP-RUNBOOK.md 为准。本文中的接口与组件是新项目设计，不是上游已存在的公共 API。未修改服务器。
 

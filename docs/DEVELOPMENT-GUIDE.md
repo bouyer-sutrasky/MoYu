@@ -24,7 +24,7 @@
 
 ## 新仓库如何组织
 
-建议名 `superagent-workspace`，名字由用户决定。用户先创建仓库并授予专用账号写权限，上传 repo-kit 的内容成为初始化提交。数据库、token、Passkey、SSH 配置、服务器 profile 和原始环境变量均不入仓。
+项目名 **MoYu**，仓库已建：`sutrasky/MoYu`（私有）。用户先创建仓库并授予专用账号写权限，上传 repo-kit 的内容成为初始化提交。数据库、token、Passkey、SSH 配置、服务器 profile 和原始环境变量均不入仓。
 
 目标结构：
 

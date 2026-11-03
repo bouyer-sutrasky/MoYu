@@ -1,4 +1,4 @@
-# Superagent Workspace
+# MoYu 术语表
 
 面向个人的智能体工作入口，统一承载开发任务与后续的机器人对话。
 

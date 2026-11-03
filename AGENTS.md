@@ -1,4 +1,10 @@
-# Superagent Workspace 开发约定
+# MoYu 开发约定
+
+## 命名
+
+- 项目名：**MoYu**。Issue、PR、提交信息、文档标题一律写 `MoYu`；不要再写「Superagent Workspace」作为项目名。
+- GitHub 仓库：`sutrasky/MoYu`（私有）。agent 账号：`Bouyer12`。
+- 代码内部标识（如插件 id `dsh-superagent-workspace`、包名 `dsh-superagent/*`）沿用上游命名，不随项目名改动。
 
 开始任何开发任务，先读 docs/DEVELOPMENT-GUIDE.md 对应阶段、docs/DESIGN.md 的已确认行为，以及 docs/API-CONTRACTS.md 的相关接口。部署与兼容性工作还须读取 docs/research/，复核现场事实后写 docs/environment-baseline.md。
 

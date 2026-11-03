@@ -1,6 +1,6 @@
-# Superagent Workspace
+# MoYu
 
-个人智能体工作台：ChatGPT式布局，DeepSeek Harness视觉变量；Work接入superagent，Chat预留接口。
+**MoYu** —— 个人智能体工作台（内部概念名 Superagent Workspace）：ChatGPT式布局，DeepSeek Harness视觉变量；Work接入superagent，Chat预留接口。
 
 此提交是开发交接资料，不含已完成应用。
 
