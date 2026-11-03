@@ -1,6 +1,14 @@
 import { sql } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
-import { index, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import {
+  foreignKey,
+  index,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from 'drizzle-orm/pg-core';
 
 import { conversations } from './conversations';
 import { messageDirection } from './enums';
@@ -31,6 +39,9 @@ export const messages = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
+    // Redundant with the primary key, but PostgreSQL requires a unique
+    // constraint on the referenced columns of the composite reply foreign key.
+    uniqueIndex('messages_id_conversation_uq').on(table.id, table.conversationId),
     uniqueIndex('messages_conversation_client_message_uq')
       .on(table.conversationId, table.clientMessageId)
       .where(sql`${table.clientMessageId} is not null`),
@@ -38,6 +49,14 @@ export const messages = pgTable(
       .on(table.conversationId, table.sourceEventId)
       .where(sql`${table.sourceEventId} is not null`),
     index('messages_conversation_created_idx').on(table.conversationId, table.createdAt),
+    // A reply may only reference a message from the same conversation. The
+    // single-column FK above keeps ON DELETE SET NULL behaviour; this composite
+    // key is what rejects cross-conversation references at the database level.
+    foreignKey({
+      name: 'messages_reply_same_conversation_fk',
+      columns: [table.replyToMessageId, table.conversationId],
+      foreignColumns: [table.id, table.conversationId],
+    }).onDelete('set null'),
   ],
 );
 

@@ -35,6 +35,9 @@ export const conversations = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
+    // Referenced by the composite task-link foreign key that binds a task to the
+    // conversation's repository.
+    uniqueIndex('conversations_id_repository_uq').on(table.id, table.repositoryId),
     index('conversations_repository_idx').on(table.repositoryId),
     index('conversations_owner_idx').on(table.ownerId),
     uniqueIndex('conversations_owner_client_request_uq')
