@@ -8,7 +8,9 @@
 - `main` 受分支保护：必须走 PR，且 `check (lint, format, types, unit tests, build)` 与 `integration (real PostgreSQL)` 两个检查必须通过；禁直推、禁 force push、禁删除。
 - 代码内部标识（如插件 id `dsh-superagent-workspace`、包名 `dsh-superagent/*`）沿用上游命名，不随项目名改动。
 
-开始任何开发任务，先读 docs/DEVELOPMENT-GUIDE.md 对应阶段、docs/DESIGN.md 的已确认行为，以及 docs/API-CONTRACTS.md 的相关接口。部署与兼容性工作还须读取 docs/research/，复核现场事实后写 docs/environment-baseline.md。
+开始任何开发任务，
+先读 `docs/DEPLOYMENT.md` 了解当前的域名、端口、反代、分支保护与验收规范；该文件是环境事实的唯一来源。
+先读 docs/DEVELOPMENT-GUIDE.md 对应阶段、docs/DESIGN.md 的已确认行为，以及 docs/API-CONTRACTS.md 的相关接口。部署与兼容性工作还须读取 docs/research/，复核现场事实后写 docs/environment-baseline.md。
 
 任务以 Issue 指定阶段为范围，完成其验收后提交 PR，由所有者审阅合并。沿用已确认产品决策；实现差异记录在 PR，不能用上游缺失能力静默缩减验收。
 
