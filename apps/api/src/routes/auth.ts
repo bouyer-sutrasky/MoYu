@@ -45,7 +45,7 @@ import {
   verifyAuthentication,
   verifyRegistration,
 } from '../auth/passkey';
-import type { SessionService } from '../auth/sessions';
+import type { CreatedSession, SessionService } from '../auth/sessions';
 import { ApiProblem } from '../lib/errors';
 import { clientIp, parseInput, sendData } from '../lib/http';
 import { createRateLimiter, type RateLimiter } from '../lib/rate-limit';
@@ -311,8 +311,9 @@ export function registerAuthRoutes(
 
     const info = verification.registrationInfo;
     let credential: PasskeyCredential;
+    let registrationSession: CreatedSession | null = null;
     try {
-      credential = await database.transaction(async (transaction) => {
+      const registered = await database.transaction(async (transaction) => {
         await lockAuthState(transaction);
 
         let resolvedOwnerId = ownerId;
@@ -369,8 +370,25 @@ export function registerAuthRoutes(
             .where(eq(bootstrapCodes.id, bootstrapCompletionId));
         }
 
-        return inserted;
+        // Issue the bootstrap completion session under the same auth-state lock
+        // as the credential insert. A registration that completed the only
+        // active credential cannot race a revocation here, but keeping both
+        // writes in one transaction makes the invariant uniform with login.
+        const created = bootstrapCompletionId
+          ? await sessions.create(
+              {
+                ownerId: resolvedOwnerId,
+                credentialId: inserted.id,
+                userAgent: request.headers['user-agent'] ?? null,
+              },
+              transaction,
+            )
+          : null;
+
+        return { credential: inserted, session: created };
       });
+      credential = registered.credential;
+      registrationSession = registered.session;
     } catch (error) {
       if (isUniqueViolation(error)) {
         throw ApiProblem.conflict('This passkey is already registered');
@@ -380,21 +398,13 @@ export function registerAuthRoutes(
 
     clearBootstrapCookie(reply, config);
 
-    if (bootstrapCompletionId) {
-      const [owner] = await database
-        .select()
-        .from(owners)
-        .where(eq(owners.id, credential.ownerId))
-        .limit(1);
-      if (!owner) {
-        throw new Error('owner disappeared after registration');
-      }
-      const created = await sessions.create({
-        ownerId: owner.id,
-        credentialId: credential.id,
-        userAgent: request.headers['user-agent'] ?? null,
-      });
-      setSessionCookie(reply, config, created.token, created.session.expiresAt);
+    if (registrationSession) {
+      setSessionCookie(
+        reply,
+        config,
+        registrationSession.token,
+        registrationSession.session.expiresAt,
+      );
     }
 
     request.log.info(
@@ -481,29 +491,49 @@ export function registerAuthRoutes(
       throw ApiProblem.unauthorized('Passkey authentication failed');
     }
 
-    const [updatedCredential] = await database
-      .update(passkeyCredentials)
-      .set({
-        counter: verification.authenticationInfo.newCounter,
-        lastUsedAt: sql`now()`,
-      })
-      .where(and(eq(passkeyCredentials.id, credential.id), isNull(passkeyCredentials.revokedAt)))
-      .returning();
-    if (!updatedCredential) {
-      throw ApiProblem.unauthorized('Passkey was revoked during authentication');
-    }
+    // Narrow once so the transaction callback keeps the non-null owner id.
+    const challengeOwnerId = challenge.ownerId;
 
-    const created = await sessions.create({
-      ownerId: challenge.ownerId,
-      credentialId: credential.id,
-      userAgent: request.headers['user-agent'] ?? null,
+    // Re-check credential liveness and create the session under the same
+    // transaction-scoped lock that credential revocation takes. Revocation
+    // either committed first (no active row, login refuses) or runs after this
+    // transaction (its session sweep sees and revokes the new session).
+    const created = await database.transaction(async (transaction) => {
+      await lockAuthState(transaction);
+
+      const [updatedCredential] = await transaction
+        .update(passkeyCredentials)
+        .set({
+          counter: verification.authenticationInfo.newCounter,
+          lastUsedAt: sql`now()`,
+        })
+        .where(
+          and(
+            eq(passkeyCredentials.id, credential.id),
+            eq(passkeyCredentials.ownerId, challengeOwnerId),
+            isNull(passkeyCredentials.revokedAt),
+          ),
+        )
+        .returning();
+      if (!updatedCredential) {
+        throw ApiProblem.unauthorized('Passkey was revoked during authentication');
+      }
+
+      return sessions.create(
+        {
+          ownerId: challengeOwnerId,
+          credentialId: credential.id,
+          userAgent: request.headers['user-agent'] ?? null,
+        },
+        transaction,
+      );
     });
     setSessionCookie(reply, config, created.token, created.session.expiresAt);
 
     const [owner] = await database
       .select()
       .from(owners)
-      .where(eq(owners.id, challenge.ownerId))
+      .where(eq(owners.id, challengeOwnerId))
       .limit(1);
     if (!owner) {
       throw new Error('owner disappeared after login');
