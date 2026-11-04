@@ -9,7 +9,7 @@ import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { migrateDatabase } from '../../src/migrate';
 import type { Database } from '../../src/client';
-import { createTestDatabase, type TestDatabase } from './helpers';
+import { createTestDatabaseUpTo, type TestDatabase } from './helpers';
 
 const REPOSITORY_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 const FORWARD_MIGRATION = path.join(
@@ -25,7 +25,7 @@ let forwardMigrationHash = '';
 const databases: TestDatabase[] = [];
 
 async function createDatabase(): Promise<TestDatabase> {
-  const database = await createTestDatabase();
+  const database = await createTestDatabaseUpTo(5);
   databases.push(database);
   return database;
 }
@@ -168,7 +168,7 @@ describe('0005 rollback script on real PostgreSQL', () => {
 
     await migrateDatabase(database.db);
     expect(await readState(database)).toMatchObject({
-      migrations: 6,
+      migrations: 7,
       conversations: 1,
       taskLinks: 1,
       operationsTable: true,

@@ -29,6 +29,7 @@ const environmentSchema = z.object({
   OPERATION_RETRY_CAP_MS: z.coerce.number().int().min(1_000).max(600_000).default(60_000),
   RECONCILE_ON_START: z.enum(['true', 'false']).default('true'),
   REPORT_CAPTURE_INTERVAL_MS: z.coerce.number().int().min(500).max(60_000).default(2000),
+  DUPLICATE_INTERVAL_MS: z.coerce.number().int().min(100).max(60_000).default(500),
 });
 
 export type DispatcherConfig = {
@@ -49,6 +50,7 @@ export type DispatcherConfig = {
   operationRetryCapMs: number;
   reconcileOnStart: boolean;
   reportCaptureIntervalMs: number;
+  duplicateIntervalMs: number;
 };
 
 /**
@@ -86,5 +88,6 @@ export function loadDispatcherConfig(
     operationRetryCapMs: parsed.data.OPERATION_RETRY_CAP_MS,
     reconcileOnStart: parsed.data.RECONCILE_ON_START === 'true',
     reportCaptureIntervalMs: parsed.data.REPORT_CAPTURE_INTERVAL_MS,
+    duplicateIntervalMs: parsed.data.DUPLICATE_INTERVAL_MS,
   };
 }

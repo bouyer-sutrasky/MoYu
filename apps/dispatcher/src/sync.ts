@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
 
 import { taskStateSchema, type ArtifactSummary } from '@moyu/contracts';
@@ -602,22 +601,19 @@ async function applyImportedEvent(
   // A requirement first started in Work can be linked from a GitHub mention: claim
   // the Web conversation that already contains this Issue/PR URL instead of opening
   // a second one and executing the same requirement twice.
-  if (!conversation && number !== undefined) {
-    const full = repository.fullName.replace(/[%_]/g, (value) => `\\${value}`);
-    const issue = `%github.com/${full}/issues/${number}%`;
-    const pull = `%github.com/${full}/pull/${number}%`;
-    const web = (
-      await client.query<{ id: string; title: string | null }>(
-        `select c.id, c.title from conversations c
-          where c.repository_id = $1 and c.source = 'web' and c.external_key is null
-            and exists (
-              select 1 from messages m
-               where m.conversation_id = c.id and (m.body like $2 or m.body like $3)
-            )
-          order by c.updated_at desc limit 1`,
-        [repository.id, issue, pull],
-      )
-    ).rows[0];
+  if (!conversation && number != null) {
+    const candidates = await client.query<{ id: string; title: string | null; body: string }>(
+      `select c.id, c.title, m.body from conversations c
+         join messages m on m.conversation_id = c.id
+        where c.repository_id = $1 and c.source = 'web' and c.external_key is null
+          and m.body like '%github.com/%'
+        order by c.updated_at desc, m.created_at desc
+        limit 50`,
+      [repository.id],
+    );
+    const web = candidates.rows.find((row) =>
+      githubRequirementUrl(row.body, repository.fullName, isPr, number),
+    );
     if (web) {
       await client.query(
         `update conversations
@@ -625,7 +621,7 @@ async function applyImportedEvent(
           where id = $1`,
         [web.id, externalId, url ?? null],
       );
-      conversation = web;
+      conversation = { id: web.id, title: web.title };
     }
   }
   if (!conversation) {
@@ -680,9 +676,15 @@ async function applyImportedEvent(
         },
         'ignored a duplicate GitHub ticket for an active Work task',
       );
-      // The runtime already has this second Ticket; pause it so the same
-      // requirement does not execute twice. The pause is recoverable and keeps
-      // its worktree, unlike the terminal stop.
+      // The runtime already has this second Ticket. Queue a durable pause so a
+      // failed call or a restart retries it; the platform task remains the only
+      // execution.
+      await client.query(
+        `insert into duplicate_tickets (repository_id, task_id, ticket_id)
+         values ($1, $2, $3)
+         on conflict (repository_id, ticket_id) do nothing`,
+        [repository.id, existingConversationTask.id, ticketId],
+      );
       return ticketId;
     }
     // The previous ticket ended: the same conversation starts a new attempt on the
@@ -799,7 +801,7 @@ async function applyImportedEvent(
   return undefined;
 }
 
-async function applyEvent(
+export async function applyEvent(
   client: pg.PoolClient,
   repository: RepositoryBinding,
   event: BridgeEvent,
@@ -823,8 +825,7 @@ async function applyEvent(
       await applyPausedEvent(client, repository, event, logger);
       return;
     case 'ticket.imported':
-      await applyImportedEvent(client, repository, event, logger);
-      return;
+      return applyImportedEvent(client, repository, event, logger);
     case 'message.read':
       await applyReadEvent(client, repository, event, logger);
       return;
@@ -867,7 +868,6 @@ export async function syncOnce(
   }
 
   const client = await pool.connect();
-  const duplicates: string[] = [];
   try {
     await client.query('begin');
     for (const event of page.events) {
@@ -878,7 +878,10 @@ export async function syncOnce(
       try {
         const duplicate = await applyEvent(client, repository, event, logger);
         if (duplicate) {
-          duplicates.push(duplicate);
+          logger.info(
+            { event: 'bridge.import_duplicate_queued', bridgeEvent: event.id, ticketId: duplicate },
+            'queued a duplicate runtime ticket for a durable pause',
+          );
         }
         await client.query('release savepoint bridge_event');
       } catch (error) {
@@ -907,24 +910,22 @@ export async function syncOnce(
   } finally {
     client.release();
   }
-  for (const ticketId of duplicates) {
-    try {
-      await bridge.pause(ticketId, {
-        operationId: randomUUID(),
-        reason: 'Duplicate GitHub requirement; the existing task continues',
-      });
-      logger.warn(
-        { event: 'bridge.import_duplicate_paused', ticketId },
-        'paused a duplicate runtime ticket so the requirement executes once',
-      );
-    } catch (error) {
-      logger.error(
-        { event: 'bridge.import_duplicate_pause_failed', ticketId, error: String(error) },
-        'could not pause a duplicate runtime ticket; the platform still has one task',
-      );
-    }
-  }
   return true;
+}
+
+/** Whether `body` contains the exact GitHub Issue/PR URL for this repository and number. */
+export function githubRequirementUrl(
+  body: string,
+  repository: string,
+  isPr: boolean,
+  number: number,
+): boolean {
+  const escaped = repository.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const path = isPr ? '(?:pull|pulls)' : 'issues';
+  return new RegExp(
+    String.raw`https?:\/\/(?:www\.)?github\.com\/${escaped}\/${path}\/${number}(?![0-9A-Za-z_-])`,
+    'i',
+  ).test(body);
 }
 
 function isUniqueViolation(error: unknown): boolean {

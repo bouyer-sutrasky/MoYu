@@ -43,6 +43,13 @@
       "when": 1793728781323,
       "tag": "0005_colossal_brood",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793765222753,
+      "tag": "0006_aspiring_fenris",
+      "breakpoints": true
     }
   ]
 }

@@ -12,7 +12,8 @@ import { createConsoleLogger } from '../../src/logger';
 import { maintainLeases, operationsOnce, reconcileTasks } from '../../src/operations';
 import { captureReportsOnce } from '../../src/reports';
 import type { RepositoryBinding } from '../../src/runtime';
-import { syncOnce } from '../../src/sync';
+import { applyEvent, githubRequirementUrl, syncOnce } from '../../src/sync';
+import { duplicatesOnce } from '../../src/duplicates';
 import { createTestDatabase, type TestDatabase } from './helpers';
 
 const TOKEN = 'm4-test-bridge-token-0123456789';
@@ -567,6 +568,43 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
     expect(task.stopEvidence).toMatchObject({ error: expect.stringContaining('worktree') });
   }, 30_000);
 
+  it('does not accept a snapshot stopped state when its pause evidence is incomplete', async () => {
+    const fixture = await seed({
+      state: 'stopped',
+      stoppedAt: new Date(),
+      stopEvidence: { agentStatus: 'idle', jobsAfter: [] },
+    });
+    fakeBridge.snapshots.set(fixture.ticketId, {
+      ticketId: fixture.ticketId,
+      title: 'M4 task',
+      state: 'stopped',
+      mode: 'execute',
+      paused: {
+        at: new Date().toISOString(),
+        by: 'human',
+        stoppedAt: new Date().toISOString(),
+        evidence: {
+          agentStatus: 'running',
+          jobsAfter: [{ id: 'bash-1', name: 'sleep 300' }],
+          subagentsAfter: 0,
+        },
+      },
+      execution: { name: 'fix', directory: '/tmp/m4-worktree', assignment: 'Fix it' },
+    });
+    fakeBridge.refuse = { kind: 'resume', code: 'bridge_error', message: 'refused' };
+    await insertOperation(fixture, 'resume', `cmd-snapshot-evidence-${Date.now()}`);
+    await operationsOnce(
+      testDatabase.pool,
+      config,
+      fixture.repository,
+      client,
+      createConsoleLogger('test'),
+    );
+    const task = await readTask(fixture.taskId);
+    expect(task.state).toBe('blocked');
+    expect(task.stoppedAt).toBeNull();
+  }, 30_000);
+
   it('marks a task closed_unmerged when the runtime refuses to resume a closed PR', async () => {
     const fixture = await seed({
       state: 'stopped',
@@ -825,6 +863,52 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
     ]);
   }, 30_000);
 
+  it('does not claim a Web conversation for a different issue number', async () => {
+    const fixture = await seed({ state: 'running' });
+    const fullName = fixture.repository.fullName;
+    await testDatabase.pool.query(
+      `insert into messages (conversation_id, direction, kind, body)
+       values ($1, 'inbound', 'user', $2)`,
+      [fixture.conversationId, `Different task https://github.com/${fullName}/issues/10`],
+    );
+    fakeBridge.events = [
+      {
+        seq: 1,
+        id: 'ticket-imported:github-ticket-issue-1',
+        type: 'ticket.imported',
+        at: '2026-11-04T04:20:00.000Z',
+        data: {
+          ticketId: 'github-ticket-issue-1',
+          source: 'github',
+          externalId: 'github:1',
+          number: 1,
+          isPr: false,
+          url: `https://github.com/${fullName}/issues/1`,
+          title: 'Issue one',
+          state: 'running',
+          triggerId: 'github-comment:1:web',
+          text: 'GitHub entry',
+          base: { branch: 'main', commit: 'b'.repeat(40) },
+          at: '2026-11-04T04:20:00.000Z',
+        },
+      },
+    ];
+    expect(
+      await syncOnce(testDatabase.pool, fixture.repository, client, createConsoleLogger('test')),
+    ).toBe(true);
+    const conversations = await testDatabase.pool.query(
+      `select id, source, external_key as "externalKey" from conversations where repository_id = $1 order by created_at`,
+      [fixture.repository.id],
+    );
+    expect(conversations.rows).toHaveLength(2);
+    expect(conversations.rows[0]).toMatchObject({
+      id: fixture.conversationId,
+      source: 'web',
+      externalKey: null,
+    });
+    expect(conversations.rows[1]).toMatchObject({ source: 'github', externalKey: 'github:1' });
+  }, 30_000);
+
   it('claims a Web conversation that already contains the GitHub requirement URL', async () => {
     const fixture = await seed({ state: 'running' });
     const fullName = fixture.repository.fullName;
@@ -868,6 +952,146 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
     );
     expect(tasks.rows[0]?.count).toBe(1);
   }, 30_000);
+
+  it('returns the duplicate ticket id and persists a pause even when the first pause fails', async () => {
+    const fixture = await seed({ state: 'running', source: 'github', externalKey: 'github:42' });
+    const event: BridgeEvent = {
+      seq: 1,
+      id: 'ticket-imported:github-ticket-dup',
+      type: 'ticket.imported',
+      at: '2026-11-04T04:10:00.000Z',
+      data: {
+        ticketId: 'github-ticket-dup',
+        source: 'github',
+        externalId: 'github:42',
+        number: 42,
+        isPr: true,
+        url: 'https://github.com/Bouyer12/m4-import/pull/42',
+        title: 'Fix the GitHub issue',
+        state: 'running',
+        triggerId: 'github-comment:42:dup',
+        text: 'Duplicate entry',
+        base: { branch: 'main', commit: 'b'.repeat(40) },
+        at: '2026-11-04T04:10:00.000Z',
+      },
+    };
+    const dbClient = await testDatabase.pool.connect();
+    let returned: string | undefined;
+    try {
+      await dbClient.query('begin');
+      returned = await applyEvent(dbClient, fixture.repository, event, createConsoleLogger('test'));
+      await dbClient.query('rollback');
+    } finally {
+      dbClient.release();
+    }
+    expect(returned).toBe('github-ticket-dup');
+    fakeBridge.events = [event];
+    expect(
+      await syncOnce(testDatabase.pool, fixture.repository, client, createConsoleLogger('test')),
+    ).toBe(true);
+    const queued = await testDatabase.pool.query(
+      `select ticket_id as "ticketId", state from duplicate_tickets where repository_id = $1`,
+      [fixture.repository.id],
+    );
+    expect(queued.rows[0]).toMatchObject({ ticketId: 'github-ticket-dup', state: 'pending' });
+
+    // A failed pause is persisted and retried, not only logged.
+    const callsBefore = fakeBridge.calls.length;
+    fakeBridge.refuse = { kind: 'pause', code: 'bridge_error', message: 'temporary failure' };
+    await duplicatesOnce(
+      testDatabase.pool,
+      config,
+      fixture.repository,
+      client,
+      createConsoleLogger('test'),
+    );
+    const failed = await testDatabase.pool.query(
+      `select state, last_error as "lastError" from duplicate_tickets where repository_id = $1`,
+      [fixture.repository.id],
+    );
+    expect(failed.rows[0]).toMatchObject({
+      state: 'failed',
+      lastError: expect.stringContaining('temporary'),
+    });
+    fakeBridge.refuse = null;
+    await testDatabase.pool.query(
+      `update duplicate_tickets set next_attempt_at = now() where repository_id = $1`,
+      [fixture.repository.id],
+    );
+    await duplicatesOnce(
+      testDatabase.pool,
+      config,
+      fixture.repository,
+      client,
+      createConsoleLogger('test'),
+    );
+    const paused = await testDatabase.pool.query(
+      `select state from duplicate_tickets where repository_id = $1`,
+      [fixture.repository.id],
+    );
+    expect(paused.rows[0]?.state).toBe('paused');
+    expect(
+      fakeBridge.calls.slice(callsBefore).filter((call) => call.kind === 'pause'),
+    ).toHaveLength(2);
+  }, 30_000);
+
+  it('recovers a duplicate pause left in flight by a restart', async () => {
+    const fixture = await seed({ state: 'running', source: 'github', externalKey: 'github:42' });
+    await testDatabase.pool.query(
+      `insert into duplicate_tickets (repository_id, task_id, ticket_id, state, attempts, operation_id, updated_at)
+       values ($1, $2, 'github-ticket-restart', 'pausing', 1, '00000000-0000-4000-8000-000000000001', now() - interval '2 minutes')`,
+      [fixture.repository.id, fixture.taskId],
+    );
+    await duplicatesOnce(
+      testDatabase.pool,
+      config,
+      fixture.repository,
+      client,
+      createConsoleLogger('test'),
+    );
+    const row = await testDatabase.pool.query(
+      `select state from duplicate_tickets where ticket_id = 'github-ticket-restart'`,
+    );
+    expect(['paused', 'failed']).toContain(row.rows[0]?.state);
+  }, 30_000);
+
+  it('matches only the exact GitHub requirement URL, not #10/#11 or another repository', () => {
+    const repo = 'Bouyer12/m4-import';
+    expect(
+      githubRequirementUrl('see https://github.com/Bouyer12/m4-import/issues/1', repo, false, 1),
+    ).toBe(true);
+    expect(
+      githubRequirementUrl('see https://github.com/Bouyer12/m4-import/issues/10', repo, false, 1),
+    ).toBe(false);
+    expect(
+      githubRequirementUrl('see https://github.com/Bouyer12/m4-import/issues/11', repo, false, 1),
+    ).toBe(false);
+    expect(
+      githubRequirementUrl(
+        'https://github.com/Bouyer12/m4-import/issues/1#issuecomment-9',
+        repo,
+        false,
+        1,
+      ),
+    ).toBe(true);
+    expect(
+      githubRequirementUrl(
+        'https://github.com/Bouyer12/m4-import/issues/1?foo=bar',
+        repo,
+        false,
+        1,
+      ),
+    ).toBe(true);
+    expect(
+      githubRequirementUrl('https://github.com/Bouyer12/m4-import/pull/1', repo, true, 1),
+    ).toBe(true);
+    expect(
+      githubRequirementUrl('https://github.com/Bouyer12/m4-import/pull/1', repo, false, 1),
+    ).toBe(false);
+    expect(githubRequirementUrl('https://github.com/Bouyer12/other/issues/1', repo, false, 1)).toBe(
+      false,
+    );
+  });
 
   it('copies a ready runtime report into the conversation exactly once', async () => {
     const fixture = await seed({ state: 'awaiting_review', executionMode: 'discuss' });

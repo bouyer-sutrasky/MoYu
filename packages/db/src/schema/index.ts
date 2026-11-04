@@ -7,6 +7,7 @@ export * from './deferred-bridge-events';
 export * from './deliveries';
 export * from './enums';
 export * from './events';
+export * from './duplicate-tickets';
 export * from './messages';
 export * from './owners';
 export * from './repositories';

@@ -418,12 +418,22 @@ async function applySnapshot(
   try {
     await client.query('begin');
     const task = await taskById(client, taskId);
-    if (!task || task.state === state) {
+    const paused = snapshot.paused;
+    const proven = pauseEvidenceProven(
+      paused?.stoppedAt ? { ...paused.evidence, stoppedAt: paused.stoppedAt } : undefined,
+    );
+    const problem =
+      paused?.stoppedAt && !proven
+        ? pauseEvidenceProblem({ ...paused.evidence, stoppedAt: paused.stoppedAt })
+        : undefined;
+    // The snapshot path is the same stop-evidence boundary as the event, poll and
+    // restart paths: a timestamp without an idle worker/no jobs/no subagents is not stopped.
+    const effectiveState = state === 'stopped' && !proven ? 'blocked' : state;
+    if (!task || task.state === effectiveState) {
       await client.query('commit');
       return;
     }
-    const paused = snapshot.paused;
-    const stoppedAt = paused?.stoppedAt ? new Date(paused.stoppedAt) : null;
+    const stoppedAt = proven ? new Date(paused!.stoppedAt!) : null;
     const result = await client.query<TaskRow>(
       `update task_links
           set state = $2, stopped_at = $3::timestamptz, stop_evidence = $4::jsonb,
@@ -431,9 +441,13 @@ async function applySnapshot(
         where id = $1 returning ${TASK_COLUMNS.replaceAll('t.', 'task_links.')}`,
       [
         taskId,
-        state,
+        effectiveState,
         stoppedAt,
-        JSON.stringify(paused?.evidence ?? {}),
+        JSON.stringify(
+          proven
+            ? (paused?.evidence ?? {})
+            : { ...paused?.evidence, ...(problem ? { problem } : {}) },
+        ),
         snapshot.mode === 'discuss' ? 'discuss' : 'execute',
       ],
     );

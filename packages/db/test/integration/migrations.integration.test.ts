@@ -11,6 +11,7 @@ const EXPECTED_TABLES = [
   'conversations',
   'deferred_bridge_events',
   'deliveries',
+  'duplicate_tickets',
   'events',
   'messages',
   'owners',
@@ -60,6 +61,8 @@ const EXPECTED_INDEXES = [
   'task_operations_active_task_uq',
   'task_operations_state_next_attempt_idx',
   'task_operations_repository_idx',
+  'duplicate_tickets_repository_ticket_uq',
+  'duplicate_tickets_due_idx',
 ];
 
 async function stringColumn(database: TestDatabase, query: ReturnType<typeof sql>, column: string) {

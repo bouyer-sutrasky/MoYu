@@ -10,6 +10,7 @@ import { deliverOnce } from './delivery';
 import { createConsoleLogger, type DispatcherLogger } from './logger';
 import { maintainLeases, operationsOnce, reconcileTasks } from './operations';
 import { captureReportsOnce } from './reports';
+import { duplicatesOnce } from './duplicates';
 import { bridgeClient, resolveRepository, type RepositoryBinding } from './runtime';
 import { syncOnce } from './sync';
 
@@ -151,6 +152,9 @@ export async function runDispatcher(
       // them into the conversation so the owner can read and approve the plan.
       runLoop('reports', config.reportCaptureIntervalMs, options.signal, logger, () =>
         captureReportsOnce(pool, repository, bridge, logger),
+      ),
+      runLoop('duplicates', config.duplicateIntervalMs, options.signal, logger, () =>
+        duplicatesOnce(pool, config, repository, bridge, logger),
       ),
     ]);
     logger.info({ event: 'dispatcher.stopped' }, 'dispatcher stopped');

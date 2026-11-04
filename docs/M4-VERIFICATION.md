@@ -191,3 +191,28 @@ Bridge 在清除暂停前检查目录、`.git` 链接及目标存在；平台在
 - 固定上游：`6337fc823ce20251c8de8085948165c81aaa701e`，补丁 `0001`–`0019`。
 - 最终构建目录 `/root/src/upstream/m4-final-verify`；`lib/index.js` sha256 `dccd47fc7063e7881da619181a5a5120955bd7f21023383f60e32f40541175e5`；`package.json` `d428e669805ea1dfb6a4900bddbffe3cafb8f06a0b1eb139266c2b2f6b94b021`。
 - 上游定向测试：`discussion`、`bridge-control`、`pause`、`process-tree`、`sources` 相关用例通过；全量结果见 PR/CI。
+
+
+## 第二轮返修（2026-11-04）
+
+### 重复 runtime Ticket 的暂停返回值与持久化
+
+- `applyEvent` 的 `ticket.imported` 分支现在直接返回 `applyImportedEvent` 的结果；`syncOnce` 记录返回的重复 Ticket ID，不再丢弃。
+- 新增迁移 `0006_aspiring_fenris.sql` 与 `duplicate_tickets` 表（`(repository_id,ticket_id)` 唯一）。导入事务写入 `pending` 行；dispatcher 的 `duplicatesOnce` 领取、调用 Bridge pause、轮询 operation，成功 `paused`，失败 `failed` 并指数退避；`pausing` 行在进程退出 90 秒后回收，重启继续。
+- 实跑：把已存在的重复 Ticket `d207db98…` resume 后插入队列行；dispatcher 在 5 秒内将其暂停，行 `paused`、attempts 1、`lingeringPids: []`、`processesAfter: []`、`jobsAfter: []`；探针仓库仍只有原 Web 任务的 PR #2，没有第二个副作用。证据：[`live-duplicate-queue.log`](evidence/m4/live-duplicate-queue.log)。
+- 测试：返回值直测、暂停失败后重试、`pausing` 重启回收；见 dispatcher 集成测试。
+
+### GitHub requirement URL 精确关联
+
+- 不再使用 `LIKE '%.../issues/1%'`（会匹配 #10/#11）。改为读取候选 Web 消息，用精确的 `https?://github.com/<owner>/<repo>/(issues|pull)/<n>` 边界匹配，支持 `#fragment`/`?query`，并区分 Issue 与 PR。
+- 测试：`#1` 与 `#10/#11`、fragment/query、Issue/PR、不同仓库；真实 PostgreSQL 中断言 `/issues/10` 的 Web 会话不会被 `github:1` 认领，而会新建独立 conversation。
+
+### 操作拒绝后的快照停止证据
+
+- `applySnapshot` 现在与事件、轮询、重启核对共用 `pauseEvidenceProven`：`stopped` 但缺时间、worker 非 idle、残留 jobs/subagents/PID 时置 `blocked`，不写 `stopped_at`。
+- 测试：resume 409 后快照 state=stopped 且 `agentStatus: running`、`jobsAfter:[…]` 时平台为 `blocked`，`stoppedAt` 为空。
+
+### 讨论环境级边界（未完成，阻塞）
+
+- 当前讨论 worker 与执行 worker 仍在同一个 harness 进程、同一 UID（隔离实例为 root），worktree 为可写的 root 700，GitHub/Bridge 凭据对同 UID 可读；`read` 的路径守卫、工具 allow-list、read-only preset 只是进程内边界，不满足 Issue 要求的“该 runtime 不挂写凭据、不可写工作目录”的环境级保证。
+- 要达到该要求，需要独立的讨论 runtime 进程/容器：不同 UID、独立 mount namespace、worktree 只读 bind、凭据不挂载；现有 DSH in-process Worker Session 无法在单个进程内提供该隔离。该项需架构/范围决策，未在本轮声称完成。

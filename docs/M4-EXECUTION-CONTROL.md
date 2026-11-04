@@ -213,3 +213,7 @@ operation 必须持久化（append-only，位于 `<stateDir>/bridge/operations.j
 - 同一 GitHub ticket 的重复 import / 双入口只产生一条 conversation 与一个 task。
 - `ticket.ended outcome:'closed'` 映射 `closed_unmerged`，不显示成功、不自动重开、不自动新任务。
 - 3082 bootstrap 实例及其 GitHub Source 设置不被修改或重启。
+
+## 重复 runtime Ticket 的持久化暂停
+
+`ticket.imported` 在同一事务里把重复 runtime Ticket 写入 `duplicate_tickets`（`(repository_id,ticket_id)` 唯一），状态 `pending`。dispatcher 的 `duplicatesOnce` 独立循环领取、调用 Bridge pause、轮询 operation，成功置 `paused`，失败置 `failed` 并按指数退避重试；进程退出时 `pausing` 行在 90 秒后回收，重启继续。平台 task 是唯一执行记录，第二个 runtime Ticket 不产生仓库副作用。
