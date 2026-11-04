@@ -96,23 +96,23 @@ async function loadConversationRow(
   ownerId: string,
   conversationId: string,
 ): Promise<{ conversation: typeof conversations.$inferSelect; task: TaskLink | null }> {
-  const [conversation] = await database
-    .select()
+  // Read the conversation, its task and its merge alias in one statement. Two
+  // statements could observe the task before a concurrent merge deletes it and
+  // then a conversation row that already moved to the alias (or vice versa),
+  // producing a false "no task" conflict for a retried message.
+  const [row] = await database
+    .select({ conversation: conversations, task: taskLinks })
     .from(conversations)
+    .leftJoin(taskLinks, eq(taskLinks.conversationId, conversations.id))
     .where(and(eq(conversations.id, conversationId), eq(conversations.ownerId, ownerId)))
     .limit(1);
-  if (!conversation) {
+  if (!row) {
     throw ApiProblem.notFound('Conversation not found');
   }
-  if (conversation.mergedIntoConversationId) {
-    return loadConversationRow(database, ownerId, conversation.mergedIntoConversationId);
+  if (row.conversation.mergedIntoConversationId) {
+    return loadConversationRow(database, ownerId, row.conversation.mergedIntoConversationId);
   }
-  const [task] = await database
-    .select()
-    .from(taskLinks)
-    .where(eq(taskLinks.conversationId, conversation.id))
-    .limit(1);
-  return { conversation, task: task ?? null };
+  return { conversation: row.conversation, task: row.task ?? null };
 }
 
 async function taskByConversation(

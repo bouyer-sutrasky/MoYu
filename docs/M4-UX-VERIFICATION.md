@@ -38,6 +38,10 @@ corepack pnpm@11.7.0 -r --if-present build                # exit 0
 | `@moyu/api` | 10 文件、59 测试通过（含历史/任务分页、偏好、合并别名发送路径） |
 | `@moyu/dispatcher` | 2 文件、27 测试通过（M4 停止/继续、投递/read、GitHub 导入回归） |
 
+并发合并回归：`conversation-merge.integration.test.ts` 的「相同 clientMessageId 并发重试」连续 15 次
+单独运行全部通过（修复前 CI 曾出现 202/409 的假冲突；现会话与任务改为单条 join 读取，避免并发合并
+删除源任务时读到“已合并但无任务”的中间态）。
+
 分页测试覆盖：250 条消息中 3 条共享同一时间戳、逐页 limit=7 全量遍历、`before`/`after` 双向、
 微秒精度时间戳、非法/跨会话/跨仓库游标 422、105 个会话分页与仓库隔离、乱序/迟到页由前端 token
 丢弃（浏览器用例）。偏好测试覆盖：GET 默认值与 saved/effective、PUT 保存与刷新恢复、跨仓库隔离、
