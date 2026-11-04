@@ -213,6 +213,8 @@ describe('Web entry after a GitHub import', () => {
         }),
       ),
     );
+    if (![200, 202].includes(first!.statusCode) || ![200, 202].includes(second!.statusCode))
+      console.log('RACE_BODY', first!.statusCode, first!.body, second!.statusCode, second!.body);
     expect([first!.statusCode, second!.statusCode].sort()).toEqual([200, 202]);
     const receipt = first!.statusCode === 200 ? first!.json() : second!.json();
     expect((receipt as { data: { duplicate: boolean } }).data.duplicate).toBe(true);

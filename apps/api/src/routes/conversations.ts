@@ -486,6 +486,67 @@ export function registerConversationRoutes(
         input.replyToMessageId ?? null,
       );
 
+      // A retry can arrive after the merge committed but before the caller saw
+      // the response. The target message itself is the durable receipt.
+      if (
+        conversation.source === 'web' &&
+        task.state === 'pending_admission' &&
+        !input.replyToMessageId
+      ) {
+        const repository = await findOwnedRepository(
+          database,
+          auth.owner.id,
+          conversation.repositoryId,
+        );
+        const requirement = repository
+          ? githubRequirementsIn(input.text, repository.fullName)[0]
+          : undefined;
+        if (requirement) {
+          const [target] = await database
+            .select({ id: conversations.id })
+            .from(conversations)
+            .where(
+              and(
+                eq(conversations.repositoryId, conversation.repositoryId),
+                eq(conversations.source, 'github'),
+                eq(conversations.externalKey, `github:${requirement.number}`),
+              ),
+            )
+            .limit(1);
+          if (target) {
+            const [existing] = await database
+              .select({ message: messages, delivery: deliveries })
+              .from(messages)
+              .leftJoin(deliveries, eq(deliveries.messageId, messages.id))
+              .where(
+                and(
+                  eq(messages.conversationId, target.id),
+                  eq(messages.clientMessageId, input.clientMessageId),
+                ),
+              )
+              .limit(1);
+            if (existing) {
+              const samePayload =
+                existing.message.body === input.text &&
+                (existing.message.replyToMessageId ?? null) === (input.replyToMessageId ?? null);
+              if (!samePayload)
+                throw ApiProblem.conflict(
+                  'clientMessageId was already used for a different message payload',
+                );
+              return sendData(
+                reply,
+                request,
+                createMessageDataSchema.parse({
+                  message: toMessage(existing.message, existing.delivery ?? null),
+                  duplicate: true,
+                }),
+                200,
+              );
+            }
+          }
+        }
+      }
+
       // GitHub-first, then Web: a Web conversation's first message naming the
       // same exact Issue/PR is delivered to the imported GitHub conversation.
       // The Web conversation is kept as a durable alias, so a lost response can be
