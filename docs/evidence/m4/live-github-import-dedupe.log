@@ -1,0 +1,15 @@
+M4 real human GitHub @ import and Web/GitHub dedupe
+at=2026-11-04T03:39Z
+human_author=sutrasky
+human_comment=https://github.com/bouyer-sutrasky/m4-github-probe/issues/1
+runtime_ticket=d207db985d3cb972a1f856d8cf5f83f7
+platform_conversation=06f8284e-f79c-46d5-adce-325275b64ead
+platform_external_key=github:1
+platform_tasks_in_conversation=1
+platform_task_upstream_ticket=ce16cfe5cc4457f6208581772c24888e (the original Web ticket; no second task)
+notice=A second GitHub ticket (github:1) for this requirement was linked to the task that is already running; it is not executed separately.
+bridge_import_event_seq=39
+platform_cursor_after=41
+prepare_initial_failure=fatal: empty string is not a valid pathspec
+prepare_fix=DSH_SUPERAGENT_WORKSPACE_BASE_COMMIT/BASE_BRANCH fall back to HEAD for GitHub-origin Tickets
+prepare_after_fix=running; worktree created; then paused with lingeringPids=[] and processesAfter=[]

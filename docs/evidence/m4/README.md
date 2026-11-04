@@ -11,6 +11,8 @@
 | `live-closed-pr.log` | PR #5 关闭后的 `closed_unmerged`、409 与 PR 状态 |
 | `live-resume-missing-worktree.json` | worktree 缺失时 resume 被拒、平台 blocked |
 | `live-discuss-boundary.log` | 只读 preset/sandbox、凭据读取拒绝、进程/挂载身份 |
+| `live-github-import-dedupe.log` | 真人 GitHub @ 导入、单 task、notice、cursor 继续 |
+| `live-web-continuation.log` | 停止中消息 stored、resume 后 read、回复来源 |
 | `upstream-0009-tests.log` / `upstream-0010-tests.log` | 0009/0010 的上游定向回归 |
 
 环境：`/root/.dsh-m4`（profile `m4`、Web 3292、Bridge 3291），平台 API/dispatcher 4302，测试仓库

@@ -462,6 +462,7 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
             harnessPid: 1,
             jobsAfter: [{ id: 'bash-1', name: 'sleep 300' }],
             subagentsAfter: 0,
+            lingeringPids: [4242],
           },
         },
       },

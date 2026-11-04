@@ -4,6 +4,7 @@ export interface PauseEvidence {
   agentStatus?: unknown;
   jobsAfter?: unknown;
   subagentsAfter?: unknown;
+  lingeringPids?: unknown;
   [key: string]: unknown;
 }
 
@@ -14,14 +15,15 @@ export interface PauseEvidence {
  */
 export function pauseEvidenceProven(evidence: PauseEvidence | null | undefined): boolean {
   if (!evidence) return false;
-  const { stoppedAt, agentStatus, jobsAfter, subagentsAfter } = evidence;
+  const { stoppedAt, agentStatus, jobsAfter, subagentsAfter, lingeringPids } = evidence;
   return (
     typeof stoppedAt === 'string' &&
     !Number.isNaN(Date.parse(stoppedAt)) &&
     (agentStatus === 'idle' || agentStatus === 'absent') &&
     Array.isArray(jobsAfter) &&
     jobsAfter.length === 0 &&
-    (subagentsAfter === undefined || subagentsAfter === 0)
+    (subagentsAfter === undefined || subagentsAfter === 0) &&
+    (!Array.isArray(lingeringPids) || lingeringPids.length === 0)
   );
 }
 
@@ -47,6 +49,9 @@ export function pauseEvidenceProblem(
   }
   if (evidence.subagentsAfter !== undefined && evidence.subagentsAfter !== 0) {
     return `${String(evidence.subagentsAfter)} subagent(s) still running`;
+  }
+  if (Array.isArray(evidence.lingeringPids) && evidence.lingeringPids.length > 0) {
+    return `${evidence.lingeringPids.length} process(es) still running`;
   }
   return 'The stop evidence is incomplete';
 }

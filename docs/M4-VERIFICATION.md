@@ -43,6 +43,9 @@ integrations/superagent/build-patched.sh \
 | `0014-resume-worktree-closed-pr.patch` | 157 | resume 前校验 worktree 与 PR 状态，拒绝已关闭 PR |
 | `0015-discuss-read-boundary.patch` | 118 | 讨论态读取限制在工作目录内 |
 | `0016-discuss-local-tool-guard.patch` | 42 | 讨论态拒绝 subagent/消息等非只读本地工具 |
+| `0017-docs-process-tree-test.patch` | 13 | 补文档测试索引 |
+| `0018-github-base-head.patch` | 20 | GitHub 来源 Ticket 的 prepare 使用 HEAD 作为起始 |
+| `0019-pause-child-processes.patch` | 45 | 暂停等待暂停前的子进程退出，残留 PID 时不判 stopped |
 
 上游测试（干净环境，`corepack pnpm@11.7.0`）：
 
@@ -158,7 +161,10 @@ DOM 断言（Playwright）：After 讨论页有 1 个“按此方案开始执行
 - Web 先行的会话若消息包含同一 Issue/PR URL，GitHub 导入会认领该会话而不是新建第二条。
 - 每个事件使用 savepoint，意外唯一冲突只跳过该事件并推进游标，不再回滚整页卡住 cursor。
 - 集成测试新增：不同 Ticket 活动去重、终止后复用、Web URL 认领、重复 runtime Ticket 暂停。
-- **真人 GitHub @ 实跑仍待人工在 `https://github.com/bouyer-sutrasky/m4-github-probe/issues/1` 评论**；探针仓库与运行中的 Web 会话已就绪。
+- **真人 GitHub @ 实跑已完成**：`sutrasky` 在探针 Issue 评论后，隔离实例创建 Ticket `d207db98…`，平台认领原 Web 会话 `06f8284e…`，全程只有 1 个 task；写入
+  “A second GitHub ticket (github:1) … not executed separately.” notice，Bridge import 事件 seq 39 后平台 cursor 到 41。初始 prepare 因空 base commit 失败，已由 `0018` 修复；retry 后 prepare 成功并暂停。
+- 网页续聊：停止状态下发送的消息先 `stored`，resume 后 `read`（readAt 03:47:07），回到原 Web Ticket；回复走 workspace 来源，不写 GitHub。证据：
+  [`live-github-import-dedupe.log`](evidence/m4/live-github-import-dedupe.log)、[`live-web-continuation.log`](evidence/m4/live-web-continuation.log)。
 
 ### 关闭未合并 PR
 
@@ -177,10 +183,11 @@ Bridge 在清除暂停前检查目录、`.git` 链接及目标存在；平台在
 - 实跑：讨论 worker 读取 `/root/.dsh-m4/env` 与 `/root/.ssh/id_ed25519` 均返回
   `Error: Discussion work may read only files inside its worktree`，无内容泄漏；10 次拒绝记录。
 - 服务身份：隔离实例 harness 以 root 运行；worktree `root root 700`，`/root/.dsh-m4/env` `root root 600`，根文件系统 ext4 rw。沙箱与 guard 是强制边界，不依赖提示词；生产非 root 身份仍按部署要求执行。
+- 暂停的子进程：真实 `gh` 子进程曾在 stoppedAt 快照中残留；`0019` 等待暂停前的 PID 全部退出，残留时判失败。复验 `lingeringPids: []`、`processesAfter: []` 后才停止。
 - 证据：[`live-discuss-boundary.log`](evidence/m4/live-discuss-boundary.log)。
 
 ### 最终制品
 
-- 固定上游：`6337fc823ce20251c8de8085948165c81aaa701e`，补丁 `0001`–`0016`。
-- 最终构建目录 `/root/src/upstream/m4-final-verify`；`lib/index.js` sha256 `a6f10720cde97f09468a11c75f06eb5e43038477cc5990fd6884f387e94f5287`；`package.json` `d428e669805ea1dfb6a4900bddbffe3cafb8f06a0b1eb139266c2b2f6b94b021`。
+- 固定上游：`6337fc823ce20251c8de8085948165c81aaa701e`，补丁 `0001`–`0019`。
+- 最终构建目录 `/root/src/upstream/m4-final-verify`；`lib/index.js` sha256 `dccd47fc7063e7881da619181a5a5120955bd7f21023383f60e32f40541175e5`；`package.json` `d428e669805ea1dfb6a4900bddbffe3cafb8f06a0b1eb139266c2b2f6b94b021`。
 - 上游定向测试：`discussion`、`bridge-control`、`pause`、`process-tree`、`sources` 相关用例通过；全量结果见 PR/CI。
