@@ -121,9 +121,9 @@ Before 为 `origin/main` @ `40e857a` 的真实构建，After 为 `docs/evidence/
 
 | 文件 | sha256 |
 | --- | --- |
-| `apps/api/dist/server.js` | `6c6c7e9fb8b5bd015da7c9c7327c8705fdf17dfa90a8457ef14387675c5eab56` |
-| `apps/web/dist/index.html` | `cbcba26ab8a6e66ef15e652f08a2097dfecb535a92e911fab15ff41118058cbb` |
-| `apps/web/dist/assets/index-CWk3ip3v.js` | `a9e382fd0aabe17faba13ed8328eecbf8b2194a362c726a5b3c24e5b40319209` |
+| `apps/api/dist/server.js` | `9f14065c6e8ee7d3636b93da48543baf273e796f8f03c878382ceb3ede627dc3` |
+| `apps/web/dist/index.html` | `cf15dd705864ecf8b537054c19348fed3ff75cf78501061732787050b57bdbf0` |
+| `apps/web/dist/assets/index-_bJ_wghQ.js` | `f5673ce7bac9ebecc28422a562b19add55667dea74fb21a7bf45d4b2c7d2bb4a` |
 
 ## 迁移与回滚
 
