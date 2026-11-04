@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { and, count, desc, eq, inArray, isNull, lt } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, lt } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 
 import {
@@ -152,7 +152,7 @@ async function latestOperation(database: Database, taskId: string): Promise<Task
  * foreign-key error, before any message or delivery row is written.
  */
 async function assertReplyTargetBelongsToConversation(
-  database: Database,
+  database: Database | DatabaseTransaction,
   conversationId: string,
   replyToMessageId: string | null,
 ): Promise<void> {
@@ -597,17 +597,9 @@ export function registerConversationRoutes(
                   .where(eq(conversations.id, conversation.id))
                   .for('update');
                 if (!source) throw ApiProblem.notFound('Conversation not found');
-                const sourceCount = await transaction
-                  .select({ total: count() })
-                  .from(messages)
-                  .where(eq(messages.conversationId, source.id));
                 const sourceTask = await taskByConversation(transaction, source.id);
-                // Another message won the race before the alias landed: deliver it
-                // normally to the source task rather than deleting its data.
-                if (
-                  !source.mergedIntoConversationId &&
-                  ((sourceCount[0]?.total ?? 0) > 0 || sourceTask?.state !== 'pending_admission')
-                ) {
+                // A started source task must not be deleted by a merge.
+                if (!source.mergedIntoConversationId && sourceTask?.state !== 'pending_admission') {
                   return insertInbound(transaction, source, input);
                 }
                 const [targetConversion] = await transaction
@@ -631,6 +623,51 @@ export function registerConversationRoutes(
                 }
                 const created = await insertInbound(transaction, targetConversion, input);
                 if (!source.mergedIntoConversationId) {
+                  // A supplementary message may have committed while this merge
+                  // waited for the source lock. Move it to the target task rather
+                  // than deleting it with the source task.
+                  const sourceMessages = await transaction
+                    .select()
+                    .from(messages)
+                    .where(eq(messages.conversationId, source.id))
+                    .for('update');
+                  for (const sourceMessage of sourceMessages) {
+                    if (sourceMessage.clientMessageId) {
+                      const [duplicate] = await transaction
+                        .select({
+                          id: messages.id,
+                          body: messages.body,
+                          replyTo: messages.replyToMessageId,
+                        })
+                        .from(messages)
+                        .where(
+                          and(
+                            eq(messages.conversationId, targetConversion.id),
+                            eq(messages.clientMessageId, sourceMessage.clientMessageId),
+                          ),
+                        )
+                        .limit(1);
+                      if (duplicate) {
+                        if (
+                          duplicate.body !== sourceMessage.body ||
+                          (duplicate.replyTo ?? null) !== (sourceMessage.replyToMessageId ?? null)
+                        ) {
+                          throw ApiProblem.conflict(
+                            'A message with this clientMessageId already exists on the target',
+                          );
+                        }
+                        await transaction
+                          .delete(deliveries)
+                          .where(eq(deliveries.messageId, sourceMessage.id));
+                        await transaction.delete(messages).where(eq(messages.id, sourceMessage.id));
+                        continue;
+                      }
+                    }
+                    await transaction
+                      .update(messages)
+                      .set({ conversationId: targetConversion.id })
+                      .where(eq(messages.id, sourceMessage.id));
+                  }
                   await transaction
                     .update(conversations)
                     .set({ mergedIntoConversationId: targetConversion.id, updatedAt: new Date() })
@@ -694,12 +731,46 @@ export function registerConversationRoutes(
       }
 
       let created: { message: MessageRow; delivery: Delivery; event: unknown } | null = null;
+      let resolvedConversationId = conversation.id;
       try {
         created = await database.transaction(async (transaction) => {
+          // Every write, not only a URL merge, resolves the alias and rechecks the
+          // task under a row lock. A supplementary message that read a source id
+          // before a concurrent merge must land on the target task, never on an
+          // alias with no task.
+          const [locked] = await transaction
+            .select()
+            .from(conversations)
+            .where(eq(conversations.id, conversation.id))
+            .for('update');
+          if (!locked) throw ApiProblem.notFound('Conversation not found');
+          let target = locked;
+          if (locked.mergedIntoConversationId) {
+            const [aliased] = await transaction
+              .select()
+              .from(conversations)
+              .where(eq(conversations.id, locked.mergedIntoConversationId))
+              .for('update');
+            if (!aliased) throw ApiProblem.conflict('The merged conversation no longer exists');
+            target = aliased;
+          }
+          const targetTask = await taskByConversation(transaction, target.id);
+          if (!targetTask) throw ApiProblem.conflict('Conversation has no task');
+          if (['completed', 'closed_unmerged', 'not_accepted'].includes(targetTask.state)) {
+            throw ApiProblem.conflict(
+              'This conversation has ended; create a linked task or resume it explicitly',
+            );
+          }
+          await assertReplyTargetBelongsToConversation(
+            transaction,
+            target.id,
+            input.replyToMessageId ?? null,
+          );
+          resolvedConversationId = target.id;
           const [message] = await transaction
             .insert(messages)
             .values({
-              conversationId: conversation.id,
+              conversationId: target.id,
               direction: 'inbound',
               kind: 'user',
               clientMessageId: input.clientMessageId,
@@ -722,14 +793,14 @@ export function registerConversationRoutes(
           await transaction
             .update(conversations)
             .set({
-              title: conversation.title ?? deriveTitle(input.text),
+              title: target.title ?? deriveTitle(input.text),
               updatedAt: new Date(),
             })
-            .where(eq(conversations.id, conversation.id));
+            .where(eq(conversations.id, target.id));
           const event = await appendEvent(transaction, {
             type: 'message.created',
-            repositoryId: conversation.repositoryId,
-            conversationId: conversation.id,
+            repositoryId: target.repositoryId,
+            conversationId: target.id,
             payload: { messageId: message.id, direction: 'inbound' },
           });
           return { message, delivery, event };
@@ -749,7 +820,7 @@ export function registerConversationRoutes(
           .leftJoin(deliveries, eq(deliveries.messageId, messages.id))
           .where(
             and(
-              eq(messages.conversationId, conversation.id),
+              eq(messages.conversationId, resolvedConversationId),
               eq(messages.clientMessageId, input.clientMessageId),
             ),
           )

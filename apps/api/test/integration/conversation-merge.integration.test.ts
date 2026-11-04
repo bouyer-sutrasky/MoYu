@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -282,6 +282,89 @@ describe('Web entry after a GitHub import', () => {
       .from(messages)
       .where(eq(messages.conversationId, web!.id));
     expect(sourceMessages).toHaveLength(0);
+  });
+
+  it('routes an ordinary supplementary message and a URL merge into the one target task', async () => {
+    const [web] = await database
+      .insert(conversations)
+      .values({
+        ownerId: (
+          await database
+            .select({ ownerId: repositories.ownerId })
+            .from(repositories)
+            .where(eq(repositories.id, repositoryId))
+            .limit(1)
+        )[0]!.ownerId,
+        repositoryId,
+        mode: 'work',
+        executionMode: 'execute',
+        source: 'web',
+        baseBranch: 'main',
+      })
+      .returning();
+    await database.insert(taskLinks).values({
+      conversationId: web!.id,
+      repositoryId,
+      state: 'pending_admission',
+      baseBranch: 'main',
+      executionMode: 'execute',
+    });
+    const ordinaryId = `ordinary-${randomUUID()}`;
+    const urlId = `url-${randomUUID()}`;
+    const [ordinary, merge] = await Promise.all([
+      app.inject({
+        method: 'POST',
+        url: `/api/v1/conversations/${web!.id}/messages`,
+        headers: { cookie },
+        payload: { clientMessageId: ordinaryId, text: 'A supplementary note without a URL' },
+      }),
+      app.inject({
+        method: 'POST',
+        url: `/api/v1/conversations/${web!.id}/messages`,
+        headers: { cookie },
+        payload: {
+          clientMessageId: urlId,
+          text: 'Same requirement https://github.com/Bouyer12/m4-merge-test/issues/1',
+        },
+      }),
+    ]);
+    expect([ordinary.statusCode, merge.statusCode]).toEqual([202, 202]);
+    const source = await database
+      .select({ mergedInto: conversations.mergedIntoConversationId })
+      .from(conversations)
+      .where(eq(conversations.id, web!.id))
+      .limit(1);
+    expect(source[0]?.mergedInto).toBe(githubConversationId);
+    const sourceMessages = await database
+      .select({ id: messages.id })
+      .from(messages)
+      .where(eq(messages.conversationId, web!.id));
+    expect(sourceMessages).toHaveLength(0);
+    const targetIds = await database
+      .select({ clientMessageId: messages.clientMessageId })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.conversationId, githubConversationId),
+          inArray(messages.clientMessageId, [ordinaryId, urlId]),
+        ),
+      );
+    expect(targetIds.map((row) => row.clientMessageId).sort()).toEqual([ordinaryId, urlId].sort());
+    const tasks = await database
+      .select({ id: taskLinks.id })
+      .from(taskLinks)
+      .where(eq(taskLinks.repositoryId, repositoryId));
+    expect(tasks).toHaveLength(1);
+    // Alias reads resolve to the target and see the moved ordinary message.
+    const detail = await app.inject({
+      method: 'GET',
+      url: `/api/v1/conversations/${web!.id}`,
+      headers: { cookie },
+    });
+    expect(detail.statusCode).toBe(200);
+    expect((detail.json() as { data: { conversation: { id: string } } }).data.conversation.id).toBe(
+      githubConversationId,
+    );
   });
 
   it('does not merge /issues/10 into the /issues/1 requirement', async () => {
