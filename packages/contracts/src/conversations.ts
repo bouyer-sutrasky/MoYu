@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { isoTimestampSchema, uuidSchema } from './common';
+import { isoTimestampSchema, pageCursorSchema, uuidSchema } from './common';
 import { modelSelectionSchema, taskSummarySchema } from './tasks';
 
 export const conversationModeSchema = z.enum(['work', 'chat']);
@@ -47,8 +47,24 @@ export const conversationSummarySchema = z.object({
 
 export type ConversationSummary = z.infer<typeof conversationSummarySchema>;
 
+/**
+ * Lists one repository's conversations, newest activity first. `cursor` is an
+ * opaque keyset cursor scoped to the repository so a cursor cannot be reused
+ * after switching repositories.
+ */
+export const conversationListQuerySchema = z.object({
+  repositoryId: uuidSchema.optional(),
+  cursor: pageCursorSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+
+export type ConversationListQuery = z.infer<typeof conversationListQuerySchema>;
+
 export const conversationListDataSchema = z.object({
   conversations: z.array(conversationSummarySchema),
+  /** Pass as `cursor` to load the next older page; null when no more remain. */
+  nextCursor: pageCursorSchema.nullable().default(null),
+  hasMore: z.boolean().default(false),
 });
 
 export type ConversationListData = z.infer<typeof conversationListDataSchema>;

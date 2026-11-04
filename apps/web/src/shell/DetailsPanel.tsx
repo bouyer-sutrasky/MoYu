@@ -53,7 +53,7 @@ export function DetailsPanel({ open, repository, conversation, onClose }: Detail
               <Icon name="task" size={15} />
               任务
             </span>
-            <span className={styles.phaseTag}>M4</span>
+            <span className={styles.phaseTag}>可用</span>
           </div>
           <dl className={styles.detailList}>
             <div className={styles.detailRow}>
@@ -187,7 +187,7 @@ export function DetailsPanel({ open, repository, conversation, onClose }: Detail
         <div className={styles.detailsNote}>
           <Icon name="panel" size={15} />
           <p>
-            右侧详情默认收起。M4 展示真实任务字段、讨论/执行状态、停止证据、PR
+            右侧详情默认收起。当前展示真实任务字段、讨论/执行状态、停止证据、PR
             链接与待回复问题；diff 与检查结果在 M6 接入，不会用占位数据冒充成功。
           </p>
         </div>

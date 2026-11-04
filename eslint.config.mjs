@@ -52,5 +52,19 @@ export default tseslint.config(
       },
     },
   },
+  {
+    files: ['scripts/m4ux/e2e.mjs'],
+    languageOptions: {
+      globals: {
+        window: 'readonly',
+        document: 'readonly',
+        fetch: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        URL: 'readonly',
+        Buffer: 'readonly',
+      },
+    },
+  },
   prettier,
 );

@@ -10,6 +10,7 @@
 - [管理员引导步骤](docs/BOOTSTRAP-RUNBOOK.md)：现有 agent 不能跨仓库或管理服务时的并列入口。
 - [产品决策](docs/DESIGN.md)：已经确认的范围和行为。
 - [部署与验收事实](docs/DEPLOYMENT.md)：现行域名、端口、反代、分支保护与截图规范。
+- [M4-UX 验证记录](docs/M4-UX-VERIFICATION.md)：历史分页、草稿/发送一致性、仓库偏好与浏览器证据。
 - [M2 验证记录](docs/M2-VERIFICATION.md)：Passkey、会话撤销、SSE/附件保护与浏览器验收的实际命令和结果。
 - [M2 视觉证据](docs/evidence/m2/README.md)：桌面/手机、浅色/深色的 Before/After 截图与复现命令。
 - [M1 验证记录](docs/M1-VERIFICATION.md)：M1 的实际命令、结果、未验证项与迁移回滚。

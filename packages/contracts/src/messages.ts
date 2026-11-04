@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { isoTimestampSchema, uuidSchema } from './common';
+import { isoTimestampSchema, pageCursorSchema, uuidSchema } from './common';
 
 export const messageDirectionSchema = z.enum(['inbound', 'outbound']);
 
@@ -68,9 +68,34 @@ export const createMessageDataSchema = z.object({
 
 export type CreateMessageData = z.infer<typeof createMessageDataSchema>;
 
+/**
+ * Reads one page of a conversation in ascending message order. `before` loads
+ * the page immediately older than a cursor; `after` loads messages newer than
+ * a cursor (used to merge SSE arrivals into an already loaded history). Both
+ * are opaque server cursors and are mutually exclusive.
+ */
+export const messageListQuerySchema = z
+  .object({
+    before: pageCursorSchema.optional(),
+    after: pageCursorSchema.optional(),
+    limit: z.coerce.number().int().min(1).max(200).optional(),
+  })
+  .refine((value) => value.before === undefined || value.after === undefined, {
+    message: 'before and after are mutually exclusive',
+  });
+
+export type MessageListQuery = z.infer<typeof messageListQuerySchema>;
+
 export const messageListDataSchema = z.object({
   messages: z.array(messageSchema),
-  nextCursor: z.string().nullable(),
+  /** Pass as `before` to load the next older page; null when no older message exists. */
+  nextCursor: pageCursorSchema.nullable(),
+  /** Cursor of the newest message in this response; pass as `after` to merge newer messages. */
+  newerCursor: pageCursorSchema.nullable(),
+  /** Whether older messages exist beyond this page. */
+  hasMore: z.boolean().default(false),
+  /** Whether newer messages exist beyond this page (only meaningful for an `after` query). */
+  hasNewer: z.boolean().default(false),
 });
 
 export type MessageListData = z.infer<typeof messageListDataSchema>;

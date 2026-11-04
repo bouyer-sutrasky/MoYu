@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from 'react';
 import type { ConversationSummary, CreateMessageData, RepositorySummary } from '@moyu/contracts';
 
 import { Icon } from '../components/Icon';
+import { ApiClientError } from '../lib/api';
+import { draftForSend, loadDraft, removeDraft, saveDraft, type Draft } from '../lib/drafts';
 import { describeApiError } from '../lib/errors';
 import styles from './WorkspaceShell.module.css';
 
@@ -13,13 +15,16 @@ interface ComposerProps {
   repository: RepositorySummary | null;
   conversation: ConversationSummary | null;
   conversationLoading: boolean;
-  onSend: (text: string, clientMessageId: string) => Promise<CreateMessageData>;
-}
-
-interface PendingMessage {
-  conversationId: string;
-  id: string;
-  text: string;
+  ownerId: string;
+  /**
+   * Sends to the conversation that was open when the user pressed send, not to
+   * whatever happens to be selected when the request finishes.
+   */
+  onSend: (
+    conversationId: string,
+    text: string,
+    clientMessageId: string,
+  ) => Promise<CreateMessageData>;
 }
 
 export function Composer({
@@ -27,26 +32,53 @@ export function Composer({
   repository,
   conversation,
   conversationLoading,
+  ownerId,
   onSend,
 }: ComposerProps) {
   const [text, setText] = useState('');
-  const [sending, setSending] = useState(false);
+  const [sendingFor, setSendingFor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [storageWarning, setStorageWarning] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const pendingRef = useRef<PendingMessage | null>(null);
+  const draftRef = useRef<Draft | null>(null);
+  const conversationIdRef = useRef<string | null>(conversation?.id ?? null);
+  const repositoryIdRef = useRef<string | null>(repository?.id ?? null);
+  conversationIdRef.current = conversation?.id ?? null;
+  repositoryIdRef.current = repository?.id ?? null;
 
   const terminal =
     conversation?.task?.state === 'completed' ||
     conversation?.task?.state === 'closed_unmerged' ||
     conversation?.task?.state === 'not_accepted';
+  const sending = conversation?.id != null && sendingFor === conversation.id;
   const disabled = mode !== 'work' || !conversation || conversationLoading || terminal;
+  const pendingDraft =
+    draftRef.current?.pending && draftRef.current.text === text.trim()
+      ? draftRef.current.pending
+      : null;
 
   useEffect(() => {
-    pendingRef.current = null;
+    const conversationId = conversation?.id;
+    const repositoryId = repository?.id;
     setError(null);
     setNotice(null);
-  }, [conversation?.id]);
+    if (!conversationId || !repositoryId) {
+      draftRef.current = null;
+      setText('');
+      return;
+    }
+    const stored = loadDraft(ownerId, repositoryId, conversationId);
+    draftRef.current = stored;
+    setText(stored?.text ?? '');
+    if (stored?.pending) {
+      setNotice(
+        stored.pending.ambiguous
+          ? '上次发送结果未确认。保留原文重试会复用同一标识核对结果，不会重复写入。'
+          : '上次发送失败，草稿与幂等标识已保留；重试会复用同一标识。',
+      );
+    }
+  }, [conversation?.id, repository?.id, ownerId]);
 
   useEffect(() => {
     const element = textareaRef.current;
@@ -79,34 +111,130 @@ export function Composer({
               ? '消息按投递证据更新，不提前显示已读取'
               : '消息输入区未启用';
 
+  function updateText(next: string) {
+    setText(next);
+    setStorageWarning(null);
+    const conversationId = conversationIdRef.current;
+    const repositoryId = repositoryIdRef.current;
+    if (!conversationId || !repositoryId) {
+      return;
+    }
+    if (next.trim().length === 0) {
+      removeDraft(ownerId, repositoryId, conversationId);
+      draftRef.current = null;
+      return;
+    }
+    const base = draftRef.current;
+    if (base && base.text === next) {
+      return;
+    }
+    const draft: Draft = {
+      version: (base?.version ?? 0) + 1,
+      text: next,
+      updatedAt: new Date().toISOString(),
+      // Keep the idempotency id only while the text is unchanged; a different
+      // text is a different message and must not share it.
+      pending: base?.pending && base.pending.text === next ? base.pending : null,
+    };
+    draftRef.current = draft;
+    if (!saveDraft(ownerId, repositoryId, conversationId, draft)) {
+      setStorageWarning('浏览器无法保存本地草稿；当前输入仍保留在本页面，发送不受影响。');
+    }
+  }
+
+  function clearDraft() {
+    const conversationId = conversationIdRef.current;
+    const repositoryId = repositoryIdRef.current;
+    if (conversationId && repositoryId) {
+      removeDraft(ownerId, repositoryId, conversationId);
+    }
+    draftRef.current = null;
+    setText('');
+    setError(null);
+    setNotice(null);
+  }
+
   async function submit() {
     const trimmed = text.trim();
-    if (!trimmed || !conversation || sending || disabled) {
+    const conversationId = conversationIdRef.current;
+    const repositoryId = repositoryIdRef.current;
+    if (!trimmed || !conversationId || !repositoryId || sending || disabled) {
       return;
     }
 
-    let pending = pendingRef.current;
-    if (!pending || pending.text !== trimmed || pending.conversationId !== conversation.id) {
-      pending = {
-        conversationId: conversation.id,
-        id: crypto.randomUUID(),
+    const prepared = draftForSend(ownerId, repositoryId, conversationId, trimmed);
+    const pending = prepared.pending;
+    const clientMessageId = pending?.clientMessageId ?? crypto.randomUUID();
+    const draft: Draft = {
+      ...prepared,
+      pending: {
+        clientMessageId,
         text: trimmed,
-      };
-      pendingRef.current = pending;
+        version: prepared.version,
+        at: new Date().toISOString(),
+      },
+    };
+    draftRef.current = draft;
+    if (!saveDraft(ownerId, repositoryId, conversationId, draft)) {
+      setStorageWarning('浏览器无法保存本地草稿；当前输入仍保留在本页面，发送不受影响。');
     }
 
-    setSending(true);
+    setSendingFor(conversationId);
     setError(null);
     setNotice(null);
     try {
-      const result = await onSend(trimmed, pending.id);
-      pendingRef.current = null;
-      setText('');
-      setNotice(result.duplicate ? '这条消息此前已提交，已刷新会话。' : null);
+      const result = await onSend(conversationId, trimmed, clientMessageId);
+      // Reconcile only the exact draft version this request submitted. An edit
+      // made while it was in flight keeps the newer text.
+      const current = loadDraft(ownerId, repositoryId, conversationId);
+      if (!current || (current.version === draft.version && current.text === draft.text)) {
+        removeDraft(ownerId, repositoryId, conversationId);
+        draftRef.current = null;
+        if (conversationIdRef.current === conversationId) {
+          setText('');
+        }
+      } else {
+        const kept: Draft = {
+          ...current,
+          pending:
+            current.pending && current.pending.clientMessageId !== clientMessageId
+              ? current.pending
+              : null,
+        };
+        saveDraft(ownerId, repositoryId, conversationId, kept);
+        draftRef.current = kept;
+      }
+      if (conversationIdRef.current === conversationId) {
+        setNotice(result.duplicate ? '这条消息此前已提交，已按原标识核对并刷新会话。' : null);
+      }
     } catch (caught) {
-      setError(describeApiError(caught));
+      const ambiguous = !(caught instanceof ApiClientError);
+      const current = loadDraft(ownerId, repositoryId, conversationId);
+      if (current) {
+        const kept: Draft = {
+          ...current,
+          pending: current.pending
+            ? { ...current.pending, ambiguous }
+            : {
+                clientMessageId,
+                text: trimmed,
+                version: draft.version,
+                at: new Date().toISOString(),
+                ambiguous,
+              },
+        };
+        saveDraft(ownerId, repositoryId, conversationId, kept);
+        draftRef.current = kept;
+      }
+      if (conversationIdRef.current === conversationId) {
+        setError(
+          ambiguous
+            ? `${describeApiError(caught)} 网络结果不明确：可直接重试，重试会复用同一标识核对结果，不会重复写入或执行。`
+            : `${describeApiError(caught)} 草稿与幂等标识已保留，可直接重试。`,
+        );
+      }
     } finally {
-      setSending(false);
+      setSendingFor(null);
     }
   }
 
@@ -121,7 +249,7 @@ export function Composer({
           value={text}
           disabled={disabled}
           aria-label={disabled ? '消息输入区（当前不可发送）' : '消息输入区'}
-          onChange={(event) => setText(event.target.value)}
+          onChange={(event) => updateText(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
@@ -139,19 +267,41 @@ export function Composer({
             {notice}
           </p>
         ) : null}
+        {pendingDraft ? (
+          <p className={styles.composerStatus} data-kind="pending">
+            发送结果待确认：按原标识重试不会重复写入。
+          </p>
+        ) : null}
+        {storageWarning ? (
+          <p className={styles.composerStatus} data-kind="notice">
+            {storageWarning}
+          </p>
+        ) : null}
         <div className={styles.composerFooter}>
-          <span>
+          <span className={styles.composerHint}>
             <Icon name="session" size={13} /> {hint}
           </span>
-          <button
-            type="button"
-            className={styles.sendButton}
-            disabled={disabled || sending || text.trim().length === 0}
-            onClick={() => void submit()}
-            title={disabled ? placeholder : '发送消息'}
-          >
-            {sending ? '发送中…' : '发送'}
-          </button>
+          <div className={styles.composerActions}>
+            {text.trim().length > 0 && !sending ? (
+              <button
+                type="button"
+                className={styles.textButton}
+                onClick={clearDraft}
+                title="清除当前会话的本地草稿"
+              >
+                清除草稿
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className={styles.sendButton}
+              disabled={disabled || sending || text.trim().length === 0}
+              onClick={() => void submit()}
+              title={disabled ? placeholder : '发送消息'}
+            >
+              {sending ? '发送中…' : '发送'}
+            </button>
+          </div>
         </div>
       </div>
     </div>

@@ -52,11 +52,27 @@ export const bridgeCapabilitiesSchema = z.object({
     readOnlyDiscussion: z.boolean(),
     /** M4: discussion tickets can be started into execution; absent on an M3 runtime. */
     start: z.boolean().optional(),
+    /** M4-UX: the runtime can list repository branches; absent on runtimes without the patch. */
+    branches: z.boolean().optional(),
   }),
   source: z.object({ kind: z.string(), enabled: z.boolean() }),
 });
 
 export type BridgeCapabilities = z.infer<typeof bridgeCapabilitiesSchema>;
+
+/** One branch as reported by the repository runtime's read-only listing. */
+export const bridgeBranchSchema = z.object({
+  name: z.string().min(1),
+  /** Branch head commit, or an empty string when the runtime could not report it. */
+  commit: z.string().nullable().optional(),
+});
+
+export const bridgeBranchListSchema = z.object({
+  branches: z.array(bridgeBranchSchema),
+  hasMore: z.boolean().optional(),
+});
+
+export type BridgeBranchList = z.infer<typeof bridgeBranchListSchema>;
 
 export const bridgeModelSchema = z.object({
   provider: z.string().min(1),

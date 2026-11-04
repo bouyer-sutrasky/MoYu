@@ -1,0 +1,61 @@
+{
+  "at": "2026-11-04T10:12:52.144Z",
+  "baseSha": "40e857a9081b281fb3a93ebaea6986e0101f005d",
+  "results": [
+    {
+      "name": "before screenshots",
+      "status": "pass",
+      "detail": "baseline build @ 40e857a"
+    },
+    {
+      "name": "after screenshots",
+      "status": "pass",
+      "detail": "branch build"
+    },
+    {
+      "name": "message history pagination",
+      "status": "pass",
+      "detail": "250 messages across pages, anchored"
+    },
+    {
+      "name": "SSE merge with loaded history",
+      "status": "pass",
+      "detail": "251 messages, no duplicate"
+    },
+    {
+      "name": "task list pagination and repository isolation",
+      "status": "pass",
+      "detail": "124 tasks reachable"
+    },
+    {
+      "name": "draft isolation, refresh and clear",
+      "status": "pass",
+      "detail": "owner/repo/conversation keys"
+    },
+    {
+      "name": "edit during send",
+      "status": "pass",
+      "detail": "newer draft kept, old text sent to the captured conversation"
+    },
+    {
+      "name": "switch conversation during send",
+      "status": "pass",
+      "detail": "request stays on its captured conversation"
+    },
+    {
+      "name": "ambiguous response retry",
+      "status": "pass",
+      "detail": "same clientMessageId, one stored message"
+    },
+    {
+      "name": "repository preferences",
+      "status": "pass",
+      "detail": "save/restore/isolation/invalid branch/model/frozen task"
+    },
+    {
+      "name": "M4 regression and copy",
+      "status": "pass",
+      "detail": "stopped/resume, GitHub import, delivery read, M5 copy"
+    }
+  ]
+}

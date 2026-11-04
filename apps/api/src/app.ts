@@ -22,6 +22,7 @@ import { ensureConfiguredRepository } from './domain/repositories';
 import { registerAuthRoutes } from './routes/auth';
 import { registerConversationRoutes } from './routes/conversations';
 import { registerEventRoutes } from './routes/events';
+import { registerPreferenceRoutes } from './routes/preferences';
 import { registerRuntimeRoutes } from './routes/runtime';
 import { registerRepositoryRoutes } from './routes/repositories';
 import { registerTaskRoutes } from './routes/tasks';
@@ -117,6 +118,7 @@ export function buildApp({
     const machineAuthenticate = createMachineAuthenticate(config);
     registerAuthRoutes(app, { config, database, sessions: sessionService });
     registerRepositoryRoutes(app, { config, database, authenticate });
+    registerPreferenceRoutes(app, { config, database, authenticate });
     registerEventRoutes(app, {
       database,
       sessions: sessionService,

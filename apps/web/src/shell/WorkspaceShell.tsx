@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
 
 import {
@@ -12,6 +12,7 @@ import {
 } from '@moyu/contracts';
 
 import { api, ApiClientError } from '../lib/api';
+import { clearOwnerDrafts } from '../lib/drafts';
 import { describeApiError } from '../lib/errors';
 import { Icon } from '../components/Icon';
 import { useTheme } from '../theme/ThemeProvider';
@@ -25,7 +26,13 @@ import styles from './WorkspaceShell.module.css';
 
 type Mode = 'work' | 'chat';
 type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
+type PageStatus = 'idle' | 'loading' | 'error';
 type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
+
+const MESSAGE_PAGE_SIZE = 100;
+const CONVERSATION_PAGE_SIZE = 50;
+/** How many additional `after` pages one SSE merge may fetch before leaving the rest. */
+const SSE_MERGE_PAGE_LIMIT = 5;
 
 const CONNECTION_LABELS: Record<ConnectionStatus, string> = {
   connecting: '重连中',
@@ -37,6 +44,54 @@ interface ProgressEntry {
   id: string;
   text: string;
   at: string;
+}
+
+function compareMessages(left: Message, right: Message): number {
+  if (left.createdAt !== right.createdAt) {
+    return left.createdAt < right.createdAt ? -1 : 1;
+  }
+  if (left.id === right.id) {
+    return 0;
+  }
+  return left.id < right.id ? -1 : 1;
+}
+
+/**
+ * Merges pages by message id. Loaded history is kept, a message that appears
+ * again replaces its earlier projection (for example a delivery update), and
+ * the result is restored to the server's ascending order.
+ */
+function mergeMessages(current: Message[], incoming: Message[]): Message[] {
+  if (incoming.length === 0) {
+    return current;
+  }
+  const byId = new Map(current.map((message) => [message.id, message]));
+  for (const message of incoming) {
+    byId.set(message.id, message);
+  }
+  if (byId.size === current.length && incoming.every((message) => current.includes(message))) {
+    return current;
+  }
+  return [...byId.values()].sort(compareMessages);
+}
+
+function mergeConversations(
+  current: ConversationSummary[],
+  incoming: ConversationSummary[],
+): ConversationSummary[] {
+  if (incoming.length === 0) {
+    return current;
+  }
+  const byId = new Map(current.map((conversation) => [conversation.id, conversation]));
+  for (const conversation of incoming) {
+    byId.set(conversation.id, conversation);
+  }
+  return [...byId.values()].sort((left, right) => {
+    if (left.updatedAt !== right.updatedAt) {
+      return left.updatedAt < right.updatedAt ? 1 : -1;
+    }
+    return left.id === right.id ? 0 : left.id < right.id ? 1 : -1;
+  });
 }
 
 interface WorkspaceShellProps {
@@ -64,6 +119,10 @@ export function WorkspaceShell({
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [conversationsStatus, setConversationsStatus] = useState<LoadStatus>('idle');
   const [conversationsError, setConversationsError] = useState<string | null>(null);
+  const [conversationsNextCursor, setConversationsNextCursor] = useState<string | null>(null);
+  const [conversationsHasMore, setConversationsHasMore] = useState(false);
+  const [conversationsMoreStatus, setConversationsMoreStatus] = useState<PageStatus>('idle');
+  const [conversationsMoreError, setConversationsMoreError] = useState<string | null>(null);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
 
   const [conversation, setConversation] = useState<ConversationSummary | null>(null);
@@ -72,6 +131,11 @@ export function WorkspaceShell({
   const [messages, setMessages] = useState<Message[]>([]);
   const [messagesStatus, setMessagesStatus] = useState<LoadStatus>('idle');
   const [messagesError, setMessagesError] = useState<string | null>(null);
+  const [messagesNextCursor, setMessagesNextCursor] = useState<string | null>(null);
+  const [messagesNewerCursor, setMessagesNewerCursor] = useState<string | null>(null);
+  const [messagesHasMoreOlder, setMessagesHasMoreOlder] = useState(false);
+  const [messagesOlderStatus, setMessagesOlderStatus] = useState<PageStatus>('idle');
+  const [messagesOlderError, setMessagesOlderError] = useState<string | null>(null);
   const [progress, setProgress] = useState<ProgressEntry[]>([]);
   const [creatingTask, setCreatingTask] = useState(false);
   const [taskCommandBusy, setTaskCommandBusy] = useState(false);
@@ -87,10 +151,30 @@ export function WorkspaceShell({
   const conversationRequestRef = useRef(0);
   const messagesRequestRef = useRef(0);
   const conversationsRequestRef = useRef(0);
+  const conversationsMoreRef = useRef(0);
+  const conversationsMoreInFlightRef = useRef(false);
+  const messagesOlderRef = useRef(0);
+  const messagesOlderInFlightRef = useRef(false);
+  const messagesMergeRef = useRef(0);
+  const mainRef = useRef<HTMLElement | null>(null);
+  const scrollAdjustRef = useRef<{
+    conversationId: string;
+    height: number;
+    top: number;
+    toBottom: boolean;
+    anchorId?: string;
+    anchorTop?: number;
+  } | null>(null);
+  const messagesNextCursorRef = useRef<string | null>(null);
+  const messagesNewerCursorRef = useRef<string | null>(null);
+  const conversationsNextCursorRef = useRef<string | null>(null);
   const selectedConversationIdRef = useRef<string | null>(selectedConversationId);
   const selectedRepositoryIdRef = useRef<string | null>(selectedRepositoryId);
   selectedConversationIdRef.current = selectedConversationId;
   selectedRepositoryIdRef.current = selectedRepositoryId;
+  messagesNextCursorRef.current = messagesNextCursor;
+  messagesNewerCursorRef.current = messagesNewerCursor;
+  conversationsNextCursorRef.current = conversationsNextCursor;
 
   const loadRepositories = useCallback(async () => {
     setRepositoriesStatus('loading');
@@ -110,23 +194,79 @@ export function WorkspaceShell({
   }, [onSessionLost]);
 
   const loadConversations = useCallback(
-    async (repositoryId: string, silent = false) => {
+    async (repositoryId: string, options: { silent?: boolean; cursor?: string | null } = {}) => {
+      const cursor = options.cursor ?? null;
+      if (cursor) {
+        if (conversationsMoreInFlightRef.current) {
+          return;
+        }
+        conversationsMoreInFlightRef.current = true;
+        const token = ++conversationsMoreRef.current;
+        setConversationsMoreStatus('loading');
+        setConversationsMoreError(null);
+        try {
+          const result = await api.conversations(repositoryId, {
+            limit: CONVERSATION_PAGE_SIZE,
+            cursor,
+          });
+          if (
+            token !== conversationsMoreRef.current ||
+            selectedRepositoryIdRef.current !== repositoryId
+          ) {
+            return;
+          }
+          setConversations((current) => mergeConversations(current, result.conversations));
+          setConversationsNextCursor(result.nextCursor);
+          setConversationsHasMore(result.hasMore && result.nextCursor !== null);
+          setConversationsMoreStatus('idle');
+        } catch (caught) {
+          if (
+            token !== conversationsMoreRef.current ||
+            selectedRepositoryIdRef.current !== repositoryId
+          ) {
+            return;
+          }
+          if (caught instanceof ApiClientError && caught.status === 401) {
+            onSessionLost();
+            return;
+          }
+          setConversationsMoreStatus('error');
+          setConversationsMoreError(describeApiError(caught));
+        } finally {
+          conversationsMoreInFlightRef.current = false;
+        }
+        return;
+      }
+
       const token = ++conversationsRequestRef.current;
+      const silent = options.silent === true;
       if (!silent) {
         setConversationsStatus('loading');
         setConversationsError(null);
       }
       try {
-        const result = await api.conversations(repositoryId);
+        const result = await api.conversations(repositoryId, { limit: CONVERSATION_PAGE_SIZE });
         if (
           token !== conversationsRequestRef.current ||
           selectedRepositoryIdRef.current !== repositoryId
         ) {
           return;
         }
-        setConversations(result.conversations);
+        setConversations((current) =>
+          silent ? mergeConversations(current, result.conversations) : result.conversations,
+        );
+        setConversationsNextCursor((current) => {
+          // A silent refresh only fetches the newest page. Keep the cursor of
+          // already loaded older pages; otherwise adopt the response cursor.
+          if (silent && current && result.conversations.length > 0) {
+            return current;
+          }
+          return result.nextCursor;
+        });
+        setConversationsHasMore((current) => (silent && current ? current : result.hasMore));
         setConversationsStatus('ready');
         setConversationsError(null);
+        setConversationsMoreStatus('idle');
       } catch (caught) {
         if (token !== conversationsRequestRef.current) {
           return;
@@ -144,6 +284,15 @@ export function WorkspaceShell({
     },
     [onSessionLost],
   );
+
+  const loadMoreConversations = useCallback(async () => {
+    const repositoryId = selectedRepositoryIdRef.current;
+    const cursor = conversationsNextCursorRef.current;
+    if (!repositoryId || !cursor || conversationsMoreStatus === 'loading') {
+      return;
+    }
+    await loadConversations(repositoryId, { cursor });
+  }, [conversationsMoreStatus, loadConversations]);
 
   const loadConversation = useCallback(
     async (conversationId: string, silent = false) => {
@@ -189,16 +338,25 @@ export function WorkspaceShell({
         setMessagesError(null);
       }
       try {
-        const result = await api.messages(conversationId);
+        const result = await api.messages(conversationId, { limit: MESSAGE_PAGE_SIZE });
         if (
           token !== messagesRequestRef.current ||
           selectedConversationIdRef.current !== conversationId
         ) {
           return;
         }
-        setMessages(result.messages);
+        setMessages((current) =>
+          silent ? mergeMessages(current, result.messages) : result.messages,
+        );
+        setMessagesNextCursor((current) => (silent && current ? current : result.nextCursor));
+        setMessagesNewerCursor(result.newerCursor);
+        setMessagesHasMoreOlder((current) =>
+          silent && current ? current : result.nextCursor !== null,
+        );
         setMessagesStatus('ready');
         setMessagesError(null);
+        setMessagesOlderStatus('idle');
+        setMessagesOlderError(null);
       } catch (caught) {
         if (token !== messagesRequestRef.current) {
           return;
@@ -216,6 +374,182 @@ export function WorkspaceShell({
     },
     [onSessionLost],
   );
+
+  /**
+   * Fetches messages newer than the loaded history and merges them by id. Used
+   * for SSE arrivals: it appends without replacing already loaded older pages.
+   */
+  const mergeNewerMessages = useCallback(
+    async (conversationId: string) => {
+      if (selectedConversationIdRef.current !== conversationId) {
+        return;
+      }
+      if (messagesStatus === 'loading') {
+        // The initial page will already contain these messages.
+        return;
+      }
+      const token = ++messagesMergeRef.current;
+      let cursor = messagesNewerCursorRef.current;
+      try {
+        for (let pageIndex = 0; pageIndex < SSE_MERGE_PAGE_LIMIT; pageIndex += 1) {
+          const result = await api.messages(conversationId, {
+            ...(cursor ? { after: cursor } : {}),
+            limit: MESSAGE_PAGE_SIZE,
+          });
+          if (
+            token !== messagesMergeRef.current ||
+            selectedConversationIdRef.current !== conversationId
+          ) {
+            return;
+          }
+          const container = mainRef.current;
+          const nearBottom =
+            !container ||
+            container.scrollHeight - container.scrollTop - container.clientHeight < 120;
+          if (nearBottom && result.messages.length > 0) {
+            scrollAdjustRef.current = {
+              conversationId,
+              height: container?.scrollHeight ?? 0,
+              top: container?.scrollTop ?? 0,
+              toBottom: true,
+            };
+          }
+          setMessages((current) => mergeMessages(current, result.messages));
+          if (!cursor) {
+            setMessagesNextCursor((current) => current ?? result.nextCursor);
+            setMessagesHasMoreOlder((current) => current || result.nextCursor !== null);
+          }
+          const nextCursor = result.newerCursor ?? cursor;
+          if (nextCursor) {
+            cursor = nextCursor;
+            setMessagesNewerCursor(nextCursor);
+          }
+          if (!result.hasNewer) {
+            return;
+          }
+        }
+      } catch {
+        // A later SSE event or a manual refresh retries the same keyset window.
+      }
+    },
+    [messagesStatus],
+  );
+
+  /**
+   * Loads the page immediately older than the loaded history and keeps the
+   * reader's viewport anchored to the same message.
+   */
+  const loadOlderMessages = useCallback(async () => {
+    const conversationId = selectedConversationIdRef.current;
+    const cursor = messagesNextCursorRef.current;
+    if (!conversationId || !cursor || messagesOlderInFlightRef.current) {
+      return;
+    }
+    messagesOlderInFlightRef.current = true;
+    const token = ++messagesOlderRef.current;
+    setMessagesOlderStatus('loading');
+    setMessagesOlderError(null);
+    const container = mainRef.current;
+    const height = container?.scrollHeight ?? 0;
+    const top = container?.scrollTop ?? 0;
+    // Remember the message currently at the top of the viewport, so the same
+    // row can be held at the same screen position after older rows are added.
+    const anchor = mainRef.current?.querySelector<HTMLElement>('[data-message-id]');
+    const visible = (() => {
+      const mainTop = container?.getBoundingClientRect().top ?? 0;
+      const rows = container?.querySelectorAll<HTMLElement>('[data-message-id]') ?? [];
+      for (const row of rows) {
+        if (row.getBoundingClientRect().bottom > mainTop + 1) {
+          return { id: row.dataset.messageId ?? '', top: row.getBoundingClientRect().top };
+        }
+      }
+      return null;
+    })();
+    try {
+      const result = await api.messages(conversationId, {
+        before: cursor,
+        limit: MESSAGE_PAGE_SIZE,
+      });
+      if (
+        token !== messagesOlderRef.current ||
+        selectedConversationIdRef.current !== conversationId ||
+        messagesNextCursorRef.current !== cursor
+      ) {
+        return;
+      }
+      scrollAdjustRef.current = {
+        conversationId,
+        height,
+        top,
+        toBottom: false,
+        anchorId: visible?.id ?? anchor?.dataset.messageId,
+        anchorTop: visible?.top,
+      };
+      setMessages((current) => mergeMessages(current, result.messages));
+      setMessagesNextCursor(result.nextCursor);
+      setMessagesHasMoreOlder(result.nextCursor !== null);
+      setMessagesOlderStatus('idle');
+    } catch (caught) {
+      if (
+        token !== messagesOlderRef.current ||
+        selectedConversationIdRef.current !== conversationId
+      ) {
+        return;
+      }
+      if (caught instanceof ApiClientError && caught.status === 401) {
+        onSessionLost();
+        return;
+      }
+      setMessagesOlderStatus('error');
+      setMessagesOlderError(describeApiError(caught));
+    } finally {
+      messagesOlderInFlightRef.current = false;
+    }
+  }, [onSessionLost]);
+
+  // After a page is prepended, restore the viewport by the added height; after
+  // new messages arrive at the bottom, follow them only when already near it.
+  useLayoutEffect(() => {
+    const pending = scrollAdjustRef.current;
+    const container = mainRef.current;
+    if (!pending || !container || pending.conversationId !== selectedConversationIdRef.current) {
+      scrollAdjustRef.current = null;
+      return;
+    }
+    if (pending.toBottom) {
+      container.scrollTop = container.scrollHeight;
+    } else if (pending.anchorId && typeof pending.anchorTop === 'number') {
+      const anchor = container.querySelector<HTMLElement>(
+        `[data-message-id="${pending.anchorId}"]`,
+      );
+      if (anchor) {
+        container.scrollTop += anchor.getBoundingClientRect().top - pending.anchorTop;
+      } else {
+        const added = container.scrollHeight - pending.height;
+        if (added > 0) {
+          container.scrollTop = pending.top + added;
+        }
+      }
+    } else {
+      const added = container.scrollHeight - pending.height;
+      if (added > 0) {
+        container.scrollTop = pending.top + added;
+      }
+    }
+    scrollAdjustRef.current = null;
+  }, [messages]);
+
+  useEffect(() => {
+    // On a conversation switch the first page is the newest one; start at the
+    // bottom like a chat client, not at the oldest loaded message.
+    if (!selectedConversationId || messagesStatus !== 'ready') {
+      return;
+    }
+    const container = mainRef.current;
+    if (container) {
+      container.scrollTop = container.scrollHeight;
+    }
+  }, [selectedConversationId, messagesStatus]);
 
   useEffect(() => {
     void loadRepositories();
@@ -235,8 +569,15 @@ export function WorkspaceShell({
   }, [repositories, selectedRepositoryId]);
 
   useEffect(() => {
+    conversationsRequestRef.current += 1;
+    conversationsMoreRef.current += 1;
+    conversationsMoreInFlightRef.current = false;
     setSelectedConversationId(null);
     setCreatingTask(false);
+    setConversationsNextCursor(null);
+    setConversationsHasMore(false);
+    setConversationsMoreStatus('idle');
+    setConversationsMoreError(null);
     if (!selectedRepositoryId) {
       setConversations([]);
       setConversationsStatus('idle');
@@ -252,10 +593,19 @@ export function WorkspaceShell({
   useEffect(() => {
     conversationRequestRef.current += 1;
     messagesRequestRef.current += 1;
+    messagesOlderRef.current += 1;
+    messagesOlderInFlightRef.current = false;
+    messagesMergeRef.current += 1;
+    scrollAdjustRef.current = null;
     setConversation(null);
     setConversationError(null);
     setMessages([]);
     setMessagesError(null);
+    setMessagesNextCursor(null);
+    setMessagesNewerCursor(null);
+    setMessagesHasMoreOlder(false);
+    setMessagesOlderStatus('idle');
+    setMessagesOlderError(null);
     setProgress([]);
     if (!selectedConversationId) {
       setConversationStatus('idle');
@@ -293,13 +643,17 @@ export function WorkspaceShell({
       const repositoryMatches = repositoryId !== null && event.repositoryId === repositoryId;
       if (openConversationId && (conversationMatches || repositoryMatches)) {
         void loadConversation(openConversationId, true);
-        void loadMessages(openConversationId, true);
+        // Messages merge by id instead of replacing the loaded history; the
+        // same path covers a delivery update or a replayed SSE event.
+        if (event.type === 'message.created' || event.type === 'message.delivery_changed') {
+          void mergeNewerMessages(openConversationId);
+        }
       }
       if (repositoryId && repositoryMatches) {
-        void loadConversations(repositoryId, true);
+        void loadConversations(repositoryId, { silent: true });
       }
     },
-    [loadConversation, loadMessages, loadConversations],
+    [loadConversation, loadConversations, mergeNewerMessages],
   );
 
   const eventHandlerRef = useRef<(event: WorkspaceEvent) => void>(handleWorkspaceEvent);
@@ -367,19 +721,18 @@ export function WorkspaceShell({
   );
 
   const sendMessage = useCallback(
-    async (text: string, clientMessageId: string) => {
-      const conversationId = selectedConversationIdRef.current;
-      if (!conversationId) {
-        throw new ApiClientError(409, 'no_conversation', '当前没有打开的会话');
-      }
+    async (conversationId: string, text: string, clientMessageId: string) => {
+      const repositoryId = selectedRepositoryIdRef.current;
       try {
         const result = await api.sendMessage(conversationId, { clientMessageId, text });
         // The API merged a Web message naming an existing GitHub requirement into
-        // that imported conversation and removed the empty Web one.
+        // that imported conversation and removed the empty Web one. Only follow
+        // it if the user is still looking at the conversation they sent from.
         if (result.message.conversationId !== conversationId) {
-          openConversation(result.message.conversationId);
-          const repositoryId = selectedRepositoryIdRef.current;
-          if (repositoryId) void loadConversations(repositoryId, true);
+          if (selectedConversationIdRef.current === conversationId) {
+            openConversation(result.message.conversationId);
+          }
+          if (repositoryId) void loadConversations(repositoryId, { silent: true });
           return result;
         }
         if (selectedConversationIdRef.current === conversationId) {
@@ -388,9 +741,8 @@ export function WorkspaceShell({
             loadConversation(conversationId, true),
           ]);
         }
-        const repositoryId = selectedRepositoryIdRef.current;
         if (repositoryId) {
-          void loadConversations(repositoryId, true);
+          void loadConversations(repositoryId, { silent: true });
         }
         return result;
       } catch (caught) {
@@ -427,7 +779,7 @@ export function WorkspaceShell({
           void loadMessages(selectedConversationIdRef.current, true);
         }
         if (selectedRepositoryIdRef.current) {
-          void loadConversations(selectedRepositoryIdRef.current, true);
+          void loadConversations(selectedRepositoryIdRef.current, { silent: true });
         }
       } catch (caught) {
         if (caught instanceof ApiClientError && caught.status === 401) {
@@ -461,6 +813,9 @@ export function WorkspaceShell({
         setRepositoriesError(describeApiError(caught));
       }
     } finally {
+      // Explicit sign-out clears this owner's local drafts. A lost session keeps
+      // them, so signing back in restores work in progress.
+      clearOwnerDrafts(me.owner.id);
       setLoggingOut(false);
       onLoggedOut();
     }
@@ -495,7 +850,7 @@ export function WorkspaceShell({
     setSidebarOpen(false);
     const repositoryId = selectedRepositoryIdRef.current;
     if (repositoryId) {
-      void loadConversations(repositoryId, true);
+      void loadConversations(repositoryId, { silent: true });
     }
   }
 
@@ -521,6 +876,10 @@ export function WorkspaceShell({
           conversations={conversations}
           conversationsStatus={conversationsStatus}
           conversationsError={conversationsError}
+          conversationsHasMore={conversationsHasMore}
+          conversationsMoreStatus={conversationsMoreStatus}
+          conversationsMoreError={conversationsMoreError}
+          onLoadMoreConversations={() => void loadMoreConversations()}
           selectedConversationId={selectedConversationId}
           onSelectConversation={openConversation}
           onReloadConversations={() => {
@@ -618,7 +977,7 @@ export function WorkspaceShell({
             </div>
           </header>
 
-          <main id="main-content" className={styles.main} tabIndex={-1}>
+          <main ref={mainRef} id="main-content" className={styles.main} tabIndex={-1}>
             <ConversationPane
               mode={mode}
               repository={selectedRepository}
@@ -628,6 +987,11 @@ export function WorkspaceShell({
               messages={messages}
               messagesStatus={messagesStatus}
               messagesError={messagesError}
+              messagesHasMoreOlder={messagesHasMoreOlder}
+              messagesOlderStatus={messagesOlderStatus}
+              messagesOlderError={messagesOlderError}
+              onLoadOlderMessages={() => void loadOlderMessages()}
+              onRetryOlderMessages={() => void loadOlderMessages()}
               progress={progress}
               creatingTask={creatingTask}
               taskCommandBusy={taskCommandBusy}
@@ -656,6 +1020,7 @@ export function WorkspaceShell({
             repository={selectedRepository}
             conversation={conversation}
             conversationLoading={conversationStatus === 'loading'}
+            ownerId={me.owner.id}
             onSend={sendMessage}
           />
         </div>

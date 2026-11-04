@@ -1,6 +1,6 @@
 # 新平台 API 与上游适配契约
 
-本文定义目标契约。M2 已实现 Passkey、auth state/me/logout/sessions/credentials、仓库只读列表、受保护 SSE 与附件下载；其余 `/api/v1` 与全部 `/bridge/v1` 路由仍为拟实现。共享 Zod schema 位于 `packages/contracts`，实现时无需另建一套类型。
+本文定义目标契约。M2 已实现 Passkey、auth state/me/logout/sessions/credentials、仓库只读列表、受保护 SSE 与附件下载；M3/M4 已实现消息闭环、事件流与执行控制；M4-UX 补齐历史分页、每仓库任务偏好与运行时分支列表。共享 Zod schema 位于 `packages/contracts`，实现时无需另建一套类型。
 
 ## 统一约定
 
@@ -47,14 +47,16 @@ M2 实际 Cookie：https origin 使用 `__Host-moyu_session` 与 `__Host-moyu_bo
 | POST /api/v1/repositories | `{fullName}` → repositoryId；校验repo存在与所需读写权限，异步准备配置 |
 | GET /api/v1/repositories | **M2 已实现只读列表**：状态、默认分支、实例状态；M3 启动时按 `BRIDGE_REPOSITORY` 绑定一行（不存秘密） |
 | GET /api/v1/repositories/:id/models | **M3 已实现**：经仓库 Bridge 读取 Harness 已配置模型白名单（provider/model/displayName/reasoningEfforts），不返回 API Key；运行时不可达返回 503 |
+| GET /api/v1/repositories/:id/branches | **M4-UX 已实现**：经 Bridge `GET /bridge/v1/branches` 读取分支；运行时不支持该能力时返回 `status:'unsupported'` 与空列表，不以错误冒充 |
+| GET/PUT/DELETE /api/v1/repositories/:id/preferences | **M4-UX 已实现**：每仓库默认执行方式、分支、模型与推理强度；GET 返回 saved 与 effective（仓库默认兜底），PUT 经模型目录/分支列表校验，失效值 422、运行时不可达 503，不落库；偏好只影响新任务，旧任务冻结值不变 |
 | POST /api/v1/repositories/:id/wake | 返回调度operationId，忙时queued，不承诺立即在线 |
 | GET /api/v1/repositories/:id/branches | 分页分支列表 |
 | GET /api/v1/repositories/:id/models | Harness已配置且可用的模型标识，不返回API Key |
 | POST /api/v1/conversations | **M4 已实现**：`{repositoryId,mode:'work',executionMode:'execute'\|'discuss',baseBranch,model:{provider,model,reasoningEffort?}\|null,clientRequestId}`；同一 `clientRequestId` 相同 payload 返回原会话，不同 payload 409；`discuss` 创建只读讨论任务 |
-| GET /api/v1/conversations | **M3 已实现**：按仓库列出会话与任务投影 |
+| GET /api/v1/conversations | **M3 已实现**：按仓库列出会话与任务投影；M4-UX 增加 `cursor` 分页与 `nextCursor`/`hasMore`，游标绑定仓库，跨仓库复用返回 422 |
 | GET /api/v1/conversations/:id | **M3 已实现**：会话、冻结字段与任务投影 |
 | POST /api/v1/conversations/:id/messages | **M3 已实现**：`{clientMessageId,text,replyToMessageId?}` → 202 `{message,duplicate:false}`；相同幂等键与 payload 返回 200 原结果，不同 payload 409；message 与 delivery 同事务写入 |
-| GET /api/v1/conversations/:id/messages | **M3 已实现**：`before` 游标分页，包含方向/kind、回复关联、来源与投递状态 |
+| GET /api/v1/conversations/:id/messages | **M3 已实现**：游标分页，包含方向/kind、回复关联、来源与投递状态；M4-UX 使用 `(createdAt,id)` 不透明游标，支持 `before`（更早）与 `after`（更新），返回 `nextCursor`、`newerCursor`、`hasMore`、`hasNewer`；同时间戳由 id 决胜，游标不匹配返回 422 |
 | POST /api/v1/tasks/:id/start | **M4 已实现**：`{planRevision,expectedVersion,clientCommandId}`；同一会话/工作目录/PR 只读讨论→执行；记录 `planRevision` 与已冻结 `baseCommit`；202 返回 operation |
 | POST /api/v1/tasks/:id/stop | **M4 已实现**：`{expectedVersion,clientCommandId}`；幂等进入 `stopping`，经 Bridge `pause`，有停止证据后才变 `stopped`；不是上游终态 stop |
 | POST /api/v1/tasks/:id/resume | **M4 已实现**：`{expectedVersion,clientCommandId}`；只允许 `stopped`，dispatcher 重新取得仓库租约并核验现场后调用 Bridge `resume` |
@@ -87,7 +89,7 @@ type WorkspaceEvent = {
 
 任务展示状态：pending_admission / discussing / queued / running / waiting_input / awaiting_review / stopping / stopped / blocked / failed / completed / closed_unmerged / not_accepted。消息状态：stored / delivering / delivered / read / failed；delivered和read均要求实际执行器证据，缺证据停留在前态。
 
-M4 新增的枚举与投影保持在上述集合内：讨论态 `discussing`；人工暂停 `stopping`（意图已记录）→ `stopped`（运行时已给出停止证据）；暂停期间新消息保留 `stored`，resume 后投递。conversation 增加 `source`（`web|github`）、`externalKey`、`externalUrl`、`planRevision`；task 增加 `planRevision`、`stopRequestedAt`、`stoppedAt`、`stopEvidence`、`lastOperation`。完整语义见 [`M4-EXECUTION-CONTROL.md`](M4-EXECUTION-CONTROL.md)。
+M4-UX 不新增事件类型；历史分页与草稿都在既有消息/投递投影上工作。M4 新增的枚举与投影保持在上述集合内：讨论态 `discussing`；人工暂停 `stopping`（意图已记录）→ `stopped`（运行时已给出停止证据）；暂停期间新消息保留 `stored`，resume 后投递。conversation 增加 `source`（`web|github`）、`externalKey`、`externalUrl`、`planRevision`；task 增加 `planRevision`、`stopRequestedAt`、`stoppedAt`、`stopEvidence`、`lastOperation`。完整语义见 [`M4-EXECUTION-CONTROL.md`](M4-EXECUTION-CONTROL.md)。
 
 M3 实际映射：`stored`=平台消息与 delivery 同事务写入；`delivering`=dispatcher 已领取租约；`delivered`=Bridge `POST /bridge/v1/triggers` 返回 `stored|duplicate`（执行器已接收 Trigger）；`read`=worker Session 的 `user/message` 已落盘且 `Ticket.inputs[].readAt` 经 `message.read` 回报；`failed`=平台侧永久拒绝。HTTP 202 与 Trigger 入库都不会推进到 `read`。
 
