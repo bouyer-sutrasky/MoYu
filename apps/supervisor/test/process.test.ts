@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createServer, type Server } from 'node:net';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -23,8 +24,13 @@ afterEach(async () => {
 describe('supervisor process evidence', () => {
   it('reports a loopback port as free only when nothing listens on it', async () => {
     expect(await portFree(4499)).toBe(true);
-    expect(await portFree(3082)).toBe(false);
-    expect(await waitForPortClosed(4499, 500)).toBe(true);
+    const server: Server = createServer();
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server did not listen');
+    expect(await portFree(address.port)).toBe(false);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    expect(await waitForPortClosed(address.port, 1000)).toBe(true);
   });
 
   it('lists a real child process and stops its detached process group', async () => {
