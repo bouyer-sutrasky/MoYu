@@ -1,0 +1,34 @@
+M4 isolated discussion pause/resume and concurrent snapshots (final build)
+at=2026-11-04T07:05-07:10Z
+build_lib_sha256=652e05fe2301e62ada21b38363fe22005c85c4a5e3888303ab5ea5fb3b9ffe26
+
+running pause:
+ticket=30b120171ceb866ad84fa3ad540b9be2
+platform_state=stopped
+stoppedAt=2026-11-04T07:09:35.243Z
+pause_operation=succeeded
+stop_evidence.lingeringPids=[]
+stop_evidence.processesAfter=[]
+stop_evidence.jobsAfter=[]
+discuss_processes_after=0
+run_dirs_after=0
+
+earlier running pause:
+ticket=8d57a495f155bcb86da81fc65cbf302f
+platform_state=stopped
+stoppedAt=2026-11-04T07:05:16.635Z
+run_processes_after=0
+
+resume same ticket:
+ticket=eebef529979085fac6ef8a3173728fe8
+stopped -> discussing (discuss mode, same Ticket/worktree) -> stopped
+stoppedAt=2026-11-04T07:01:11.672Z
+
+concurrent snapshot isolation (two live sandbox processes):
+run_a=/srv/m4-discuss/runs/A/a/workspace marker=ALPHA output=ALPHA
+run_b=/srv/m4-discuss/runs/B/b/workspace marker=BETA output=BETA
+result=each process read only its own snapshot; separate UID/profile/home; no shared deletion
+
+platform concurrent discuss:
+tickets=575b7208c890098b5c074265d5bbd385, 9adf3e5b9cebae1c5a7ce1ae0504e4de
+run_dirs=/srv/m4-discuss/runs/<ticket>/<assignment> distinct

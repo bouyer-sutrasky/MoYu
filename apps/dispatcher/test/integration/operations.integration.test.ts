@@ -441,6 +441,62 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
     );
   }, 30_000);
 
+  it('does not fail a pause operation on the first stopping event before its settled evidence', async () => {
+    const fixture = await seed({ state: 'stopping' });
+    const operationId = await insertOperation(fixture, 'pause', `cmd-stopping-${Date.now()}`);
+    await testDatabase.pool.query(
+      `update task_operations set state = 'running', bridge_operation_id = $2 where id = $1`,
+      [operationId, operationId],
+    );
+    const stopping: BridgeEvent = {
+      seq: 1,
+      id: `ticket-paused:${fixture.ticketId}:stopping`,
+      type: 'ticket.paused',
+      at: '2026-11-04T03:00:10.000Z',
+      data: { ticketId: fixture.ticketId, operationId, at: '2026-11-04T03:00:09.000Z' },
+    };
+    fakeBridge.events = [stopping];
+    expect(
+      await syncOnce(testDatabase.pool, fixture.repository, client, createConsoleLogger('test')),
+    ).toBe(true);
+    const during = await testDatabase.pool.query(
+      `select state from task_operations where id = $1`,
+      [operationId],
+    );
+    expect(during.rows[0]?.state).toBe('running');
+    fakeBridge.events = [
+      stopping,
+      {
+        seq: 2,
+        id: `ticket-paused:${fixture.ticketId}:settled2`,
+        type: 'ticket.paused',
+        at: '2026-11-04T03:00:11.000Z',
+        data: {
+          ticketId: fixture.ticketId,
+          operationId,
+          at: '2026-11-04T03:00:09.000Z',
+          stoppedAt: '2026-11-04T03:00:10.500Z',
+          evidence: {
+            agentStatus: 'idle',
+            harnessPid: 1,
+            jobsAfter: [],
+            subagentsAfter: 0,
+            lingeringPids: [],
+          },
+        },
+      },
+    ];
+    expect(
+      await syncOnce(testDatabase.pool, fixture.repository, client, createConsoleLogger('test')),
+    ).toBe(true);
+    const operation = await testDatabase.pool.query(
+      `select state from task_operations where id = $1`,
+      [operationId],
+    );
+    expect(operation.rows[0]?.state).toBe('succeeded');
+    expect(await readTask(fixture.taskId)).toMatchObject({ state: 'stopped' });
+  }, 30_000);
+
   it('blocks a paused event whose evidence still shows a background job', async () => {
     const fixture = await seed({ state: 'stopping' });
     const operationId = await insertOperation(fixture, 'pause', `cmd-busy-${Date.now()}`);

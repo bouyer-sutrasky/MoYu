@@ -46,9 +46,10 @@
               max: max
 - id: agent-default-model
   config:
-    provider: commandcode
-    model: deepseek/deepseek-v4.1-flash
+    provider: !!js process.env.DSH_DISCUSS_PROVIDER ?? 'commandcode'
+    model: !!js process.env.DSH_DISCUSS_MODEL ?? 'deepseek/deepseek-v4.1-flash'
+    reasoningEffort: !!js process.env.DSH_DISCUSS_REASONING || null
 - id: sandbox-policy
   config:
     mode: read-only
-    workspaceRoot: /srv/m4-discuss/workspace
+    workspaceRoot: !!js process.env.DSH_DISCUSS_WORKSPACE ?? '/srv/m4-discuss/workspace'

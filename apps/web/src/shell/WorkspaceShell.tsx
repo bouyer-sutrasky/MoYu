@@ -374,6 +374,14 @@ export function WorkspaceShell({
       }
       try {
         const result = await api.sendMessage(conversationId, { clientMessageId, text });
+        // The API merged a Web message naming an existing GitHub requirement into
+        // that imported conversation and removed the empty Web one.
+        if (result.message.conversationId !== conversationId) {
+          openConversation(result.message.conversationId);
+          const repositoryId = selectedRepositoryIdRef.current;
+          if (repositoryId) void loadConversations(repositoryId, true);
+          return result;
+        }
         if (selectedConversationIdRef.current === conversationId) {
           await Promise.all([
             loadMessages(conversationId, true),

@@ -153,6 +153,7 @@ async function applyOperationResult(
   repository: RepositoryBinding,
   operation: OperationRow,
   bridgeOperation: BridgeOperation,
+  bridge: RuntimeBridgeClient,
   logger: DispatcherLogger,
 ): Promise<void> {
   const client = await pool.connect();
@@ -166,7 +167,26 @@ async function applyOperationResult(
       await client.query('commit');
       return;
     }
-    const evidence = bridgeOperation.evidence ?? {};
+    let evidence = bridgeOperation.evidence ?? {};
+    // The runtime settles a pause operation and the ticket's stop evidence
+    // together, but a poll can observe the operation a moment before the evidence
+    // reaches it. Re-read the ticket's authoritative paused evidence before
+    // treating a successful pause as unproven.
+    if (
+      operation.kind === 'pause' &&
+      bridgeOperation.state === 'succeeded' &&
+      !pauseEvidenceProven(evidence) &&
+      task.upstreamTicketId
+    ) {
+      try {
+        const snapshot = await bridge.ticket(task.upstreamTicketId);
+        if (snapshot.paused?.stoppedAt) {
+          evidence = { ...snapshot.paused.evidence, stoppedAt: snapshot.paused.stoppedAt };
+        }
+      } catch {
+        // keep the operation evidence; the pause stays unproven and is not shown as stopped
+      }
+    }
     // A pause is only proven with a stop timestamp, no loaded worker or an idle
     // one, and an empty job/subagent set. `absent` means the runtime restarted and
     // the worker Session is not loaded, so nothing of it can still run.
@@ -610,7 +630,7 @@ async function pollOperations(
       const bridgeOperation = await bridge.operation(operation.bridgeOperationId ?? '');
       worked = true;
       if (bridgeOperation.state === 'succeeded' || bridgeOperation.state === 'failed') {
-        await applyOperationResult(pool, repository, operation, bridgeOperation, logger);
+        await applyOperationResult(pool, repository, operation, bridgeOperation, bridge, logger);
       } else {
         await pool.query(
           `update task_operations set next_attempt_at = now() + interval '1 second',

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { and, desc, eq, inArray, lt } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, lt } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 
 import {
@@ -10,6 +10,7 @@ import {
   createConversationInputSchema,
   createMessageDataSchema,
   createMessageInputSchema,
+  githubRequirementsIn,
   messageListDataSchema,
   modelListDataSchema,
   type ConversationSummary,
@@ -438,6 +439,107 @@ export function registerConversationRoutes(
         conversation.id,
         input.replyToMessageId ?? null,
       );
+
+      // GitHub-first, then Web: a new Web conversation's first message naming the
+      // same exact Issue/PR is delivered to the imported GitHub conversation and
+      // the empty Web task is removed, so the requirement never runs twice.
+      if (
+        conversation.source === 'web' &&
+        task.state === 'pending_admission' &&
+        !input.replyToMessageId
+      ) {
+        const repository = await findOwnedRepository(
+          database,
+          auth.owner.id,
+          conversation.repositoryId,
+        );
+        const requirements = repository
+          ? githubRequirementsIn(input.text, repository.fullName)
+          : [];
+        if (requirements.length === 1) {
+          const requirement = requirements[0]!;
+          const sourceMessages = await database
+            .select({ total: count() })
+            .from(messages)
+            .where(eq(messages.conversationId, conversation.id));
+          const [target] = await database
+            .select({ conversation: conversations, task: taskLinks })
+            .from(conversations)
+            .leftJoin(taskLinks, eq(taskLinks.conversationId, conversations.id))
+            .where(
+              and(
+                eq(conversations.repositoryId, conversation.repositoryId),
+                eq(conversations.source, 'github'),
+                eq(conversations.externalKey, `github:${requirement.number}`),
+              ),
+            )
+            .limit(1);
+          if (
+            target &&
+            target.conversation.id !== conversation.id &&
+            (sourceMessages[0]?.total ?? 0) === 0
+          ) {
+            if (!target.task) throw ApiProblem.conflict('The GitHub requirement has no task');
+            if (
+              target.task.state === 'completed' ||
+              target.task.state === 'closed_unmerged' ||
+              target.task.state === 'not_accepted'
+            ) {
+              throw ApiProblem.conflict(
+                'This GitHub requirement has ended; create a linked task or resume it explicitly',
+              );
+            }
+            const merged = await database.transaction(async (transaction) => {
+              const [message] = await transaction
+                .insert(messages)
+                .values({
+                  conversationId: target.conversation.id,
+                  direction: 'inbound',
+                  kind: 'user',
+                  clientMessageId: input.clientMessageId,
+                  body: input.text,
+                  replyToMessageId: null,
+                  source: 'web',
+                })
+                .returning();
+              if (!message) throw new Error('message insert returned no row');
+              const [delivery] = await transaction
+                .insert(deliveries)
+                .values({ messageId: message.id, upstreamTriggerId: `workspace:${message.id}` })
+                .returning();
+              if (!delivery) throw new Error('delivery insert returned no row');
+              await transaction
+                .update(conversations)
+                .set({
+                  title: target.conversation.title ?? deriveTitle(input.text),
+                  updatedAt: new Date(),
+                })
+                .where(eq(conversations.id, target.conversation.id));
+              const event = await appendEvent(transaction, {
+                type: 'message.created',
+                repositoryId: target.conversation.repositoryId,
+                conversationId: target.conversation.id,
+                payload: { messageId: message.id, direction: 'inbound' },
+              });
+              await transaction
+                .delete(taskLinks)
+                .where(eq(taskLinks.conversationId, conversation.id));
+              await transaction.delete(conversations).where(eq(conversations.id, conversation.id));
+              return { message, delivery, event };
+            });
+            if (merged.event) publish(merged.event);
+            return sendData(
+              reply,
+              request,
+              createMessageDataSchema.parse({
+                message: toMessage(merged.message, merged.delivery),
+                duplicate: false,
+              }),
+              202,
+            );
+          }
+        }
+      }
 
       let created: { message: MessageRow; delivery: Delivery; event: unknown } | null = null;
       try {

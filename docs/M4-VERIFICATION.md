@@ -190,7 +190,7 @@ Bridge 在清除暂停前检查目录、`.git` 链接及目标存在；平台在
 ### 最终制品
 
 - 固定上游：`6337fc823ce20251c8de8085948165c81aaa701e`，补丁 `0001`–`0020`。
-- 最终构建目录 `/root/src/upstream/m4-final-verify`；`lib/index.js` sha256 `a6369acc7c21fc492d52f8bff24f9c7e57917587fa675c02376a3b2e7092297a`；`package.json` `d428e669805ea1dfb6a4900bddbffe3cafb8f06a0b1eb139266c2b2f6b94b021`。
+- 最终构建目录 `/root/src/upstream/m4-final-verify`；`lib/index.js` sha256 `652e05fe2301e62ada21b38363fe22005c85c4a5e3888303ab5ea5fb3b9ffe26`；`package.json` `d428e669805ea1dfb6a4900bddbffe3cafb8f06a0b1eb139266c2b2f6b94b021`。
 - 上游定向测试：`discussion`、`bridge-control`、`pause`、`process-tree`、`sources` 相关用例通过；全量结果见 PR/CI。
 
 
@@ -218,5 +218,8 @@ Bridge 在清除暂停前检查目录、`.git` 链接及目标存在；平台在
 - 独立讨论命令（`executor.discussCommand`，补丁 0020）在单独进程中运行：主 runtime 以 root 生成 worktree 的只读快照 `/srv/m4-discuss/workspace`（root 所有，目录 555、文件 444），随后 `setpriv` 到专用用户 `moyu-discuss`（uid 996）启动 headless DSH；讨论进程不继承 GitHub/Bridge 凭据，也无 `/root` 访问权限。
 - 讨论 profile 禁用 `tool-bash`、`tool-pwsh`、`tool-jobs`、subagent、workflow 与 working-directory，`tool-fs` 仅保留 read/readImage，`sandbox-policy` 为 `read-only` 且 `workspaceRoot` 固定为快照目录。
 - 实跑：新建 discuss task `f3db8fe6…`，平台收到 plan 并进入 `awaiting_review`；证据显示 host uid 0、讨论 uid 996、workdir `root root 755`/文件 444、`root_env_readable=no`、`worktree_write=denied`、`ssh_key_readable=no`，模型输出明确“没有写工具，不能写文件或开 PR”。见 [`live-discuss-sandbox.log`](evidence/m4/live-discuss-sandbox.log)。
-- 讨论使用只读快照而非直接挂载可写 worktree；执行阶段仍由主 runtime 使用原 worktree。讨论中的 plan 路径为 `/srv/m4-discuss/workspace`。
+- 生命周期：外部进程按 assignment 注册可取消 run，暂停/关机 abort + `setsid` 进程组 SIGTERM/SIGKILL，等待全部子进程退出；暂停证据与进程内暂停同形，stale run 的 ready/failed 被 assignment/pause 守卫丢弃。实跑运行中 stop `30b120…`/`8d57a4…`，pause operation succeeded、`lingeringPids: []`、`processesAfter: []`、无残留 discuss 进程；同一 Ticket resume 回到 discuss 再 stop。见 [`live-discuss-lifecycle.log`](evidence/m4/live-discuss-lifecycle.log)。
+- 并发：每个 Ticket/assignment 使用独立 run 目录、HOME、DSH profile 与快照；双进程 ALPHA/BETA 各自读取本仓库标记，停止/清理一个不影响另一个。
+- 模型/基线：sandbox 使用 Ticket 冻结的 provider/model/reasoning；Ticket 未冻结时使用实例 executor 默认，不回退到 profile 模板；prompt 带 base branch/commit 与 plan revision。
+- 讨论使用只读快照而非直接挂载可写 worktree；执行阶段仍由主 runtime 使用原 worktree。讨论中的 plan 路径为 `/srv/m4-discuss/runs/<ticket>/<assignment>/workspace`。
 - 本项改变了讨论执行路径（新进程/UID/profile），已获所有者批准；3082 bootstrap 与生产库未改动。

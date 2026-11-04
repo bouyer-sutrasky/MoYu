@@ -1,4 +1,5 @@
 import type pg from 'pg';
+import { githubRequirementUrl } from '@moyu/contracts';
 
 import { taskStateSchema, type ArtifactSummary } from '@moyu/contracts';
 import type { RuntimeBridgeClient, BridgeEvent } from '@moyu/runtime-client';
@@ -490,7 +491,11 @@ async function applyPausedEvent(
   // The paused event and the Bridge operation settle independently. Settle the
   // platform operation from this evidence too, so a stop followed immediately by
   // resume is not refused as "another command is still being processed".
-  if (stoppedAt || pauseError || problem) {
+  // Only the terminal pause event settles the Bridge operation. The first
+  // event records the intent and has no `stoppedAt`; treating its expected
+  // "did not record when the worker stopped" as a failure would fail the
+  // operation before the settled event with evidence arrives.
+  if (data.stoppedAt !== undefined || pauseError) {
     await client.query(
       `update task_operations
           set state = $2,
@@ -913,20 +918,7 @@ export async function syncOnce(
   return true;
 }
 
-/** Whether `body` contains the exact GitHub Issue/PR URL for this repository and number. */
-export function githubRequirementUrl(
-  body: string,
-  repository: string,
-  isPr: boolean,
-  number: number,
-): boolean {
-  const escaped = repository.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const path = isPr ? '(?:pull|pulls)' : 'issues';
-  return new RegExp(
-    String.raw`https?:\/\/(?:www\.)?github\.com\/${escaped}\/${path}\/${number}(?![0-9A-Za-z_-])`,
-    'i',
-  ).test(body);
-}
+export { githubRequirementUrl } from '@moyu/contracts';
 
 function isUniqueViolation(error: unknown): boolean {
   return (
