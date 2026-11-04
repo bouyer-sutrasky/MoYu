@@ -7,11 +7,14 @@ import type { SupervisorConfig } from './config';
 import type { SupervisorLogger } from './logger';
 import { configureProfile, waitForPanel } from './panel';
 import {
+  collectOwnership,
   pidAlive,
-  retainedDescendants,
   portFree,
+  retainedDescendants,
   stopProcessTree,
   waitForPortClosed,
+  type ProcessIdentity,
+  type StoredOwnership,
 } from './process';
 import { instanceLogPath, parseEnvFile, prepareInstance, type PreparedInstance } from './provision';
 import type { InstanceRow, SupervisorStore } from './store';
@@ -31,6 +34,47 @@ export interface WakeResult {
   accepted: boolean;
   duplicate: boolean;
   instance: InstanceRow;
+}
+
+function storedOwnership(row: InstanceRow): StoredOwnership {
+  const value = row.ownership ?? {};
+  return {
+    rootPid: typeof value.rootPid === 'number' ? value.rootPid : row.pid,
+    pgid: typeof value.pgid === 'number' ? value.pgid : row.pid,
+    members: Array.isArray(value.members) ? (value.members as StoredOwnership['members']) : [],
+  };
+}
+
+function ownershipPayload(rootPid: number | null, pgid: number | null, members: ProcessIdentity[]) {
+  return {
+    rootPid,
+    pgid,
+    members: members.map((member) => ({
+      pid: member.pid,
+      startTime: member.startTime,
+      pgid: member.pgid,
+      sid: member.sid,
+      command: member.command,
+    })),
+  };
+}
+
+/** A queued wake merges the highest priority and keeps the oldest request time. */
+export function mergeQueuedWake(
+  existing: { queuePriority: number; wakeRequestedAt: Date | null },
+  incoming: { priority: number; at: Date },
+  queued: boolean,
+): { queuePriority: number; wakeRequestedAt: Date } {
+  if (!queued || !existing.wakeRequestedAt) {
+    return { queuePriority: incoming.priority, wakeRequestedAt: incoming.at };
+  }
+  return {
+    queuePriority: Math.min(existing.queuePriority, incoming.priority),
+    wakeRequestedAt:
+      existing.wakeRequestedAt.getTime() <= incoming.at.getTime()
+        ? existing.wakeRequestedAt
+        : incoming.at,
+  };
 }
 
 interface RuntimeHandle {
@@ -136,80 +180,7 @@ export class InstanceManager {
     await this.withLock(async () => {
       const rows = await this.store.listInstances();
       for (const row of rows) {
-        if (row.state === 'online' && row.pid && pidAlive(row.pid)) {
-          // Adopt a process that survived a supervisor restart. The Bridge is
-          // the authority for an online instance; a live process with a silent
-          // Bridge stays online and is reported as unhealthy, never killed.
-          const bridgeUp = row.bridgePort ? await portOpen(row.bridgePort) : false;
-          await this.store.updateInstance(row.repositoryId, {
-            lastHealthAt: bridgeUp ? new Date() : row.lastHealthAt,
-            reasonCode: bridgeUp ? 'listening' : 'bridge_unreachable',
-            reasonDetail: bridgeUp
-              ? null
-              : 'The runtime process survived the supervisor restart but its Bridge did not answer the first health check',
-            waitingFor: bridgeUp ? null : 'runtime',
-          });
-          continue;
-        }
-        if (row.state === 'starting') {
-          const bridgeUp = row.bridgePort ? await portOpen(row.bridgePort) : false;
-          if (row.pid && pidAlive(row.pid) && bridgeUp) {
-            await this.store.updateInstance(row.repositoryId, {
-              state: 'online',
-              lastHealthAt: new Date(),
-              reasonCode: 'listening',
-              reasonDetail: null,
-              waitingFor: null,
-            });
-            await this.store.syncRepositoryStatus(row.repositoryId, 'online');
-            continue;
-          }
-          // A half-started orphan is stopped and reported; it must not keep a
-          // port or be silently counted as online.
-          if (row.pid && pidAlive(row.pid)) {
-            await stopProcessTree(row.pid, this.config.stopTimeoutMs);
-            if (row.bridgePort) await waitForPortClosed(row.bridgePort, 5000);
-          }
-          await this.store.updateInstance(row.repositoryId, {
-            state: 'fault',
-            desiredState: 'sleeping',
-            pid: null,
-            reasonCode: 'instance_lost',
-            reasonDetail: 'The supervisor restarted while this runtime was still starting',
-            waitingFor: null,
-            errorCode: 'instance_lost',
-            errorDetail: 'startup interrupted by supervisor restart',
-          });
-          await this.store.syncRepositoryStatus(row.repositoryId, 'fault');
-        } else if (row.state === 'online') {
-          await this.store.updateInstance(row.repositoryId, {
-            state: 'fault',
-            desiredState: 'sleeping',
-            pid: null,
-            reasonCode: 'instance_lost',
-            reasonDetail:
-              'The supervisor restarted and could not confirm the previous runtime process',
-            waitingFor: null,
-            errorCode: 'instance_lost',
-            errorDetail: 'runtime process missing after supervisor restart',
-          });
-          await this.store.syncRepositoryStatus(row.repositoryId, 'fault');
-        } else if (row.state === 'stopping') {
-          if (row.pid && pidAlive(row.pid)) {
-            await stopProcessTree(row.pid, this.config.stopTimeoutMs);
-            if (row.bridgePort) await waitForPortClosed(row.bridgePort, 5000);
-          }
-          await this.store.updateInstance(row.repositoryId, {
-            state: 'sleeping',
-            desiredState: 'sleeping',
-            pid: null,
-            reasonCode: 'sleeping',
-            reasonDetail: null,
-            waitingFor: null,
-            lastStoppedAt: new Date(),
-          });
-          await this.store.syncRepositoryStatus(row.repositoryId, 'sleeping');
-        }
+        await this.reconcileRestart(row);
       }
     });
     this.timer = setInterval(() => {
@@ -222,6 +193,95 @@ export class InstanceManager {
     }, this.config.tickIntervalMs);
     this.timer.unref();
     await this.tick();
+  }
+
+  /**
+   * Converges one persisted instance after a supervisor restart. A root PID
+   * that is gone is not enough to release capacity: stored descendants and the
+   * old process group are checked, and a failed cleanup stays `stopping`.
+   */
+  private async reconcileRestart(row: InstanceRow): Promise<void> {
+    const stored = storedOwnership(row);
+    const snapshot = collectOwnership(row.pid ?? 0, stored);
+    const live = snapshot.members;
+    const rootAlive = row.pid ? pidAlive(row.pid) : false;
+
+    if (row.state === 'online') {
+      if (rootAlive) {
+        const bridgeUp = row.bridgePort ? await portOpen(row.bridgePort) : false;
+        await this.store.updateInstance(row.repositoryId, {
+          lastHealthAt: bridgeUp ? new Date() : row.lastHealthAt,
+          ownership: ownershipPayload(row.pid, snapshot.pgid, live),
+          reasonCode: bridgeUp ? 'listening' : 'bridge_unreachable',
+          reasonDetail: bridgeUp
+            ? null
+            : 'The runtime process survived the supervisor restart but its Bridge did not answer the first health check',
+          waitingFor: bridgeUp ? null : 'runtime',
+        });
+        return;
+      }
+      if (live.length > 0) {
+        const stopped = await this.stopInstance(row, 'restart_cleanup', 'process_exit');
+        if (stopped) {
+          await this.failInstance(
+            row,
+            'instance_lost',
+            'The runtime root exited but its descendants survived; they are stopped now',
+          );
+        }
+        return;
+      }
+      await this.failInstance(
+        row,
+        'instance_lost',
+        'The supervisor restarted and could not confirm the previous runtime process',
+      );
+      return;
+    }
+
+    if (row.state === 'starting') {
+      const bridgeUp = row.bridgePort ? await portOpen(row.bridgePort) : false;
+      if (rootAlive && bridgeUp) {
+        await this.store.updateInstance(row.repositoryId, {
+          state: 'online',
+          lastHealthAt: new Date(),
+          ownership: ownershipPayload(row.pid, snapshot.pgid, live),
+          reasonCode: 'listening',
+          reasonDetail: null,
+          waitingFor: null,
+        });
+        await this.store.syncRepositoryStatus(row.repositoryId, 'online');
+        return;
+      }
+      if (live.length > 0) {
+        const stopped = await this.stopInstance(row, 'restart_cleanup', 'process_exit');
+        if (stopped) {
+          await this.failInstance(
+            row,
+            'instance_lost',
+            'The supervisor restarted while this runtime was still starting; the process tree is stopped',
+          );
+        }
+        return;
+      }
+      await this.failInstance(
+        row,
+        'instance_lost',
+        'The supervisor restarted while this runtime was still starting',
+      );
+      return;
+    }
+
+    if (row.state === 'stopping') {
+      await this.stopInstance(row, 'restart_stop', 'process_exit');
+      return;
+    }
+
+    if (live.length > 0) {
+      // A fault/sleeping row with surviving descendants keeps its capacity and
+      // is reported as a stop in progress instead of being silently released.
+      await this.stopInstance(row, 'restart_orphan', 'process_exit');
+    }
   }
 
   async stop(): Promise<void> {
@@ -271,7 +331,15 @@ export class InstanceManager {
       const alreadyQueued =
         instance.desiredState === 'online' &&
         instance.wakeRequestedAt !== null &&
-        instance.state === 'sleeping';
+        (instance.state === 'sleeping' || instance.state === 'stopping');
+      const merged = mergeQueuedWake(
+        {
+          queuePriority: instance.queuePriority,
+          wakeRequestedAt: instance.wakeRequestedAt,
+        },
+        { priority: input.priority, at: now },
+        alreadyQueued,
+      );
       if (instance.state === 'online' || instance.state === 'starting') {
         await this.store.updateInstance(repositoryId, {
           desiredState: 'online',
@@ -288,8 +356,8 @@ export class InstanceManager {
       }
       await this.store.updateInstance(repositoryId, {
         desiredState: 'online',
-        wakeRequestedAt: now,
-        queuePriority: input.priority,
+        wakeRequestedAt: merged.wakeRequestedAt,
+        queuePriority: merged.queuePriority,
         reasonCode: instance.state === 'stopping' ? 'stopping' : 'wake_queued',
         reasonDetail: null,
         waitingFor: 'capacity',
@@ -346,21 +414,36 @@ export class InstanceManager {
           instance: (await this.store.getInstance(repositoryId)) ?? instance,
         };
       }
-      if (instance.state === 'fault' || instance.state === 'stopping') {
+      if (instance.state === 'stopping') {
+        if (instance.reasonCode === 'stop_failed') {
+          const stopped = await this.stopInstance(instance, 'retry_stop', 'process_exit');
+          return {
+            accepted: stopped,
+            duplicate: false,
+            instance: (await this.store.getInstance(repositoryId)) ?? instance,
+          };
+        }
+        return {
+          accepted: false,
+          duplicate: true,
+          instance,
+        };
+      }
+      if (instance.state === 'fault') {
         await this.store.updateInstance(repositoryId, {
           desiredState: 'sleeping',
-          ...(instance.state === 'fault'
-            ? { reasonCode: 'fault', reasonDetail: instance.reasonDetail, waitingFor: null }
-            : {}),
+          reasonCode: 'fault',
+          reasonDetail: instance.reasonDetail,
+          waitingFor: null,
         });
         return {
           accepted: true,
-          duplicate: instance.state === 'stopping',
+          duplicate: true,
           instance: (await this.store.getInstance(repositoryId)) ?? instance,
         };
       }
       const gate = await this.store.taskGate(repositoryId);
-      const background = instance.pid ? retainedDescendants(instance.pid) : [];
+      const background = retainedDescendants(instance.pid ?? 0, storedOwnership(instance));
       if (gate.active > 0 || gate.pendingOperations > 0) {
         await this.store.updateInstance(repositoryId, {
           desiredState: 'online',
@@ -392,9 +475,9 @@ export class InstanceManager {
         { event: 'supervisor.sleeping', repositoryId, manual },
         'stopping repository runtime',
       );
-      await this.stopInstance(instance, manual ? 'manual' : 'idle', 'idle');
+      const stopped = await this.stopInstance(instance, manual ? 'manual' : 'idle', 'idle');
       return {
-        accepted: true,
+        accepted: stopped,
         duplicate: false,
         instance: (await this.store.getInstance(repositoryId)) ?? instance,
       };
@@ -411,8 +494,10 @@ export class InstanceManager {
         } catch {
           // Progress is explanatory only; a missing row must not stop scheduling.
         }
-        if (!row.pid || !['starting', 'online', 'stopping'].includes(row.state)) continue;
-        const alive = pidAlive(row.pid);
+        const stored = storedOwnership(row);
+        const snapshot = collectOwnership(row.pid ?? 0, stored);
+        const live = snapshot.members;
+        const rootAlive = row.pid ? pidAlive(row.pid) : false;
         const bridgeUp = row.bridgePort ? await portOpen(row.bridgePort) : false;
         this.logger.debug(
           {
@@ -422,56 +507,88 @@ export class InstanceManager {
             port: row.port,
             bridgePort: row.bridgePort,
             bridgeUp,
-            alive,
+            rootAlive,
+            descendants: live.length,
           },
           'checked runtime health',
         );
-        if (!alive) {
+
+        if (live.length === 0) {
           if (row.state === 'stopping') {
-            await this.store.updateInstance(row.repositoryId, {
-              state: 'sleeping',
-              desiredState: 'sleeping',
-              pid: null,
-              reasonCode: 'sleeping',
-              reasonDetail: null,
-              waitingFor: null,
-              lastStoppedAt: new Date(),
-            });
-            await this.store.syncRepositoryStatus(row.repositoryId, 'sleeping');
-          } else {
+            await this.markSleeping(row, 'stop_completed');
+          } else if (row.state === 'starting' || row.state === 'online') {
             await this.failInstance(
               row,
               'instance_lost',
-              'The runtime process exited unexpectedly',
+              'The runtime process and all descendants exited unexpectedly',
             );
           }
           continue;
         }
-        if (row.state === 'online' && !bridgeUp) {
-          // A live process is not an instance failure. The worker may be busy
-          // enough that the Bridge briefly cannot answer; killing it here would
-          // destroy real work. Keep the process and report the unknown health
-          // honestly instead of guessing that it is gone.
-          await this.store.updateInstance(row.repositoryId, {
-            reasonCode: 'bridge_unreachable',
-            reasonDetail:
-              'The runtime process is alive but its Bridge did not answer the health check; the instance is left running',
-            waitingFor: 'runtime',
-          });
-        } else if (bridgeUp) {
-          await this.store.updateInstance(row.repositoryId, {
-            lastHealthAt: new Date(),
-            ...(row.reasonCode === 'bridge_unreachable'
-              ? { reasonCode: 'online', reasonDetail: null, waitingFor: null }
-              : {}),
-          });
+
+        if (row.state === 'stopping') {
+          if (row.reasonCode === 'stop_failed') {
+            await this.store.updateInstance(row.repositoryId, {
+              state: 'stopping',
+              desiredState: 'sleeping',
+              ownership: ownershipPayload(row.pid, snapshot.pgid, live),
+              reasonCode: 'stop_failed',
+              reasonDetail: `Stopping is incomplete: ${live.length} process(es) still alive`,
+              waitingFor: 'process_exit',
+              pid: row.pid,
+              errorCode: 'stop_failed',
+              errorDetail: 'stop did not prove every descendant exited',
+            });
+            continue;
+          }
+          await this.stopInstance(row, 'stop_retry', 'process_exit');
+          continue;
         }
+
+        if (!rootAlive) {
+          const stopped = await this.stopInstance(row, 'orphan_cleanup', 'process_exit');
+          if (stopped) {
+            await this.failInstance(
+              (await this.store.getInstance(row.repositoryId)) ?? row,
+              'instance_lost',
+              'The runtime root exited but its descendants survived; they are now stopped',
+            );
+          }
+          continue;
+        }
+
+        await this.store.updateInstance(row.repositoryId, {
+          ownership: ownershipPayload(row.pid, snapshot.pgid, live),
+        });
+
+        if (row.state === 'online') {
+          if (!bridgeUp) {
+            // A live process is not an instance failure. The worker may be busy
+            // enough that the Bridge briefly cannot answer; killing it here would
+            // destroy real work. Keep the process and report the unknown health
+            // honestly instead of guessing that it is gone.
+            await this.store.updateInstance(row.repositoryId, {
+              reasonCode: 'bridge_unreachable',
+              reasonDetail:
+                'The runtime process is alive but its Bridge did not answer the health check; the instance is left running',
+              waitingFor: 'runtime',
+            });
+          } else {
+            await this.store.updateInstance(row.repositoryId, {
+              lastHealthAt: new Date(),
+              ...(row.reasonCode === 'bridge_unreachable'
+                ? { reasonCode: 'online', reasonDetail: null, waitingFor: null }
+                : {}),
+            });
+          }
+        }
+
         if (row.desiredState === 'sleeping') {
           if (row.state === 'starting') {
             await this.stopInstance(row, 'idle', 'idle');
           } else if (row.state === 'online') {
             const gate = await this.store.taskGate(row.repositoryId);
-            const background = retainedDescendants(row.pid);
+            const background = retainedDescendants(row.pid ?? 0, stored);
             if (gate.active === 0 && gate.pendingOperations === 0 && background.length === 0) {
               await this.stopInstance(row, 'idle', 'idle');
             } else {
@@ -481,7 +598,7 @@ export class InstanceManager {
                 reasonDetail:
                   gate.active > 0 || gate.pendingOperations > 0
                     ? 'A task or owner command is still active; an explicit sleep waits for it to finish'
-                    : 'A retained background process still needs this runtime',
+                    : `The runtime still owns ${background.length} background process(es)`,
                 waitingFor:
                   gate.active > 0 || gate.pendingOperations > 0
                     ? 'execution'
@@ -514,7 +631,9 @@ export class InstanceManager {
           let evicted = false;
           for (const victim of evictable) {
             const gate = await this.store.taskGate(victim.repositoryId);
-            const background = victim.pid ? retainedDescendants(victim.pid) : [];
+            const background = victim.pid
+              ? retainedDescendants(victim.pid, storedOwnership(victim))
+              : [];
             if (gate.active > 0 || gate.pendingOperations > 0 || background.length > 0) continue;
             this.logger.info(
               {
@@ -631,6 +750,11 @@ export class InstanceManager {
       port: prepared.dshPort,
       bridgePort: prepared.bridgePort,
       profile: prepared.profile,
+      ownership: ownershipPayload(
+        pid,
+        pid,
+        collectOwnership(pid, { rootPid: pid, pgid: pid, members: [] }).members,
+      ),
       reasonCode: 'starting',
       reasonDetail: null,
       waitingFor: null,
@@ -662,7 +786,16 @@ export class InstanceManager {
       },
       'repository runtime spawned',
     );
-    void this.settleStart(instance.repositoryId, generation, prepared);
+    void this.settleStart(instance.repositoryId, generation, prepared).catch((error) => {
+      this.logger.error(
+        {
+          event: 'supervisor.start_settle_failed',
+          repositoryId: instance.repositoryId,
+          error: safeError(error),
+        },
+        'startup verification failed after the supervisor stopped or lost its pool',
+      );
+    });
   }
 
   private async settleStart(
@@ -684,6 +817,7 @@ export class InstanceManager {
     const worktreeDir = join(this.config.worktreeRoot, prepared.profile);
     mkdirSync(worktreeDir, { recursive: true, mode: 0o700 });
     try {
+      if (this.stopped) return;
       await waitForPanel(
         prepared.dshPort,
         this.config.startTimeoutMs,
@@ -713,6 +847,7 @@ export class InstanceManager {
         prepare,
         timeoutMs: this.config.startTimeoutMs,
       });
+      if (this.stopped) return;
       const handle = this.handles.get(repositoryId);
       if (!handle || handle.generation !== generation) return;
       const row = await this.store.getInstance(repositoryId);
@@ -736,27 +871,40 @@ export class InstanceManager {
         'repository runtime is online',
       );
     } catch (error) {
+      if (this.stopped) return;
       const handle = this.handles.get(repositoryId);
       if (!handle || handle.generation !== generation) return;
       this.handles.delete(repositoryId);
-      const pid = handle.pid;
-      await stopProcessTree(pid, this.config.stopTimeoutMs);
-      await waitForPortClosed(prepared.bridgePort, 5000);
       const row = (await this.store.getInstance(repositoryId)) ?? null;
-      if (row) await this.failInstance(row, 'start_failed', safeError(error));
+      if (!row) return;
+      const stopped = await this.stopInstance(row, 'start_failed', 'process_exit');
+      if (stopped) {
+        await this.failInstance(
+          (await this.store.getInstance(repositoryId)) ?? row,
+          'start_failed',
+          safeError(error),
+        );
+      }
     }
   }
 
   private async failInstance(instance: InstanceRow, code: string, detail: string): Promise<void> {
+    const snapshot = collectOwnership(instance.pid ?? 0, storedOwnership(instance));
+    if (snapshot.members.length > 0) {
+      await this.stopInstance(instance, 'failure_cleanup', 'process_exit');
+      return;
+    }
     await this.store.updateInstance(instance.repositoryId, {
       state: 'fault',
       desiredState: 'sleeping',
       pid: null,
+      ownership: {},
       reasonCode: code,
       reasonDetail: detail,
       waitingFor: null,
       errorCode: code,
       errorDetail: detail,
+      lastStoppedAt: null,
     });
     await this.store.syncRepositoryStatus(instance.repositoryId, 'fault');
     this.logger.error(
@@ -765,54 +913,92 @@ export class InstanceManager {
     );
   }
 
+  private async markSleeping(instance: InstanceRow, reason: string): Promise<void> {
+    await this.store.updateInstance(instance.repositoryId, {
+      state: 'sleeping',
+      desiredState: 'sleeping',
+      pid: null,
+      ownership: {},
+      reasonCode: reason === 'evicted_for_capacity' ? 'evicted' : 'sleeping',
+      reasonDetail:
+        reason === 'evicted_for_capacity'
+          ? 'Stopped to free an online slot for a waiting repository'
+          : null,
+      waitingFor: null,
+      errorCode: null,
+      errorDetail: null,
+      lastStoppedAt: new Date(),
+    });
+    await this.store.syncRepositoryStatus(instance.repositoryId, 'sleeping');
+    this.logger.info(
+      { event: 'supervisor.instance_sleeping', repositoryId: instance.repositoryId, reason },
+      'repository runtime stopped',
+    );
+  }
+
+  /**
+   * Stops the runtime and every recorded descendant. It returns true only when
+   * no tracked process remains and the Bridge port is closed. A timeout leaves
+   * the row in `stopping` with the surviving ownership snapshot, so capacity is
+   * not released and the owner can retry the stop.
+   */
   private async stopInstance(
     instance: InstanceRow,
     reason: string,
     waitingFor: string | null,
-  ): Promise<void> {
-    const pid = instance.pid;
+  ): Promise<boolean> {
+    const stored = storedOwnership(instance);
+    const pid = instance.pid ?? stored.rootPid ?? 0;
+    const snapshot = collectOwnership(pid, stored);
+    const pgid = snapshot.pgid ?? stored.pgid ?? (pid > 1 ? pid : null);
     this.handles.delete(instance.repositoryId);
     this.generation += 1;
     await this.store.updateInstance(instance.repositoryId, {
       state: 'stopping',
       desiredState: 'sleeping',
+      pid: instance.pid,
+      ownership: ownershipPayload(pid > 1 ? pid : null, pgid, snapshot.members),
       reasonCode: 'stopping',
       reasonDetail: null,
       waitingFor,
+      errorCode: null,
+      errorDetail: null,
     });
     await this.store.syncRepositoryStatus(instance.repositoryId, 'stopping');
-    let stopped = true;
-    if (pid) {
-      stopped = await stopProcessTree(pid, this.config.stopTimeoutMs);
-      if (instance.bridgePort) {
-        stopped = (await waitForPortClosed(instance.bridgePort, 5000)) && stopped;
-      }
+    const result = await stopProcessTree(pid, this.config.stopTimeoutMs, stored);
+    const portClosed = instance.bridgePort
+      ? await waitForPortClosed(instance.bridgePort, 5000)
+      : true;
+    if (result.stopped && portClosed) {
+      await this.markSleeping(instance, reason);
+      return true;
     }
-    if (stopped) {
-      await this.store.updateInstance(instance.repositoryId, {
-        state: 'sleeping',
-        desiredState: 'sleeping',
-        pid: null,
-        reasonCode:
-          reason === 'fault' ? 'fault' : reason === 'evicted_for_capacity' ? 'evicted' : 'sleeping',
-        reasonDetail:
-          reason === 'evicted_for_capacity'
-            ? 'Stopped to free an online slot for a waiting repository'
-            : null,
-        waitingFor: null,
-        lastStoppedAt: new Date(),
-      });
-      await this.store.syncRepositoryStatus(instance.repositoryId, 'sleeping');
-      this.logger.info(
-        { event: 'supervisor.instance_sleeping', repositoryId: instance.repositoryId, reason },
-        'repository runtime stopped',
-      );
-    } else {
-      await this.failInstance(
-        instance,
-        'stop_failed',
-        'The runtime process did not stop within the timeout',
-      );
-    }
+    const remaining = result.remaining;
+    const detail = result.stopped
+      ? `The Bridge port ${instance.bridgePort ?? '(none)'} remained open after the process tree exited`
+      : `Stopping is incomplete: ${remaining.length} process(es) still alive after the timeout`;
+    await this.store.updateInstance(instance.repositoryId, {
+      state: 'stopping',
+      desiredState: 'sleeping',
+      pid: instance.pid,
+      ownership: ownershipPayload(pid > 1 ? pid : null, result.pgid, remaining),
+      reasonCode: 'stop_failed',
+      reasonDetail: detail,
+      waitingFor: 'process_exit',
+      errorCode: 'stop_failed',
+      errorDetail: detail,
+      lastStoppedAt: null,
+    });
+    await this.store.syncRepositoryStatus(instance.repositoryId, 'stopping');
+    this.logger.error(
+      {
+        event: 'supervisor.stop_failed',
+        repositoryId: instance.repositoryId,
+        remaining: remaining.length,
+        portClosed,
+      },
+      'runtime stop did not prove every process exited; capacity remains occupied',
+    );
+    return false;
   }
 }

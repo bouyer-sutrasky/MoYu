@@ -24,7 +24,7 @@ export type RuntimeDesiredState = z.infer<typeof runtimeDesiredStateSchema>;
 
 /** One allowed owner operation on a repository instance. */
 export const repositoryRuntimeActionSchema = z.object({
-  action: z.enum(['wake', 'sleep', 'retry']),
+  action: z.enum(['wake', 'sleep', 'retry', 'retry_stop']),
   label: z.string().min(1),
   enabled: z.boolean(),
   unavailableReason: z.string().nullable(),

@@ -30,6 +30,7 @@ export interface InstanceRow {
   port: number | null;
   bridgePort: number | null;
   profile: string | null;
+  ownership: Record<string, unknown>;
   attemptCount: number;
   errorCode: string | null;
   errorDetail: string | null;
@@ -49,7 +50,7 @@ const INSTANCE_COLUMNS = `
   i.wake_requested_at as "wakeRequestedAt", i.last_activity_at as "lastActivityAt",
   i.last_progress_at as "lastProgressAt", i.last_started_at as "lastStartedAt",
   i.last_stopped_at as "lastStoppedAt", i.last_health_at as "lastHealthAt",
-  i.pid, i.port, i.bridge_port as "bridgePort", i.profile, i.attempt_count as "attemptCount", i.error_code as "errorCode",
+  i.pid, i.port, i.bridge_port as "bridgePort", i.profile, i.ownership, i.attempt_count as "attemptCount", i.error_code as "errorCode",
   i.error_detail as "errorDetail", i.updated_at as "updatedAt"
 `;
 
@@ -163,6 +164,7 @@ export class SupervisorStore {
       port: number | null;
       bridgePort: number | null;
       profile: string | null;
+      ownership: Record<string, unknown>;
       attemptCount: number;
       errorCode: string | null;
       errorDetail: string | null;
@@ -185,6 +187,7 @@ export class SupervisorStore {
       port: 'port',
       bridgePort: 'bridge_port',
       profile: 'profile',
+      ownership: 'ownership',
       attemptCount: 'attempt_count',
       errorCode: 'error_code',
       errorDetail: 'error_detail',

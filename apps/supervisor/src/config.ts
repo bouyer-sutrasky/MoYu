@@ -52,7 +52,7 @@ const environmentSchema = z.object({
   MAX_ONLINE: z.coerce.number().int().min(1).max(8).default(2),
   TICK_INTERVAL_MS: z.coerce.number().int().min(250).max(60_000).default(2000),
   START_TIMEOUT_MS: z.coerce.number().int().min(5000).max(600_000).default(120_000),
-  STOP_TIMEOUT_MS: z.coerce.number().int().min(2000).max(120_000).default(30_000),
+  STOP_TIMEOUT_MS: z.coerce.number().int().min(100).max(120_000).default(30_000),
   EXECUTOR_MODEL: z
     .string()
     .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+$/)

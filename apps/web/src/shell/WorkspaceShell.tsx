@@ -208,13 +208,13 @@ export function WorkspaceShell({
   }, [onSessionLost]);
 
   const handleRepositoryAction = useCallback(
-    async (action: 'wake' | 'sleep' | 'retry') => {
+    async (action: 'wake' | 'sleep' | 'retry' | 'retry_stop') => {
       const repositoryId = selectedRepositoryIdRef.current;
       if (!repositoryId) return;
       setRepositoryActionBusy(true);
       setRepositoryActionError(null);
       try {
-        if (action === 'sleep') {
+        if (action === 'sleep' || action === 'retry_stop') {
           await api.sleepRepository(repositoryId);
         } else {
           await api.wakeRepository(repositoryId);

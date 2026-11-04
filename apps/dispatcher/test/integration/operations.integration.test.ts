@@ -734,6 +734,36 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
     expect(lease.rows[0]?.state).toBe('active');
   }, 30_000);
 
+  it('releases the execution slot for human-waiting and review states but not a running task', async () => {
+    const waiting = await seed({ state: 'waiting_input' });
+    const running = await seed({ state: 'running' });
+    const leaseFor = async (seed: Seed, taskId: string) => {
+      const lease = await testDatabase.pool.query<{ id: string }>(
+        `insert into runtime_leases (repository_id, holder_id, expires_at)
+         values ($1, $2, now() + interval '10 minutes') returning id`,
+        [seed.repository.id, `holder-${taskId}`],
+      );
+      const leaseId = lease.rows[0]!.id;
+      await testDatabase.pool.query('update task_links set runtime_lease_id = $2 where id = $1', [
+        taskId,
+        leaseId,
+      ]);
+      return leaseId;
+    };
+    const waitingLease = await leaseFor(waiting, waiting.taskId);
+    const runningLease = await leaseFor(running, running.taskId);
+
+    await maintainLeases(testDatabase.pool, waiting.repository, 60_000);
+
+    const states = await testDatabase.pool.query<{ id: string; state: string }>(
+      'select id, state from runtime_leases where id = any($1::uuid[])',
+      [[waitingLease, runningLease]],
+    );
+    const byId = new Map(states.rows.map((row) => [row.id, row.state]));
+    expect(byId.get(waitingLease)).toBe('released');
+    expect(byId.get(runningLease)).toBe('active');
+  }, 30_000);
+
   it('keeps a resume queued when a different task holds the repository lease', async () => {
     const first = await seed({ state: 'running' });
     await insertOperation(first, 'pause', `cmd-hold-${Date.now()}`);

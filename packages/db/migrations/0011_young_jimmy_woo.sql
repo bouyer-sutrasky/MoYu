@@ -1,0 +1,1 @@
+ALTER TABLE "repository_instances" ADD COLUMN "ownership" jsonb DEFAULT '{}'::jsonb NOT NULL;

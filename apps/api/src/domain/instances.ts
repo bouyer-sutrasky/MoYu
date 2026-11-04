@@ -66,6 +66,17 @@ function actionsFor(
         ),
       ];
     case 'stopping':
+      if (reasonCode === 'stop_failed') {
+        return [
+          wake(false, '旧进程尚未完全退出'),
+          {
+            action: 'retry_stop',
+            label: '重试停止',
+            enabled: true,
+            unavailableReason: null,
+          },
+        ];
+      }
       return [wake(false, '实例正在停止'), sleep(false, '实例正在停止')];
     case 'fault':
       return [retry, sleep(false, '先重试启动')];

@@ -1,4 +1,4 @@
-import { index, integer, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { index, integer, jsonb, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 
 import { runtimeDesiredState, runtimeInstanceState } from './enums';
 import { repositories } from './repositories';
@@ -41,6 +41,12 @@ export const repositoryInstances = pgTable(
     /** Machine Bridge port; a separate loopback listener from the panel. */
     bridgePort: integer('bridge_port'),
     profile: text('profile'),
+    /**
+     * Process ownership snapshot used to prove a stop. It records the root pid,
+     * its process group and the descendants seen while the runtime was alive, so
+     * a child that survives its parent can still be found and waited for.
+     */
+    ownership: jsonb('ownership').$type<Record<string, unknown>>().notNull().default({}),
     /** Bounded start attempts; an explicit retry resets it. */
     attemptCount: integer('attempt_count').notNull().default(0),
     errorCode: text('error_code'),

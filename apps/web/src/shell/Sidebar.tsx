@@ -36,7 +36,7 @@ interface SidebarProps {
   onReloadConversations: () => void;
   onNewTask: () => void;
   onOpenAddRepository: () => void;
-  onRepositoryAction: (action: 'wake' | 'sleep' | 'retry') => void;
+  onRepositoryAction: (action: 'wake' | 'sleep' | 'retry' | 'retry_stop') => void;
   repositoryActionBusy: boolean;
   repositoryActionError: string | null;
   onOpenActivity: () => void;
