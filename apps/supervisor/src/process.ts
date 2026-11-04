@@ -222,10 +222,15 @@ export function isTransientPolling(command: string): boolean {
   return basename(first) === 'gh' || basename(first) === 'gh-agent';
 }
 
+/** Applies the retention policy to a captured set; only known polling is disposable. */
+export function retainedIdentities(members: ProcessIdentity[]): ProcessIdentity[] {
+  return members.filter((member) => !isTransientPolling(member.command));
+}
+
 /** Descendants that are work worth preserving; only known polling is excluded. */
 export function retainedDescendants(pid: number, stored?: StoredOwnership): ProcessIdentity[] {
-  return collectOwnership(pid, stored).members.filter(
-    (member) => member.pid !== pid && !isTransientPolling(member.command),
+  return retainedIdentities(
+    collectOwnership(pid, stored).members.filter((member) => member.pid !== pid),
   );
 }
 

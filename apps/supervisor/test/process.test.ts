@@ -1,7 +1,4 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { chmodSync, copyFileSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { createServer, type Server } from 'node:net';
 
 import { afterEach, describe, expect, it } from 'vitest';
@@ -11,17 +8,15 @@ import {
   childPids,
   collectOwnership,
   descendants,
-  identifyProcess,
-  isTransientPolling,
   pidAlive,
   portFree,
   retainedDescendants,
+  retainedIdentities,
   stopProcessTree,
   waitForPortClosed,
 } from '../src/process';
 
 const children: ChildProcess[] = [];
-const tempDirs: string[] = [];
 
 function spawnDetached(command: string, args: string[]): ChildProcess {
   const child = spawn(command, args, { detached: true, stdio: 'ignore' });
@@ -43,9 +38,6 @@ afterEach(async () => {
     if (child.pid && pidAlive(child.pid)) {
       await stopProcessTree(child.pid, 3000);
     }
-  }
-  for (const directory of tempDirs.splice(0)) {
-    rmSync(directory, { recursive: true, force: true });
   }
 });
 
@@ -113,27 +105,21 @@ describe('supervisor process evidence', () => {
     expect(pidAlive(childPid)).toBe(true);
   });
 
-  it('ignores only the known short-lived GitHub polling process', async () => {
-    expect(isTransientPolling('/root/.local/bin/gh-agent api repos/x/y')).toBe(true);
-    expect(isTransientPolling('gh api repos/x/y')).toBe(true);
-    expect(isTransientPolling('sleep 300')).toBe(false);
-    expect(isTransientPolling('/usr/bin/node server.js')).toBe(false);
-
-    const directory = mkdtempSync(join(tmpdir(), 'moyu-gh-'));
-    tempDirs.push(directory);
-    const gh = join(directory, 'gh-agent');
-    copyFileSync('/bin/sleep', gh);
-    chmodSync(gh, 0o755);
-    const polling = spawnDetached(gh, ['30']);
-    if (!polling.pid) throw new Error('no polling pid');
-    expect(isTransientPolling(`/tmp/${'gh-agent'} api`)).toBe(true);
-    await waitUntil(
-      () => isTransientPolling(identifyProcess(polling.pid ?? 0)?.command ?? ''),
-      3000,
-    );
-    expect(retainedDescendants(process.pid).some((member) => member.pid === polling.pid)).toBe(
-      false,
-    );
+  it('applies the retention policy only to known GitHub polling', () => {
+    const members = [
+      {
+        pid: 2,
+        startTime: '1',
+        pgid: 2,
+        sid: 2,
+        command: '/root/.local/bin/gh-agent api repos/x/y',
+      },
+      { pid: 3, startTime: '2', pgid: 3, sid: 3, command: 'gh api repos/x/y' },
+      { pid: 4, startTime: '3', pgid: 4, sid: 4, command: 'sleep 300' },
+      { pid: 5, startTime: '4', pgid: 5, sid: 5, command: '/usr/bin/node server.js' },
+      { pid: 6, startTime: '5', pgid: 6, sid: 6, command: 'gh-agent-worker --serve' },
+    ];
+    expect(retainedIdentities(members).map((member) => member.pid)).toEqual([4, 5, 6]);
   });
 });
 
