@@ -521,6 +521,8 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* Pagination restores the viewport from the anchor row itself. */
+  overflow-anchor: none;
   outline: none;
 }
 
@@ -1768,6 +1770,183 @@
 
 .mobileScrim {
   display: none;
+}
+
+/* --------------------------- History pagination ---------------------------- */
+
+.historyControl {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 2px 0 4px;
+  color: var(--dsw-alias-label-tertiary);
+  font: var(--dsw-font-xxxs-11);
+}
+
+.historyButton {
+  min-height: 30px;
+  padding: 0 14px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xs-strong-13);
+}
+
+.historyButton:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.historyButton:disabled {
+  opacity: 0.6;
+}
+
+.historyEnd {
+  margin: 0;
+  padding: 2px 0 4px;
+  color: var(--dsw-alias-label-caption);
+  font: var(--dsw-font-xxxs-11);
+  text-align: center;
+}
+
+.sectionMore {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 2px 4px 4px;
+}
+
+.sectionMore p {
+  margin: 0;
+  color: var(--dsw-alias-state-error-primary);
+  font: var(--dsw-font-xxxs-11);
+}
+
+/* ------------------------- Effective task configuration -------------------- */
+
+.configSummary {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-module-platform);
+}
+
+.configSummaryHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.configSummaryHead strong {
+  color: var(--dsw-alias-label-primary);
+  font: var(--dsw-font-xs-strong-13);
+}
+
+.configSource {
+  color: var(--dsw-alias-label-caption);
+  font: var(--dsw-font-xxxs-11);
+}
+
+.configList {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.configList li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding-bottom: 5px;
+  border-bottom: 1px dashed var(--dsw-alias-border-l2);
+}
+
+.configList span {
+  color: var(--dsw-alias-label-tertiary);
+  font: var(--dsw-font-xxxs-11);
+}
+
+.configList strong {
+  overflow: hidden;
+  color: var(--dsw-alias-label-primary);
+  font: var(--dsw-font-xs-13);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.configWarning {
+  margin: 0;
+  color: var(--dsw-alias-state-error-primary);
+  font: var(--dsw-font-xxxs-11);
+}
+
+.checkboxField {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xxxs-11);
+  line-height: 1.6;
+}
+
+.checkboxField input {
+  margin-top: 2px;
+}
+
+.formNotice {
+  margin: 0;
+  padding: 9px 12px;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-state-success-primary) 35%, transparent);
+  border-radius: var(--dsw-radius-md);
+  color: var(--dsw-alias-state-success-primary);
+  font: var(--dsw-font-xs-13);
+}
+
+.formActionsButtons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.fieldHint[data-kind='error'] {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.fieldHint[data-kind='warning'] {
+  color: var(--dsw-alias-state-warning-primary, var(--dsw-alias-label-tertiary));
+}
+
+.composerHint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composerActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+
+.composerStatus[data-kind='pending'] {
+  color: var(--dsw-alias-state-warning-primary, var(--dsw-alias-label-secondary));
 }
 
 @media (max-width: 900px) {

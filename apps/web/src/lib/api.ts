@@ -9,10 +9,13 @@ import {
   createMessageDataSchema,
   credentialListDataSchema,
   loginVerifyDataSchema,
+  messageDetailDataSchema,
   messageListDataSchema,
   modelListDataSchema,
   registrationVerifyDataSchema,
+  repositoryBranchListDataSchema,
   repositoryListDataSchema,
+  repositoryPreferencesDataSchema,
   revokeSessionDataSchema,
   sessionListDataSchema,
   taskCommandDataSchema,
@@ -25,9 +28,13 @@ import {
   type CreateConversationInput,
   type CreateMessageData,
   type CreateMessageInput,
+  type MessageDetailData,
   type MessageListData,
   type ModelListData,
   type PasskeyCredentialSummary,
+  type RepositoryBranchListData,
+  type RepositoryPreferencesData,
+  type RepositoryPreferencesInput,
   type RepositorySummary,
   type SessionSummary,
   type StartTaskInput,
@@ -53,7 +60,7 @@ export class ApiClientError extends Error {
 }
 
 interface RequestOptions {
-  method?: 'GET' | 'POST' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
   body?: unknown;
 }
 
@@ -170,11 +177,18 @@ export const api = {
   repositories(): Promise<{ repositories: RepositorySummary[] }> {
     return request('/api/v1/repositories', repositoryListDataSchema);
   },
-  conversations(repositoryId: string, limit = 50): Promise<ConversationListData> {
-    return request(
-      `/api/v1/conversations?repositoryId=${encodeURIComponent(repositoryId)}&limit=${limit}`,
-      conversationListDataSchema,
-    );
+  conversations(
+    repositoryId: string,
+    options: { limit?: number; cursor?: string } = {},
+  ): Promise<ConversationListData> {
+    const query = new URLSearchParams({ repositoryId });
+    if (options.limit) {
+      query.set('limit', String(options.limit));
+    }
+    if (options.cursor) {
+      query.set('cursor', options.cursor);
+    }
+    return request(`/api/v1/conversations?${query.toString()}`, conversationListDataSchema);
   },
   createConversation(input: CreateConversationInput): Promise<ConversationDetailData> {
     return request('/api/v1/conversations', conversationDetailDataSchema, {
@@ -187,11 +201,14 @@ export const api = {
   },
   messages(
     id: string,
-    options: { before?: string; limit?: number } = {},
+    options: { before?: string; after?: string; limit?: number } = {},
   ): Promise<MessageListData> {
     const query = new URLSearchParams();
     if (options.before) {
       query.set('before', options.before);
+    }
+    if (options.after) {
+      query.set('after', options.after);
     }
     if (options.limit) {
       query.set('limit', String(options.limit));
@@ -201,6 +218,12 @@ export const api = {
     return request(
       `/api/v1/conversations/${encodeURIComponent(id)}/messages${suffix}`,
       messageListDataSchema,
+    );
+  },
+  message(id: string, messageId: string): Promise<MessageDetailData> {
+    return request(
+      `/api/v1/conversations/${encodeURIComponent(id)}/messages/${encodeURIComponent(messageId)}`,
+      messageDetailDataSchema,
     );
   },
   sendMessage(id: string, input: CreateMessageInput): Promise<CreateMessageData> {
@@ -224,6 +247,28 @@ export const api = {
     return request(
       `/api/v1/repositories/${encodeURIComponent(repositoryId)}/models`,
       modelListDataSchema,
+    );
+  },
+  branches(repositoryId: string): Promise<RepositoryBranchListData> {
+    return request(
+      `/api/v1/repositories/${encodeURIComponent(repositoryId)}/branches`,
+      repositoryBranchListDataSchema,
+    );
+  },
+  preferences(repositoryId: string): Promise<RepositoryPreferencesData> {
+    return request(
+      `/api/v1/repositories/${encodeURIComponent(repositoryId)}/preferences`,
+      repositoryPreferencesDataSchema,
+    );
+  },
+  savePreferences(
+    repositoryId: string,
+    input: RepositoryPreferencesInput,
+  ): Promise<RepositoryPreferencesData> {
+    return request(
+      `/api/v1/repositories/${encodeURIComponent(repositoryId)}/preferences`,
+      repositoryPreferencesDataSchema,
+      { method: 'PUT', body: input },
     );
   },
 };

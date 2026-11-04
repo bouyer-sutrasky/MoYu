@@ -17,6 +17,7 @@ const EXPECTED_TABLES = [
   'owners',
   'passkey_credentials',
   'repositories',
+  'repository_preferences',
   'runtime_cursors',
   'runtime_leases',
   'sessions',
@@ -49,6 +50,7 @@ const EXPECTED_INDEXES = [
   'conversations_owner_client_request_uq',
   'conversations_merged_into_idx',
   'messages_conversation_client_message_uq',
+  'messages_conversation_created_id_idx',
   'messages_id_conversation_uq',
   'messages_conversation_source_event_uq',
   'passkey_credentials_credential_id_uq',
@@ -64,6 +66,7 @@ const EXPECTED_INDEXES = [
   'task_operations_repository_idx',
   'duplicate_tickets_repository_ticket_uq',
   'duplicate_tickets_due_idx',
+  'repository_preferences_owner_repository_uq',
 ];
 
 async function stringColumn(database: TestDatabase, query: ReturnType<typeof sql>, column: string) {

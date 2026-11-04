@@ -8,7 +8,7 @@ import { sql } from 'drizzle-orm';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { migrateDatabase } from '../../src/migrate';
-import { createTestDatabase, type TestDatabase } from './helpers';
+import { createTestDatabaseUpTo, type TestDatabase } from './helpers';
 
 const ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 const FORWARD = path.join(ROOT, 'packages/db/migrations/0008_defer_reply_fk.sql');
@@ -17,7 +17,9 @@ let hash = '';
 const databases: TestDatabase[] = [];
 
 const createDatabase = async (): Promise<TestDatabase> => {
-  const database = await createTestDatabase();
+  // 0008 has to be the latest applied migration for its rollback script, so
+  // build the database at that revision instead of including 0009.
+  const database = await createTestDatabaseUpTo(8);
   databases.push(database);
   return database;
 };

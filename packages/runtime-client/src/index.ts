@@ -1,4 +1,5 @@
 import {
+  bridgeBranchListSchema,
   bridgeCapabilitiesSchema,
   bridgeEventPageSchema,
   bridgeModelListSchema,
@@ -11,6 +12,7 @@ import {
   bridgeTicketSnapshotSchema,
   bridgeTriggerInputSchema,
   bridgeTriggerResultSchema,
+  type BridgeBranchList,
   type BridgeCapabilities,
   type BridgeEventPage,
   type BridgeModelList,
@@ -32,6 +34,7 @@ import type { z } from 'zod';
  * imports upstream superagent code or browser credentials.
  */
 export type {
+  BridgeBranchList,
   BridgeCapabilities,
   BridgeEvent,
   BridgeEventPage,
@@ -100,6 +103,10 @@ export class RuntimeBridgeClient {
 
   async models(signal?: AbortSignal): Promise<BridgeModelList> {
     return this.request('/bridge/v1/models', bridgeModelListSchema, { signal });
+  }
+
+  async branches(signal?: AbortSignal): Promise<BridgeBranchList> {
+    return this.request('/bridge/v1/branches', bridgeBranchListSchema, { signal });
   }
 
   async trigger(input: BridgeTriggerInput, signal?: AbortSignal): Promise<BridgeTriggerResult> {

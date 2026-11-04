@@ -11,6 +11,7 @@ export * from './duplicate-tickets';
 export * from './messages';
 export * from './owners';
 export * from './repositories';
+export * from './repository-preferences';
 export * from './runtime-cursors';
 export * from './runtime-leases';
 export * from './sessions';

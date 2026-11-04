@@ -1,0 +1,151 @@
+{
+  "at": "2026-11-04T14:39:15.961Z",
+  "baseSha": "40e857a9081b281fb3a93ebaea6986e0101f005d",
+  "results": [
+    {
+      "name": "before screenshots",
+      "status": "pass",
+      "detail": "baseline build @ 40e857a"
+    },
+    {
+      "name": "after screenshots",
+      "status": "pass",
+      "detail": "branch build"
+    },
+    {
+      "name": "message history pagination",
+      "status": "pass",
+      "detail": "250 messages across pages, anchored"
+    },
+    {
+      "name": "SSE merge with loaded history",
+      "status": "pass",
+      "detail": "251 messages, no duplicate"
+    },
+    {
+      "name": "task list pagination and repository isolation",
+      "status": "pass",
+      "detail": "124 tasks reachable"
+    },
+    {
+      "name": "delivery and read update in place",
+      "status": "pass",
+      "detail": "stored -> delivered -> read through the real dispatcher and SSE"
+    },
+    {
+      "name": "out-of-order delivery responses",
+      "status": "pass",
+      "detail": "held delivered response cannot overwrite read after a switch round-trip"
+    },
+    {
+      "name": "SSE during initial load",
+      "status": "pass",
+      "detail": "held first-page response, event arrived, catch-up showed it once"
+    },
+    {
+      "name": "draft isolation, refresh and clear",
+      "status": "pass",
+      "detail": "owner/repo/conversation keys"
+    },
+    {
+      "name": "edit during send",
+      "status": "pass",
+      "detail": "newer draft kept, old text sent to the captured conversation"
+    },
+    {
+      "name": "switch conversation during send",
+      "status": "pass",
+      "detail": "request stays on its captured conversation"
+    },
+    {
+      "name": "ambiguous response retry",
+      "status": "pass",
+      "detail": "same clientMessageId, one stored message"
+    },
+    {
+      "name": "cleared and retyped draft is not cleared by the old response",
+      "status": "pass",
+      "detail": "same text, new draft lineage, input preserved"
+    },
+    {
+      "name": "edit then explicit failure restores both",
+      "status": "pass",
+      "detail": "old body retried by key; newer edit restored after success and refresh"
+    },
+    {
+      "name": "edit then ambiguous failure restores both",
+      "status": "pass",
+      "detail": "new edit deferred across retry; old body not duplicated"
+    },
+    {
+      "name": "per-conversation send state and late finally",
+      "status": "pass",
+      "detail": "A/B stay independently locked; A finishing does not unlock B"
+    },
+    {
+      "name": "merge carries edited draft",
+      "status": "pass",
+      "detail": "newer source draft appears in the merged target and survives refresh"
+    },
+    {
+      "name": "merge preserves an existing target draft",
+      "status": "pass",
+      "detail": "target and source text are joined, neither is overwritten"
+    },
+    {
+      "name": "merge with a target send in flight",
+      "status": "pass",
+      "detail": "B keeps its key; deferred + newer edit promoted after B settles and refresh"
+    },
+    {
+      "name": "identical source and target text stay separate drafts",
+      "status": "pass",
+      "detail": "source identity survives B settling; one row; text restored after refresh"
+    },
+    {
+      "name": "merge with a lost target response",
+      "status": "pass",
+      "detail": "identical source text survives B retry by original key, one row, refresh"
+    },
+    {
+      "name": "restored deferred edit survives merge retry",
+      "status": "pass",
+      "detail": "abort-before-server, restore pending, retry URL by key; Y moves to target"
+    },
+    {
+      "name": "deferred edit survives committed-but-lost merge",
+      "status": "pass",
+      "detail": "response lost after commit; retry by key restores Y without duplicate URL"
+    },
+    {
+      "name": "alias does not confirm a later pending send",
+      "status": "pass",
+      "detail": "B pending + source M pending; M parked with its key, survived refresh, retried once"
+    },
+    {
+      "name": "old pending URL parks without duplicate",
+      "status": "pass",
+      "detail": "alias keeps source URL key; target B settles, URL retry is idempotent"
+    },
+    {
+      "name": "merge while switching conversation",
+      "status": "pass",
+      "detail": "late merge result leaves the new conversation input untouched"
+    },
+    {
+      "name": "two concurrent sends and a late response",
+      "status": "pass",
+      "detail": "merged target keeps its draft while the other send settles"
+    },
+    {
+      "name": "repository preferences",
+      "status": "pass",
+      "detail": "save/restore/isolation/invalid branch/model/frozen task"
+    },
+    {
+      "name": "M4 regression and copy",
+      "status": "pass",
+      "detail": "stopped/resume, GitHub import, delivery read, M5 copy"
+    }
+  ]
+}

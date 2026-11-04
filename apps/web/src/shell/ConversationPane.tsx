@@ -33,6 +33,9 @@ interface ConversationPaneProps {
   messages: Message[];
   messagesStatus: LoadStatus;
   messagesError: string | null;
+  messagesHasMoreOlder: boolean;
+  messagesOlderStatus: 'idle' | 'loading' | 'error';
+  messagesOlderError: string | null;
   progress: ProgressEntry[];
   creatingTask: boolean;
   taskCommandBusy: boolean;
@@ -40,6 +43,8 @@ interface ConversationPaneProps {
   onTaskCommand: (action: 'start' | 'stop' | 'resume' | 'retry') => void;
   onRetryConversation: () => void;
   onRetryMessages: () => void;
+  onLoadOlderMessages: () => void;
+  onRetryOlderMessages: () => void;
   onOpenDetails: () => void;
   onNewTask: () => void;
   onCancelNewTask: () => void;
@@ -79,6 +84,7 @@ function MessageItem({ message }: { message: Message }) {
           styles.messageBubble,
           inbound ? styles.messageBubbleInbound : styles.messageBubbleOutbound,
         )}
+        data-message-id={message.id}
       >
         <header className={styles.messageMeta}>
           <span className={styles.messageAuthor}>
@@ -102,6 +108,9 @@ export function ConversationPane({
   messages,
   messagesStatus,
   messagesError,
+  messagesHasMoreOlder,
+  messagesOlderStatus,
+  messagesOlderError,
   progress,
   creatingTask,
   taskCommandBusy,
@@ -109,6 +118,8 @@ export function ConversationPane({
   onTaskCommand,
   onRetryConversation,
   onRetryMessages,
+  onLoadOlderMessages,
+  onRetryOlderMessages,
   onOpenDetails,
   onNewTask,
   onCancelNewTask,
@@ -144,7 +155,8 @@ export function ConversationPane({
           <p className={styles.heroEyebrow}>Work 模式</p>
           <h1 className={styles.heroTitle}>先选择一个仓库</h1>
           <p className={styles.heroLead}>
-            仓库列表来自服务端真实数据。选择仓库后可以查看已有会话或新建任务；添加仓库与实例准备在后续阶段接入。
+            仓库列表来自服务端真实数据。选择仓库后可以查看已有会话或新建任务。网页添加仓库、实例调度与资源控制将在
+            M5 接入；当前只使用已配置的仓库。
           </p>
           <span className={styles.phasePill}>没有可用仓库</span>
         </div>
@@ -394,6 +406,30 @@ export function ConversationPane({
       ) : null}
 
       <section className={styles.messageList} aria-label="会话消息">
+        {messagesHasMoreOlder || messagesOlderStatus === 'error' ? (
+          <div className={styles.historyControl}>
+            {messagesOlderStatus === 'error' ? (
+              <>
+                <span>更早消息加载失败：{messagesOlderError ?? '请重试'}</span>
+                <button type="button" className={styles.textButton} onClick={onRetryOlderMessages}>
+                  重试加载更早消息
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className={styles.historyButton}
+                onClick={onLoadOlderMessages}
+                disabled={messagesOlderStatus === 'loading'}
+              >
+                {messagesOlderStatus === 'loading' ? '正在加载更早消息…' : '加载更早消息'}
+              </button>
+            )}
+          </div>
+        ) : messages.length > 0 && messagesStatus === 'ready' ? (
+          <p className={styles.historyEnd}>已显示全部消息</p>
+        ) : null}
+
         {messagesStatus === 'loading' && messages.length === 0 ? (
           <p className={styles.paneHint} aria-busy="true">
             正在读取消息…

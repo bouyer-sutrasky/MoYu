@@ -43,7 +43,23 @@ export default tseslint.config(
       globals: {
         window: 'readonly',
         document: 'readonly',
+        localStorage: 'readonly',
         EventSource: 'readonly',
+        fetch: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        URL: 'readonly',
+        Buffer: 'readonly',
+      },
+    },
+  },
+  {
+    files: ['scripts/m4ux/e2e.mjs', 'scripts/m4ux/runtime-evidence.mjs'],
+    languageOptions: {
+      globals: {
+        window: 'readonly',
+        document: 'readonly',
+        localStorage: 'readonly',
         fetch: 'readonly',
         setTimeout: 'readonly',
         clearTimeout: 'readonly',

@@ -1,0 +1,244 @@
+diff --git a/docs/007-architecture.md b/docs/007-architecture.md
+index cadd548..12b62a4 100644
+--- a/docs/007-architecture.md
++++ b/docs/007-architecture.md
+@@ -343,7 +343,7 @@ Some generic modules still refer directly to GitHub or Feishu:
+ | `src/app/tools/main.ts` | The main Session's tools |
+ | `src/app/tools/executor.ts` | An Executor Session's tools |
+ | `src/app/http.ts` | The `/orchestrator/api` routes: the same-origin check, request limits and one status per kind of failure |
+-| `src/app/bridge.ts` | The machine Bridge of the MoYu platform: its loopback server and bearer check, `POST /bridge/v1/triggers` (repository, mode, model and base commit checks, and `targetTicketId` attachment to an existing Ticket), the pause/resume/start/retry operations and `GET /bridge/v1/operations/:id`, `GET /bridge/v1/{capabilities,models,events,tickets}`, the `EventLog` under `<stateDir>/bridge/events.jsonl` with fsynced append-only events, `projectTicketState`, the one-time `ticket.imported` event of a GitHub-origin Ticket, and the once-a-second projection of stored Tickets and worker `task.progress` |
++| `src/app/bridge.ts` | The machine Bridge of the MoYu platform: its loopback server and bearer check, `POST /bridge/v1/triggers` (repository, mode, model and base commit checks, and `targetTicketId` attachment to an existing Ticket), the pause/resume/start/retry operations and `GET /bridge/v1/operations/:id`, `GET /bridge/v1/{capabilities,models,branches,events,tickets}`, the `EventLog` under `<stateDir>/bridge/events.jsonl` with fsynced append-only events, `projectTicketState`, the one-time `ticket.imported` event of a GitHub-origin Ticket, and the once-a-second projection of stored Tickets and worker `task.progress` |
+ | `src/app/operations.ts` | `OperationLog`, the fsynced append-only log of machine operations under `<stateDir>/bridge/operations.jsonl`, its latest record per operation id, and the queued or running operations the Bridge settles from Ticket state |
+ | `src/app/api.ts` | `Api`, every route with its parameters, query, body and response, and the filters of the lists; it imports only types, so the panel bundles it |
+ | `src/app/views/text.ts` | The two forms of a view's text: `preview`, plain text on one line, and `markdown` without HTML; `plain` and `readable` |
+@@ -417,6 +417,7 @@ Some generic modules still refer directly to GitHub or Feishu:
+ | `tests/discussion.spec.ts` | Discussion mode: the read-only tool allow-list and permission preset, the read-only worktree boundary and refusal of local tools such as subagent, the work tools and `danger-full-access` for execute, replacing the restriction when the mode changes, the discussion assignment text, and `discussing` state projection |
+ | `tests/pause.spec.ts` | A human pause and resume: Inputs and attention kept, the Executor pause, `stoppedAt` evidence and failures, resume admission and ticket identity, starting a discuss plan, non-retryability, and `DshExecutor.pause` stopping jobs with its evidence |
+ | `tests/bridge-control.spec.ts` | M4 execution control: the operation log across a reopen, pause/resume/start/retry endpoints and their 202/404/409/422 answers, idempotency, settlement from Ticket state, operation persistence across a Bridge restart, the M4 ticket snapshot, `targetTicketId` attach/conflict/ended cases, `ticket.paused` events, and one-time GitHub `ticket.imported` events |
++| `tests/bridge-branches.spec.ts` | The read-only branch list: the sorted 200 shape and `branches` capability, one page versus pagination, the ten-page `hasMore` cap, repository-scoped `commands.api` paths, a CLI failure as 503, malformed data as 502, and bearer auth |
+ | `tests/process-tree.spec.ts` | The harness process tree used as stop evidence: a live child PID and its command, and its disappearance after exit |
+ | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
+ | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
+diff --git a/src/app/bridge.ts b/src/app/bridge.ts
+index 55d9b1e..c7740a5 100644
+--- a/src/app/bridge.ts
++++ b/src/app/bridge.ts
+@@ -254,6 +254,11 @@ const TriggerRequestSchema = z.object({
+ }).strict()
+ type TriggerRequest = z.infer<typeof TriggerRequestSchema>
+ const CommitSchema = z.object({ sha: z.string().min(1) })
++/** One branch of `GET /bridge/v1/branches`; a branch without a head sha still lists, with an empty commit. */
++const BranchSchema = z.object({ name: z.string().trim().min(1), commit: z.object({ sha: z.string().nullish() }).nullish() })
++const BRANCH_PAGE_SIZE = 100
++const BRANCH_MAX_PAGES = 10
++const byBranchName = (a: { name: string }, b: { name: string }): number => a.name.localeCompare(b.name)
+ 
+ /** Builds the stable workspace Trigger the Router delivers; the resolved `baseCommit` replaces the request's. */
+ /** The base commit a stored workspace Trigger froze; null only for legacy rows without a spec. */
+@@ -560,6 +565,7 @@ export class Bridge {
+       const [, , name, ...rest] = segments
+       if (name === 'capabilities' && req.method === 'GET' && rest.length === 0) return this.capabilities(res)
+       if (name === 'models' && req.method === 'GET' && rest.length === 0) return await this.models(res)
++      if (name === 'branches' && req.method === 'GET' && rest.length === 0) return await this.branchesRoute(res)
+       if (name === 'triggers' && req.method === 'POST' && rest.length === 0) return await this.triggers(req, res)
+       if (name === 'events' && req.method === 'GET' && rest.length === 0) return this.eventsRoute(url, res)
+       if (name === 'tickets' && rest.length === 1 && req.method === 'GET') return this.ticket(decodeURIComponent(rest[0]!), res)
+@@ -586,7 +592,8 @@ export class Bridge {
+     json(res, 200, {
+       protocolVersion: PROTOCOL_VERSION,
+       upstream: { ...UPSTREAM },
+-      capabilities: { trigger: true, events: true, tickets: true, models: true, pause: true, resume: true, retry: true, readOnlyDiscussion: true, start: true },
++      capabilities: { trigger: true, events: true, tickets: true, models: true, branches: true, pause: true, resume: true, retry: true,
++        readOnlyDiscussion: true, start: true },
+       source: { kind: 'workspace', enabled: this.host.workspaceEnabled() },
+     })
+   }
+@@ -597,6 +604,40 @@ export class Bridge {
+       displayName: model.name, reasoningEfforts: model.reasoning?.efforts.map(effort => effort.id) ?? [] }))) })
+   }
+ 
++  /**
++   * `GET /bridge/v1/branches`: the configured repository's branches, for validating a selection and detecting a deleted
++   * branch. Reads 100 a page and stops at a short page; ten full pages report `hasMore` instead of reading without
++   * bound. A GitHub CLI failure is a 503 and a malformed answer a 502, so the platform can tell an unavailable
++   * repository from a broken one. This only reads.
++   */
++  private async branchesRoute(res: ServerResponse): Promise<void> {
++    const branches: { name: string; commit: string }[] = []
++    let hasMore = false
++    for (let page = 1; page <= BRANCH_MAX_PAGES; page += 1) {
++      let items: unknown[]
++      try {
++        const answer = await this.host.commands.api(z.array(z.unknown()), `branches?per_page=${BRANCH_PAGE_SIZE}&page=${page}`)
++        // The host parses with the schema above; re-check the shape so a host that does not still gets a 502, not a 500.
++        if (!Array.isArray(answer)) return json(res, 502, { error: 'The branch list is malformed' })
++        items = answer
++      } catch (error) {
++        // The CLI's own failure is temporary; an unparsable answer is a broken upstream contract.
++        if (error instanceof z.ZodError || error instanceof SyntaxError) return json(res, 502, { error: 'The branch list is malformed' })
++        return json(res, 503, { error: `The branch list is unavailable: ${errorText(error).slice(0, 200)}` })
++      }
++      const parsed = items.flatMap(item => {
++        const branch = BranchSchema.safeParse(item)
++        return branch.success ? [{ name: branch.data.name, commit: branch.data.commit?.sha || '' }] : []
++      })
++      // A page with entries but no usable branch answered something other than branches.
++      if (parsed.length === 0 && items.length > 0) return json(res, 502, { error: 'The branch list is malformed' })
++      branches.push(...parsed)
++      if (items.length < BRANCH_PAGE_SIZE) break
++      if (page === BRANCH_MAX_PAGES) hasMore = true
++    }
++    json(res, 200, { branches: branches.sort(byBranchName), hasMore })
++  }
++
+   /** One operation's state as `GET /bridge/v1/operations/:id` returns it. */
+   private operation(id: string, res: ServerResponse): void {
+     const operation = this.operations.get(id)
+diff --git a/tests/bridge-branches.spec.ts b/tests/bridge-branches.spec.ts
+new file mode 100644
+index 0000000..40a8a44
+--- /dev/null
++++ b/tests/bridge-branches.spec.ts
+@@ -0,0 +1,142 @@
++import { afterEach, describe, expect, it, vi } from 'vitest'
++import { mkdtempSync, rmSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import { MemoryRepositories } from '../src/core/index.ts'
++import { Bridge, type BridgeHost } from '../src/app/bridge.ts'
++import { testDeployment } from './fixtures/deployment.ts'
++
++const MODEL = { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash', reasoningEffort: 'high' }
++const stateDirs: string[] = []
++const bridges: Bridge[] = []
++afterEach(async () => {
++  await Promise.all(bridges.splice(0).map(bridge => bridge.stop()))
++  for (const dir of stateDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
++})
++const stateDir = (): string => {
++  const dir = mkdtempSync(join(tmpdir(), 'bridge-branches-'))
++  stateDirs.push(dir)
++  return dir
++}
++
++type Api = (schema: unknown, path: string) => Promise<unknown>
++interface Harness {
++  host: BridgeHost
++  commands: { api: ReturnType<typeof vi.fn> }
++}
++function harness(api: Api): Harness {
++  const repo = new MemoryRepositories()
++  const commands = { api: vi.fn(api) }
++  const host: BridgeHost = {
++    stateDir: stateDir(), store: repo, commands: commands as never,
++    engine: { pauseTicket: vi.fn(), resumeTicket: vi.fn(), startTicket: vi.fn(), retryTicket: vi.fn() } as never,
++    configured: () => true, deployment: testDeployment(),
++    receive: trigger => { repo.triggers.save(trigger); return 'stored' },
++    models: async () => ({ default: { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash' },
++      routableProviders: ['commandcode'], groups: [], failures: [] }),
++    verifyModel: async () => {},
++    executorModel: () => MODEL,
++    workspaceEnabled: () => true,
++    subscribeSessionEvents: () => () => {},
++  }
++  return { host, commands }
++}
++
++let token = 'bridge-token'
++/** Starts a Bridge on an ephemeral loopback port and returns a request helper with the machine bearer. */
++async function serve(h: Harness) {
++  const bridge = new Bridge(h.host)
++  bridges.push(bridge)
++  await bridge.start({ MOYU_BRIDGE_HOST: '127.0.0.1', MOYU_BRIDGE_PORT: '0', MOYU_BRIDGE_TOKEN: token })
++  const origin = `http://127.0.0.1:${bridge.boundPort}`
++  const call = async (method: string, path: string, headers: Record<string, string> = { authorization: `Bearer ${token}` }) => {
++    const response = await fetch(`${origin}${path}`, { method, headers })
++    return { status: response.status, body: await response.json() as Record<string, unknown> }
++  }
++  return { call }
++}
++
++const branch = (name: string, sha = `sha-${name}`) => ({ name, commit: { sha } })
++const names = (prefix: string, count: number): string[] => Array.from({ length: count }, (_, index) => `${prefix}${String(index).padStart(3, '0')}`)
++
++describe('GET /bridge/v1/branches', () => {
++  it('lists one page sorted by name with the head sha, and advertises the capability', async () => {
++    const h = harness(async () => [
++      { name: 'release', commit: { sha: 'sha-release' }, protected: true },
++      { name: 'main', commit: { sha: 'sha-main' } },
++      { name: 'feature/x', commit: { sha: 'sha-feature' } },
++      { name: 'no-head', commit: null },
++      { name: 'no-sha', commit: { sha: null } },
++    ])
++    const { call } = await serve(h)
++    expect(await call('GET', '/bridge/v1/branches')).toEqual({ status: 200, body: { branches: [
++      { name: 'feature/x', commit: 'sha-feature' },
++      { name: 'main', commit: 'sha-main' },
++      { name: 'no-head', commit: '' },
++      { name: 'no-sha', commit: '' },
++      { name: 'release', commit: 'sha-release' },
++    ], hasMore: false } })
++    // The host's `api` prefixes the configured repository; the Bridge itself only asks for branch pages.
++    expect(h.commands.api).toHaveBeenCalledTimes(1)
++    expect(h.commands.api).toHaveBeenCalledWith(expect.anything(), 'branches?per_page=100&page=1')
++    expect(await call('GET', '/bridge/v1/capabilities')).toMatchObject({ status: 200, body: { capabilities: {
++      trigger: true, events: true, tickets: true, models: true, branches: true, pause: true, resume: true, retry: true,
++      readOnlyDiscussion: true, start: true } } })
++  })
++
++  it('reads two pages while the first is full and stops at the short second page', async () => {
++    const first = names('branch-', 100).map(name => branch(name))
++    const second = [branch('zeta'), branch('zulu')]
++    const h = harness(async (_schema, path) => path === 'branches?per_page=100&page=1' ? first : second)
++    const { call } = await serve(h)
++    const response = await call('GET', '/bridge/v1/branches')
++    expect(response.status).toBe(200)
++    const body = response.body as { branches: { name: string; commit: string }[]; hasMore: boolean }
++    expect(body.hasMore).toBe(false)
++    expect(body.branches).toHaveLength(102)
++    expect(body.branches[0]).toEqual({ name: 'branch-000', commit: 'sha-branch-000' })
++    expect(body.branches.at(-1)).toEqual({ name: 'zulu', commit: 'sha-zulu' })
++    expect(h.commands.api.mock.calls.map(call => call[1])).toEqual([
++      'branches?per_page=100&page=1',
++      'branches?per_page=100&page=2',
++    ])
++  })
++
++  it('stops after ten full pages and reports hasMore instead of reading without bound', async () => {
++    const h = harness(async (_schema, path) => {
++      const page = new URLSearchParams(path.split('?')[1]).get('page')!
++      return names(`page-${page}-`, 100).map(name => branch(name))
++    })
++    const { call } = await serve(h)
++    const response = await call('GET', '/bridge/v1/branches')
++    expect(response.status).toBe(200)
++    expect(response.body).toMatchObject({ hasMore: true })
++    expect((response.body.branches as unknown[]).length).toBe(1000)
++    expect(h.commands.api).toHaveBeenCalledTimes(10)
++    expect(h.commands.api.mock.calls.at(-1)![1]).toBe('branches?per_page=100&page=10')
++  })
++
++  it('answers 503, not 500, when the GitHub CLI fails', async () => {
++    const h = harness(async () => { throw new Error('gh: Not Found (HTTP 404)') })
++    const { call } = await serve(h)
++    expect(await call('GET', '/bridge/v1/branches')).toEqual({ status: 503, body: {
++      error: 'The branch list is unavailable: gh: Not Found (HTTP 404)' } })
++  })
++
++  it('answers 502 for malformed or absent data', async () => {
++    for (const malformed of [null, { branches: [] }, [{ name: '', commit: { sha: 'sha-empty' } }]]) {
++      const h = harness(async () => malformed)
++      const { call } = await serve(h)
++      expect(await call('GET', '/bridge/v1/branches')).toEqual({ status: 502, body: { error: 'The branch list is malformed' } })
++    }
++  })
++
++  it('requires the machine bearer', async () => {
++    const h = harness(async () => [])
++    const { call } = await serve(h)
++    expect(await call('GET', '/bridge/v1/branches', {})).toEqual({ status: 401, body: { error: 'Unauthorized' } })
++    expect(await call('GET', '/bridge/v1/branches', { authorization: 'Bearer wrong' }))
++      .toEqual({ status: 401, body: { error: 'Unauthorized' } })
++    expect(h.commands.api).not.toHaveBeenCalled()
++  })
++})

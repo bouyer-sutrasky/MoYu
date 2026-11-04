@@ -22,6 +22,10 @@ interface SidebarProps {
   conversations: ConversationSummary[];
   conversationsStatus: LoadStatus;
   conversationsError: string | null;
+  conversationsHasMore: boolean;
+  conversationsMoreStatus: 'idle' | 'loading' | 'error';
+  conversationsMoreError: string | null;
+  onLoadMoreConversations: () => void;
   selectedConversationId: string | null;
   onSelectConversation: (id: string) => void;
   onReloadConversations: () => void;
@@ -48,6 +52,10 @@ export function Sidebar({
   conversations,
   conversationsStatus,
   conversationsError,
+  conversationsHasMore,
+  conversationsMoreStatus,
+  conversationsMoreError,
+  onLoadMoreConversations,
   selectedConversationId,
   onSelectConversation,
   onReloadConversations,
@@ -134,7 +142,7 @@ export function Sidebar({
           <div className={styles.emptyCard}>
             <Icon name="cloud" />
             <p>尚未添加仓库</p>
-            <span>仓库添加与实例准备在 M4 接入。</span>
+            <span>网页新增仓库、实例调度与资源控制将在 M5 接入；当前使用已配置仓库。</span>
           </div>
         ) : (
           <label className={styles.repositorySelect}>
@@ -153,10 +161,15 @@ export function Sidebar({
           </label>
         )}
 
-        <button type="button" className={styles.disabledAction} disabled title="仓库添加在 M4 接入">
+        <button
+          type="button"
+          className={styles.disabledAction}
+          disabled
+          title="网页添加仓库、实例调度与资源控制在 M5 接入；请先在服务端完成仓库配置"
+        >
           <Icon name="plus" size={15} />
           添加仓库
-          <span className={styles.phaseTag}>M4</span>
+          <span className={styles.phaseTag}>M5</span>
         </button>
       </section>
 
@@ -209,6 +222,7 @@ export function Sidebar({
                     )}
                     onClick={() => onSelectConversation(conversation.id)}
                     aria-current={conversation.id === selectedConversationId ? 'true' : undefined}
+                    data-conversation-id={conversation.id}
                   >
                     <span className={styles.conversationItemTop}>
                       <span className={styles.conversationTitle}>
@@ -227,6 +241,32 @@ export function Sidebar({
             })}
           </ul>
         )}
+
+        {conversationsHasMore || conversationsMoreStatus === 'error' ? (
+          <div className={styles.sectionMore}>
+            {conversationsMoreStatus === 'error' ? (
+              <>
+                <p>{conversationsMoreError ?? '加载更多任务失败'}</p>
+                <button
+                  type="button"
+                  className={styles.textButton}
+                  onClick={onLoadMoreConversations}
+                >
+                  重试
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className={styles.textButton}
+                onClick={onLoadMoreConversations}
+                disabled={conversationsMoreStatus === 'loading'}
+              >
+                {conversationsMoreStatus === 'loading' ? '正在加载更多任务…' : '加载更多任务'}
+              </button>
+            )}
+          </div>
+        ) : null}
 
         <button
           type="button"

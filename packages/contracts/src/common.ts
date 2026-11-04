@@ -17,3 +17,10 @@ export const isoTimestampSchema = z.string().refine((value) => !Number.isNaN(Dat
 export const eventSeqSchema = z.string().regex(/^(0|[1-9][0-9]*)$/, {
   message: 'must be a decimal string without leading zeros',
 });
+
+/**
+ * An opaque keyset-pagination cursor. Clients pass a server-returned cursor
+ * back unchanged; the encoding is deliberately not public so a timestamp
+ * alone never has to identify a page boundary when rows share it.
+ */
+export const pageCursorSchema = z.string().min(1).max(512);

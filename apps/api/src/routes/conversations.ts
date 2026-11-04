@@ -1,19 +1,24 @@
 import { createHash } from 'node:crypto';
 
-import { and, desc, eq, inArray, isNull, lt } from 'drizzle-orm';
-import type { FastifyInstance } from 'fastify';
+import { and, asc, desc, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
+import type { FastifyBaseLogger, FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import {
   artifactListDataSchema,
   conversationDetailDataSchema,
   conversationListDataSchema,
+  conversationListQuerySchema,
   createConversationInputSchema,
   createMessageDataSchema,
   createMessageInputSchema,
   githubRequirementsIn,
+  messageDetailDataSchema,
   messageListDataSchema,
+  messageListQuerySchema,
   modelListDataSchema,
+  uuidSchema,
   type ConversationSummary,
+  type MessageListQuery,
   type ModelOption,
 } from '@moyu/contracts';
 import {
@@ -34,9 +39,16 @@ import type { Authenticate } from '../auth/guards';
 import type { ApiConfig } from '../config';
 import { toConversationSummary, toMessage } from '../domain/serialize';
 import { ensureConfiguredRepository, findOwnedRepository } from '../domain/repositories';
+import {
+  advertisesBranches,
+  assertBranchAvailable,
+  assertModelAvailable,
+  bridgeClientIfConfigured,
+} from '../domain/runtime-selection';
 import { appendEvent, type DatabaseTransaction } from '../events/append';
 import { eventToWorkspaceEvent } from '../events/format';
 import type { AppEventBus } from '../events/bus';
+import { decodeCursorValue, encodeCursorValue } from '../lib/cursor';
 import { ApiProblem } from '../lib/errors';
 import { parseInput, sendData } from '../lib/http';
 import { isUniqueViolation, postgresError } from '../lib/pg';
@@ -50,7 +62,7 @@ export interface ConversationRouteDependencies {
 }
 
 const MESSAGE_PAGE_DEFAULT = 100;
-const MESSAGE_PAGE_MAX = 200;
+const CONVERSATION_PAGE_DEFAULT = 50;
 
 function conversationFingerprint(input: {
   repositoryId: string;
@@ -86,23 +98,23 @@ async function loadConversationRow(
   ownerId: string,
   conversationId: string,
 ): Promise<{ conversation: typeof conversations.$inferSelect; task: TaskLink | null }> {
-  const [conversation] = await database
-    .select()
+  // Read the conversation, its task and its merge alias in one statement. Two
+  // statements could observe the task before a concurrent merge deletes it and
+  // then a conversation row that already moved to the alias (or vice versa),
+  // producing a false "no task" conflict for a retried message.
+  const [row] = await database
+    .select({ conversation: conversations, task: taskLinks })
     .from(conversations)
+    .leftJoin(taskLinks, eq(taskLinks.conversationId, conversations.id))
     .where(and(eq(conversations.id, conversationId), eq(conversations.ownerId, ownerId)))
     .limit(1);
-  if (!conversation) {
+  if (!row) {
     throw ApiProblem.notFound('Conversation not found');
   }
-  if (conversation.mergedIntoConversationId) {
-    return loadConversationRow(database, ownerId, conversation.mergedIntoConversationId);
+  if (row.conversation.mergedIntoConversationId) {
+    return loadConversationRow(database, ownerId, row.conversation.mergedIntoConversationId);
   }
-  const [task] = await database
-    .select()
-    .from(taskLinks)
-    .where(eq(taskLinks.conversationId, conversation.id))
-    .limit(1);
-  return { conversation, task: task ?? null };
+  return { conversation: row.conversation, task: row.task ?? null };
 }
 
 async function taskByConversation(
@@ -172,36 +184,183 @@ async function assertReplyTargetBelongsToConversation(
   }
 }
 
+/**
+ * Renders the database timestamp with its full microsecond precision. The API
+ * cursor must carry the exact boundary PostgreSQL compares against; a `Date`
+ * would silently truncate to milliseconds and break ties inside one millisecond.
+ */
+const messageCursorTimestamp = sql<string>`to_char(${messages.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
+const conversationCursorTimestamp = sql<string>`to_char(${conversations.updatedAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
+
+function messageCursor(conversationId: string, timestamp: string, id: string): string {
+  return encodeCursorValue({
+    kind: 'message',
+    scope: conversationId,
+    timestamp,
+    id,
+  });
+}
+
+interface MessagePage {
+  messages: MessageRow[];
+  deliveriesById: Map<string, Delivery>;
+  nextCursor: string | null;
+  newerCursor: string | null;
+  hasMore: boolean;
+  hasNewer: boolean;
+}
+
+/**
+ * Keyset pagination over `(created_at, id)`. A page boundary carries the id as
+ * well as the timestamp, so messages that share a timestamp are neither skipped
+ * nor repeated. A legacy timestamp-only cursor still compares strictly on the
+ * timestamp, which is the behaviour older clients were written against.
+ */
 async function loadMessages(
   database: Database,
   conversationId: string,
-  before: string | undefined,
-  limit: number,
-): Promise<{ messages: MessageRow[]; deliveriesById: Map<string, Delivery>; hasMore: boolean }> {
+  query: MessageListQuery,
+): Promise<MessagePage> {
+  const limit = query.limit ?? MESSAGE_PAGE_DEFAULT;
+  const newer = query.after !== undefined;
+  const boundary = query.after ?? query.before;
+
+  let where;
+  let order;
+  if (newer) {
+    const position = decodeCursorValue(boundary ?? '', {
+      kind: 'message',
+      scope: conversationId,
+    });
+    const keyset =
+      position.id === null
+        ? sql`${messages.createdAt} > ${position.timestamp}::timestamptz`
+        : sql`(${messages.createdAt} > ${position.timestamp}::timestamptz OR (${messages.createdAt} = ${position.timestamp}::timestamptz AND ${messages.id} > ${position.id}::uuid))`;
+    where = and(eq(messages.conversationId, conversationId), keyset);
+    order = [asc(messages.createdAt), asc(messages.id)];
+  } else if (query.before !== undefined) {
+    const position = decodeCursorValue(query.before, {
+      kind: 'message',
+      scope: conversationId,
+    });
+    const keyset =
+      position.id === null
+        ? sql`${messages.createdAt} < ${position.timestamp}::timestamptz`
+        : sql`(${messages.createdAt} < ${position.timestamp}::timestamptz OR (${messages.createdAt} = ${position.timestamp}::timestamptz AND ${messages.id} < ${position.id}::uuid))`;
+    where = and(eq(messages.conversationId, conversationId), keyset);
+    order = [desc(messages.createdAt), desc(messages.id)];
+  } else {
+    where = eq(messages.conversationId, conversationId);
+    order = [desc(messages.createdAt), desc(messages.id)];
+  }
+
   const rows = await database
-    .select({ message: messages, delivery: deliveries })
+    .select({ message: messages, delivery: deliveries, cursorTimestamp: messageCursorTimestamp })
     .from(messages)
     .leftJoin(deliveries, eq(deliveries.messageId, messages.id))
-    .where(
-      before
-        ? and(eq(messages.conversationId, conversationId), lt(messages.createdAt, new Date(before)))
-        : eq(messages.conversationId, conversationId),
-    )
-    .orderBy(desc(messages.createdAt), desc(messages.id))
+    .where(where)
+    .orderBy(...order)
     .limit(limit + 1);
 
-  const page = rows.slice(0, limit).reverse();
+  const hasExtra = rows.length > limit;
+  const page = rows.slice(0, limit);
+  if (!newer) {
+    // Fetched newest first for the SQL limit; the API always returns ascending.
+    page.reverse();
+  }
   const deliveriesById = new Map<string, Delivery>();
   for (const row of page) {
     if (row.delivery) {
       deliveriesById.set(row.message.id, row.delivery);
     }
   }
+  const oldest = page[0] ?? null;
+  const newest = page[page.length - 1] ?? null;
   return {
     messages: page.map((row) => row.message),
     deliveriesById,
-    hasMore: rows.length > limit,
+    nextCursor:
+      !newer && hasExtra && oldest
+        ? messageCursor(conversationId, oldest.cursorTimestamp, oldest.message.id)
+        : null,
+    newerCursor: newest
+      ? messageCursor(conversationId, newest.cursorTimestamp, newest.message.id)
+      : null,
+    hasMore: !newer && hasExtra,
+    hasNewer: newer && hasExtra,
   };
+}
+
+/**
+ * Best-effort creation-time verification. A missing Bridge binding or an
+ * unreachable runtime is skipped, because existing deployments must keep
+ * creating conversations and the runtime checks the selection again on first
+ * delivery. When the runtime answers, an unknown branch or model is a 422: the
+ * API never silently falls back to a different selection.
+ */
+async function verifyConversationSelection(
+  config: ApiConfig,
+  repository: Parameters<typeof createBridgeClient>[1],
+  input: {
+    baseBranch: string;
+    model?: { provider: string; model: string; reasoningEffort?: string | null } | null;
+  },
+  log: FastifyBaseLogger,
+): Promise<void> {
+  const bridge = bridgeClientIfConfigured(config, repository);
+  if (!bridge) {
+    return;
+  }
+
+  let catalog;
+  let capabilities;
+  try {
+    [catalog, capabilities] = await Promise.all([bridge.models(), bridge.capabilities()]);
+  } catch (error) {
+    log.warn({ err: error, event: 'bridge.selection_unverified' }, 'runtime selection unverified');
+    return;
+  }
+
+  if (input.model) {
+    assertModelAvailable(catalog, input.model);
+  }
+  if (advertisesBranches(capabilities)) {
+    let branches;
+    try {
+      branches = await bridge.branches();
+    } catch (error) {
+      log.warn(
+        { err: error, event: 'bridge.branch_selection_unverified' },
+        'runtime branch selection unverified',
+      );
+      return;
+    }
+    assertBranchAvailable(branches, input.baseBranch);
+  }
+}
+
+async function sendExistingConversation(
+  database: Database,
+  reply: FastifyReply,
+  request: FastifyRequest,
+  existing: typeof conversations.$inferSelect,
+  fingerprint: string,
+) {
+  if (existing.requestFingerprint !== fingerprint) {
+    throw ApiProblem.conflict(
+      'clientRequestId was already used for a different conversation request',
+    );
+  }
+  const task = await taskByConversation(database, existing.id);
+  const operation = task ? await latestOperation(database, task.id) : null;
+  return sendData(
+    reply,
+    request,
+    conversationDetailDataSchema.parse({
+      conversation: toConversationSummary(existing, task, existing.title, operation),
+    }),
+    200,
+  );
 }
 
 /** Inserts one inbound message, its delivery, target title update and event in one transaction. */
@@ -263,31 +422,65 @@ export function registerConversationRoutes(
       throw ApiProblem.unauthorized();
     }
     await ensureConfiguredRepository(database, config);
-    const query = request.query as { repositoryId?: string; limit?: string };
-    const limit = Math.min(Math.max(Number(query.limit ?? 50) || 50, 1), 100);
+    const query = parseInput(conversationListQuerySchema, request.query);
+    const limit = query.limit ?? CONVERSATION_PAGE_DEFAULT;
+
+    // A page boundary only means something inside the list it came from. The
+    // repository id (or the owner, when listing every repository) is part of the
+    // cursor scope so a cursor cannot be replayed against another list.
+    let scope = `owner:${auth.owner.id}`;
+    const conditions: SQL[] = [
+      isNull(conversations.mergedIntoConversationId),
+      eq(conversations.ownerId, auth.owner.id),
+    ];
+    if (query.repositoryId) {
+      const repository = await findOwnedRepository(database, auth.owner.id, query.repositoryId);
+      if (!repository) {
+        throw ApiProblem.notFound('Repository not found');
+      }
+      scope = repository.id;
+      conditions.push(eq(conversations.repositoryId, repository.id));
+    }
+
+    if (query.cursor) {
+      const position = decodeCursorValue(query.cursor, { kind: 'conversation', scope });
+      conditions.push(
+        position.id === null
+          ? sql`${conversations.updatedAt} < ${position.timestamp}::timestamptz`
+          : sql`(${conversations.updatedAt} < ${position.timestamp}::timestamptz OR (${conversations.updatedAt} = ${position.timestamp}::timestamptz AND ${conversations.id} < ${position.id}::uuid))`,
+      );
+    }
+
     const rows = await database
-      .select({ conversation: conversations, task: taskLinks })
+      .select({
+        conversation: conversations,
+        task: taskLinks,
+        cursorTimestamp: conversationCursorTimestamp,
+      })
       .from(conversations)
       .leftJoin(taskLinks, eq(taskLinks.conversationId, conversations.id))
-      .where(
-        and(
-          isNull(conversations.mergedIntoConversationId),
-          query.repositoryId
-            ? and(
-                eq(conversations.ownerId, auth.owner.id),
-                eq(conversations.repositoryId, query.repositoryId),
-              )
-            : eq(conversations.ownerId, auth.owner.id),
-        ),
-      )
-      .orderBy(desc(conversations.updatedAt))
-      .limit(limit);
+      .where(and(...conditions))
+      .orderBy(desc(conversations.updatedAt), desc(conversations.id))
+      .limit(limit + 1);
+
+    const hasMore = rows.length > limit;
+    const page = rows.slice(0, limit);
+    const oldest = page[page.length - 1];
+    const nextCursor =
+      hasMore && oldest
+        ? encodeCursorValue({
+            kind: 'conversation',
+            scope,
+            timestamp: oldest.cursorTimestamp,
+            id: oldest.conversation.id,
+          })
+        : null;
 
     const operations = await latestOperations(
       database,
-      rows.flatMap((row) => (row.task ? [row.task.id] : [])),
+      page.flatMap((row) => (row.task ? [row.task.id] : [])),
     );
-    const items: ConversationSummary[] = rows.map((row) =>
+    const items: ConversationSummary[] = page.map((row) =>
       toConversationSummary(
         row.conversation,
         row.task ?? null,
@@ -295,7 +488,11 @@ export function registerConversationRoutes(
         row.task ? (operations.get(row.task.id) ?? null) : null,
       ),
     );
-    return sendData(reply, request, conversationListDataSchema.parse({ conversations: items }));
+    return sendData(
+      reply,
+      request,
+      conversationListDataSchema.parse({ conversations: items, nextCursor, hasMore }),
+    );
   });
 
   app.post('/api/v1/conversations', { preHandler: authenticate }, async (request, reply) => {
@@ -315,6 +512,25 @@ export function registerConversationRoutes(
     const fingerprint = conversationFingerprint(input);
     const modelId = encodeModel(input.model);
     const reasoningEffort = input.model?.reasoningEffort ?? null;
+
+    // A retry must not be rejected just because the runtime catalog moved on
+    // since the first request: answer the original conversation before any
+    // best-effort selection check runs.
+    const [existingRequest] = await database
+      .select()
+      .from(conversations)
+      .where(
+        and(
+          eq(conversations.ownerId, auth.owner.id),
+          eq(conversations.clientRequestId, input.clientRequestId),
+        ),
+      )
+      .limit(1);
+    if (existingRequest) {
+      return sendExistingConversation(database, reply, request, existingRequest, fingerprint);
+    }
+
+    await verifyConversationSelection(config, repository, input, request.log);
 
     try {
       const created = await database.transaction(async (transaction) => {
@@ -382,21 +598,7 @@ export function registerConversationRoutes(
       if (!existing) {
         throw error;
       }
-      if (existing.requestFingerprint !== fingerprint) {
-        throw ApiProblem.conflict(
-          'clientRequestId was already used for a different conversation request',
-        );
-      }
-      const task = await taskByConversation(database, existing.id);
-      const operation = task ? await latestOperation(database, task.id) : null;
-      return sendData(
-        reply,
-        request,
-        conversationDetailDataSchema.parse({
-          conversation: toConversationSummary(existing, task, existing.title, operation),
-        }),
-        200,
-      );
+      return sendExistingConversation(database, reply, request, existing, fingerprint);
     }
   });
 
@@ -431,12 +633,8 @@ export function registerConversationRoutes(
       }
       const params = request.params as { id?: string };
       const { conversation } = await loadConversationRow(database, auth.owner.id, params.id ?? '');
-      const query = request.query as { before?: string; limit?: string };
-      const limit = Math.min(
-        Math.max(Number(query.limit ?? MESSAGE_PAGE_DEFAULT) || MESSAGE_PAGE_DEFAULT, 1),
-        MESSAGE_PAGE_MAX,
-      );
-      const page = await loadMessages(database, conversation.id, query.before, limit);
+      const query = parseInput(messageListQuerySchema, request.query);
+      const page = await loadMessages(database, conversation.id, query);
       return sendData(
         reply,
         request,
@@ -444,7 +642,48 @@ export function registerConversationRoutes(
           messages: page.messages.map((row) =>
             toMessage(row, page.deliveriesById.get(row.id) ?? null),
           ),
-          nextCursor: page.hasMore ? page.messages[0]?.createdAt.toISOString() : null,
+          nextCursor: page.nextCursor,
+          newerCursor: page.newerCursor,
+          hasMore: page.hasMore,
+          hasNewer: page.hasNewer,
+        }),
+      );
+    },
+  );
+
+  /**
+   * One message's current projection. Delivery transitions target an already
+   * loaded row, which a strict `after` page cannot return; the Browser uses
+   * this instead of reloading the whole page.
+   */
+  app.get(
+    '/api/v1/conversations/:id/messages/:messageId',
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const auth = request.auth;
+      if (!auth) {
+        throw ApiProblem.unauthorized();
+      }
+      const params = request.params as { id?: string; messageId?: string };
+      const messageId = params.messageId ?? '';
+      if (!uuidSchema.safeParse(messageId).success) {
+        throw ApiProblem.notFound('Message not found');
+      }
+      const { conversation } = await loadConversationRow(database, auth.owner.id, params.id ?? '');
+      const [row] = await database
+        .select({ message: messages, delivery: deliveries })
+        .from(messages)
+        .leftJoin(deliveries, eq(deliveries.messageId, messages.id))
+        .where(and(eq(messages.id, messageId), eq(messages.conversationId, conversation.id)))
+        .limit(1);
+      if (!row) {
+        throw ApiProblem.notFound('Message not found');
+      }
+      return sendData(
+        reply,
+        request,
+        messageDetailDataSchema.parse({
+          message: toMessage(row.message, row.delivery ?? null),
         }),
       );
     },

@@ -49,6 +49,13 @@ export const messages = pgTable(
       .on(table.conversationId, table.sourceEventId)
       .where(sql`${table.sourceEventId} is not null`),
     index('messages_conversation_created_idx').on(table.conversationId, table.createdAt),
+    // Keyset pagination orders by (createdAt, id): the id breaks ties when two
+    // messages share a timestamp, so a page boundary never skips or repeats one.
+    index('messages_conversation_created_id_idx').on(
+      table.conversationId,
+      table.createdAt,
+      table.id,
+    ),
     // A reply may only reference a message from the same conversation. The
     // single-column FK above keeps ON DELETE SET NULL behaviour; this composite
     // key is what rejects cross-conversation references at the database level.
