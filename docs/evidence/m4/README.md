@@ -16,6 +16,7 @@
 | `live-duplicate-queue.log` | 重复 runtime Ticket 的持久化暂停与无重复副作用 |
 | `live-discuss-sandbox.log` | 独立 UID/只读快照/无写凭据的讨论 runtime |
 | `live-discuss-lifecycle.log` | 运行中讨论暂停/恢复与并发快照隔离 |
+| `live-discuss-ownership.log` | A 停止/B 继续、进程组归属与硬重启清理 |
 | `upstream-0009-tests.log` / `upstream-0010-tests.log` | 0009/0010 的上游定向回归 |
 
 环境：`/root/.dsh-m4`（profile `m4`、Web 3292、Bridge 3291），平台 API/dispatcher 4302，测试仓库

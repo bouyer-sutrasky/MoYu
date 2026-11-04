@@ -8,7 +8,7 @@ import { sql } from 'drizzle-orm';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { migrateDatabase } from '../../src/migrate';
-import { createTestDatabase, type TestDatabase } from './helpers';
+import { createTestDatabaseUpTo, type TestDatabase } from './helpers';
 
 const ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 const FORWARD = path.join(ROOT, 'packages/db/migrations/0006_aspiring_fenris.sql');
@@ -17,7 +17,7 @@ let hash = '';
 const databases: TestDatabase[] = [];
 
 const createDatabase = async (): Promise<TestDatabase> => {
-  const database = await createTestDatabase();
+  const database = await createTestDatabaseUpTo(6);
   databases.push(database);
   return database;
 };
@@ -95,7 +95,7 @@ describe('0006 rollback script on real PostgreSQL', () => {
 
     await migrateDatabase(database.db);
     expect(await tableExists(database)).toBe(true);
-    expect(await migrationCount(database)).toBe(7);
+    expect(await migrationCount(database)).toBe(8);
   }, 30_000);
 
   it('rejects a missing or wrong hash and keeps the table', async () => {

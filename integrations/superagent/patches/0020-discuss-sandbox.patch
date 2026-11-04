@@ -1,14 +1,15 @@
 diff --git a/src/executor/dsh.ts b/src/executor/dsh.ts
-index edcf8eb..f9a0485 100644
+index edcf8eb..bae4df7 100644
 --- a/src/executor/dsh.ts
 +++ b/src/executor/dsh.ts
 @@ -2,8 +2,9 @@
  import type { Context } from '@deepseek-ai/cordis'
  import type { SessionId } from '@deepseek-ai/dsh-session'
  import type { Agent } from '@deepseek-ai/dsh-agent'
-+import type { SubprocessHandle } from '@deepseek-ai/dsh-subprocess'
- import { readdirSync, readFileSync } from 'node:fs'
+-import { readdirSync, readFileSync } from 'node:fs'
 -import { mkdir, rmdir, stat } from 'node:fs/promises'
++import type { SubprocessHandle } from '@deepseek-ai/dsh-subprocess'
++import { readdirSync, readFileSync, rmSync } from 'node:fs'
 +import { mkdir, rm, rmdir, stat, writeFile } from 'node:fs/promises'
  import { dirname, join } from 'node:path'
  import { key, latestAssignment, latestReport, liveTicket, runningAssignment, threadKey, waitsForPerson } from '../core/index.ts'
@@ -22,8 +23,30 @@ index edcf8eb..f9a0485 100644
  /** How long a worker that goes on after a passing failure waits for a worker slot, or for processing to resume, between looks. */
  const SLOT_WAIT_MS = 5000
  /** True when an input comes from a person (a non-context human trigger or a direct text input such as a status request). */
-@@ -103,6 +106,17 @@ export function processTree(root = process.pid, limit = 20): { pid: number; ppid
+@@ -101,8 +104,39 @@ export function processTree(root = process.pid, limit = 20): { pid: number; ppid
+     return found.sort((a, b) => a.pid - b.pid).slice(0, limit)
+   } catch { return [] }
  }
++/** The processes in one discussion's own process group, never unrelated harness workers. */
++function processGroupTree(pgid: number): { pid: number; ppid: number; command: string }[] {
++  const nodes: { pid: number; ppid: number; command: string }[] = []
++  try {
++    for (const name of readdirSync('/proc')) {
++      if (!/^\d+$/.test(name)) continue
++      const pid = Number(name)
++      try {
++        const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
++        const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
++        const ppid = Number(fields[1])
++        const group = Number(fields[2])
++        if (group !== pgid) continue
++        const command = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean).join(' ').slice(0, 160)
++        nodes.push({ pid, ppid, command })
++      } catch { /* the process exited while it was read */ }
++    }
++    return nodes.sort((a, b) => a.pid - b.pid).slice(0, 20)
++  } catch { return [] }
++}
  /** Appends a stable 12-character ticket ID suffix to a validated English worktree name. */
  const ticketWorktreeName = (name: string, id: string): string => `${WorktreeNameSchema.parse(name)}-${id.slice(0, 12)}`
 +/** One running external discussion process, tracked for assignment-scoped pause and restart guards. */
@@ -40,7 +63,7 @@ index edcf8eb..f9a0485 100644
  /** Host dependencies used by `DshExecutor`. */
  export interface ExecutorHost {
    /** DSH Cordis context: agents and their events, and the subprocess service used to run prepare commands. */
-@@ -281,6 +295,8 @@ export class DshExecutor implements Executor {
+@@ -281,6 +315,8 @@ export class DshExecutor implements Executor {
    private readonly personal = new Map<string, string>()
    /** The timers of workers that go on after a passing failure, which dispose clears. */
    private readonly timers = new Set<ReturnType<typeof setTimeout>>()
@@ -49,7 +72,7 @@ index edcf8eb..f9a0485 100644
    /** Registers the `launch` and `delivery` effect handlers; both are held (concurrency limit 0) while processing is paused. */
    constructor(private readonly host: ExecutorHost) {
      this.slots = new WorkerSlots(() => host.store.tickets.open().filter(ticket => this.running(ticket)).map(ticket => ticket.id),
-@@ -437,6 +453,11 @@ export class DshExecutor implements Executor {
+@@ -437,6 +473,11 @@ export class DshExecutor implements Executor {
      this.host.store.afterCommit(() => { void this.background(this.pauseWork(ticket.id, assignment.id, operationId)) })
    }
    private async pauseWork(ticketId: string, assignmentId: string, operationId: string): Promise<void> {
@@ -61,7 +84,7 @@ index edcf8eb..f9a0485 100644
      const startedAt = now()
      const sessionId = workerSessionId(ticketId)
      const agent = this.host.context.agents.get(sessionId as SessionId)
-@@ -510,6 +531,8 @@ export class DshExecutor implements Executor {
+@@ -510,6 +551,8 @@ export class DshExecutor implements Executor {
     * of the jobs left to a person, which were killed, and cancel a worker turn that started meanwhile, keeping its inbox.
     */
    async shutdown(): Promise<void> {
@@ -70,7 +93,7 @@ index edcf8eb..f9a0485 100644
      const agents = this.host.store.tickets.list().map(ticket => this.host.context.agents.get(workerSessionId(ticket.id) as SessionId))
        .filter((agent): agent is Agent => agent !== undefined)
      const stop = async () => {
-@@ -526,7 +549,7 @@ export class DshExecutor implements Executor {
+@@ -526,7 +569,7 @@ export class DshExecutor implements Executor {
    /** Whether a ticket's worker holds a worker slot: its turn runs, or its shell jobs or subagents do after its turn ended. */
    private running(ticket: Ticket): boolean {
      if (!runningAssignment(ticket)) return false
@@ -79,7 +102,7 @@ index edcf8eb..f9a0485 100644
    }
    /** Marks a ticket failed after its launch fails; the ticket waits until new human input or an explicit retry arrives. */
    private launchFailed(ticketId: string, assignmentId: string, error: unknown): void {
-@@ -556,6 +579,13 @@ export class DshExecutor implements Executor {
+@@ -556,6 +599,13 @@ export class DshExecutor implements Executor {
      // A frozen model that the provider no longer serves refuses this launch; the ticket is reported failed and never runs on
      // the instance default instead. The model itself is chosen by `Sessions.ensure` below.
      if (ticket.model) await verifyTicketModel(this.host.context, ticket.model)
@@ -93,7 +116,7 @@ index edcf8eb..f9a0485 100644
      // Prepare the workspace directory once; an existing directory counts as already prepared, including worktrees created before `prepare` commands existed.
      if (!await stat(workspace).then(() => true, () => false)) {
        await this.prepareDirectory(ticket)
-@@ -593,6 +623,126 @@ export class DshExecutor implements Executor {
+@@ -593,6 +643,128 @@ export class DshExecutor implements Executor {
        () => { this.host.engine.assignmentStarted(ticket.id, assignment.id) })
      this.host.engine.assignmentStarted(ticket.id, assignment.id)
    }
@@ -182,10 +205,12 @@ index edcf8eb..f9a0485 100644
 +  /** Stops one external discussion run and records the same stop evidence as an in-process pause. */
 +  private async pauseDiscuss(ticketId: string, assignmentId: string, operationId: string, run: DiscussRun): Promise<void> {
 +    const startedAt = now()
-+    const processesBefore = processTree()
 +    const sessionId = run.sessionId
 +    let pgid: number | undefined
 +    try { pgid = Number(readFileSync(join(DISCUSS_ROOT, ticketId, assignmentId, 'shell.pid'), 'utf8').trim()) } catch { pgid = undefined }
++    // Only this assignment's process group is evidence. Other discussions and
++    // execute workers are unrelated and must not keep this pause from settling.
++    const processesBefore = pgid !== undefined && Number.isFinite(pgid) ? processGroupTree(pgid) : []
 +    run.controller.abort()
 +    run.handle?.terminate()
 +    if (pgid !== undefined && Number.isFinite(pgid)) {
@@ -204,7 +229,7 @@ index edcf8eb..f9a0485 100644
 +      await new Promise(resolve => setTimeout(resolve, 100))
 +      lingeringPids = aliveBefore()
 +    }
-+    const processesAfter = processTree()
++    const processesAfter = pgid !== undefined && Number.isFinite(pgid) ? processGroupTree(pgid) : []
 +    const stoppedAt = now()
 +    const evidence = { ticketId, assignmentId, operationId, sessionId, harnessPid: process.pid, startedAt, stoppedAt,
 +      agentStatus: 'idle', jobsBefore: [], jobsAfter: [], subagentsAfter: 0, processesBefore, processesAfter, lingeringPids,
@@ -220,6 +245,53 @@ index edcf8eb..f9a0485 100644
    /** Returns the stored ticket for `agent` when it is a worker session, or undefined otherwise. */
    private ticketOf(agent: Agent): Ticket | undefined {
      const ticketId = ticketOfSession(agent.id)
+@@ -647,6 +819,7 @@ export class DshExecutor implements Executor {
+    * while failed launches (`waitsForPerson`) wait for a person's message or a retry.
+    */
+   resume(): void {
++    this.cleanupDiscussRuns()
+     // Launch pending tickets oldest first (in acceptance order).
+     for (const ticket of this.host.store.tickets.open().sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
+       // A human-paused ticket stays paused across a host restart; only an explicit resume with a lease starts it again.
+@@ -662,6 +835,38 @@ export class DshExecutor implements Executor {
+       else if (latest?.state === 'pending' && !waitsForPerson(ticket)) this.start(ticket, latest)
+     }
+   }
++  /**
++   * A hard restart loses the in-memory run map but may leave a discussion process
++   * group alive. Run directories are assignment-owned; kill only a group whose
++   * command still identifies that run, then remove the stale directory. The
++   * interrupted assignment is reported by `assignmentInterrupted` below.
++   */
++  private cleanupDiscussRuns(): void {
++    let tickets: string[]
++    try { tickets = readdirSync(DISCUSS_ROOT) } catch { return }
++    for (const ticketId of tickets) {
++      if (!/^[A-Za-z0-9_-]+$/.test(ticketId)) continue
++      const ticketRoot = join(DISCUSS_ROOT, ticketId)
++      let assignments: string[]
++      try { assignments = readdirSync(ticketRoot) } catch { continue }
++      for (const assignmentId of assignments) {
++        if (!/^[A-Za-z0-9_-]+$/.test(assignmentId)) continue
++        const runRoot = join(ticketRoot, assignmentId)
++        let pgid: number | undefined
++        try { pgid = Number(readFileSync(join(runRoot, 'shell.pid'), 'utf8').trim()) } catch { pgid = undefined }
++        if (pgid !== undefined && Number.isFinite(pgid)) {
++          try {
++            const command = readFileSync(`/proc/${pgid}/cmdline`, 'utf8')
++            if (/m4-discuss-sandbox|dsh --profile discuss/.test(command)) {
++              try { process.kill(-pgid, 'SIGTERM') } catch { /* already gone */ }
++              try { process.kill(-pgid, 'SIGKILL') } catch { /* already gone */ }
++            }
++          } catch { /* not alive or not this run */ }
++        }
++        try { rmSync(runRoot, { recursive: true, force: true }) } catch { /* best effort */ }
++      }
++    }
++  }
+   /** Runs background worker event handling and updates the `worker` health entry on failure or recovery. */
+   private background(work: Promise<void>): Promise<void> {
+     const { health } = this.host
 diff --git a/src/policy.ts b/src/policy.ts
 index b6a66cf..a09dc4a 100644
 --- a/src/policy.ts

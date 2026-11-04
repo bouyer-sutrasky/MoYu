@@ -1,5 +1,14 @@
 import { sql } from 'drizzle-orm';
-import { index, integer, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import {
+  index,
+  integer,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+  type AnyPgColumn,
+} from 'drizzle-orm/pg-core';
 
 import { conversationMode, conversationSource, executionMode } from './enums';
 import { owners } from './owners';
@@ -26,6 +35,11 @@ export const conversations = pgTable(
     /** Stable identity of an imported ticket (`github:<number>`); null for web conversations. */
     externalKey: text('external_key'),
     externalUrl: text('external_url'),
+    /** Web conversation merged into an exact imported GitHub conversation; kept as a retry/idempotency alias. */
+    mergedIntoConversationId: uuid('merged_into_conversation_id').references(
+      (): AnyPgColumn => conversations.id,
+      { onDelete: 'set null' },
+    ),
     /** Plan revision the owner approved when a discussion became execution. */
     planRevision: integer('plan_revision'),
     baseBranch: text('base_branch').notNull(),
@@ -47,6 +61,7 @@ export const conversations = pgTable(
     uniqueIndex('conversations_id_repository_uq').on(table.id, table.repositoryId),
     index('conversations_repository_idx').on(table.repositoryId),
     index('conversations_owner_idx').on(table.ownerId),
+    index('conversations_merged_into_idx').on(table.mergedIntoConversationId),
     uniqueIndex('conversations_owner_client_request_uq')
       .on(table.ownerId, table.clientRequestId)
       .where(sql`${table.clientRequestId} is not null`),

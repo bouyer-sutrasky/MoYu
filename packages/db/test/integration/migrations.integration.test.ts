@@ -47,6 +47,7 @@ const EXPECTED_INDEXES = [
   'events_seq_uq',
   'conversations_id_repository_uq',
   'conversations_owner_client_request_uq',
+  'conversations_merged_into_idx',
   'messages_conversation_client_message_uq',
   'messages_id_conversation_uq',
   'messages_conversation_source_event_uq',

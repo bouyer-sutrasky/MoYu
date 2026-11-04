@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -115,35 +115,171 @@ afterAll(async () => {
 
 describe('Web entry after a GitHub import', () => {
   it('delivers the first Web message to the exact imported Issue/PR and removes the empty Web task', async () => {
+    const clientMessageId = `merge-${randomUUID()}`;
+    const text =
+      'Same requirement: https://github.com/Bouyer12/m4-merge-test/issues/1#issuecomment-9';
     const response = await app.inject({
       method: 'POST',
       url: `/api/v1/conversations/${webConversationId}/messages`,
       headers: { cookie },
-      payload: {
-        clientMessageId: `merge-${randomUUID()}`,
-        text: 'Same requirement: https://github.com/Bouyer12/m4-merge-test/issues/1#issuecomment-9',
-      },
+      payload: { clientMessageId, text },
     });
     expect(response.statusCode).toBe(202);
-    const body = response.json() as { data: { message: { conversationId: string } } };
+    const body = response.json() as { data: { message: { id: string; conversationId: string } } };
     expect(body.data.message.conversationId).toBe(githubConversationId);
 
-    const remaining = await database
-      .select({ id: conversations.id })
+    const source = await database
+      .select({ mergedInto: conversations.mergedIntoConversationId })
       .from(conversations)
-      .where(eq(conversations.repositoryId, repositoryId));
-    expect(remaining.map((row) => row.id)).toEqual([githubConversationId]);
+      .where(eq(conversations.id, webConversationId))
+      .limit(1);
+    expect(source[0]?.mergedInto).toBe(githubConversationId);
     const tasks = await database
       .select({ id: taskLinks.id })
       .from(taskLinks)
       .where(eq(taskLinks.repositoryId, repositoryId));
     expect(tasks).toHaveLength(1);
     expect(tasks[0]?.id).not.toBe(webTaskId);
+
+    const retry = await app.inject({
+      method: 'POST',
+      url: `/api/v1/conversations/${webConversationId}/messages`,
+      headers: { cookie },
+      payload: { clientMessageId, text },
+    });
+    expect(retry.statusCode).toBe(200);
+    const retryBody = retry.json() as {
+      data: { duplicate: boolean; message: { id: string; conversationId: string } };
+    };
+    expect(retryBody.data.duplicate).toBe(true);
+    expect(retryBody.data.message.id).toBe(body.data.message.id);
+    expect(retryBody.data.message.conversationId).toBe(githubConversationId);
+
+    const later = await app.inject({
+      method: 'POST',
+      url: `/api/v1/conversations/${webConversationId}/messages`,
+      headers: { cookie },
+      payload: {
+        clientMessageId: `later-${randomUUID()}`,
+        text: 'Follow-up on the same requirement',
+      },
+    });
+    expect(later.statusCode).toBe(202);
+    expect(
+      (later.json() as { data: { message: { conversationId: string } } }).data.message
+        .conversationId,
+    ).toBe(githubConversationId);
     const githubMessages = await database
       .select({ id: messages.id })
       .from(messages)
       .where(eq(messages.conversationId, githubConversationId));
-    expect(githubMessages).toHaveLength(1);
+    expect(githubMessages).toHaveLength(2);
+  });
+
+  it('returns one receipt for concurrent retries with the same clientMessageId', async () => {
+    const [web] = await database
+      .insert(conversations)
+      .values({
+        ownerId: (
+          await database
+            .select({ ownerId: repositories.ownerId })
+            .from(repositories)
+            .where(eq(repositories.id, repositoryId))
+            .limit(1)
+        )[0]!.ownerId,
+        repositoryId,
+        mode: 'work',
+        executionMode: 'execute',
+        source: 'web',
+        baseBranch: 'main',
+      })
+      .returning();
+    await database.insert(taskLinks).values({
+      conversationId: web!.id,
+      repositoryId,
+      state: 'pending_admission',
+      baseBranch: 'main',
+      executionMode: 'execute',
+    });
+    const clientMessageId = `race-${randomUUID()}`;
+    const text = 'Race: https://github.com/Bouyer12/m4-merge-test/issues/1';
+    const [first, second] = await Promise.all(
+      [1, 2].map(() =>
+        app.inject({
+          method: 'POST',
+          url: `/api/v1/conversations/${web!.id}/messages`,
+          headers: { cookie },
+          payload: { clientMessageId, text },
+        }),
+      ),
+    );
+    expect([first!.statusCode, second!.statusCode].sort()).toEqual([200, 202]);
+    const receipt = first!.statusCode === 200 ? first!.json() : second!.json();
+    expect((receipt as { data: { duplicate: boolean } }).data.duplicate).toBe(true);
+    const targetMessages = await database
+      .select({ id: messages.id })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.conversationId, githubConversationId),
+          eq(messages.clientMessageId, clientMessageId),
+        ),
+      );
+    expect(targetMessages).toHaveLength(1);
+  });
+
+  it('delivers different concurrent Web messages to the target once the alias is being created', async () => {
+    const [web] = await database
+      .insert(conversations)
+      .values({
+        ownerId: (
+          await database
+            .select({ ownerId: repositories.ownerId })
+            .from(repositories)
+            .where(eq(repositories.id, repositoryId))
+            .limit(1)
+        )[0]!.ownerId,
+        repositoryId,
+        mode: 'work',
+        executionMode: 'execute',
+        source: 'web',
+        baseBranch: 'main',
+      })
+      .returning();
+    await database.insert(taskLinks).values({
+      conversationId: web!.id,
+      repositoryId,
+      state: 'pending_admission',
+      baseBranch: 'main',
+      executionMode: 'execute',
+    });
+    const url = 'https://github.com/Bouyer12/m4-merge-test/issues/1';
+    const responses = await Promise.all([
+      app.inject({
+        method: 'POST',
+        url: `/api/v1/conversations/${web!.id}/messages`,
+        headers: { cookie },
+        payload: { clientMessageId: `a-${randomUUID()}`, text: `First ${url}` },
+      }),
+      app.inject({
+        method: 'POST',
+        url: `/api/v1/conversations/${web!.id}/messages`,
+        headers: { cookie },
+        payload: { clientMessageId: `b-${randomUUID()}`, text: `Second ${url}` },
+      }),
+    ]);
+    expect(responses.map((response) => response.statusCode)).toEqual([202, 202]);
+    for (const response of responses) {
+      expect(
+        (response.json() as { data: { message: { conversationId: string } } }).data.message
+          .conversationId,
+      ).toBe(githubConversationId);
+    }
+    const sourceMessages = await database
+      .select({ id: messages.id })
+      .from(messages)
+      .where(eq(messages.conversationId, web!.id));
+    expect(sourceMessages).toHaveLength(0);
   });
 
   it('does not merge /issues/10 into the /issues/1 requirement', async () => {
