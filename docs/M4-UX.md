@@ -63,9 +63,11 @@
   target 有 pending 时不改写其文本/快照/key，源剩余内容存入 `deferredText`，等 target 本次发送成功后
   再提升为可编辑文本。源 key 只在 target 写入后删除；迟到回执只在当前会话仍是源/目标时改输入，已切走时
   仅整理存储。
-- 当合并请求的响应丢失，后续 GET 会把源会话解析成 target：前端在 id 切换前调用 alias 迁移。target 无
-  草稿时源状态原样搬过去（保留 pending key，可在 target 按原 key 核对）；target 有 pending 时只搬源未发送
-  内容到 deferred；target 有普通草稿时把 target 内容也放入 deferred，等源发送结算后恢复。
+- 当合并请求的响应丢失，后续 GET 会把源会话解析成 target：前端在 id 切换前调用 alias 迁移。alias 存在
+  **不等于**当前 pending key 已提交；没有当前 clientMessageId 的真实成功/重复回执时绝不结算。
+  target 无草稿时源状态原样搬过去（保留 pending key，可在 target 按原 key 核对）；源有 pending 而 target
+  已有草稿/pending 时，把源草稿完整停放到 target 的 `parked` 列表（正文、key、lineage、deferred），
+  逐项显示“恢复此草稿”；当前 pending 结算后才允许恢复。其余情况才把源未发送内容合并进 deferred/text。
 - 存储策略：显式退出清除该所有者全部草稿；会话内“清除草稿”立即删除本地记录（包括 pending/deferred）；
   会话丢失（401）不清草稿，重新登录后可继续。localStorage 不可用时使用内存副本，当前会话内的输入不丢失、
   发送不失败。

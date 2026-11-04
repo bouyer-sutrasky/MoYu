@@ -2067,6 +2067,326 @@ async function functional(browser, api, seeded) {
     'response lost after commit; retry by key restores Y without duplicate URL',
   );
 
+  // 7c6. Alias existence is not proof that the current pending key committed.
+  // Target B and source A each have an independent ambiguous send; a late
+  // alias GET must park A intact instead of settling it into B.
+  const sourceParked = await createWebConversation(baseURL, token, seeded.repositoryA);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openConversation(page, 'GitHub 汇入任务');
+  if ((await page.getByRole('button', { name: '清除草稿' }).count()) > 0) {
+    await page.getByRole('button', { name: '清除草稿' }).click();
+  }
+  const parkBText = `B 独立待确认 ${Date.now()}`;
+  const parkBGate = makeGate();
+  let parkBHeld;
+  const parkBHeldPromise = new Promise((resolve) => {
+    parkBHeld = resolve;
+  });
+  const parkBPattern = new RegExp(`/conversations/${seeded.githubId}/messages$`);
+  const parkBHandler = async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue();
+      return;
+    }
+    parkBHeld();
+    await parkBGate.promise;
+    await route.abort('failed');
+  };
+  await page.route(parkBPattern, parkBHandler);
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(parkBText);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await parkBHeldPromise;
+  parkBGate.release();
+  await page
+    .getByText(/发送结果待确认/)
+    .first()
+    .waitFor();
+  await page.unroute(parkBPattern, parkBHandler);
+  await openConversationById(page, sourceParked);
+
+  const urlParkText = mergeUrl;
+  const parkUrlGate = makeGate();
+  let parkUrlHeld;
+  const parkUrlHeldPromise = new Promise((resolve) => {
+    parkUrlHeld = resolve;
+  });
+  const parkUrlPattern = new RegExp(`/conversations/${sourceParked}/messages$`);
+  const parkUrlHandler = async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue();
+      return;
+    }
+    await route.fetch();
+    parkUrlHeld();
+    await parkUrlGate.promise;
+    await route.abort('failed');
+  };
+  await page.route(parkUrlPattern, parkUrlHandler);
+  let aliasHeld;
+  const aliasHeldPromise = new Promise((resolve) => {
+    aliasHeld = resolve;
+  });
+  let aliasRelease;
+  const aliasReleasePromise = new Promise((resolve) => {
+    aliasRelease = resolve;
+  });
+  const aliasPattern = new RegExp(`/conversations/${sourceParked}$`);
+  const aliasHandler = async (route) => {
+    const response = await route.fetch();
+    aliasHeld();
+    await aliasReleasePromise;
+    await route.fulfill({ response });
+  };
+  await page.route(aliasPattern, aliasHandler);
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(urlParkText);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await parkUrlHeldPromise;
+  await aliasHeldPromise;
+  parkUrlGate.release();
+  await page
+    .getByText(/网络结果不明确/)
+    .first()
+    .waitFor();
+  // Clear while the alias GET is held, then create a brand-new pending M.
+  await page.getByRole('button', { name: '清除草稿' }).click();
+  const parkMText = `后发 M ${Date.now()}`;
+  await page.unroute(parkUrlPattern, parkUrlHandler);
+  const parkMGate = makeGate();
+  let parkMHeld;
+  const parkMHeldPromise = new Promise((resolve) => {
+    parkMHeld = resolve;
+  });
+  const parkMPattern = new RegExp(`/conversations/${sourceParked}/messages$`);
+  const parkMHandler = async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue();
+      return;
+    }
+    parkMHeld();
+    await parkMGate.promise;
+    await route.abort('failed');
+  };
+  await page.route(parkMPattern, parkMHandler);
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(parkMText);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await parkMHeldPromise;
+  parkMGate.release();
+  await page
+    .getByText(/网络结果不明确/)
+    .first()
+    .waitFor();
+  const sourceDraftKey = `moyu:draft:v1:${seeded.ownerId}:${seeded.repositoryA}:${sourceParked}`;
+  const sourceDraftRaw = await page.evaluate((key) => localStorage.getItem(key), sourceDraftKey);
+  const sourceDraft = JSON.parse(sourceDraftRaw);
+  const mClientMessageId = sourceDraft?.pending?.clientMessageId;
+  assert(
+    mClientMessageId && sourceDraft.pending.ambiguous === true,
+    'after: source has its own ambiguous pending M',
+  );
+  await page.unroute(parkMPattern, parkMHandler);
+  // Release the old alias GET. A exists in the URL, but M was never committed.
+  aliasRelease();
+  await page.getByRole('heading', { name: 'GitHub 汇入任务', exact: true }).waitFor();
+  await waitForComposer(page, parkBText);
+  await page
+    .getByText(/合并来源还有未确认发送/)
+    .first()
+    .waitFor();
+  const targetDraftKey = `moyu:draft:v1:${seeded.ownerId}:${seeded.repositoryA}:${seeded.githubId}`;
+  const parkedRaw = await page.evaluate((key) => localStorage.getItem(key), targetDraftKey);
+  const parkedDraft = JSON.parse(parkedRaw);
+  assert(
+    parkedDraft?.parked?.some((item) => item?.pending?.clientMessageId === mClientMessageId),
+    'after: alias parks M with its original key',
+  );
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openConversation(page, 'GitHub 汇入任务');
+  await page
+    .getByText(/合并来源还有未确认发送/)
+    .first()
+    .waitFor();
+  assert(
+    (await countMessages(currentDatabase.url, seeded.githubId, parkMText)) === 0,
+    'after: M is not auto-sent by the alias or refresh',
+  );
+  // Settle B first, then recover M and retry it by its own key.
+  const parkBResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      response.url().includes(`/${seeded.githubId}/messages`),
+  );
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await parkBResponse;
+  await page.getByRole('button', { name: '恢复此草稿' }).click();
+  await waitForComposer(page, parkMText);
+  const parkMResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      response.url().includes(`/${seeded.githubId}/messages`),
+  );
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await parkMResponse;
+  assert(
+    (await countMessages(currentDatabase.url, seeded.githubId, parkBText)) === 1,
+    'after: B committed once after its own retry',
+  );
+  assert(
+    (await countMessages(currentDatabase.url, seeded.githubId, parkMText)) === 1,
+    'after: M was not auto-sent before recovery and stored once after retry',
+  );
+  await page.unroute(aliasPattern, aliasHandler);
+  await page.waitForTimeout(500);
+  if ((await page.getByRole('button', { name: '清除草稿' }).count()) > 0) {
+    await page.getByRole('button', { name: '清除草稿' }).click();
+  }
+  record(
+    'alias does not confirm a later pending send',
+    'pass',
+    'B pending + source M pending; M parked with its key, survived refresh, retried once',
+  );
+
+  // 7c7. The parked send may be an older pending URL instead of a newer M.
+  // It is still not confirmed by the alias; park its key and retry idempotently.
+  const sourceOld = await createWebConversation(baseURL, token, seeded.repositoryA);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openConversation(page, 'GitHub 汇入任务');
+  if ((await page.getByRole('button', { name: '清除草稿' }).count()) > 0) {
+    await page.getByRole('button', { name: '清除草稿' }).click();
+  }
+  const oldBText = `B 旧待确认 ${Date.now()}`;
+  const oldBGate = makeGate();
+  let oldBHeld;
+  const oldBHeldPromise = new Promise((resolve) => {
+    oldBHeld = resolve;
+  });
+  const oldBPattern = new RegExp(`/conversations/${seeded.githubId}/messages$`);
+  const oldBHandler = async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue();
+      return;
+    }
+    oldBHeld();
+    await oldBGate.promise;
+    await route.abort('failed');
+  };
+  await page.route(oldBPattern, oldBHandler);
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(oldBText);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await oldBHeldPromise;
+  oldBGate.release();
+  await page
+    .getByText(/发送结果待确认/)
+    .first()
+    .waitFor();
+  await page.unroute(oldBPattern, oldBHandler);
+  await openConversationById(page, sourceOld);
+  const oldUrlCountBefore = await countMessages(currentDatabase.url, seeded.githubId, mergeUrl);
+  const oldUrlGate = makeGate();
+  let oldUrlHeld;
+  const oldUrlHeldPromise = new Promise((resolve) => {
+    oldUrlHeld = resolve;
+  });
+  const oldUrlPattern = new RegExp(`/conversations/${sourceOld}/messages$`);
+  const oldUrlHandler = async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue();
+      return;
+    }
+    await route.fetch();
+    oldUrlHeld();
+    await oldUrlGate.promise;
+    await route.abort('failed');
+  };
+  await page.route(oldUrlPattern, oldUrlHandler);
+  let oldAliasHeld;
+  const oldAliasHeldPromise = new Promise((resolve) => {
+    oldAliasHeld = resolve;
+  });
+  let oldAliasRelease;
+  const oldAliasReleasePromise = new Promise((resolve) => {
+    oldAliasRelease = resolve;
+  });
+  const oldAliasPattern = new RegExp(`/conversations/${sourceOld}$`);
+  const oldAliasHandler = async (route) => {
+    const response = await route.fetch();
+    oldAliasHeld();
+    await oldAliasReleasePromise;
+    await route.fulfill({ response });
+  };
+  await page.route(oldAliasPattern, oldAliasHandler);
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(mergeUrl);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await oldUrlHeldPromise;
+  await oldAliasHeldPromise;
+  const oldSourceDraftKey = `moyu:draft:v1:${seeded.ownerId}:${seeded.repositoryA}:${sourceOld}`;
+  const oldSourceDraft = JSON.parse(
+    await page.evaluate((key) => localStorage.getItem(key), oldSourceDraftKey),
+  );
+  const oldClientMessageId = oldSourceDraft?.pending?.clientMessageId;
+  assert(oldClientMessageId, 'after: old source pending has its key');
+  oldUrlGate.release();
+  await page
+    .getByText(/网络结果不明确/)
+    .first()
+    .waitFor();
+  oldAliasRelease();
+  await page.getByRole('heading', { name: 'GitHub 汇入任务', exact: true }).waitFor();
+  await page
+    .getByText(/合并来源还有未确认发送/)
+    .first()
+    .waitFor();
+  const oldTargetDraft = JSON.parse(
+    await page.evaluate(
+      (key) => localStorage.getItem(key),
+      `moyu:draft:v1:${seeded.ownerId}:${seeded.repositoryA}:${seeded.githubId}`,
+    ),
+  );
+  assert(
+    oldTargetDraft?.parked?.some((item) => item?.pending?.clientMessageId === oldClientMessageId),
+    'after: old pending URL is parked with its key',
+  );
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openConversation(page, 'GitHub 汇入任务');
+  await page
+    .getByText(/合并来源还有未确认发送/)
+    .first()
+    .waitFor();
+  const oldBResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      response.url().includes(`/${seeded.githubId}/messages`),
+  );
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await oldBResponse;
+  await page.getByRole('button', { name: '恢复此草稿' }).click();
+  await waitForComposer(page, mergeUrl);
+  const oldUrlRetry = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      response.url().includes(`/${seeded.githubId}/messages`),
+  );
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await oldUrlRetry;
+  assert(
+    (await countMessages(currentDatabase.url, seeded.githubId, oldBText)) === 1,
+    'after: old B committed once',
+  );
+  assert(
+    (await countMessages(currentDatabase.url, seeded.githubId, mergeUrl)) === oldUrlCountBefore + 1,
+    'after: old URL committed once and its retry did not duplicate it',
+  );
+  await page.unroute(oldUrlPattern, oldUrlHandler);
+  await page.unroute(oldAliasPattern, oldAliasHandler);
+  await page.waitForTimeout(500);
+  if ((await page.getByRole('button', { name: '清除草稿' }).count()) > 0) {
+    await page.getByRole('button', { name: '清除草稿' }).click();
+  }
+  record(
+    'old pending URL parks without duplicate',
+    'pass',
+    'alias keeps source URL key; target B settles, URL retry is idempotent',
+  );
+
   // 7d. Merging while the user moved to another conversation: the late result
   // must not touch the current composer, and the source hides without losing
   // unsent text (there is no newer draft in this run).

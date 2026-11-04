@@ -60,7 +60,8 @@ corepack pnpm@11.7.0 -r --if-present build                # exit 0
 | 待确认比较用错字段、恢复入口缺失 | `pendingTextMismatch` 比较 pending.text 与输入；恢复按钮按此显示 | 编辑 Y 后明确失败/结果不明，按钮出现且可执行 |
 | 恢复待确认覆盖新编辑 | 恢复时把较新编辑存入 deferred，旧发送成功后再提升 | 已有 deferred + 新编辑 Y + 刷新，重试成功后两者都恢复 |
 | 合并 sentOnly 忽略 deferred | 合并改为统一协议：排除已发送正文，提取 source editable+deferred 全部剩余；不再直接删源 | 源 URL 已发、deferred=Y，恢复后再合并；Y 迁到 target，URL 不重复 |
-| 合并响应丢失后源会话被 alias 隐藏 | GET 解析 alias 时先迁移草稿：target 空则原样搬，target pending 则只搬未发送，target 普通草稿则 deferred | 已提交但 abort 的源；target 空，pending key 保留，原 key 重试后 Y 恢复 |
+| 合并响应丢失后源会话被 alias 隐藏 | GET 解析 alias 时先迁移草稿：target 空则原样搬；源有 pending 且 target 有草稿/pending 时停放为 `parked`；无 pending 才合并 deferred | 源 M pending + target B pending；M 停放保留 key，刷新后恢复并原 key 重试，未自动外发 |
+| alias 存在被误当成当前 pending 已提交 | alias 迁移不再调用发送结算；只有真实成功/重复回执才结算 clientMessageId；源 pending 与 target 同时存在时停放为 parked | 目标 B pending + 源新 M pending + 晚到 alias GET；M 正文/key/deferred 完整保留；旧 URL pending 同样停放且重试幂等 |
 
 分页测试覆盖：250 条消息中 3 条共享同一时间戳、逐页 limit=7 全量遍历、`before`/`after` 双向、
 微秒精度时间戳、非法/跨会话/跨仓库游标 422、105 个会话分页与仓库隔离、乱序/迟到页由前端 token
@@ -132,7 +133,7 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
   node scripts/m4ux/e2e.mjs --skip-build
 ```
 
-结果：**27/27 通过**，JSON 在 [`evidence/m4ux/m4ux-e2e.json`](evidence/m4ux/m4ux-e2e.json)。脚本使用一次性
+结果：**29/29 通过**，JSON 在 [`evidence/m4ux/m4ux-e2e.json`](evidence/m4ux/m4ux-e2e.json)。脚本使用一次性
 PostgreSQL、真实 API 进程、真实 Chromium 与基线/分支两份真实构建；Before 由 `/root/src/m4ux-before`
 的 `40e857a` 构建产生，After 为本分支构建，两者同一数据库、同一视口、主题与场景。
 
@@ -152,6 +153,8 @@ PostgreSQL、真实 API 进程、真实 Chromium 与基线/分支两份真实构
 | 编辑后结果不明恢复 | 发送 X→hold→编辑 Y→abort→恢复待确认→原 key 重试；Y 恢复且未外发，X 只 1 条 |
 | 恢复后再合并 retry | 源首条 URL 在服务端前 abort→编辑 Y→恢复（deferred=Y）→原 key 重试并合并；URL +1，Y 恢复且未外发，刷新仍在 |
 | 已提交但响应丢失再合并 | 源 POST 已提交并合并后 abort→恢复→原 key 重试；URL 不重复，deferred Y 迁到 target 并恢复 |
+| alias 不确认新 pending | target B 独立 pending + 源 A 清除后新发 M（query abort）→释放旧 alias GET；M 停放 target.parked 保留原 key，刷新后仍可恢复；B 先结算，再恢复 M 并按原 key 重试，M 只入库 1 条且此前未外发 |
+| 旧 pending URL 停放 | target B pending + 源旧 URL pending（已提交 alias）→alias GET 停放 URL key；B 结算后恢复 URL 原 key 重试，URL 不重复 |
 | 初次加载窗口 SSE | 首屏查询完成后 hold 响应，POST 新消息并收到 SSE，再释放旧响应；新消息最终可见且只 1 条 |
 | 合并草稿迁移 | 新 Web 会话首条发送 GitHub 需求 URL 期间继续编辑，跳转 target 后草稿仍在；刷新仍恢复 |
 | 合并保留目标草稿 | target 已有草稿时，合并后的 target 同时包含两段文本，没有覆盖 |
@@ -183,8 +186,8 @@ Before 为 `origin/main` @ `40e857a` 的真实构建，After 为 `docs/evidence/
 | 文件 | sha256 |
 | --- | --- |
 | `apps/api/dist/server.js` | `3774fec8537a82513c5f4706f4f78ab4dc47fc2dea4a532f03aba059d6080c4a` |
-| `apps/web/dist/index.html` | `856767839ec8c3e6eed48460b327c2d788a0618c30fa60e646680f0d20bd74d5` |
-| `apps/web/dist/assets/index-uo_pWKu-.js` | `44321a780177a1aef24dbcf386e2167a4ce31d8b5a0afe663033089d760a9ba6` |
+| `apps/web/dist/index.html` | `eeb85ac0f44972908fdcf8e02f5dea3bfa430d12c738f9378138725488fd83f4` |
+| `apps/web/dist/assets/index-_Fgd60Df.js` | `d9dff49cbb6d5f8ca4a6256cbf40d258bb0d6c501c6403cfc4e75dbc98b0be55` |
 
 ## 迁移与回滚
 

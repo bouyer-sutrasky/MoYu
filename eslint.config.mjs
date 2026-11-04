@@ -43,6 +43,7 @@ export default tseslint.config(
       globals: {
         window: 'readonly',
         document: 'readonly',
+        localStorage: 'readonly',
         EventSource: 'readonly',
         fetch: 'readonly',
         setTimeout: 'readonly',
@@ -58,6 +59,7 @@ export default tseslint.config(
       globals: {
         window: 'readonly',
         document: 'readonly',
+        localStorage: 'readonly',
         fetch: 'readonly',
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
