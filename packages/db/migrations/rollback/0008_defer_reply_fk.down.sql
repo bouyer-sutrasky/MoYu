@@ -24,5 +24,5 @@ BEGIN
 END $$;
 ALTER TABLE "messages" DROP CONSTRAINT "messages_reply_same_conversation_fk";
 ALTER TABLE "messages" ADD CONSTRAINT "messages_reply_same_conversation_fk" FOREIGN KEY ("reply_to_message_id","conversation_id") REFERENCES "public"."messages"("id","conversation_id") ON DELETE SET NULL ("reply_to_message_id") ON UPDATE no action;
-DELETE FROM drizzle.__drizzle_migrations WHERE hash = 'b9a6df511a1c2070aa86f0142a7c1fdb9db3401126bd7595e88593e1348f36c1';
+DELETE FROM drizzle.__drizzle_migrations WHERE hash = 'd8a838ea7e5fd093ed4769e5c8901211b2c0869e0ff266bdb86fc4007ee93056';
 COMMIT;
