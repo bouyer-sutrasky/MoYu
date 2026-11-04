@@ -161,6 +161,9 @@ export function WorkspaceShell({
   const messagesOlderRef = useRef(0);
   const messagesOlderInFlightRef = useRef(false);
   const messagesMergeRef = useRef(0);
+  const messagesInitialLoadingRef = useRef(false);
+  const messagesDirtyRef = useRef(false);
+  const pendingDeliveryIdsRef = useRef<Set<string>>(new Set());
   const mainRef = useRef<HTMLElement | null>(null);
   const scrollAdjustRef = useRef<{
     conversationId: string;
@@ -335,66 +338,50 @@ export function WorkspaceShell({
     [onSessionLost],
   );
 
-  const loadMessages = useCallback(
-    async (conversationId: string, silent = false) => {
-      const token = ++messagesRequestRef.current;
-      if (!silent) {
-        setMessagesStatus('loading');
-        setMessagesError(null);
-      }
-      try {
-        const result = await api.messages(conversationId, { limit: MESSAGE_PAGE_SIZE });
-        if (
-          token !== messagesRequestRef.current ||
-          selectedConversationIdRef.current !== conversationId
-        ) {
-          return;
-        }
-        setMessages((current) =>
-          silent ? mergeMessages(current, result.messages, 'newer') : result.messages,
-        );
-        setMessagesNextCursor((current) => (silent && current ? current : result.nextCursor));
-        setMessagesNewerCursor(result.newerCursor);
-        setMessagesHasMoreOlder((current) =>
-          silent && current ? current : result.nextCursor !== null,
-        );
-        setMessagesStatus('ready');
-        setMessagesError(null);
-        setMessagesOlderStatus('idle');
-        setMessagesOlderError(null);
-      } catch (caught) {
-        if (token !== messagesRequestRef.current) {
-          return;
-        }
-        if (caught instanceof ApiClientError && caught.status === 401) {
-          onSessionLost();
-          return;
-        }
-        if (silent) {
-          return;
-        }
-        setMessagesStatus('error');
-        setMessagesError(describeApiError(caught));
-      }
-    },
-    [onSessionLost],
-  );
-
   /**
-   * Fetches messages newer than the loaded history and merges them by id. Used
-   * for SSE arrivals: it appends without replacing already loaded older pages.
+   * Refreshes one already loaded message. Delivery transitions (`delivered`,
+   * `read`) target existing rows, which a strict `after` page cannot return; the
+   * event carries the message id so only that row is refetched.
    */
-  const mergeNewerMessages = useCallback(
-    async (conversationId: string) => {
+  const refreshMessage = useCallback(async (conversationId: string, messageId: string) => {
+    if (selectedConversationIdRef.current !== conversationId) {
+      return;
+    }
+    if (messagesInitialLoadingRef.current) {
+      pendingDeliveryIdsRef.current.add(messageId);
+      messagesDirtyRef.current = true;
+      return;
+    }
+    try {
+      const result = await api.message(conversationId, messageId);
       if (selectedConversationIdRef.current !== conversationId) {
         return;
       }
-      if (messagesStatus === 'loading') {
-        // The initial page will already contain these messages.
+      setMessages((current) =>
+        current.map((message) => (message.id === result.message.id ? result.message : message)),
+      );
+    } catch {
+      // A later delivery event or a manual refresh retries the same row.
+    }
+  }, []);
+
+  /**
+   * Fetches messages newer than a cursor and merges them by id. Used for SSE
+   * arrivals and for catch-up after an initial page; it appends without
+   * replacing already loaded older pages.
+   */
+  const mergeNewerMessages = useCallback(
+    async (conversationId: string, startingCursor?: string | null) => {
+      if (selectedConversationIdRef.current !== conversationId) {
+        return;
+      }
+      if (messagesInitialLoadingRef.current) {
+        // The initial response may predate this event; catch up after it lands.
+        messagesDirtyRef.current = true;
         return;
       }
       const token = ++messagesMergeRef.current;
-      let cursor = messagesNewerCursorRef.current;
+      let cursor = startingCursor === undefined ? messagesNewerCursorRef.current : startingCursor;
       try {
         for (let pageIndex = 0; pageIndex < SSE_MERGE_PAGE_LIMIT; pageIndex += 1) {
           const result = await api.messages(conversationId, {
@@ -437,7 +424,82 @@ export function WorkspaceShell({
         // A later SSE event or a manual refresh retries the same keyset window.
       }
     },
-    [messagesStatus],
+    [],
+  );
+
+  const loadMessages = useCallback(
+    async (conversationId: string, silent = false) => {
+      // A silent refresh during the first page would supersede the initial
+      // request and could lose either response. Record the need to catch up and
+      // let the initial page finish first.
+      if (silent && messagesInitialLoadingRef.current) {
+        messagesDirtyRef.current = true;
+        return;
+      }
+      const token = ++messagesRequestRef.current;
+      if (!silent) {
+        messagesInitialLoadingRef.current = true;
+        setMessagesStatus('loading');
+        setMessagesError(null);
+      }
+      try {
+        const result = await api.messages(conversationId, { limit: MESSAGE_PAGE_SIZE });
+        if (
+          token !== messagesRequestRef.current ||
+          selectedConversationIdRef.current !== conversationId
+        ) {
+          return;
+        }
+        // Update the cursor ref before the catch-up uses it: React state is not
+        // applied until after this callback finishes.
+        messagesNewerCursorRef.current = result.newerCursor;
+        setMessages((current) =>
+          silent ? mergeMessages(current, result.messages, 'newer') : result.messages,
+        );
+        setMessagesNextCursor((current) => (silent && current ? current : result.nextCursor));
+        setMessagesNewerCursor(result.newerCursor);
+        setMessagesHasMoreOlder((current) =>
+          silent && current ? current : result.nextCursor !== null,
+        );
+        setMessagesStatus('ready');
+        setMessagesError(null);
+        setMessagesOlderStatus('idle');
+        setMessagesOlderError(null);
+        if (!silent) {
+          messagesInitialLoadingRef.current = false;
+          const dirty = messagesDirtyRef.current;
+          const pendingDeliveryIds = [...pendingDeliveryIdsRef.current];
+          messagesDirtyRef.current = false;
+          pendingDeliveryIdsRef.current.clear();
+          if (dirty) {
+            // The first query may have run before an SSE event that was then
+            // ignored as "loading"; fetch everything after the returned cursor
+            // and refresh any delivery transitions observed in the gap.
+            void mergeNewerMessages(conversationId, result.newerCursor);
+            for (const messageId of pendingDeliveryIds) {
+              void refreshMessage(conversationId, messageId);
+            }
+          }
+        }
+      } catch (caught) {
+        if (token !== messagesRequestRef.current) {
+          return;
+        }
+        if (!silent) {
+          messagesInitialLoadingRef.current = false;
+        }
+        if (caught instanceof ApiClientError && caught.status === 401) {
+          onSessionLost();
+          return;
+        }
+        if (silent) {
+          return;
+        }
+        setMessagesStatus('error');
+        setMessagesError(describeApiError(caught));
+      }
+    },
+    [mergeNewerMessages, onSessionLost, refreshMessage],
   );
 
   /**
@@ -601,6 +663,9 @@ export function WorkspaceShell({
     messagesOlderRef.current += 1;
     messagesOlderInFlightRef.current = false;
     messagesMergeRef.current += 1;
+    messagesInitialLoadingRef.current = false;
+    messagesDirtyRef.current = false;
+    pendingDeliveryIdsRef.current.clear();
     scrollAdjustRef.current = null;
     setConversation(null);
     setConversationError(null);
@@ -646,19 +711,26 @@ export function WorkspaceShell({
       const conversationMatches =
         openConversationId !== null && event.conversationId === openConversationId;
       const repositoryMatches = repositoryId !== null && event.repositoryId === repositoryId;
-      if (openConversationId && (conversationMatches || repositoryMatches)) {
+      if (openConversationId && conversationMatches) {
         void loadConversation(openConversationId, true);
-        // Messages merge by id instead of replacing the loaded history; the
-        // same path covers a delivery update or a replayed SSE event.
-        if (event.type === 'message.created' || event.type === 'message.delivery_changed') {
+        if (event.type === 'message.created') {
+          // New messages are caught up from the newest cursor.
           void mergeNewerMessages(openConversationId);
+        } else if (event.type === 'message.delivery_changed') {
+          // Delivery/read changes belong to an already loaded row; `after`
+          // cannot return it, so refresh the specific message by id.
+          void refreshMessage(openConversationId, event.data.messageId);
         }
+      } else if (openConversationId && repositoryMatches) {
+        // A task/artifact event in another conversation of this repository
+        // still affects the open header and task projection.
+        void loadConversation(openConversationId, true);
       }
       if (repositoryId && repositoryMatches) {
         void loadConversations(repositoryId, { silent: true });
       }
     },
-    [loadConversation, loadConversations, mergeNewerMessages],
+    [loadConversation, loadConversations, mergeNewerMessages, refreshMessage],
   );
 
   const eventHandlerRef = useRef<(event: WorkspaceEvent) => void>(handleWorkspaceEvent);

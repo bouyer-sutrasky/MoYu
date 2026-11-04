@@ -11,6 +11,9 @@
 
 const PREFIX = 'moyu:draft:v1';
 
+/** One-shot UI notes handed from a send/merge to the conversation that loads next. */
+const notices = new Map<string, string>();
+
 export interface DraftPending {
   /** The idempotency key of the send attempt that created this pending state. */
   clientMessageId: string;
@@ -54,6 +57,26 @@ function storage(): StorageLike | null {
     // Access can throw when the browser blocks storage for the origin.
     return null;
   }
+}
+
+export function markDraftNotice(
+  ownerId: string,
+  repositoryId: string,
+  conversationId: string,
+  text: string,
+): void {
+  notices.set(draftKey(ownerId, repositoryId, conversationId), text);
+}
+
+export function consumeDraftNotice(
+  ownerId: string,
+  repositoryId: string,
+  conversationId: string,
+): string | null {
+  const key = draftKey(ownerId, repositoryId, conversationId);
+  const text = notices.get(key) ?? null;
+  notices.delete(key);
+  return text;
 }
 
 export function draftKey(ownerId: string, repositoryId: string, conversationId: string): string {
@@ -191,6 +214,54 @@ export function clearOwnerDrafts(ownerId: string): void {
   } catch {
     // The in-memory copies are already cleared.
   }
+}
+
+/**
+ * Moves a newer draft from a hidden source conversation (merged into a GitHub
+ * conversation) to the target. The target's own draft is never overwritten:
+ * when both exist their text is joined so each remains editable and
+ * recoverable. The source key is removed only after the target write.
+ */
+export function migrateDraftToConversation(
+  ownerId: string,
+  repositoryId: string,
+  sourceConversationId: string,
+  targetConversationId: string,
+): Draft | null {
+  if (sourceConversationId === targetConversationId) {
+    return loadDraft(ownerId, repositoryId, targetConversationId);
+  }
+  const source = loadDraft(ownerId, repositoryId, sourceConversationId);
+  const target = loadDraft(ownerId, repositoryId, targetConversationId);
+  if (!source) {
+    return target;
+  }
+  if (source.text.trim().length === 0) {
+    removeDraft(ownerId, repositoryId, sourceConversationId);
+    return target;
+  }
+  if (target && target.text.trim() === source.text.trim()) {
+    removeDraft(ownerId, repositoryId, sourceConversationId);
+    return target;
+  }
+  const combinedText =
+    target && target.text.trim().length > 0
+      ? `${target.text.replace(/\s+$/, '')}\n\n${source.text}`
+      : source.text;
+  const migrated: Draft = {
+    // A fresh version, so a late response from either conversation cannot
+    // match and clear the migrated text.
+    version: Math.max(target?.version ?? 0, source.version) + 1,
+    text: combinedText,
+    updatedAt: new Date().toISOString(),
+    // The previous sending attempt is settled; text was combined or moved.
+    pending: null,
+  };
+  if (!saveDraft(ownerId, repositoryId, targetConversationId, migrated)) {
+    // The in-memory copy is authoritative when browser storage is blocked.
+  }
+  removeDraft(ownerId, repositoryId, sourceConversationId);
+  return migrated;
 }
 
 export function draftForSend(

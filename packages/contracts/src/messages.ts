@@ -86,6 +86,13 @@ export const messageListQuerySchema = z
 
 export type MessageListQuery = z.infer<typeof messageListQuerySchema>;
 
+/** One message with its current delivery projection, used to refresh an already loaded row. */
+export const messageDetailDataSchema = z.object({
+  message: messageSchema,
+});
+
+export type MessageDetailData = z.infer<typeof messageDetailDataSchema>;
+
 export const messageListDataSchema = z.object({
   messages: z.array(messageSchema),
   /** Pass as `before` to load the next older page; null when no older message exists. */

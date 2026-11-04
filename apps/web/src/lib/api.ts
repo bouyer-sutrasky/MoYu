@@ -9,6 +9,7 @@ import {
   createMessageDataSchema,
   credentialListDataSchema,
   loginVerifyDataSchema,
+  messageDetailDataSchema,
   messageListDataSchema,
   modelListDataSchema,
   registrationVerifyDataSchema,
@@ -27,6 +28,7 @@ import {
   type CreateConversationInput,
   type CreateMessageData,
   type CreateMessageInput,
+  type MessageDetailData,
   type MessageListData,
   type ModelListData,
   type PasskeyCredentialSummary,
@@ -216,6 +218,12 @@ export const api = {
     return request(
       `/api/v1/conversations/${encodeURIComponent(id)}/messages${suffix}`,
       messageListDataSchema,
+    );
+  },
+  message(id: string, messageId: string): Promise<MessageDetailData> {
+    return request(
+      `/api/v1/conversations/${encodeURIComponent(id)}/messages/${encodeURIComponent(messageId)}`,
+      messageDetailDataSchema,
     );
   },
   sendMessage(id: string, input: CreateMessageInput): Promise<CreateMessageData> {

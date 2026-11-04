@@ -6,13 +6,22 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   conversationListDataSchema,
+  messageDetailDataSchema,
   messageListDataSchema,
   type ConversationListData,
   type ConversationSummary,
   type Message,
   type MessageListData,
 } from '@moyu/contracts';
-import { conversations, messages, owners, repositories, sessions, type Database } from '@moyu/db';
+import {
+  conversations,
+  deliveries,
+  messages,
+  owners,
+  repositories,
+  sessions,
+  type Database,
+} from '@moyu/db';
 
 import { buildApp } from '../../src/app';
 import { hashSecret, randomToken } from '../../src/auth/crypto';
@@ -571,5 +580,38 @@ describe('keyset pagination on real PostgreSQL', () => {
       );
       expect(ownerScoped.statusCode).toBe(422);
     }
+  });
+
+  it('refreshes one already loaded message with its current delivery projection', async () => {
+    const targetMessageId = messageId(0);
+    await harness.database.insert(deliveries).values({
+      messageId: targetMessageId,
+      state: 'delivered',
+      deliveredAt: new Date('2026-01-01T00:00:05.000Z'),
+      readAt: new Date('2026-01-01T00:00:06.000Z'),
+    });
+    const response = await harness.app.inject({
+      method: 'GET',
+      url: `/api/v1/conversations/${harness.messageConversationId}/messages/${targetMessageId}`,
+      headers: { cookie: harness.cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    const message = messageDetailDataSchema.parse(envelope(response.json())).message;
+    expect(message.id).toBe(targetMessageId);
+    expect(message.delivery?.state).toBe('read');
+
+    const foreign = await harness.app.inject({
+      method: 'GET',
+      url: `/api/v1/conversations/${conversationId('a', 0)}/messages/${targetMessageId}`,
+      headers: { cookie: harness.cookie },
+    });
+    expect(foreign.statusCode).toBe(404);
+
+    const malformed = await harness.app.inject({
+      method: 'GET',
+      url: `/api/v1/conversations/${harness.messageConversationId}/messages/not-a-uuid`,
+      headers: { cookie: harness.cookie },
+    });
+    expect(malformed.statusCode).toBe(404);
   });
 });

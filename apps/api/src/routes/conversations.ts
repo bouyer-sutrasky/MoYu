@@ -12,9 +12,11 @@ import {
   createMessageDataSchema,
   createMessageInputSchema,
   githubRequirementsIn,
+  messageDetailDataSchema,
   messageListDataSchema,
   messageListQuerySchema,
   modelListDataSchema,
+  uuidSchema,
   type ConversationSummary,
   type MessageListQuery,
   type ModelOption,
@@ -644,6 +646,44 @@ export function registerConversationRoutes(
           newerCursor: page.newerCursor,
           hasMore: page.hasMore,
           hasNewer: page.hasNewer,
+        }),
+      );
+    },
+  );
+
+  /**
+   * One message's current projection. Delivery transitions target an already
+   * loaded row, which a strict `after` page cannot return; the Browser uses
+   * this instead of reloading the whole page.
+   */
+  app.get(
+    '/api/v1/conversations/:id/messages/:messageId',
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const auth = request.auth;
+      if (!auth) {
+        throw ApiProblem.unauthorized();
+      }
+      const params = request.params as { id?: string; messageId?: string };
+      const messageId = params.messageId ?? '';
+      if (!uuidSchema.safeParse(messageId).success) {
+        throw ApiProblem.notFound('Message not found');
+      }
+      const { conversation } = await loadConversationRow(database, auth.owner.id, params.id ?? '');
+      const [row] = await database
+        .select({ message: messages, delivery: deliveries })
+        .from(messages)
+        .leftJoin(deliveries, eq(deliveries.messageId, messages.id))
+        .where(and(eq(messages.id, messageId), eq(messages.conversationId, conversation.id)))
+        .limit(1);
+      if (!row) {
+        throw ApiProblem.notFound('Message not found');
+      }
+      return sendData(
+        reply,
+        request,
+        messageDetailDataSchema.parse({
+          message: toMessage(row.message, row.delivery ?? null),
         }),
       );
     },

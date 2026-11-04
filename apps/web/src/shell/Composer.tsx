@@ -4,7 +4,16 @@ import type { ConversationSummary, CreateMessageData, RepositorySummary } from '
 
 import { Icon } from '../components/Icon';
 import { ApiClientError } from '../lib/api';
-import { draftForSend, loadDraft, removeDraft, saveDraft, type Draft } from '../lib/drafts';
+import {
+  consumeDraftNotice,
+  draftForSend,
+  loadDraft,
+  markDraftNotice,
+  migrateDraftToConversation,
+  removeDraft,
+  saveDraft,
+  type Draft,
+} from '../lib/drafts';
 import { describeApiError } from '../lib/errors';
 import styles from './WorkspaceShell.module.css';
 
@@ -71,7 +80,10 @@ export function Composer({
     const stored = loadDraft(ownerId, repositoryId, conversationId);
     draftRef.current = stored;
     setText(stored?.text ?? '');
-    if (stored?.pending) {
+    const migrationNotice = consumeDraftNotice(ownerId, repositoryId, conversationId);
+    if (migrationNotice) {
+      setNotice(migrationNotice);
+    } else if (stored?.pending) {
       setNotice(
         stored.pending.ambiguous
           ? '上次发送结果未确认。保留原文重试会复用同一标识核对结果，不会重复写入。'
@@ -187,10 +199,45 @@ export function Composer({
       // Reconcile only the exact draft version this request submitted. An edit
       // made while it was in flight keeps the newer text.
       const current = loadDraft(ownerId, repositoryId, conversationId);
-      if (!current || (current.version === draft.version && current.text === draft.text)) {
-        removeDraft(ownerId, repositoryId, conversationId);
-        draftRef.current = null;
+      const sentVersionMatches =
+        !current || (current.version === draft.version && current.text === draft.text);
+      const targetConversationId = result.message.conversationId;
+      if (targetConversationId !== conversationId) {
+        // The API merged this Web conversation into an imported GitHub one.
+        // The source is now a hidden alias, so a newer draft must move to the
+        // target; an existing target draft is joined, never overwritten.
+        if (sentVersionMatches) {
+          removeDraft(ownerId, repositoryId, conversationId);
+        } else {
+          const migrated = migrateDraftToConversation(
+            ownerId,
+            repositoryId,
+            conversationId,
+            targetConversationId,
+          );
+          if (migrated && current && current.text.trim().length > 0) {
+            const migrationText =
+              '消息已合并到关联会话；原会话草稿已迁移到这里，未发送内容没有丢失。';
+            markDraftNotice(ownerId, repositoryId, targetConversationId, migrationText);
+            if (conversationIdRef.current === targetConversationId) {
+              // Navigation already landed on the target before this response;
+              // apply the migrated draft now instead of waiting for a switch.
+              consumeDraftNotice(ownerId, repositoryId, targetConversationId);
+              draftRef.current = migrated;
+              setText(migrated.text);
+              setNotice(migrationText);
+            }
+          }
+        }
         if (conversationIdRef.current === conversationId) {
+          // The merge navigation is about to replace this conversation.
+          draftRef.current = null;
+          setText('');
+        }
+      } else if (sentVersionMatches) {
+        removeDraft(ownerId, repositoryId, conversationId);
+        if (conversationIdRef.current === conversationId) {
+          draftRef.current = null;
           setText('');
         }
       } else {
@@ -202,9 +249,11 @@ export function Composer({
               : null,
         };
         saveDraft(ownerId, repositoryId, conversationId, kept);
-        draftRef.current = kept;
+        if (conversationIdRef.current === conversationId) {
+          draftRef.current = kept;
+        }
       }
-      if (conversationIdRef.current === conversationId) {
+      if (conversationIdRef.current === conversationId && targetConversationId === conversationId) {
         setNotice(result.duplicate ? '这条消息此前已提交，已按原标识核对并刷新会话。' : null);
       }
     } catch (caught) {
@@ -224,7 +273,9 @@ export function Composer({
               },
         };
         saveDraft(ownerId, repositoryId, conversationId, kept);
-        draftRef.current = kept;
+        if (conversationIdRef.current === conversationId) {
+          draftRef.current = kept;
+        }
       }
       if (conversationIdRef.current === conversationId) {
         setError(
