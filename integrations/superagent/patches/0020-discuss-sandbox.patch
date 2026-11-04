@@ -1,0 +1,112 @@
+diff --git a/src/executor/dsh.ts b/src/executor/dsh.ts
+index edcf8eb..8010597 100644
+--- a/src/executor/dsh.ts
++++ b/src/executor/dsh.ts
+@@ -3,7 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
+ import type { SessionId } from '@deepseek-ai/dsh-session'
+ import type { Agent } from '@deepseek-ai/dsh-agent'
+ import { readdirSync, readFileSync } from 'node:fs'
+-import { mkdir, rmdir, stat } from 'node:fs/promises'
++import { mkdir, rm, rmdir, stat, writeFile } from 'node:fs/promises'
+ import { dirname, join } from 'node:path'
+ import { key, latestAssignment, latestReport, liveTicket, runningAssignment, threadKey, waitsForPerson } from '../core/index.ts'
+ import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Executor, Mandate, PolicyEffect, Ticket, TicketInput, Trigger }
+@@ -553,6 +553,13 @@ export class DshExecutor implements Executor {
+     const source = sourceTrigger(this.host, ticket)
+     const workspace = ticket.execution?.directory ?? ''
+     if (!current()) return
++    // A configured external discussion command runs the model in its own
++    // environment (separate UID and read-only worktree); it never shares the
++    // execute worker's credentials.
++    if (ticket.mode === 'discuss' && this.host.store.settings().executor.discussCommand.trim()) {
++      await this.launchDiscussSandbox(ticket, assignment, this.host.store.settings().executor.discussCommand.trim())
++      return
++    }
+     // A frozen model that the provider no longer serves refuses this launch; the ticket is reported failed and never runs on
+     // the instance default instead. The model itself is chosen by `Sessions.ensure` below.
+     if (ticket.model) await verifyTicketModel(this.host.context, ticket.model)
+@@ -593,6 +600,36 @@ export class DshExecutor implements Executor {
+       () => { this.host.engine.assignmentStarted(ticket.id, assignment.id) })
+     this.host.engine.assignmentStarted(ticket.id, assignment.id)
+   }
++  /** Runs a discussion in a separate, read-only environment and reports its plan. */
++  private async launchDiscussSandbox(ticket: Ticket, assignment: Assignment, command: string): Promise<void> {
++    const source = sourceTrigger(this.host, ticket)
++    const directory = ticket.execution?.directory ?? ''
++    if (!directory) {
++      this.host.engine.report(ticket.id, { state: 'failed', summary: 'The discussion has no worktree' })
++      return
++    }
++    if (!await stat(directory).then(() => true, () => false)) {
++      await this.prepareDirectory(ticket)
++      if (!liveTicket(this.host.store.tickets.get(ticket.id) ?? ticket)) return
++    }
++    const promptFile = join(dirname(directory), `.discuss-${assignment.id}.txt`)
++    const prompt = [`Read-only worktree: /srv/m4-discuss/workspace`, ticket.execution?.assignment ?? '',
++      source?.text ? `Source request:
++${source.text}` : ''].filter(Boolean).join('\n\n')
++    this.host.engine.assignmentStarted(ticket.id, assignment.id)
++    try {
++      await writeFile(promptFile, prompt, { mode: 0o644 })
++      const output = await runAsWorker(this.host.context.subprocess, ['sh', '-c', command], dirname(directory),
++        AbortSignal.any([this.host.lifetime, AbortSignal.timeout(15 * 60_000)]),
++        { DSH_DISCUSS_WORKTREE: directory, DSH_DISCUSS_PROMPT_FILE: promptFile })
++      this.host.engine.report(ticket.id, { state: 'ready', summary: output.trim() || 'Discussion completed.' })
++    } catch (error) {
++      this.host.engine.report(ticket.id, { state: 'failed', summary: `Discussion sandbox failed: ${error instanceof Error ? error.message : String(error)}` })
++    } finally {
++      await rm(promptFile, { force: true })
++    }
++  }
++
+   /** Returns the stored ticket for `agent` when it is a worker session, or undefined otherwise. */
+   private ticketOf(agent: Agent): Ticket | undefined {
+     const ticketId = ticketOfSession(agent.id)
+diff --git a/src/policy.ts b/src/policy.ts
+index b6a66cf..a09dc4a 100644
+--- a/src/policy.ts
++++ b/src/policy.ts
+@@ -93,6 +93,8 @@ export const ExecutorConfigSchema = z.object({
+   maxWorkers: z.number().int().min(LIMITS.maxWorkers.min).max(LIMITS.maxWorkers.max).default(3),
+   directory: z.string().trim().refine(path => path === '' || path.startsWith('/'), 'An absolute path, or empty for <stateDir>/work').default(''),
+   prepare: z.string().max(LIMITS.prepareCommand).default(''),
++  /** Optional environment-isolated discussion command; empty keeps the in-process read-only session. */
++  discussCommand: z.string().max(LIMITS.prepareCommand).default(''),
+   blockedCommands: z.array(CommandNameSchema).default([]),
+ }).strict()
+ export const SourceInstanceSchema = z.object({ enabled: z.boolean().default(true), config: z.record(z.string(), z.unknown()).default({}) }).strict()
+diff --git a/tests/panel-settings.spec.tsx b/tests/panel-settings.spec.tsx
+index 0208e06..6804c1e 100644
+--- a/tests/panel-settings.spec.tsx
++++ b/tests/panel-settings.spec.tsx
+@@ -54,7 +54,7 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
+   expect([...document.querySelectorAll('#dt-worker-model-efforts option')].map(option => option.getAttribute('value'))).toEqual(['high'])
+   await click(zh.save)
+   expect(server.settings.executor).toEqual({ maxWorkers: 5, directory: '/srv/work',
+-    prepare: 'git worktree add "$DSH_SUPERAGENT_DIR"', blockedCommands: ['gh-personal', 'gh.other'], model: { provider: 'worker-provider',
++    prepare: 'git worktree add "$DSH_SUPERAGENT_DIR"', blockedCommands: ['gh-personal', 'gh.other'], discussCommand: '', model: { provider: 'worker-provider',
+       model: 'worker-model', reasoningEffort: 'high' } })
+   expect(server.requests.filter(request => request.method === 'PUT').map(request => request.path)).toEqual(['settings/eval',
+     'settings/executor'])
+diff --git a/tests/policy.spec.ts b/tests/policy.spec.ts
+index 4a25b14..5fe30b5 100644
+--- a/tests/policy.spec.ts
++++ b/tests/policy.spec.ts
+@@ -241,7 +241,7 @@ describe('settings migration', () => {
+       rules: [{ id: 'visual', name: 'V', enabled: true, instruction: 'x' }],
+       sources: { feishu: { allowed: [{ id: MEMBER, name: 'Alice' }, { id: 'ou_bob', name: 'Bob' }], syncChat: CHAT, admission: {} }, github: { allowed: [{ id: 'alice' }, { id: 'carol' }], admission: {} } },
+     })
+-    expect(saved).toMatchObject({ paused: false, executor: { model: null, maxWorkers: 2, directory: '', prepare: '', blockedCommands: [] } })
++    expect(saved).toMatchObject({ paused: false, executor: { model: null, maxWorkers: 2, directory: '', prepare: '', blockedCommands: [], discussCommand: '' } })
+     expect(saved.sources.feishu).toEqual({ enabled: true, config: { chats: [], directMessages: true } })
+     expect(SettingsSchema.parse(migrateSettings(saved))).toEqual(saved)
+     expect(SettingsSchema.parse(migrateSettings({ executor: { maxWorkers: 2, paused: true } }))).toMatchObject({ paused: true, executor: { maxWorkers: 2 } })
+@@ -254,7 +254,7 @@ describe('settings migration', () => {
+       sources: { feishu: feishuSource({ chats: [{ chatId: CHAT, listen: 'mentions' }, { chatId: OBSERVED, listen: 'all' }], directMessages: false }), github: { enabled: true, config: { pollSeconds: 120 } } },
+       policy: { rules: [], sources: { feishu: { allowed: [{ id: MEMBER, name: 'A' }], admission: {} }, github: { allowed: [{ id: 'a' }], admission: {} } } },
+       eval: { mode: 'auto', timeoutSeconds: 90, model: { provider: 'p', model: 'm' } },
+-      executor: { model: null, maxWorkers: 5, directory: '', prepare: '', blockedCommands: [] },
++      executor: { model: null, maxWorkers: 5, directory: '', prepare: '', blockedCommands: [], discussCommand: '' },
+     })
+     expect(migrateSettings(migrated)).toEqual(migrated)
+   })

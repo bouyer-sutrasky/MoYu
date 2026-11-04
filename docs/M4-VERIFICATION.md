@@ -46,6 +46,7 @@ integrations/superagent/build-patched.sh \
 | `0017-docs-process-tree-test.patch` | 13 | 补文档测试索引 |
 | `0018-github-base-head.patch` | 20 | GitHub 来源 Ticket 的 prepare 使用 HEAD 作为起始 |
 | `0019-pause-child-processes.patch` | 45 | 暂停等待暂停前的子进程退出，残留 PID 时不判 stopped |
+| `0020-discuss-sandbox.patch` | 78 | 讨论在独立 UID/只读快照/无写凭据环境中运行 |
 
 上游测试（干净环境，`corepack pnpm@11.7.0`）：
 
@@ -188,8 +189,8 @@ Bridge 在清除暂停前检查目录、`.git` 链接及目标存在；平台在
 
 ### 最终制品
 
-- 固定上游：`6337fc823ce20251c8de8085948165c81aaa701e`，补丁 `0001`–`0019`。
-- 最终构建目录 `/root/src/upstream/m4-final-verify`；`lib/index.js` sha256 `dccd47fc7063e7881da619181a5a5120955bd7f21023383f60e32f40541175e5`；`package.json` `d428e669805ea1dfb6a4900bddbffe3cafb8f06a0b1eb139266c2b2f6b94b021`。
+- 固定上游：`6337fc823ce20251c8de8085948165c81aaa701e`，补丁 `0001`–`0020`。
+- 最终构建目录 `/root/src/upstream/m4-final-verify`；`lib/index.js` sha256 `a6369acc7c21fc492d52f8bff24f9c7e57917587fa675c02376a3b2e7092297a`；`package.json` `d428e669805ea1dfb6a4900bddbffe3cafb8f06a0b1eb139266c2b2f6b94b021`。
 - 上游定向测试：`discussion`、`bridge-control`、`pause`、`process-tree`、`sources` 相关用例通过；全量结果见 PR/CI。
 
 
@@ -212,7 +213,10 @@ Bridge 在清除暂停前检查目录、`.git` 链接及目标存在；平台在
 - `applySnapshot` 现在与事件、轮询、重启核对共用 `pauseEvidenceProven`：`stopped` 但缺时间、worker 非 idle、残留 jobs/subagents/PID 时置 `blocked`，不写 `stopped_at`。
 - 测试：resume 409 后快照 state=stopped 且 `agentStatus: running`、`jobsAfter:[…]` 时平台为 `blocked`，`stoppedAt` 为空。
 
-### 讨论环境级边界（未完成，阻塞）
+### 讨论环境级边界（已实现）
 
-- 当前讨论 worker 与执行 worker 仍在同一个 harness 进程、同一 UID（隔离实例为 root），worktree 为可写的 root 700，GitHub/Bridge 凭据对同 UID 可读；`read` 的路径守卫、工具 allow-list、read-only preset 只是进程内边界，不满足 Issue 要求的“该 runtime 不挂写凭据、不可写工作目录”的环境级保证。
-- 要达到该要求，需要独立的讨论 runtime 进程/容器：不同 UID、独立 mount namespace、worktree 只读 bind、凭据不挂载；现有 DSH in-process Worker Session 无法在单个进程内提供该隔离。该项需架构/范围决策，未在本轮声称完成。
+- 独立讨论命令（`executor.discussCommand`，补丁 0020）在单独进程中运行：主 runtime 以 root 生成 worktree 的只读快照 `/srv/m4-discuss/workspace`（root 所有，目录 555、文件 444），随后 `setpriv` 到专用用户 `moyu-discuss`（uid 996）启动 headless DSH；讨论进程不继承 GitHub/Bridge 凭据，也无 `/root` 访问权限。
+- 讨论 profile 禁用 `tool-bash`、`tool-pwsh`、`tool-jobs`、subagent、workflow 与 working-directory，`tool-fs` 仅保留 read/readImage，`sandbox-policy` 为 `read-only` 且 `workspaceRoot` 固定为快照目录。
+- 实跑：新建 discuss task `f3db8fe6…`，平台收到 plan 并进入 `awaiting_review`；证据显示 host uid 0、讨论 uid 996、workdir `root root 755`/文件 444、`root_env_readable=no`、`worktree_write=denied`、`ssh_key_readable=no`，模型输出明确“没有写工具，不能写文件或开 PR”。见 [`live-discuss-sandbox.log`](evidence/m4/live-discuss-sandbox.log)。
+- 讨论使用只读快照而非直接挂载可写 worktree；执行阶段仍由主 runtime 使用原 worktree。讨论中的 plan 路径为 `/srv/m4-discuss/workspace`。
+- 本项改变了讨论执行路径（新进程/UID/profile），已获所有者批准；3082 bootstrap 与生产库未改动。

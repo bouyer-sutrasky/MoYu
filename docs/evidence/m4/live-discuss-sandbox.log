@@ -1,0 +1,14 @@
+M4 environment-isolated discussion runtime (final build)
+at=2026-11-04T06:11Z
+ticket=f3db8fe61f597147f3a9429669a7276a
+platform_state=awaiting_review
+build_lib_sha256=a6369acc7c21fc492d52f8bff24f9c7e57917587fa675c02376a3b2e7092297a
+host_uid=0
+discuss_identity=uid=996(moyu-discuss) gid=987(moyu-discuss)
+discuss_workdir=root root 755 /srv/m4-discuss/workspace
+discuss_workdir_files=root root 444
+root_env_readable=no
+worktree_write=denied
+ssh_key_readable=no
+profile=tool-bash/pwsh/jobs/subagent/workflow/working-directory disabled; tool-fs write/edit false; sandbox-policy read-only
+result_excerpt=## Inspection findings ... no SHA, no .git, no CI ... cannot write the file or open a PR: there are no write/edit tools

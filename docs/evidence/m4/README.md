@@ -14,6 +14,7 @@
 | `live-github-import-dedupe.log` | 真人 GitHub @ 导入、单 task、notice、cursor 继续 |
 | `live-web-continuation.log` | 停止中消息 stored、resume 后 read、回复来源 |
 | `live-duplicate-queue.log` | 重复 runtime Ticket 的持久化暂停与无重复副作用 |
+| `live-discuss-sandbox.log` | 独立 UID/只读快照/无写凭据的讨论 runtime |
 | `upstream-0009-tests.log` / `upstream-0010-tests.log` | 0009/0010 的上游定向回归 |
 
 环境：`/root/.dsh-m4`（profile `m4`、Web 3292、Bridge 3291），平台 API/dispatcher 4302，测试仓库
