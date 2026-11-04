@@ -241,7 +241,7 @@ export class InstanceManager {
 
     if (row.state === 'starting') {
       const bridgeUp = row.bridgePort ? await portOpen(row.bridgePort) : false;
-      if (rootAlive && bridgeUp) {
+      if (rootAlive && bridgeUp && row.desiredState === 'online') {
         await this.store.updateInstance(row.repositoryId, {
           state: 'online',
           lastHealthAt: new Date(),
@@ -965,7 +965,11 @@ export class InstanceManager {
       errorDetail: null,
     });
     await this.store.syncRepositoryStatus(instance.repositoryId, 'stopping');
-    const result = await stopProcessTree(pid, this.config.stopTimeoutMs, stored);
+    const result = await stopProcessTree(pid, this.config.stopTimeoutMs, {
+      rootPid: instance.pid,
+      pgid,
+      members: snapshot.members,
+    });
     const portClosed = instance.bridgePort
       ? await waitForPortClosed(instance.bridgePort, 5000)
       : true;

@@ -272,7 +272,11 @@ export async function stopProcessTree(
     if (identity && identityAlive(identity)) merged.set(identityKey(identity), identity);
   };
   const refresh = () => {
-    const snapshot = collectOwnership(rootPid, stored);
+    const snapshot = collectOwnership(rootPid, {
+      rootPid: stored?.rootPid ?? rootPid,
+      pgid: stored?.pgid ?? rootPid,
+      members: [...(stored?.members ?? []), ...merged.values()],
+    });
     for (const member of snapshot.members) merge(member);
     for (const member of groupMembers(snapshot.pgid ?? rootPid)) merge(member);
     return snapshot.pgid;

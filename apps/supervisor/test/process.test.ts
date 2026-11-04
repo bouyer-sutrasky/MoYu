@@ -11,6 +11,7 @@ import {
   childPids,
   collectOwnership,
   descendants,
+  identifyProcess,
   isTransientPolling,
   pidAlive,
   portFree,
@@ -126,6 +127,10 @@ describe('supervisor process evidence', () => {
     const polling = spawnDetached(gh, ['30']);
     if (!polling.pid) throw new Error('no polling pid');
     expect(isTransientPolling(`/tmp/${'gh-agent'} api`)).toBe(true);
+    await waitUntil(
+      () => isTransientPolling(identifyProcess(polling.pid ?? 0)?.command ?? ''),
+      3000,
+    );
     expect(retainedDescendants(process.pid).some((member) => member.pid === polling.pid)).toBe(
       false,
     );
