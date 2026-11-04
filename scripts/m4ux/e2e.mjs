@@ -1930,6 +1930,143 @@ async function functional(browser, api, seeded) {
     'identical source text survives B retry by original key, one row, refresh',
   );
 
+  // 7c4. The source send fails before the server commits, the user restores
+  // the pending body (moving the new edit to deferredText), then retries the
+  // original URL. The merge must carry that deferred edit to the target.
+  await openConversation(page, 'GitHub 汇入任务');
+  if ((await page.getByRole('button', { name: '清除草稿' }).count()) > 0) {
+    await page.getByRole('button', { name: '清除草稿' }).click();
+  }
+  const sourceH = await createWebConversation(baseURL, token, seeded.repositoryA);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openConversationById(page, sourceH);
+  const restoreY = `恢复后未发送 Y ${Date.now()}`;
+  const beforeServerGate = makeGate();
+  let beforeServerHeld;
+  const beforeServerHeldPromise = new Promise((resolve) => {
+    beforeServerHeld = resolve;
+  });
+  const beforeServerPattern = new RegExp(`/conversations/${sourceH}/messages$`);
+  const beforeServerHandler = async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue();
+      return;
+    }
+    beforeServerHeld();
+    await beforeServerGate.promise;
+    await route.abort('failed');
+  };
+  await page.route(beforeServerPattern, beforeServerHandler);
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(mergeUrl);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await beforeServerHeldPromise;
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(restoreY);
+  beforeServerGate.release();
+  await page.getByRole('button', { name: '恢复待确认内容' }).waitFor();
+  await page.getByRole('button', { name: '恢复待确认内容' }).click();
+  await waitForComposer(page, mergeUrl);
+  await page
+    .getByText(/合并来源|未发送内容已保留/)
+    .first()
+    .waitFor();
+  await page.unroute(beforeServerPattern, beforeServerHandler);
+  const mergeUrlCountBefore = await countMessages(currentDatabase.url, seeded.githubId, mergeUrl);
+  const mergeRetry = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' && response.url().includes(`/${sourceH}/messages`),
+  );
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await mergeRetry;
+  await page.getByRole('heading', { name: 'GitHub 汇入任务', exact: true }).waitFor();
+  await waitForComposer(page, restoreY);
+  assert(
+    (await countMessages(currentDatabase.url, seeded.githubId, mergeUrl)) ===
+      mergeUrlCountBefore + 1,
+    'after: original URL merged exactly once',
+  );
+  assert(
+    (await countMessages(currentDatabase.url, seeded.githubId, restoreY)) === 0,
+    'after: deferred Y was not sent during the merge retry',
+  );
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openConversation(page, 'GitHub 汇入任务');
+  await waitForComposer(page, restoreY);
+  await page.getByRole('button', { name: '清除草稿' }).click();
+  record(
+    'restored deferred edit survives merge retry',
+    'pass',
+    'abort-before-server, restore pending, retry URL by key; Y moves to target',
+  );
+
+  // 7c5. The first request committed and merged but its response was lost.
+  // Restore + retry by key must still carry the deferred edit to the target.
+  const sourceI = await createWebConversation(baseURL, token, seeded.repositoryA);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openConversationById(page, sourceI);
+  const lostMergeY = `提交丢响应 Y ${Date.now()}`;
+  const lostMergeGate = makeGate();
+  let lostMergeHeld;
+  const lostMergeHeldPromise = new Promise((resolve) => {
+    lostMergeHeld = resolve;
+  });
+  const lostMergePattern = new RegExp(`/conversations/${sourceI}/messages$`);
+  const lostMergeHandler = async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue();
+      return;
+    }
+    await route.fetch();
+    lostMergeHeld();
+    await lostMergeGate.promise;
+    await route.abort('failed');
+  };
+  await page.route(lostMergePattern, lostMergeHandler);
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(mergeUrl);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await lostMergeHeldPromise;
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(lostMergeY);
+  lostMergeGate.release();
+  // The server committed the merge before the response was lost. Depending on
+  // whether the alias GET lands first, the UI may already have moved to the
+  // target with the source draft intact; otherwise restore it on the source.
+  await page.waitForTimeout(1_000);
+  const lostRestore = page.getByRole('button', { name: '恢复待确认内容' });
+  if ((await lostRestore.count()) > 0) {
+    await lostRestore.click();
+  }
+  await waitForComposer(page, mergeUrl);
+  await page.unroute(lostMergePattern, lostMergeHandler);
+  const lostMergeUrlCountBefore = await countMessages(
+    currentDatabase.url,
+    seeded.githubId,
+    mergeUrl,
+  );
+  const lostMergeRetry = page.waitForResponse(
+    (response) => response.request().method() === 'POST' && response.url().includes('/messages'),
+  );
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await lostMergeRetry;
+  await page.getByRole('heading', { name: 'GitHub 汇入任务', exact: true }).waitFor();
+  await waitForComposer(page, lostMergeY);
+  assert(
+    (await countMessages(currentDatabase.url, seeded.githubId, mergeUrl)) ===
+      lostMergeUrlCountBefore,
+    'after: committed-but-lost URL was not duplicated by the retry',
+  );
+  assert(
+    (await countMessages(currentDatabase.url, seeded.githubId, lostMergeY)) === 0,
+    'after: committed-but-lost deferred Y was not sent',
+  );
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openConversation(page, 'GitHub 汇入任务');
+  await waitForComposer(page, lostMergeY);
+  await page.getByRole('button', { name: '清除草稿' }).click();
+  record(
+    'deferred edit survives committed-but-lost merge',
+    'pass',
+    'response lost after commit; retry by key restores Y without duplicate URL',
+  );
+
   // 7d. Merging while the user moved to another conversation: the late result
   // must not touch the current composer, and the source hides without losing
   // unsent text (there is no newer draft in this run).

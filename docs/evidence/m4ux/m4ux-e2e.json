@@ -1,5 +1,5 @@
 {
-  "at": "2026-11-04T12:34:07.666Z",
+  "at": "2026-11-04T13:27:29.376Z",
   "baseSha": "40e857a9081b281fb3a93ebaea6986e0101f005d",
   "results": [
     {
@@ -106,6 +106,16 @@
       "name": "merge with a lost target response",
       "status": "pass",
       "detail": "identical source text survives B retry by original key, one row, refresh"
+    },
+    {
+      "name": "restored deferred edit survives merge retry",
+      "status": "pass",
+      "detail": "abort-before-server, restore pending, retry URL by key; Y moves to target"
+    },
+    {
+      "name": "deferred edit survives committed-but-lost merge",
+      "status": "pass",
+      "detail": "response lost after commit; retry by key restores Y without duplicate URL"
     },
     {
       "name": "merge while switching conversation",

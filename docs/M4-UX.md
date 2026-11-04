@@ -57,10 +57,15 @@
 - 发送目标在按下发送时捕获；请求返回后不再读取“当前选中会话”，因此切到 B 不会把 A 的请求发到 B，
   也不会清掉 B 的输入。发送中状态按会话分别记录请求序号，A 的迟到 finally 不能解锁 B，也不能让 A 重入。
 - 服务端把空 Web 会话合并进已有 GitHub 会话时，回执的 `message.conversationId` 是 target。源会话随后
-  从列表隐藏，较新的源草稿迁到 target。文本相等不代表同一草稿：源草稿即使与 target pending 原文/现有
-  文本相同，也按独立代际保留。target 无 pending 时两段文本用空行连接并生成新代际；target 有 pending 时
-  不改写其文本/快照，源文本存入 `deferredText`，等 target 本次发送成功后再提升为可编辑文本。
-  源 key 只在 target 写入后删除；迟到回执只在当前会话仍是源/目标时改输入，已切走时仅整理存储。
+  从列表隐藏。合并结算走统一协议：先按发送快照排除本次已确认发送的正文，再取源草稿剩余的
+  editable + `deferredText`，最后迁入 target；不再用“文本是否相等”推断同一草稿。源草稿即使与 target
+  pending 原文/现有文本相同，也按独立代际保留。target 无 pending 时所有未发送内容用空行连接并生成新代际；
+  target 有 pending 时不改写其文本/快照/key，源剩余内容存入 `deferredText`，等 target 本次发送成功后
+  再提升为可编辑文本。源 key 只在 target 写入后删除；迟到回执只在当前会话仍是源/目标时改输入，已切走时
+  仅整理存储。
+- 当合并请求的响应丢失，后续 GET 会把源会话解析成 target：前端在 id 切换前调用 alias 迁移。target 无
+  草稿时源状态原样搬过去（保留 pending key，可在 target 按原 key 核对）；target 有 pending 时只搬源未发送
+  内容到 deferred；target 有普通草稿时把 target 内容也放入 deferred，等源发送结算后恢复。
 - 存储策略：显式退出清除该所有者全部草稿；会话内“清除草稿”立即删除本地记录（包括 pending/deferred）；
   会话丢失（401）不清草稿，重新登录后可继续。localStorage 不可用时使用内存副本，当前会话内的输入不丢失、
   发送不失败。
