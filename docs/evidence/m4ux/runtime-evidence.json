@@ -1,0 +1,85 @@
+{
+  "at": "2026-11-04T11:30:02.255Z",
+  "artifact": "/root/src/upstream/m4ux-final-verify",
+  "profile": {
+    "dshHome": "/root/.dsh-m4ux-fresh4",
+    "bridgePort": 3399,
+    "webPort": 3400,
+    "mode": "started"
+  },
+  "artifactFiles": {
+    "lib/index.js": "7655a8809e3d1ddf064da82bd80fab566adaa3a54a0b88efaa661b903b1debdc",
+    "package.json": "d428e669805ea1dfb6a4900bddbffe3cafb8f06a0b1eb139266c2b2f6b94b021"
+  },
+  "repository": "bouyer-sutrasky/m4-github-probe",
+  "bridge": {
+    "unauthorisedStatus": 401,
+    "protocolVersion": "moyu-bridge/1",
+    "upstream": {
+      "package": "dsh-superagent",
+      "version": "0.1.0",
+      "commit": "6337fc823ce20251c8de8085948165c81aaa701e"
+    },
+    "capabilities": {
+      "trigger": true,
+      "events": true,
+      "tickets": true,
+      "models": true,
+      "branches": true,
+      "pause": true,
+      "resume": true,
+      "retry": true,
+      "readOnlyDiscussion": true,
+      "start": true
+    },
+    "branchCount": 2,
+    "branchNames": [
+      "agent/add-human-probe-line-ce16cfe5cc44",
+      "main"
+    ],
+    "hasMore": false
+  },
+  "platform": {
+    "branchStatus": "ready",
+    "branchNames": [
+      "agent/add-human-probe-line-ce16cfe5cc44",
+      "main"
+    ],
+    "invalidBranchStatus": 422,
+    "invalidBranchMessage": "The base branch no longer exists: m4ux-missing-706b8c8f-c736-4600-965d-ff0fd6f8bf2d",
+    "savedBranch": "main",
+    "savedMode": "execute"
+  },
+  "results": [
+    {
+      "name": "runtime start",
+      "status": "pass",
+      "detail": "/root/src/upstream/m4ux-final-verify on web 3400 / bridge 3399"
+    },
+    {
+      "name": "GitHub source configured",
+      "status": "pass",
+      "detail": "bouyer-sutrasky/m4-github-probe"
+    },
+    {
+      "name": "real Bridge branches",
+      "status": "pass",
+      "detail": "2 branches: agent/add-human-probe-line-ce16cfe5cc44, main"
+    },
+    {
+      "name": "platform branch list",
+      "status": "pass",
+      "detail": "2 branches"
+    },
+    {
+      "name": "platform rejects a deleted branch",
+      "status": "pass",
+      "detail": "The base branch no longer exists: m4ux-missing-706b8c8f-c736-4600-965d-ff0fd6f8bf2d"
+    },
+    {
+      "name": "platform saves a valid branch preference",
+      "status": "pass",
+      "detail": "main saved and reloaded"
+    }
+  ]
+}

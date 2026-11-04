@@ -10,7 +10,7 @@
 | 基线 | `origin/main` = `40e857a9081b281fb3a93ebaea6986e0101f005d` |
 | 分支 | `agent/history-drafts-ux-fbd94c1fbe39` |
 | 宿主 | Ubuntu 24.04.2 LTS，4 vCPU / 16 GB |
-| 构建运行时 | Node 22.23.3（宿主；CI 按 `.node-version` 24.22.2），pnpm 11.7.0（corepack） |
+| 构建运行时 | Node 24.22.2（`/opt/moyu-node24/bin`，与 CI `.node-version` 一致）；宿主默认 22.23.3，pnpm 11.7.0（corepack） |
 | PostgreSQL | 16.15；所有集成测试与浏览器验收使用 `127.0.0.1:55432` 的一次性库；生产库 `moyu` 未连接、未迁移 |
 | 浏览器 | Playwright 1.56.1 Chromium headless，1440×900 / 390×844，浅色与深色 |
 | 平台 | 本分支构建产物 `apps/api/dist/server.js` 与 `apps/web/dist`，隔离端口 4400 |
@@ -35,12 +35,23 @@ corepack pnpm@11.7.0 -r --if-present build                # exit 0
 | 包 | 结果 |
 | --- | --- |
 | `@moyu/db` | 8 文件、34 测试通过（含 0009 rollback → reapply） |
-| `@moyu/api` | 10 文件、59 测试通过（含历史/任务分页、偏好、合并别名发送路径） |
+| `@moyu/api` | 10 文件、60 测试通过（含历史/任务分页、偏好、合并别名发送路径、单条消息投递刷新） |
 | `@moyu/dispatcher` | 2 文件、27 测试通过（M4 停止/继续、投递/read、GitHub 导入回归） |
 
 并发合并回归：`conversation-merge.integration.test.ts` 的「相同 clientMessageId 并发重试」连续 15 次
 单独运行全部通过（修复前 CI 曾出现 202/409 的假冲突；现会话与任务改为单条 join 读取，避免并发合并
 删除源任务时读到“已合并但无任务”的中间态）。
+
+### 返修轮 P1 回归（2026-11-04）
+
+针对 Issue #23 审查意见一次补齐，先建立可失败用例再修复：
+
+| 审查项 | 修复 | 回归证据 |
+| --- | --- | --- |
+| 已加载消息的 delivered/read 不随 SSE 刷新 | `message.delivery_changed` 按 event.messageId 调用单条消息接口并原地替换；新消息仍走 `after` 追赶 | 真实 dispatcher（stored→delivered→read）+ 真实 SSE + 浏览器，页面不刷新 |
+| 初次消息加载期间 SSE 被丢弃 | 记 dirty 与待刷新 id，首屏落地后按返回的 `newerCursor` 补查；切会话清空/隔离 | 拦截首屏 GET（服务端查询已执行）→ POST 消息并确认 SSE → 释放旧响应 → 最终 1 条且无重复 |
+| 合并跳转使较新草稿滞留在隐藏源会话 | 合并回执把较新源草稿迁移到 target；target 已有草稿时拼接并提升版本，不覆盖任一段；迟到回执只在当前会话匹配时改输入 | 合并+编辑、目标已有草稿、合并+切会话、双会话同时发送+旧响应晚到 |
+| 0021 未在真实 runtime 验收 | 独立 `/root/.dsh-m4ux` profile 加载固定 `/root/src/upstream/m4ux-final-verify`，真实 Bearer 与目标仓库分支；平台 API 保存/拒绝失效分支 | [`evidence/m4ux/runtime-evidence.json`](evidence/m4ux/runtime-evidence.json) |
 
 分页测试覆盖：250 条消息中 3 条共享同一时间戳、逐页 limit=7 全量遍历、`before`/`after` 双向、
 微秒精度时间戳、非法/跨会话/跨仓库游标 422、105 个会话分页与仓库隔离、乱序/迟到页由前端 token
@@ -78,6 +89,31 @@ integrations/superagent/build-patched.sh \
 | `package.json` | `d428e669805ea1dfb6a4900bddbffe3cafb8f06a0b1eb139266c2b2f6b94b021` |
 | `cordis.patch.yml` | `c91fab94d3a27c7068b5f5391907fb4d69342112ad50f987fdfed9985c2c7905` |
 
+## 独立 runtime 的 0021 验收
+
+固定制品 `/root/src/upstream/m4ux-final-verify`（pristine + 0001–0021）在全新独立 DSH profile
+`/root/.dsh-m4ux-fresh4`、独立端口 3399（Bridge）/3400（Web）、独立状态目录与一次性 PostgreSQL 中
+启动；未重启、未改动生产 3082 实例与生产数据库。
+
+```bash
+M4UX_DSH_HOME=/root/.dsh-m4ux-fresh4 M4UX_RUNTIME_BRIDGE_PORT=3399 \
+M4UX_RUNTIME_WEB_PORT=3400 M4UX_PLATFORM_PORT=4407 \
+TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
+  node scripts/m4ux/runtime-evidence.mjs
+# 脚本创建 profile、安装固定制品、启动 runtime、通过管理 API 配置 GitHub Source，
+# 再用一次性平台库验收分支与偏好；--reuse-runtime 可复用已启动的隔离实例
+```
+
+实测：
+
+- 无 Bearer → 401；`capabilities.branches = true`；`upstream.commit =
+  6337fc823ce20251c8de8085948165c81aaa701e`。
+- `GET /bridge/v1/branches` 返回真实目标仓库分支（`main` 与
+  `agent/add-human-probe-line-ce16cfe5cc44`，2 条，`hasMore:false`）。
+- 平台 API 指向该 Bridge 后：分支目录 `status:'ready'`；保存 `main`/execute 成功并刷新恢复；
+  选择不存在的分支返回 422，消息为 `The base branch no longer exists: …`，不落库。
+- 制品 sha256 与请求/响应摘要见 [`evidence/m4ux/runtime-evidence.json`](evidence/m4ux/runtime-evidence.json)。
+
 ## 真实浏览器验收
 
 命令：
@@ -87,7 +123,7 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
   node scripts/m4ux/e2e.mjs --skip-build
 ```
 
-结果：**11/11 通过**，JSON 在 [`evidence/m4ux/m4ux-e2e.json`](evidence/m4ux/m4ux-e2e.json)。脚本使用一次性
+结果：**17/17 通过**，JSON 在 [`evidence/m4ux/m4ux-e2e.json`](evidence/m4ux/m4ux-e2e.json)。脚本使用一次性
 PostgreSQL、真实 API 进程、真实 Chromium 与基线/分支两份真实构建；Before 由 `/root/src/m4ux-before`
 的 `40e857a` 构建产生，After 为本分支构建，两者同一数据库、同一视口、主题与场景。
 
@@ -96,6 +132,12 @@ PostgreSQL、真实 API 进程、真实 Chromium 与基线/分支两份真实构
 | 消息历史分页 | 首屏 100；逐页加载到 250；页数终止；250 个消息 id 唯一；滚动前后锚点行位置差 ≤2px |
 | 迟到旧页 | 切换会话后释放上一会话的 `before` 请求，新列表仍为 100 条，无污染 |
 | SSE 合并 | 已加载 250 条后 SSE 追加 1 条，得到 251 条且无重复，前 50 条历史仍在 |
+| 投递/read 就地刷新 | 打开仓库 B 的 stored 消息，真实 dispatcher 推进 delivered/read，SSE 到达后同一行改为“执行器已接收/已读取”，无刷新 |
+| 初次加载窗口 SSE | 首屏查询完成后 hold 响应，POST 新消息并收到 SSE，再释放旧响应；新消息最终可见且只 1 条 |
+| 合并草稿迁移 | 新 Web 会话首条发送 GitHub 需求 URL 期间继续编辑，跳转 target 后草稿仍在；刷新仍恢复 |
+| 合并保留目标草稿 | target 已有草稿时，合并后的 target 同时包含两段文本，没有覆盖 |
+| 合并+切会话 | 合并请求在途时切到历史并输入，迟到回执不改当前输入；目标草稿仍可恢复 |
+| 双会话并发+晚到响应 | 普通会话与合并会话同时发送，先释放合并、后释放普通；target 草稿保持，普通消息只入库 1 条 |
 | 任务列表分页 | 50 → 100 → 124，120 个历史任务全部可达；切仓库只剩该仓库任务；切回恢复 50 条与游标 |
 | 草稿隔离/恢复/清除 | 会话 B 草稿刷新恢复；会话 A 为空；仓库 B 为空；切回各自恢复；“清除草稿”后刷新为空 |
 | 发送中继续编辑 | 成功响应后保留新编辑文本，刷新仍在新草稿；原文只入库 1 条 |
@@ -121,9 +163,9 @@ Before 为 `origin/main` @ `40e857a` 的真实构建，After 为 `docs/evidence/
 
 | 文件 | sha256 |
 | --- | --- |
-| `apps/api/dist/server.js` | `9f14065c6e8ee7d3636b93da48543baf273e796f8f03c878382ceb3ede627dc3` |
-| `apps/web/dist/index.html` | `cf15dd705864ecf8b537054c19348fed3ff75cf78501061732787050b57bdbf0` |
-| `apps/web/dist/assets/index-_bJ_wghQ.js` | `f5673ce7bac9ebecc28422a562b19add55667dea74fb21a7bf45d4b2c7d2bb4a` |
+| `apps/api/dist/server.js` | `3774fec8537a82513c5f4706f4f78ab4dc47fc2dea4a532f03aba059d6080c4a` |
+| `apps/web/dist/index.html` | `24b256d19a6b00ff3849cbfc498bf0383f972a8a32e2fda3ca04f6dba31f6fac` |
+| `apps/web/dist/assets/index-CBlITEPY.js` | `5c4bb4a70681481540c3d6e75d0914713fd6dbf2d6a526c21f8ed390f4f53134` |
 
 ## 迁移与回滚
 
@@ -138,12 +180,11 @@ Before 为 `origin/main` @ `40e857a` 的真实构建，After 为 `docs/evidence/
 
 ## 未验证项
 
-- 未在独立 superagent runtime 上实跑 `GET /bridge/v1/branches`；本轮只做上游定向测试与
-  `build-patched.sh` 构建。平台侧通过回环 HTTP Bridge 替身验证分支目录/失效分支行为。
 - 上游完整测试套件未在 0021 之后重跑；只跑了 `bridge-branches`、`bridge-control`、`bridge`、
   `docs` 共 58 个用例。M4 记录的既有 Feishu 可选失败仍是上游已知项。
 - 浏览器为 Playwright Chromium headless 的桌面/手机视口，不是物理手机或真实设备；截图是真实
   页面产物，不是静态 mock。
-- 本轮未新增真实执行链路（任务投递→worker→PR）验证；M4 执行的 UI 回归来自种子数据，投递/read、
-  停止/继续、GitHub 导入的链路回归由 dispatcher/API 集成测试覆盖。
+- 未新增真实执行链路（任务投递→worker→PR）验证；M4 执行的 UI 回归来自种子数据，投递/read
+  由真实 dispatcher 与 SSE 驱动，停止/继续、GitHub 导入的链路回归由 dispatcher/API 集成测试覆盖。
+- 独立 runtime 只验证分支/偏好路径，不接收真实执行任务；未在物理手机/平板上验收。
 - 预览/资源预算、网页添加仓库、实例调度与 M5 范围未实现；界面只如实说明。

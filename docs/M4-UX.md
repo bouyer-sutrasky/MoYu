@@ -12,8 +12,8 @@
 | --- | --- | --- | --- | --- |
 | 1 | 超过 100 条消息逐页访问全部历史；与 SSE 同时到达无遗漏/重复；滚动位置稳定 | 消息 `(createdAt,id)` keyset 游标 + 按 id 合并 | 同时间戳由 id 决胜；页边界严格不含已返回 id；合并幂等 | API 集成测试、真实浏览器 |
 | 2 | 超过任务列表默认上限的历史任务可访问；切换仓库列表与游标隔离 | 会话 `(updatedAt,id)` keyset 游标，游标绑定仓库 | 跨仓库游标 422；切换仓库清空列表与游标；迟到响应按 token+仓库丢弃 | API 集成测试、真实浏览器 |
-| 3 | 加载失败重试、SSE 断线回放与刷新 | 首次页与更早页分别保留错误状态；SSE 通过 `after` 游标回放 | 重试不改变已加载页；断线重连按持久 event id 补齐 | 集成测试、浏览器网络拦截 |
-| 4 | 会话 A 发送中切 B、A 发送中继续编辑、失败重试、服务已接收但响应丢失 | 草稿版本 + 固定 clientMessageId；发送目标在提交时捕获 | 旧请求不得清理新版本草稿，不得改投新会话；同 key 重试返回原消息 | 浏览器拦截 + 真实 API/DB |
+| 3 | 加载失败重试、SSE 断线回放与刷新；已加载消息的投递/read 状态随 SSE 就地刷新；初次加载窗口内的 SSE 不丢失 | 首次页与更早页分别保留错误状态；新消息按 `after` 追赶；`message.delivery_changed` 按 event.messageId 单条补取；初次加载记 dirty 并在落地后补查 | 已加载历史与滚动位置不变；初次查询后、响应前到达的事件在首屏落地后可见且不重复；切会话按 token 隔离 | 集成测试、真实 dispatcher/SSE + 浏览器、可控时序拦截 |
+| 4 | 会话 A 发送中切 B、A 发送中继续编辑、失败重试、服务已接收但响应丢失；合并到 GitHub 目标时的草稿迁移 | 草稿版本 + 固定 clientMessageId；发送目标在提交时捕获；合并回执把较新源草稿迁到 target | 旧请求不得清理新版本草稿或改写当前输入；目标已有草稿不得被覆盖，两段文本都可恢复；同 key 重试返回原消息 | 浏览器拦截 + 真实 API/DB |
 | 5 | 多所有者/仓库/会话草稿隔离、刷新恢复、退出/清除策略 | localStorage `moyu:draft:v1:<owner>:<repo>:<conversation>`，内存兜底 | 显式退出清除该所有者草稿；存储不可用不阻断发送 | 浏览器 |
 | 6 | 偏好刷新恢复、跨仓库隔离、失效分支/模型、旧任务冻结、创建前展示实际配置 | `repository_preferences` 每仓库一行；创建时复制到 conversation/task | 偏好只影响新任务；失效分支/模型要求重新选择；目录不可用如实展示 | 集成测试、真实浏览器 |
 | 7 | 桌面与手机真实浏览器、浅色/深色；M4 停止/继续、投递/read、GitHub 关联回归 | Playwright + 真实 API + 独立 PostgreSQL | 不使用静态页面或伪造日志 | 证据截图与 DOM 断言 |
@@ -27,6 +27,10 @@
 - `before`：严格位于游标之前；同时间戳按 id 继续比较。`after`：严格位于游标之后。
 - 响应 `messages` 始终升序；`nextCursor` 指向更早页，`newerCursor` 是本次返回的最新消息，`hasNewer` 表示 `after` 查询还有下一段。
 - 前端按 id 合并页面：已加载的历史不会被最新页替换；同一消息再次出现时用新投影覆盖（投递状态更新）。
+- 新消息事件只按 `after` 最新游标追赶；`message.delivery_changed` 不是新消息，前端用事件里的
+  `messageId` 调用 `GET /conversations/:id/messages/:messageId` 就地替换该行，不移动顺序或滚动位置。
+- 首次消息页请求在途时收到 SSE，不能丢弃：前端记 dirty，并把投递事件 id 入队；首屏落地后按返回的
+  `newerCursor` 补查新消息、按 id 补取投递状态。切换会话时请求 token 与 dirty 队列一并隔离。
 - 旧客户端传入纯 ISO 时间戳仍按严格时间比较处理；新客户端只回传服务器游标。
 
 ### 2.2 任务列表（会话列表）
@@ -46,6 +50,10 @@
   pending 只清除属于本次发送的 id。
 - 发送目标在按下发送时捕获；请求返回后不再读取“当前选中会话”，因此切到 B 不会把 A 的请求发到 B，
   也不会清掉 B 的输入。
+- 服务端把空 Web 会话合并进已有 GitHub 会话时，回执的 `message.conversationId` 是 target。源会话随后
+  从列表隐藏，因此仍属发送时版本之外的较新草稿必须迁到 target；target 已有草稿时用空行连接两段文本并
+  递增版本、清除旧 pending，任何一段都不丢。源 key 只在 target 写入后删除；迟到回执只在当前会话仍是
+  源/目标时改输入，已切走时仅整理存储。
 - 网络结果不明确时保留 pending 并提示重试；重试复用原 `clientMessageId`。服务端
   `(conversation_id,client_message_id)` 唯一约束与“相同 payload 返回原结果”保证不重复入库、不重复投递。
 - 存储策略：显式退出清除该所有者全部草稿；会话内“清除草稿”立即删除本地记录；会话丢失（401）
@@ -68,6 +76,7 @@
 | 变更 | 说明 |
 | --- | --- |
 | `GET /api/v1/conversations/:id/messages` | 新增 `before`/`after` 不透明游标、`hasMore`、`newerCursor`、`hasNewer`；`nextCursor` 改为组合游标 |
+| `GET /api/v1/conversations/:id/messages/:messageId` | 返回一条消息及其当前投递投影；用于 SSE `message.delivery_changed` 就地刷新，跨会话 id 返回 404 |
 | `GET /api/v1/conversations` | 新增 `cursor`、`nextCursor`、`hasMore`；游标绑定仓库 |
 | `GET /api/v1/repositories/:id/preferences` | 已保存偏好与 effective 配置 |
 | `PUT /api/v1/repositories/:id/preferences` | 保存偏好并做运行时校验 |
@@ -85,3 +94,5 @@
 - 活动中心、diff/检查面板属于 M6；不新增占位数据。
 - 偏好校验依赖仓库 Bridge 可达；不可达时保留既有创建行为，最终以运行时解析与任务状态为准。
 - 分支列表来自固定上游补丁；未升级运行时显示 `unsupported`，不能声称已校验分支。
+- 0021 已在独立 profile 的真实 runtime 上验证（Bearer 401、真实目标仓库分支、平台保存/失效分支）；
+  生产 3082 实例未重启，平台包把 `unsupported` 作为旧运行时的诚实降级。

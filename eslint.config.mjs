@@ -53,7 +53,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ['scripts/m4ux/e2e.mjs'],
+    files: ['scripts/m4ux/e2e.mjs', 'scripts/m4ux/runtime-evidence.mjs'],
     languageOptions: {
       globals: {
         window: 'readonly',

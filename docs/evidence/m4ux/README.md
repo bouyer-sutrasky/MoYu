@@ -7,7 +7,8 @@
 
 | 文件 | 内容 |
 | --- | --- |
-| `m4ux-e2e.json` | `scripts/m4ux/e2e.mjs` 的最终结果（11 项全部通过、基线 SHA、时间） |
+| `m4ux-e2e.json` | `scripts/m4ux/e2e.mjs` 的最终结果（17 项全部通过、基线 SHA、时间） |
+| `runtime-evidence.json` | 独立 profile 中固定 0021 制品的真实 Bridge 分支与平台偏好请求/响应摘要、制品 sha256 |
 | `m4ux-before-*.png` | 基线 commit `40e857a` 的真实构建，经同一隔离 API、数据库、Playwright、视口与主题采集 |
 | `m4ux-after-*.png` | 本分支构建，与 Before 同场景同视口同主题 |
 
@@ -38,14 +39,22 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
 1. 在隔离 PostgreSQL 创建一次性数据库并迁移到最新版本；
 2. 建立两个仓库（`m4ux-main`、`m4ux-other`）、250 条历史消息（大量相同时间戳）、120 条历史任务、
    一个已停止任务和一个 GitHub 汇入任务；
+3. 用真实 dispatcher 将仓库 B 的消息从 stored 推进到 delivered/read，并通过真实 SSE 断言浏览器
+   已加载行就地更新；用可控响应时序覆盖初次加载窗口内 SSE 与合并草稿迁移/切会话/并发发送；
 3. 在 `/root/src/m4ux-before` 建立基线 commit 的 detached worktree 并构建 Web/API（已有时复用）；
 4. 启动真实 API 进程，用真实 Chromium 采集 Before/After 截图与 DOM 断言；
 5. 删除一次性数据库（`--keep` 可保留）。
 
+真实 runtime 分支/偏好证据：
+
+```bash
+TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres   node scripts/m4ux/runtime-evidence.mjs --reuse-runtime
+# 或省略 --reuse-runtime：脚本会创建独立 DSH profile、安装固定制品并启动（端口可配）
+```
+
 ## 边界
 
-- 仓库 Bridge 的模型/分支目录由脚本内的回环 HTTP 替身提供，用于验证平台的分支/模型校验与失效
-  展示。任务投递、停止/继续、read 证据来自现有平台数据与 M4 集成测试，不把该替身当作执行闭环证据。
-- 未启动新的 superagent 执行实例；`integrations/superagent` 的 0021 补丁由上游定向测试与
-  `build-patched.sh` 构建验证，真实 `GET /bridge/v1/branches` 未在独立 runtime 上重跑（单列于
-  [`../M4-UX-VERIFICATION.md`](../M4-UX-VERIFICATION.md)）。
+- 浏览器验收中的模型/分支目录由脚本内的回环 HTTP 替身提供，用于隔离地验证平台的分支/模型校验与
+  失效展示；真实 runtime 的分支接口另由 `runtime-evidence.json` 记录，二者不互相替代。
+- 独立 runtime 使用 `/root/.dsh-m4ux` profile 与 `/root/src/upstream/m4ux-final-verify` 固定制品，
+  只跑分支/偏好路径，不接收真实执行任务，也不重启生产 3082 实例。

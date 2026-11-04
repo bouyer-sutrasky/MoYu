@@ -1,5 +1,5 @@
 {
-  "at": "2026-11-04T10:42:58.972Z",
+  "at": "2026-11-04T11:33:36.859Z",
   "baseSha": "40e857a9081b281fb3a93ebaea6986e0101f005d",
   "results": [
     {
@@ -28,6 +28,16 @@
       "detail": "124 tasks reachable"
     },
     {
+      "name": "delivery and read update in place",
+      "status": "pass",
+      "detail": "stored -> delivered -> read through the real dispatcher and SSE"
+    },
+    {
+      "name": "SSE during initial load",
+      "status": "pass",
+      "detail": "held first-page response, event arrived, catch-up showed it once"
+    },
+    {
       "name": "draft isolation, refresh and clear",
       "status": "pass",
       "detail": "owner/repo/conversation keys"
@@ -46,6 +56,26 @@
       "name": "ambiguous response retry",
       "status": "pass",
       "detail": "same clientMessageId, one stored message"
+    },
+    {
+      "name": "merge carries edited draft",
+      "status": "pass",
+      "detail": "newer source draft appears in the merged target and survives refresh"
+    },
+    {
+      "name": "merge preserves an existing target draft",
+      "status": "pass",
+      "detail": "target and source text are joined, neither is overwritten"
+    },
+    {
+      "name": "merge while switching conversation",
+      "status": "pass",
+      "detail": "late merge result leaves the new conversation input untouched"
+    },
+    {
+      "name": "two concurrent sends and a late response",
+      "status": "pass",
+      "detail": "merged target keeps its draft while the other send settles"
     },
     {
       "name": "repository preferences",

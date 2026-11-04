@@ -57,6 +57,7 @@ M2 实际 Cookie：https origin 使用 `__Host-moyu_session` 与 `__Host-moyu_bo
 | GET /api/v1/conversations/:id | **M3 已实现**：会话、冻结字段与任务投影 |
 | POST /api/v1/conversations/:id/messages | **M3 已实现**：`{clientMessageId,text,replyToMessageId?}` → 202 `{message,duplicate:false}`；相同幂等键与 payload 返回 200 原结果，不同 payload 409；message 与 delivery 同事务写入 |
 | GET /api/v1/conversations/:id/messages | **M3 已实现**：游标分页，包含方向/kind、回复关联、来源与投递状态；M4-UX 使用 `(createdAt,id)` 不透明游标，支持 `before`（更早）与 `after`（更新），返回 `nextCursor`、`newerCursor`、`hasMore`、`hasNewer`；同时间戳由 id 决胜，游标不匹配返回 422 |
+| GET /api/v1/conversations/:id/messages/:messageId | **M4-UX 返修**：返回 `{message}`，含当前投递/read 投影；消息不属于该会话或不存在返回 404；供 SSE `message.delivery_changed` 就地刷新已加载行 |
 | POST /api/v1/tasks/:id/start | **M4 已实现**：`{planRevision,expectedVersion,clientCommandId}`；同一会话/工作目录/PR 只读讨论→执行；记录 `planRevision` 与已冻结 `baseCommit`；202 返回 operation |
 | POST /api/v1/tasks/:id/stop | **M4 已实现**：`{expectedVersion,clientCommandId}`；幂等进入 `stopping`，经 Bridge `pause`，有停止证据后才变 `stopped`；不是上游终态 stop |
 | POST /api/v1/tasks/:id/resume | **M4 已实现**：`{expectedVersion,clientCommandId}`；只允许 `stopped`，dispatcher 重新取得仓库租约并核验现场后调用 Bridge `resume` |

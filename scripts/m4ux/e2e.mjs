@@ -201,6 +201,55 @@ async function startApi(worktree, port) {
 
 let currentDatabase = null;
 
+/* -------------------------------- dispatcher ------------------------------- */
+
+async function startDispatcher(repositoryFullName) {
+  const child = spawn(process.execPath, ['apps/dispatcher/dist/main.js'], {
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      LOG_LEVEL: 'warn',
+      DATABASE_URL: currentDatabase.url,
+      BRIDGE_REPOSITORY: repositoryFullName,
+      BRIDGE_URL: `http://127.0.0.1:${BRIDGE_PORT}`,
+      BRIDGE_TOKEN,
+      DELIVERY_INTERVAL_MS: '200',
+      EVENT_SYNC_INTERVAL_MS: '200',
+      OPERATION_INTERVAL_MS: '500',
+      DUPLICATE_INTERVAL_MS: '500',
+      REPORT_CAPTURE_INTERVAL_MS: '1000',
+      RECONCILE_ON_START: 'false',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let output = '';
+  child.stdout.on('data', (chunk) => {
+    output += String(chunk);
+  });
+  child.stderr.on('data', (chunk) => {
+    output += String(chunk);
+  });
+  servers.push(child);
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  return {
+    output: () => output,
+    stop: async () => {
+      child.kill('SIGTERM');
+      await new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          child.kill('SIGKILL');
+          resolve();
+        }, 3000);
+        child.once('exit', () => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+    },
+  };
+}
+
 /* ------------------------------- fake Bridge ------------------------------- */
 
 const bridgeState = {
@@ -221,6 +270,13 @@ const bridgeState = {
   ],
   branches: ['main', 'release', 'feature-x'],
   calls: [],
+  // Real dispatch-path state: one trigger is accepted, then an optional read
+  // event is served so the actual dispatcher writes delivered/read transitions.
+  deliveryCalls: 0,
+  ticketCalls: 0,
+  eventsCursor: 0,
+  readEvent: null,
+  lastTrigger: null,
 };
 
 function startFakeBridge() {
@@ -257,6 +313,50 @@ function startFakeBridge() {
     }
     if (url.pathname === '/bridge/v1/models') {
       send(200, { models: bridgeState.models });
+      return;
+    }
+    if (url.pathname === '/bridge/v1/triggers' && request.method === 'POST') {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      bridgeState.deliveryCalls += 1;
+      bridgeState.lastTrigger = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      const triggerId = String(bridgeState.lastTrigger?.triggerId ?? 'm4ux-trigger');
+      send(200, {
+        result: 'stored',
+        triggerId,
+        baseCommit: 'abcdef1234567890abcdef1234567890abcdef12',
+        ticketId: 'm4ux-runtime-ticket',
+      });
+      return;
+    }
+    if (url.pathname === '/bridge/v1/events') {
+      const afterRaw = Number(url.searchParams.get('after') ?? '0');
+      const after = Number.isFinite(afterRaw) ? afterRaw : 0;
+      const events = [];
+      if (bridgeState.readEvent && after < bridgeState.readEvent.seq) {
+        events.push(bridgeState.readEvent);
+      }
+      const next = events.at(-1)?.seq ?? after;
+      send(200, { events, next, hasMore: false });
+      return;
+    }
+    if (url.pathname.startsWith('/bridge/v1/tickets/')) {
+      bridgeState.ticketCalls += 1;
+      send(200, {
+        ticketId: decodeURIComponent(url.pathname.split('/').at(-1) ?? ''),
+        title: 'M4-UX runtime evidence ticket',
+        state: 'running',
+        mode: 'execute',
+        planRevision: null,
+        paused: null,
+        ended: null,
+        assignmentId: null,
+        execution: null,
+      });
+      return;
+    }
+    if (url.pathname.startsWith('/bridge/v1/operations/')) {
+      send(404, { error: 'Unknown operation' });
       return;
     }
     if (url.pathname === '/bridge/v1/branches') {
@@ -487,7 +587,10 @@ async function seed(databaseUrl) {
     updatedAt: now + 600_000,
   });
   await task(otherId, repositoryB, 'pending_admission', { upstreamTicketId: 'ticket-other' });
-  await message(otherId, { body: '另一个仓库的消息', createdAt: now - 200_000 });
+  const otherMessageId = await message(otherId, {
+    body: '另一个仓库的消息',
+    createdAt: now - 200_000,
+  });
 
   const taskTitles = [];
   for (let index = 0; index < 120; index += 1) {
@@ -512,6 +615,7 @@ async function seed(databaseUrl) {
     stoppedId,
     githubId,
     otherId,
+    otherMessageId,
     messageIds,
     messageBodies,
     taskTitles,
@@ -551,6 +655,34 @@ async function newContext(browser, { baseURL, token, viewport, theme }) {
 
 function sidebar(page) {
   return page.getByRole('complementary', { name: '工作台导航' });
+}
+
+async function openConversationById(page, conversationId) {
+  const item = sidebar(page).locator(`[data-conversation-id="${conversationId}"]`).first();
+  await item.waitFor();
+  await item.click();
+  await page.getByRole('region', { name: '会话消息' }).waitFor();
+  await page.getByRole('heading', { name: '未命名任务', exact: true }).waitFor();
+}
+
+async function createWebConversation(baseURL, token, repositoryId) {
+  const response = await apiFetch(baseURL, token, '/api/v1/conversations', {
+    method: 'POST',
+    body: {
+      repositoryId,
+      mode: 'work',
+      executionMode: 'execute',
+      baseBranch: 'main',
+      model: {
+        provider: 'commandcode',
+        model: 'deepseek/deepseek-v4.1-flash',
+        reasoningEffort: 'high',
+      },
+      clientRequestId: `m4ux-merge-${randomUUID()}`,
+    },
+  });
+  assert(response.status === 201, `after: merge source conversation created (${response.status})`);
+  return response.payload.data.conversation.id;
 }
 
 async function openConversation(page, title) {
@@ -945,6 +1077,83 @@ async function functional(browser, api, seeded) {
   );
   record('task list pagination and repository isolation', 'pass', '124 tasks reachable');
 
+  // 3b. An already displayed message follows stored -> delivered -> read via
+  // the real dispatcher and SSE, without reloading the page.
+  await repositorySelect.selectOption(seeded.repositoryB);
+  await openConversation(page, '另一个仓库的任务');
+  await page.getByText('平台收件').first().waitFor();
+  const dispatcher = await startDispatcher('bouyer-sutrasky/m4ux-other');
+  try {
+    await page.getByText('执行器已接收').first().waitFor({ timeout: 20_000 });
+    bridgeState.readEvent = {
+      seq: 1,
+      id: 'read-1',
+      type: 'message.read',
+      at: new Date().toISOString(),
+      data: { messageId: seeded.otherMessageId, at: new Date().toISOString() },
+    };
+    await page.getByText('已读取').first().waitFor({ timeout: 20_000 });
+  } finally {
+    await dispatcher.stop();
+  }
+  await repositorySelect.selectOption(seeded.repositoryA);
+  record(
+    'delivery and read update in place',
+    'pass',
+    'stored -> delivered -> read through the real dispatcher and SSE',
+  );
+
+  // 3c. An SSE message that arrives after the initial query but before its
+  // response must be caught up after the first page lands.
+  await openConversation(page, '历史分页验证');
+  const timingBody = `初次加载期间新增 ${Date.now()}`;
+  const timingPattern = new RegExp(
+    `/api/v1/conversations/${seeded.secondId}/messages\\?limit=100$`,
+  );
+  let held;
+  const heldPromise = new Promise((resolve) => {
+    held = resolve;
+  });
+  let releaseResponse;
+  const releasePromise = new Promise((resolve) => {
+    releaseResponse = resolve;
+  });
+  const holdInitial = async (route) => {
+    const response = await route.fetch();
+    held(response);
+    await releasePromise;
+    await route.fulfill({ response });
+  };
+  await page.route(timingPattern, holdInitial);
+  await openConversation(page, '草稿与发送验证');
+  const heldResponse = await heldPromise;
+  assert(heldResponse.ok(), 'after: initial message query completed before the hold');
+  const timing = await apiFetch(
+    baseURL,
+    token,
+    `/api/v1/conversations/${seeded.secondId}/messages`,
+    {
+      method: 'POST',
+      body: { clientMessageId: `timing-${randomUUID()}`, text: timingBody },
+    },
+  );
+  assert(timing.status === 202, `after: timing message accepted (${timing.status})`);
+  // Give the SSE loop time to deliver message.created while the page is still
+  // loading; then release the pre-event query response.
+  await page.waitForTimeout(1_500);
+  releaseResponse();
+  await page.getByText(timingBody).first().waitFor({ timeout: 20_000 });
+  assert(
+    (await page.getByText(timingBody).count()) === 1,
+    'after: catch-up appended the message once',
+  );
+  await page.unroute(timingPattern, holdInitial);
+  record(
+    'SSE during initial load',
+    'pass',
+    'held first-page response, event arrived, catch-up showed it once',
+  );
+
   // 4. Draft isolation, refresh, explicit clear.
   await openConversation(page, '草稿与发送验证');
   const composer = page.getByRole('textbox', { name: '消息输入区' });
@@ -1109,6 +1318,187 @@ async function functional(browser, api, seeded) {
     'after: retry did not duplicate the stored message',
   );
   record('ambiguous response retry', 'pass', 'same clientMessageId, one stored message');
+
+  // 7b. A merged first message carries a newer draft to the GitHub target
+  // instead of leaving it under the hidden source alias.
+  const mergeUrl = 'https://github.com/bouyer-sutrasky/m4ux-main/issues/42';
+  await openConversation(page, 'GitHub 汇入任务');
+  if ((await page.getByRole('button', { name: '清除草稿' }).count()) > 0) {
+    await page.getByRole('button', { name: '清除草稿' }).click();
+  }
+  const sourceA = await createWebConversation(baseURL, token, seeded.repositoryA);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openConversationById(page, sourceA);
+  const mergeGateA = makeGate();
+  const mergeDelayA = delayedFor(mergeGateA);
+  const mergePatternA = new RegExp(`/conversations/${sourceA}/messages$`);
+  await page.route(mergePatternA, mergeDelayA);
+  const mergeResponseA = page
+    .waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' && response.url().includes(`/${sourceA}/messages`),
+    )
+    .catch(() => null);
+  const editedA = '合并后仍要保留的草稿 A';
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(mergeUrl);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(editedA);
+  mergeGateA.release();
+  assert(
+    (await (await mergeResponseA).json()).data.message.conversationId,
+    'after: merge response',
+  );
+  await page.getByRole('heading', { name: 'GitHub 汇入任务', exact: true }).waitFor();
+  await waitForComposer(page, editedA);
+  await page.unroute(mergePatternA, mergeDelayA);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openConversation(page, 'GitHub 汇入任务');
+  await waitForComposer(page, editedA);
+  record(
+    'merge carries edited draft',
+    'pass',
+    'newer source draft appears in the merged target and survives refresh',
+  );
+
+  // 7c. The target already has a draft: both texts stay recoverable.
+  await page.getByRole('textbox', { name: '消息输入区' }).fill('目标已有草稿');
+  await openConversation(page, '历史分页验证');
+  const sourceB = await createWebConversation(baseURL, token, seeded.repositoryA);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openConversationById(page, sourceB);
+  const mergeGateB = makeGate();
+  const mergeDelayB = delayedFor(mergeGateB);
+  const mergePatternB = new RegExp(`/conversations/${sourceB}/messages$`);
+  await page.route(mergePatternB, mergeDelayB);
+  const mergeResponseB = page
+    .waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' && response.url().includes(`/${sourceB}/messages`),
+    )
+    .catch(() => null);
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(mergeUrl);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await page.getByRole('textbox', { name: '消息输入区' }).fill('源会话新草稿');
+  mergeGateB.release();
+  const mergeReplyB = await mergeResponseB;
+  assert(mergeReplyB?.status() === 202, 'after: second merge send accepted');
+  await page.getByRole('heading', { name: 'GitHub 汇入任务', exact: true }).waitFor();
+  await page.waitForFunction(() => {
+    const area = document.querySelector('textarea');
+    return (
+      area !== null && area.value.includes('目标已有草稿') && area.value.includes('源会话新草稿')
+    );
+  });
+  await page.unroute(mergePatternB, mergeDelayB);
+  record(
+    'merge preserves an existing target draft',
+    'pass',
+    'target and source text are joined, neither is overwritten',
+  );
+
+  // 7d. Merging while the user moved to another conversation: the late result
+  // must not touch the current composer, and the source hides without losing
+  // unsent text (there is no newer draft in this run).
+  const sourceC = await createWebConversation(baseURL, token, seeded.repositoryA);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openConversationById(page, sourceC);
+  const mergeGateC = makeGate();
+  const mergeDelayC = delayedFor(mergeGateC);
+  const mergePatternC = new RegExp(`/conversations/${sourceC}/messages$`);
+  await page.route(mergePatternC, mergeDelayC);
+  const mergeResponseC = page
+    .waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' && response.url().includes(`/${sourceC}/messages`),
+    )
+    .catch(() => null);
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(mergeUrl);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await openConversation(page, '历史分页验证');
+  await page.getByRole('textbox', { name: '消息输入区' }).fill('合并途中切到历史并输入');
+  mergeGateC.release();
+  const mergeReplyC = await mergeResponseC;
+  assert(mergeReplyC?.status() === 202, 'after: switch merge send accepted');
+  await page.waitForTimeout(800);
+  await waitForComposer(page, '合并途中切到历史并输入');
+  await page.unroute(mergePatternC, mergeDelayC);
+  record(
+    'merge while switching conversation',
+    'pass',
+    'late merge result leaves the new conversation input untouched',
+  );
+
+  // 7e. Two sends in different conversations: the later merged send must not
+  // clear or target the other conversation's in-flight response.
+  await page.getByRole('button', { name: '清除草稿' }).click();
+  await openConversation(page, '草稿与发送验证');
+  const sourceD = await createWebConversation(baseURL, token, seeded.repositoryA);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openConversation(page, '草稿与发送验证');
+  const secondGate = makeGate();
+  const secondDelay = delayedFor(secondGate);
+  const secondPattern = new RegExp(`/conversations/${seeded.secondId}/messages$`);
+  await page.route(secondPattern, secondDelay);
+  const secondResponse = page
+    .waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' &&
+        response.url().includes(`/${seeded.secondId}/messages`),
+    )
+    .catch(() => null);
+  const concurrentNormal = `双会话并发普通消息 ${Date.now()}`;
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(concurrentNormal);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await openConversationById(page, sourceD);
+  const mergeGateD = makeGate();
+  const mergeDelayD = delayedFor(mergeGateD);
+  const mergePatternD = new RegExp(`/conversations/${sourceD}/messages$`);
+  await page.route(mergePatternD, mergeDelayD);
+  const mergeResponseD = page
+    .waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' && response.url().includes(`/${sourceD}/messages`),
+    )
+    .catch(() => null);
+  const concurrentEdited = '双会话并发合并草稿';
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(mergeUrl);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(concurrentEdited);
+  mergeGateD.release();
+  const mergeReplyD = await mergeResponseD;
+  assert(mergeReplyD?.status() === 202, 'after: concurrent merge send accepted');
+  await page.getByRole('heading', { name: 'GitHub 汇入任务', exact: true }).waitFor();
+  await page.waitForFunction(
+    (value) => {
+      const area = document.querySelector('textarea');
+      return area !== null && area.value.includes(value);
+    },
+    concurrentEdited,
+    { timeout: 10_000 },
+  );
+  secondGate.release();
+  const secondReply = await secondResponse;
+  assert(secondReply?.status() === 202, 'after: concurrent normal send accepted');
+  await page.waitForTimeout(800);
+  await page.waitForFunction(
+    (value) => {
+      const area = document.querySelector('textarea');
+      return area !== null && area.value.includes(value);
+    },
+    concurrentEdited,
+    { timeout: 10_000 },
+  );
+  assert(
+    (await countMessages(currentDatabase.url, seeded.secondId, concurrentNormal)) === 1,
+    'after: the concurrent normal message was stored once in its own conversation',
+  );
+  await page.unroute(secondPattern, secondDelay);
+  await page.unroute(mergePatternD, mergeDelayD);
+  record(
+    'two concurrent sends and a late response',
+    'pass',
+    'merged target keeps its draft while the other send settles',
+  );
 
   // 8. Preferences: defaults, refresh, cross-repository isolation, invalid branch/model.
   await page.getByRole('button', { name: '新建任务' }).first().click();
