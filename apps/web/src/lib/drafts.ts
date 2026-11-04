@@ -268,66 +268,147 @@ export interface DraftMigration {
   draft: Draft | null;
   /** True when the target had a send awaiting confirmation, so text went to deferredText. */
   deferred: boolean;
+  /** True when this send left unsent content that moved to the target. */
+  moved: boolean;
+}
+
+export interface SentSnapshot {
+  clientMessageId: string;
+  text: string;
+  lineageId: string;
 }
 
 /**
- * Moves a newer draft from a hidden source conversation (merged into a GitHub
- * conversation) to the target. The target's own draft is never overwritten.
- * When the target has a send awaiting confirmation, that send keeps its
- * original text and idempotency key; the source's unsent text is stored as
- * `deferredText` and is restored after the target's send settles.
+ * Settles one successful send on the source conversation and moves everything
+ * it did not send to the target. The sent body is excluded only when the
+ * source still holds exactly that snapshot; the source's deferredText and any
+ * newer editable text are unsent and must survive even when they equal the
+ * sent body. A target pending send keeps its body, key and deferred text
+ * untouched; incoming remaining content is appended to its deferredText.
  */
-export function migrateDraftToConversation(
+export function migrateSentDraftToConversation(
   ownerId: string,
   repositoryId: string,
   sourceConversationId: string,
   targetConversationId: string,
+  sent: SentSnapshot,
 ): DraftMigration {
-  if (sourceConversationId === targetConversationId) {
-    return {
-      draft: loadDraft(ownerId, repositoryId, targetConversationId),
-      deferred: false,
-    };
-  }
-  const source = loadDraft(ownerId, repositoryId, sourceConversationId);
   const target = loadDraft(ownerId, repositoryId, targetConversationId);
+  const source = loadDraft(ownerId, repositoryId, sourceConversationId);
   if (!source) {
-    return { draft: target, deferred: false };
+    return { draft: target, deferred: false, moved: false };
   }
-  if (source.text.trim().length === 0) {
+  const sentBodyStillOnly =
+    source.lineageId === sent.lineageId && source.text.trim() === sent.text.trim();
+  const unsentText = sentBodyStillOnly ? '' : source.text;
+  const unsentDeferred = source.deferredText ?? '';
+  const remaining = joinText(unsentText, unsentDeferred);
+  if (remaining.trim().length === 0) {
     removeDraft(ownerId, repositoryId, sourceConversationId);
-    return { draft: target, deferred: false };
+    return { draft: target, deferred: false, moved: false };
   }
-  // Text equality is not identity. A source draft with the same text can be a
-  // different unsent edit (especially while the target's send of that text is
-  // still pending), so it must not be dropped as a duplicate.
   if (target?.pending) {
     const updated: Draft = {
       ...target,
-      deferredText: joinText(target.deferredText, source.text),
+      deferredText: joinText(target.deferredText, remaining),
       updatedAt: new Date().toISOString(),
     };
     saveDraft(ownerId, repositoryId, targetConversationId, updated);
     removeDraft(ownerId, repositoryId, sourceConversationId);
-    return { draft: updated, deferred: true };
+    return { draft: updated, deferred: true, moved: true };
   }
-  const combinedText = joinText(target?.text, source.text);
-  const promotedDeferred =
-    target?.deferredText && target.deferredText.trim().length > 0
-      ? joinText(combinedText, target.deferredText)
-      : combinedText;
+  const combinedText = [target?.text, unsentText, target?.deferredText, unsentDeferred]
+    .filter((part): part is string => Boolean(part && part.trim().length > 0))
+    .reduce((current, part) => joinText(current, part), '');
   const migrated: Draft = {
     // A new lineage: the combined text is a new unsent edit. A late response
     // from either conversation can no longer match and clear it.
     version: Math.max(target?.version ?? 0, source.version) + 1,
     lineageId: newLineageId(),
-    text: promotedDeferred,
+    text: combinedText,
     updatedAt: new Date().toISOString(),
     pending: null,
   };
   saveDraft(ownerId, repositoryId, targetConversationId, migrated);
   removeDraft(ownerId, repositoryId, sourceConversationId);
-  return { draft: migrated, deferred: false };
+  return { draft: migrated, deferred: false, moved: true };
+}
+
+/**
+ * Moves a source draft when the API resolves its conversation to a merged
+ * target without a send response (for example a committed POST whose response
+ * was lost). Without a target draft the source state moves intact, so an
+ * unresolved send keeps its idempotency key and can be retried on the target.
+ */
+export function moveDraftToAlias(
+  ownerId: string,
+  repositoryId: string,
+  sourceConversationId: string,
+  targetConversationId: string,
+): Draft | null {
+  if (sourceConversationId === targetConversationId) {
+    return loadDraft(ownerId, repositoryId, targetConversationId);
+  }
+  const source = loadDraft(ownerId, repositoryId, sourceConversationId);
+  const target = loadDraft(ownerId, repositoryId, targetConversationId);
+  if (!source) {
+    return target;
+  }
+  if (!target) {
+    saveDraft(ownerId, repositoryId, targetConversationId, source);
+    removeDraft(ownerId, repositoryId, sourceConversationId);
+    return source;
+  }
+  if (target.pending) {
+    if (source.pending) {
+      // The source send was likely committed (the alias resolved); settle that
+      // snapshot and keep only its unsent text, exactly like a merge response.
+      return migrateSentDraftToConversation(
+        ownerId,
+        repositoryId,
+        sourceConversationId,
+        targetConversationId,
+        {
+          clientMessageId: source.pending.clientMessageId,
+          text: source.pending.text,
+          lineageId: source.pending.lineageId,
+        },
+      ).draft;
+    }
+    const updated: Draft = {
+      ...target,
+      deferredText: joinText(joinText(target.deferredText, source.text), source.deferredText ?? ''),
+      updatedAt: new Date().toISOString(),
+    };
+    saveDraft(ownerId, repositoryId, targetConversationId, updated);
+    removeDraft(ownerId, repositoryId, sourceConversationId);
+    return updated;
+  }
+  if (source.pending) {
+    // Keep the unresolved source send and its key; the target's own content is
+    // unsent and waits in deferredText until that send settles.
+    const kept: Draft = {
+      ...source,
+      deferredText: joinText(joinText(source.deferredText, target.text), target.deferredText ?? ''),
+      updatedAt: new Date().toISOString(),
+    };
+    saveDraft(ownerId, repositoryId, targetConversationId, kept);
+    removeDraft(ownerId, repositoryId, sourceConversationId);
+    return kept;
+  }
+  const text = [target.text, source.text, target.deferredText, source.deferredText]
+    .filter((part): part is string => Boolean(part && part.trim().length > 0))
+    .reduce((current, part) => joinText(current, part), '');
+  const merged: Draft = {
+    version: Math.max(target.version, source.version) + 1,
+    lineageId: newLineageId(),
+    text,
+    updatedAt: new Date().toISOString(),
+    pending: null,
+  };
+  saveDraft(ownerId, repositoryId, targetConversationId, merged);
+  removeDraft(ownerId, repositoryId, sourceConversationId);
+  return merged;
 }
 
 export interface SettledSend {

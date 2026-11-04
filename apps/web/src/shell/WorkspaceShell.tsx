@@ -12,7 +12,7 @@ import {
 } from '@moyu/contracts';
 
 import { api, ApiClientError } from '../lib/api';
-import { clearOwnerDrafts } from '../lib/drafts';
+import { clearOwnerDrafts, moveDraftToAlias } from '../lib/drafts';
 import { describeApiError } from '../lib/errors';
 import { Icon } from '../components/Icon';
 import { useTheme } from '../theme/ThemeProvider';
@@ -318,6 +318,18 @@ export function WorkspaceShell({
           selectedConversationIdRef.current !== conversationId
         ) {
           return;
+        }
+        // A GET can resolve a hidden merged alias to its target. Move any
+        // draft state before the selected id changes, otherwise a source send
+        // whose response was lost would leave its unresolved key invisible.
+        if (result.conversation.id !== conversationId) {
+          moveDraftToAlias(
+            me.owner.id,
+            result.conversation.repositoryId,
+            conversationId,
+            result.conversation.id,
+          );
+          setSelectedConversationId(result.conversation.id);
         }
         setConversation(result.conversation);
         setConversationStatus('ready');

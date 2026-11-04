@@ -9,7 +9,7 @@ import {
   draftForSend,
   loadDraft,
   markDraftNotice,
-  migrateDraftToConversation,
+  migrateSentDraftToConversation,
   newLineageId,
   removeDraft,
   restoreDeferredDraft,
@@ -286,34 +286,27 @@ export function Composer({
         // The API merged this Web conversation into an imported GitHub one.
         // The source is now a hidden alias, so only unsent source content may
         // move to the target; the target's own pending send is never touched.
-        const source = loadDraft(ownerId, repositoryId, conversationId);
-        const sentOnly =
-          !source ||
-          (source.pending?.clientMessageId === clientMessageId &&
-            source.lineageId === draft.lineageId &&
-            source.text.trim() === draft.text);
-        if (sentOnly) {
-          if (source) {
-            removeDraft(ownerId, repositoryId, conversationId);
-          }
-        } else {
-          const migration = migrateDraftToConversation(
-            ownerId,
-            repositoryId,
-            conversationId,
-            targetConversationId,
-          );
-          if (migration.draft) {
-            const migrationText = migration.deferred
-              ? '消息已合并；目标会话有发送待确认，合并草稿已单独保留，确认后可恢复。'
-              : '消息已合并到关联会话；原会话草稿已迁移到这里，未发送内容没有丢失。';
-            markDraftNotice(ownerId, repositoryId, targetConversationId, migrationText);
-            if (conversationIdRef.current === targetConversationId) {
-              consumeDraftNotice(ownerId, repositoryId, targetConversationId);
-              draftRef.current = migration.draft;
-              setText(migration.draft.text);
-              setNotice(migrationText);
-            }
+        const migration = migrateSentDraftToConversation(
+          ownerId,
+          repositoryId,
+          conversationId,
+          targetConversationId,
+          {
+            clientMessageId,
+            text: draft.text.trim(),
+            lineageId: draft.lineageId,
+          },
+        );
+        if (migration.moved && migration.draft) {
+          const migrationText = migration.deferred
+            ? '消息已合并；目标会话有发送待确认，合并草稿已单独保留，确认后可恢复。'
+            : '消息已合并到关联会话；原会话草稿已迁移到这里，未发送内容没有丢失。';
+          markDraftNotice(ownerId, repositoryId, targetConversationId, migrationText);
+          if (conversationIdRef.current === targetConversationId) {
+            consumeDraftNotice(ownerId, repositoryId, targetConversationId);
+            draftRef.current = migration.draft;
+            setText(migration.draft.text);
+            setNotice(migrationText);
           }
         }
         if (conversationIdRef.current === conversationId) {
