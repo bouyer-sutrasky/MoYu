@@ -298,10 +298,9 @@ export function migrateDraftToConversation(
     removeDraft(ownerId, repositoryId, sourceConversationId);
     return { draft: target, deferred: false };
   }
-  if (target && target.text.trim() === source.text.trim()) {
-    removeDraft(ownerId, repositoryId, sourceConversationId);
-    return { draft: target, deferred: Boolean(target.deferredText) };
-  }
+  // Text equality is not identity. A source draft with the same text can be a
+  // different unsent edit (especially while the target's send of that text is
+  // still pending), so it must not be dropped as a duplicate.
   if (target?.pending) {
     const updated: Draft = {
       ...target,
@@ -389,10 +388,22 @@ export function restorePendingDraft(
   if (!draft?.pending) {
     return draft;
   }
+  // Keep the edit made after the send. It is not part of the pending body, so
+  // restore it only after the old send settles; overwriting it would lose the
+  // user's newer unsent content.
+  const newerText =
+    draft.text.trim().length > 0 && draft.text.trim() !== draft.pending.text
+      ? draft.text
+      : undefined;
   const restored: Draft = {
     ...draft,
     version: draft.version + 1,
     text: draft.pending.text,
+    ...(newerText
+      ? { deferredText: joinText(draft.deferredText, newerText) }
+      : draft.deferredText
+        ? { deferredText: draft.deferredText }
+        : {}),
     updatedAt: new Date().toISOString(),
   };
   saveDraft(ownerId, repositoryId, conversationId, restored);

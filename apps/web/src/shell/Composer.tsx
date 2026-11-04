@@ -73,8 +73,7 @@ export function Composer({
   const disabled = mode !== 'work' || !conversation || conversationLoading || terminal;
   const draft = draftRef.current;
   const pendingDraft = draft?.pending ?? null;
-  const pendingTextMismatch =
-    pendingDraft !== null && draft !== null && draft.text.trim() !== text.trim();
+  const pendingTextMismatch = pendingDraft !== null && pendingDraft.text.trim() !== text.trim();
   const deferredText = draft?.deferredText ?? null;
 
   useEffect(() => {
