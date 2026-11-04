@@ -1,12 +1,7 @@
 {
-  "at": "2026-11-04T10:12:52.144Z",
+  "at": "2026-11-04T10:40:27.503Z",
   "baseSha": "40e857a9081b281fb3a93ebaea6986e0101f005d",
   "results": [
-    {
-      "name": "before screenshots",
-      "status": "pass",
-      "detail": "baseline build @ 40e857a"
-    },
     {
       "name": "after screenshots",
       "status": "pass",

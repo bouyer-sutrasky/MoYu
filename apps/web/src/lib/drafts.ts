@@ -106,6 +106,12 @@ export function loadDraft(
   conversationId: string,
 ): Draft | null {
   const key = draftKey(ownerId, repositoryId, conversationId);
+  // The in-memory copy is this tab's newest edit. Prefer it after a failed
+  // storage write, where localStorage can still hold an older version.
+  const cached = memory.get(key);
+  if (cached) {
+    return cached;
+  }
   const local = storage();
   if (local) {
     try {
@@ -115,7 +121,7 @@ export function loadDraft(
         return parsed;
       }
     } catch {
-      // Fall through to the in-memory copy.
+      // Fall through to the (empty) in-memory copy.
     }
   }
   return memory.get(key) ?? null;

@@ -46,33 +46,38 @@ interface ProgressEntry {
   at: string;
 }
 
-function compareMessages(left: Message, right: Message): number {
-  if (left.createdAt !== right.createdAt) {
-    return left.createdAt < right.createdAt ? -1 : 1;
-  }
-  if (left.id === right.id) {
-    return 0;
-  }
-  return left.id < right.id ? -1 : 1;
-}
-
 /**
- * Merges pages by message id. Loaded history is kept, a message that appears
- * again replaces its earlier projection (for example a delivery update), and
- * the result is restored to the server's ascending order.
+ * Merges one server page into the loaded history without re-sorting it. The
+ * server orders by `(created_at, id)` with full PostgreSQL precision; sorting
+ * the serialized ISO milliseconds again could reorder messages whose
+ * microseconds differ inside one millisecond. A page that overlaps the current
+ * list replaces that block (delivery updates), an older page is prepended and a
+ * newer page appended.
  */
-function mergeMessages(current: Message[], incoming: Message[]): Message[] {
+function mergeMessages(
+  current: Message[],
+  incoming: Message[],
+  direction: 'older' | 'newer',
+): Message[] {
   if (incoming.length === 0) {
     return current;
   }
-  const byId = new Map(current.map((message) => [message.id, message]));
-  for (const message of incoming) {
-    byId.set(message.id, message);
+  const incomingIds = new Set(incoming.map((message) => message.id));
+  if (current.length === 0) {
+    return incoming;
   }
-  if (byId.size === current.length && incoming.every((message) => current.includes(message))) {
-    return current;
+  const firstOverlap = current.findIndex((message) => incomingIds.has(message.id));
+  if (firstOverlap === -1) {
+    // Disjoint pages keep the server order; the caller knows whether the page
+    // is older or newer than the loaded range, so no timestamp re-comparison is
+    // needed at a boundary that may share a millisecond.
+    return direction === 'older' ? [...incoming, ...current] : [...current, ...incoming];
   }
-  return [...byId.values()].sort(compareMessages);
+  let lastOverlap = current.length - 1;
+  while (lastOverlap > firstOverlap && !incomingIds.has(current[lastOverlap]!.id)) {
+    lastOverlap -= 1;
+  }
+  return [...current.slice(0, firstOverlap), ...incoming, ...current.slice(lastOverlap + 1)];
 }
 
 function mergeConversations(
@@ -346,7 +351,7 @@ export function WorkspaceShell({
           return;
         }
         setMessages((current) =>
-          silent ? mergeMessages(current, result.messages) : result.messages,
+          silent ? mergeMessages(current, result.messages, 'newer') : result.messages,
         );
         setMessagesNextCursor((current) => (silent && current ? current : result.nextCursor));
         setMessagesNewerCursor(result.newerCursor);
@@ -414,7 +419,7 @@ export function WorkspaceShell({
               toBottom: true,
             };
           }
-          setMessages((current) => mergeMessages(current, result.messages));
+          setMessages((current) => mergeMessages(current, result.messages, 'newer'));
           if (!cursor) {
             setMessagesNextCursor((current) => current ?? result.nextCursor);
             setMessagesHasMoreOlder((current) => current || result.nextCursor !== null);
@@ -485,7 +490,7 @@ export function WorkspaceShell({
         anchorId: visible?.id ?? anchor?.dataset.messageId,
         anchorTop: visible?.top,
       };
-      setMessages((current) => mergeMessages(current, result.messages));
+      setMessages((current) => mergeMessages(current, result.messages, 'older'));
       setMessagesNextCursor(result.nextCursor);
       setMessagesHasMoreOlder(result.nextCursor !== null);
       setMessagesOlderStatus('idle');
