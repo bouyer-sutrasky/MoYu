@@ -1,5 +1,5 @@
 {
-  "at": "2026-11-04T12:12:52.829Z",
+  "at": "2026-11-04T12:34:07.666Z",
   "baseSha": "40e857a9081b281fb3a93ebaea6986e0101f005d",
   "results": [
     {
@@ -68,6 +68,16 @@
       "detail": "same text, new draft lineage, input preserved"
     },
     {
+      "name": "edit then explicit failure restores both",
+      "status": "pass",
+      "detail": "old body retried by key; newer edit restored after success and refresh"
+    },
+    {
+      "name": "edit then ambiguous failure restores both",
+      "status": "pass",
+      "detail": "new edit deferred across retry; old body not duplicated"
+    },
+    {
       "name": "per-conversation send state and late finally",
       "status": "pass",
       "detail": "A/B stay independently locked; A finishing does not unlock B"
@@ -85,12 +95,17 @@
     {
       "name": "merge with a target send in flight",
       "status": "pass",
-      "detail": "B keeps its key; source text deferred then promoted after B settles"
+      "detail": "B keeps its key; deferred + newer edit promoted after B settles and refresh"
+    },
+    {
+      "name": "identical source and target text stay separate drafts",
+      "status": "pass",
+      "detail": "source identity survives B settling; one row; text restored after refresh"
     },
     {
       "name": "merge with a lost target response",
       "status": "pass",
-      "detail": "B retried by original key; deferred source text restored without resend"
+      "detail": "identical source text survives B retry by original key, one row, refresh"
     },
     {
       "name": "merge while switching conversation",

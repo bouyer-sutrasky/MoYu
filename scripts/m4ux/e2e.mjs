@@ -1443,6 +1443,133 @@ async function functional(browser, api, seeded) {
     'same text, new draft lineage, input preserved',
   );
 
+  // 7a1. Edit while a send runs, then an explicit failure. The newer edit must
+  // be restorable while the old send is retried by its original key.
+  await openConversation(page, '草稿与发送验证');
+  if ((await page.getByRole('button', { name: '清除草稿' }).count()) > 0) {
+    await page.getByRole('button', { name: '清除草稿' }).click();
+  }
+  const explicitText = `明确失败原文 ${Date.now()}`;
+  const explicitEdit = `明确失败后编辑 ${Date.now()}`;
+  const explicitGate = makeGate();
+  let explicitHeld;
+  const explicitHeldPromise = new Promise((resolve) => {
+    explicitHeld = resolve;
+  });
+  const explicitPattern = new RegExp(`/conversations/${seeded.secondId}/messages$`);
+  const explicitHandler = async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue();
+      return;
+    }
+    await route.fetch();
+    explicitHeld();
+    await explicitGate.promise;
+    await route.fulfill({
+      status: 500,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: { code: 'internal', message: 'forced failure' } }),
+    });
+  };
+  await page.route(explicitPattern, explicitHandler);
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(explicitText);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await explicitHeldPromise;
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(explicitEdit);
+  explicitGate.release();
+  await page.getByRole('button', { name: '恢复待确认内容' }).waitFor();
+  await openConversation(page, '历史分页验证');
+  await openConversation(page, '草稿与发送验证');
+  await page.getByRole('button', { name: '恢复待确认内容' }).waitFor();
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openConversation(page, '草稿与发送验证');
+  await waitForComposer(page, explicitEdit);
+  await page.getByRole('button', { name: '恢复待确认内容' }).click();
+  await waitForComposer(page, explicitText);
+  await page
+    .getByText(/合并来源|未发送内容已保留/)
+    .first()
+    .waitFor();
+  await page.unroute(explicitPattern, explicitHandler);
+  const explicitRetry = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      response.url().includes(`/${seeded.secondId}/messages`),
+  );
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await explicitRetry;
+  await waitForComposer(page, explicitEdit);
+  assert(
+    (await countMessages(currentDatabase.url, seeded.secondId, explicitText)) === 1,
+    'after: explicit failure retry used the original key, one row',
+  );
+  assert(
+    (await countMessages(currentDatabase.url, seeded.secondId, explicitEdit)) === 0,
+    'after: the newer edit was not sent with the retry',
+  );
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openConversation(page, '草稿与发送验证');
+  await waitForComposer(page, explicitEdit);
+  await page.getByRole('button', { name: '清除草稿' }).click();
+  record(
+    'edit then explicit failure restores both',
+    'pass',
+    'old body retried by key; newer edit restored after success and refresh',
+  );
+
+  // 7a1b. Same recovery when the response is lost (ambiguous outcome).
+  await openConversation(page, '草稿与发送验证');
+  const lostEditBase = `结果不明原文 ${Date.now()}`;
+  const lostEditNew = `结果不明后编辑 ${Date.now()}`;
+  const lostEditGate = makeGate();
+  let lostEditHeld;
+  const lostEditHeldPromise = new Promise((resolve) => {
+    lostEditHeld = resolve;
+  });
+  const lostEditPattern = new RegExp(`/conversations/${seeded.secondId}/messages$`);
+  const lostEditHandler = async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue();
+      return;
+    }
+    await route.fetch();
+    lostEditHeld();
+    await lostEditGate.promise;
+    await route.abort('failed');
+  };
+  await page.route(lostEditPattern, lostEditHandler);
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(lostEditBase);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await lostEditHeldPromise;
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(lostEditNew);
+  lostEditGate.release();
+  await page.getByRole('button', { name: '恢复待确认内容' }).waitFor();
+  await page.getByRole('button', { name: '恢复待确认内容' }).click();
+  await waitForComposer(page, lostEditBase);
+  await page.unroute(lostEditPattern, lostEditHandler);
+  const lostEditRetry = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      response.url().includes(`/${seeded.secondId}/messages`),
+  );
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await lostEditRetry;
+  await waitForComposer(page, lostEditNew);
+  assert(
+    (await countMessages(currentDatabase.url, seeded.secondId, lostEditBase)) === 1,
+    'after: ambiguous retry kept one row',
+  );
+  assert(
+    (await countMessages(currentDatabase.url, seeded.secondId, lostEditNew)) === 0,
+    'after: ambiguous new edit was not sent',
+  );
+  await page.getByRole('button', { name: '清除草稿' }).click();
+  record(
+    'edit then ambiguous failure restores both',
+    'pass',
+    'new edit deferred across retry; old body not duplicated',
+  );
+
   // 7a2. Per-conversation sending state: A's late finally must not unlock B,
   // and a conversation still sending cannot be re-entered.
   await openConversation(page, '历史分页验证');
@@ -1626,16 +1753,38 @@ async function functional(browser, api, seeded) {
     (await page.getByRole('button', { name: '恢复合并草稿' }).count()) === 0,
     'after: deferred text waits for the target pending send',
   );
+  // A newer edit made on the target is also preserved when checking B.
+  const targetEditY = `目标后编辑 Y ${Date.now()}`;
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(targetEditY);
+  await page.getByRole('button', { name: '恢复待确认内容' }).click();
+  await waitForComposer(page, targetBText);
   targetBGate.release();
   await targetBResponse;
-  await waitForComposer(page, sourceEText);
+  await page.waitForFunction(
+    (texts) => {
+      const area = document.querySelector('textarea');
+      return area !== null && texts.every((text) => area.value.includes(text));
+    },
+    [sourceEText, targetEditY],
+  );
   assert(
     (await countMessages(currentDatabase.url, seeded.githubId, targetBText)) === 1,
     'after: target B stored once',
   );
-  assert(
-    (await countMessages(currentDatabase.url, seeded.githubId, sourceEText)) === 0,
-    'after: deferred source text was not sent with B',
+  for (const text of [sourceEText, targetEditY]) {
+    assert(
+      (await countMessages(currentDatabase.url, seeded.githubId, text)) === 0,
+      `after: deferred text was not sent with B (${text})`,
+    );
+  }
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openConversation(page, 'GitHub 汇入任务');
+  await page.waitForFunction(
+    (texts) => {
+      const area = document.querySelector('textarea');
+      return area !== null && texts.every((text) => area.value.includes(text));
+    },
+    [sourceEText, targetEditY],
   );
   await page.unroute(targetBPattern, targetBDelay);
   await page.unroute(sourceEPattern, sourceEDelay);
@@ -1643,7 +1792,67 @@ async function functional(browser, api, seeded) {
   record(
     'merge with a target send in flight',
     'pass',
-    'B keeps its key; source text deferred then promoted after B settles',
+    'B keeps its key; deferred + newer edit promoted after B settles and refresh',
+  );
+
+  // 7c2b. The source's new draft is textually identical to the target's
+  // pending body. They are still different edits: keep both identities and do
+  // not drop the source when the target settles.
+  const sourceG = await createWebConversation(baseURL, token, seeded.repositoryA);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openConversation(page, 'GitHub 汇入任务');
+  if ((await page.getByRole('button', { name: '清除草稿' }).count()) > 0) {
+    await page.getByRole('button', { name: '清除草稿' }).click();
+  }
+  const sameText = `同文待确认 ${Date.now()}`;
+  const sameGate = makeGate();
+  const sameDelay = delayedFor(sameGate);
+  const samePattern = new RegExp(`/conversations/${seeded.githubId}/messages$`);
+  await page.route(samePattern, sameDelay);
+  const sameResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      response.url().includes(`/${seeded.githubId}/messages`),
+  );
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(sameText);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await openConversationById(page, sourceG);
+  const sourceSameGate = makeGate();
+  const sourceSameDelay = delayedFor(sourceSameGate);
+  const sourceSamePattern = new RegExp(`/conversations/${sourceG}/messages$`);
+  await page.route(sourceSamePattern, sourceSameDelay);
+  const sourceSameResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' && response.url().includes(`/${sourceG}/messages`),
+  );
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(mergeUrl);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(sameText);
+  sourceSameGate.release();
+  await sourceSameResponse;
+  await page.getByRole('heading', { name: 'GitHub 汇入任务', exact: true }).waitFor();
+  await waitForComposer(page, sameText);
+  await page
+    .getByText(/发送结果待确认/)
+    .first()
+    .waitFor();
+  sameGate.release();
+  await sameResponse;
+  await waitForComposer(page, sameText);
+  assert(
+    (await countMessages(currentDatabase.url, seeded.githubId, sameText)) === 1,
+    'after: identical source text was not sent a second time',
+  );
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openConversation(page, 'GitHub 汇入任务');
+  await waitForComposer(page, sameText);
+  await page.unroute(samePattern, sameDelay);
+  await page.unroute(sourceSamePattern, sourceSameDelay);
+  await page.getByRole('button', { name: '清除草稿' }).click();
+  record(
+    'identical source and target text stay separate drafts',
+    'pass',
+    'source identity survives B settling; one row; text restored after refresh',
   );
 
   // 7c3. The target's send response is lost. Its pending key survives the
@@ -1675,7 +1884,6 @@ async function functional(browser, api, seeded) {
   await page.getByRole('textbox', { name: '消息输入区' }).fill(lostBText);
   await page.getByRole('button', { name: '发送', exact: true }).click();
   await lostBHeldPromise;
-  const sourceLostText = `源 A 丢响应新草稿 ${Date.now()}`;
   const sourceFGate = makeGate();
   const sourceFDelay = delayedFor(sourceFGate);
   const sourceFPattern = new RegExp(`/conversations/${sourceF}/messages$`);
@@ -1687,7 +1895,7 @@ async function functional(browser, api, seeded) {
   await openConversationById(page, sourceF);
   await page.getByRole('textbox', { name: '消息输入区' }).fill(mergeUrl);
   await page.getByRole('button', { name: '发送', exact: true }).click();
-  await page.getByRole('textbox', { name: '消息输入区' }).fill(sourceLostText);
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(lostBText);
   sourceFGate.release();
   await sourceFResponse;
   await page.getByRole('heading', { name: 'GitHub 汇入任务', exact: true }).waitFor();
@@ -1706,17 +1914,20 @@ async function functional(browser, api, seeded) {
   );
   await page.getByRole('button', { name: '发送', exact: true }).click();
   await retryResponse;
-  await waitForComposer(page, sourceLostText);
+  await waitForComposer(page, lostBText);
   assert(
     (await countMessages(currentDatabase.url, seeded.githubId, lostBText)) === 1,
     'after: lost target response retried by its original key, one row',
   );
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openConversation(page, 'GitHub 汇入任务');
+  await waitForComposer(page, lostBText);
   await page.unroute(sourceFPattern, sourceFDelay);
   await page.getByRole('button', { name: '清除草稿' }).click();
   record(
     'merge with a lost target response',
     'pass',
-    'B retried by original key; deferred source text restored without resend',
+    'identical source text survives B retry by original key, one row, refresh',
   );
 
   // 7d. Merging while the user moved to another conversation: the late result
