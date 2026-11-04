@@ -2217,6 +2217,47 @@ async function functional(browser, api, seeded) {
   );
   await page.getByRole('button', { name: '发送', exact: true }).click();
   await parkBResponse;
+  await page.waitForTimeout(500);
+  // A later merge from a third conversation must carry the existing parked M.
+  const sourceAfterPark = await createWebConversation(baseURL, token, seeded.repositoryA);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openConversation(page, 'GitHub 汇入任务');
+  await page
+    .getByText(/合并来源还有未确认发送/)
+    .first()
+    .waitFor();
+  await openConversationById(page, sourceAfterPark);
+  const afterParkDText = `后续合并 D ${Date.now()}`;
+  const afterParkGate = makeGate();
+  const afterParkDelay = delayedFor(afterParkGate);
+  const afterParkPattern = new RegExp(`/conversations/${sourceAfterPark}/messages$`);
+  await page.route(afterParkPattern, afterParkDelay);
+  const afterParkResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      response.url().includes(`/${sourceAfterPark}/messages`),
+  );
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(mergeUrl);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(afterParkDText);
+  afterParkGate.release();
+  await afterParkResponse;
+  await page.getByRole('heading', { name: 'GitHub 汇入任务', exact: true }).waitFor();
+  await waitForComposer(page, afterParkDText);
+  await page
+    .getByText(/合并来源还有未确认发送/)
+    .first()
+    .waitFor();
+  const afterMergeDraft = JSON.parse(
+    await page.evaluate((key) => localStorage.getItem(key), targetDraftKey),
+  );
+  assert(
+    afterMergeDraft?.parked?.some((item) => item?.pending?.clientMessageId === mClientMessageId),
+    'after: a later merge preserves the earlier parked M and its key',
+  );
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openConversation(page, 'GitHub 汇入任务');
+  await waitForComposer(page, afterParkDText);
   await page.getByRole('button', { name: '恢复此草稿' }).click();
   await waitForComposer(page, parkMText);
   const parkMResponse = page.waitForResponse(
@@ -2226,6 +2267,7 @@ async function functional(browser, api, seeded) {
   );
   await page.getByRole('button', { name: '发送', exact: true }).click();
   await parkMResponse;
+  await waitForComposer(page, afterParkDText);
   assert(
     (await countMessages(currentDatabase.url, seeded.githubId, parkBText)) === 1,
     'after: B committed once after its own retry',
@@ -2234,7 +2276,12 @@ async function functional(browser, api, seeded) {
     (await countMessages(currentDatabase.url, seeded.githubId, parkMText)) === 1,
     'after: M was not auto-sent before recovery and stored once after retry',
   );
+  assert(
+    (await countMessages(currentDatabase.url, seeded.githubId, afterParkDText)) === 0,
+    'after: later merge draft D remains unsent',
+  );
   await page.unroute(aliasPattern, aliasHandler);
+  await page.unroute(afterParkPattern, afterParkDelay);
   await page.waitForTimeout(500);
   if ((await page.getByRole('button', { name: '清除草稿' }).count()) > 0) {
     await page.getByRole('button', { name: '清除草稿' }).click();

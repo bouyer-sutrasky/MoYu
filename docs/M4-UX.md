@@ -68,6 +68,9 @@
   target 无草稿时源状态原样搬过去（保留 pending key，可在 target 按原 key 核对）；源有 pending 而 target
   已有草稿/pending 时，把源草稿完整停放到 target 的 `parked` 列表（正文、key、lineage、deferred），
   逐项显示“恢复此草稿”；当前 pending 结算后才允许恢复。其余情况才把源未发送内容合并进 deferred/text。
+- `parked` 是草稿状态的一部分：所有重建 Draft 的迁移/合并/结算/恢复路径都必须合并保留 `target.parked`
+  与 `source.parked`，不得因 target 无 pending 或普通文本合并而丢弃；空文本的 parked-only 草稿在渲染时
+  直接读取持久化状态，确保刷新后仍显示恢复入口。
 - 存储策略：显式退出清除该所有者全部草稿；会话内“清除草稿”立即删除本地记录（包括 pending/deferred）；
   会话丢失（401）不清草稿，重新登录后可继续。localStorage 不可用时使用内存副本，当前会话内的输入不丢失、
   发送不失败。

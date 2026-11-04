@@ -62,6 +62,8 @@ corepack pnpm@11.7.0 -r --if-present build                # exit 0
 | 合并 sentOnly 忽略 deferred | 合并改为统一协议：排除已发送正文，提取 source editable+deferred 全部剩余；不再直接删源 | 源 URL 已发、deferred=Y，恢复后再合并；Y 迁到 target，URL 不重复 |
 | 合并响应丢失后源会话被 alias 隐藏 | GET 解析 alias 时先迁移草稿：target 空则原样搬；源有 pending 且 target 有草稿/pending 时停放为 `parked`；无 pending 才合并 deferred | 源 M pending + target B pending；M 停放保留 key，刷新后恢复并原 key 重试，未自动外发 |
 | alias 存在被误当成当前 pending 已提交 | alias 迁移不再调用发送结算；只有真实成功/重复回执才结算 clientMessageId；源 pending 与 target 同时存在时停放为 parked | 目标 B pending + 源新 M pending + 晚到 alias GET；M 正文/key/deferred 完整保留；旧 URL pending 同样停放且重试幂等 |
+| parked 未贯穿所有 Draft 重建入口 | 审计并修复 migrateSent、alias 普通合并、target pending/无 pending、source 无 pending 等重建；统一 `mergeParked` 保留 target+source 全部 parked | target 有 parked 且 pending 有/无，后续第三方合并 D；parked M 与 key 保留，刷新后恢复并原 key 重试 |
+| 空文本 parked-only 草稿不渲染 | 渲染时直接读取持久化草稿，而非只依赖 effect 更新的 draftRef | 刷新后 textarea 为空但 parked 恢复按钮可见 |
 
 分页测试覆盖：250 条消息中 3 条共享同一时间戳、逐页 limit=7 全量遍历、`before`/`after` 双向、
 微秒精度时间戳、非法/跨会话/跨仓库游标 422、105 个会话分页与仓库隔离、乱序/迟到页由前端 token
@@ -155,6 +157,7 @@ PostgreSQL、真实 API 进程、真实 Chromium 与基线/分支两份真实构
 | 已提交但响应丢失再合并 | 源 POST 已提交并合并后 abort→恢复→原 key 重试；URL 不重复，deferred Y 迁到 target 并恢复 |
 | alias 不确认新 pending | target B 独立 pending + 源 A 清除后新发 M（query abort）→释放旧 alias GET；M 停放 target.parked 保留原 key，刷新后仍可恢复；B 先结算，再恢复 M 并按原 key 重试，M 只入库 1 条且此前未外发 |
 | 旧 pending URL 停放 | target B pending + 源旧 URL pending（已提交 alias）→alias GET 停放 URL key；B 结算后恢复 URL 原 key 重试，URL 不重复 |
+| parked 跨后续合并守恒 | 已停放 M 后 target 无 pending，第三方 C 再合并 URL+D；迁移后 D 为 editable、parked M 及 key 仍在，刷新可恢复，M 原 key 重试只 1 条 |
 | 初次加载窗口 SSE | 首屏查询完成后 hold 响应，POST 新消息并收到 SSE，再释放旧响应；新消息最终可见且只 1 条 |
 | 合并草稿迁移 | 新 Web 会话首条发送 GitHub 需求 URL 期间继续编辑，跳转 target 后草稿仍在；刷新仍恢复 |
 | 合并保留目标草稿 | target 已有草稿时，合并后的 target 同时包含两段文本，没有覆盖 |
@@ -186,8 +189,8 @@ Before 为 `origin/main` @ `40e857a` 的真实构建，After 为 `docs/evidence/
 | 文件 | sha256 |
 | --- | --- |
 | `apps/api/dist/server.js` | `3774fec8537a82513c5f4706f4f78ab4dc47fc2dea4a532f03aba059d6080c4a` |
-| `apps/web/dist/index.html` | `eeb85ac0f44972908fdcf8e02f5dea3bfa430d12c738f9378138725488fd83f4` |
-| `apps/web/dist/assets/index-_Fgd60Df.js` | `d9dff49cbb6d5f8ca4a6256cbf40d258bb0d6c501c6403cfc4e75dbc98b0be55` |
+| `apps/web/dist/index.html` | `75274b094b6c5a0f220f4ba683c62964c385944ab69e5fdae0135a08ebbcd89d` |
+| `apps/web/dist/assets/index-KRcPgFT7.js` | `6d13b5c4c3ce75a1a37e634d19085b98bc74edbfb6013c7acdf77120a328d226` |
 
 ## 迁移与回滚
 
