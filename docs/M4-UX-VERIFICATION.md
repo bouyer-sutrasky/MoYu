@@ -52,6 +52,10 @@ corepack pnpm@11.7.0 -r --if-present build                # exit 0
 | 初次消息加载期间 SSE 被丢弃 | 记 dirty 与待刷新 id，首屏落地后按返回的 `newerCursor` 补查；切会话清空/隔离 | 拦截首屏 GET（服务端查询已执行）→ POST 消息并确认 SSE → 释放旧响应 → 最终 1 条且无重复 |
 | 合并跳转使较新草稿滞留在隐藏源会话 | 合并回执把较新源草稿迁移到 target；target 已有草稿时拼接并提升版本，不覆盖任一段；迟到回执只在当前会话匹配时改输入 | 合并+编辑、目标已有草稿、合并+切会话、双会话同时发送+旧响应晚到 |
 | 0021 未在真实 runtime 验收 | 独立 `/root/.dsh-m4ux` profile 加载固定 `/root/src/upstream/m4ux-final-verify`，真实 Bearer 与目标仓库分支；平台 API 保存/拒绝失效分支 | [`evidence/m4ux/runtime-evidence.json`](evidence/m4ux/runtime-evidence.json) |
+| 草稿版本 ABA（清空后重输相同文本被旧回执清除） | 草稿增加 `lineageId`（清空/显式清除即换代），pending 保存本次快照；成功只按 clientMessageId + 同代际结算，不再比较 version+text | 从空草稿开始：发送 hold→清空→重输相同文本→放行，输入保留；旧 202 未清草稿 |
+| 合并把 target 的独立 pending 结算掉 | target 有 pending 时不改其文本/快照，源文本进 `deferredText`；target 发送成功后提升，失败/丢响应时按原 key 重试后再提升 | target B 在途成功晚到、B 丢响应后按原 key 重试；B 均只入库 1 条，源文本未随 B 外发 |
+| delivery 刷新被旧响应倒灌 | 每条消息的 detail GET 带单调请求序号，只有最新响应可写；切会话清空序号表 | hold delivered 响应→read 先显示→切仓库往返→释放 delivered，仍为 read |
+| 单 `sendingFor` 使 A/B 发送状态互相解锁 | 按会话保存活动请求序号；finally 只清自己的 token，提交前查 ref 防重入 | A/B 交叉结束、切回 A 重入、同会话 Enter 重入；B 在 A 结束后仍锁定 |
 
 分页测试覆盖：250 条消息中 3 条共享同一时间戳、逐页 limit=7 全量遍历、`before`/`after` 双向、
 微秒精度时间戳、非法/跨会话/跨仓库游标 422、105 个会话分页与仓库隔离、乱序/迟到页由前端 token
@@ -123,7 +127,7 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
   node scripts/m4ux/e2e.mjs --skip-build
 ```
 
-结果：**17/17 通过**，JSON 在 [`evidence/m4ux/m4ux-e2e.json`](evidence/m4ux/m4ux-e2e.json)。脚本使用一次性
+结果：**22/22 通过**，JSON 在 [`evidence/m4ux/m4ux-e2e.json`](evidence/m4ux/m4ux-e2e.json)。脚本使用一次性
 PostgreSQL、真实 API 进程、真实 Chromium 与基线/分支两份真实构建；Before 由 `/root/src/m4ux-before`
 的 `40e857a` 构建产生，After 为本分支构建，两者同一数据库、同一视口、主题与场景。
 
@@ -133,6 +137,11 @@ PostgreSQL、真实 API 进程、真实 Chromium 与基线/分支两份真实构
 | 迟到旧页 | 切换会话后释放上一会话的 `before` 请求，新列表仍为 100 条，无污染 |
 | SSE 合并 | 已加载 250 条后 SSE 追加 1 条，得到 251 条且无重复，前 50 条历史仍在 |
 | 投递/read 就地刷新 | 打开仓库 B 的 stored 消息，真实 dispatcher 推进 delivered/read，SSE 到达后同一行改为“执行器已接收/已读取”，无刷新 |
+| 投递响应乱序 | hold delivered 的 detail GET，再让 read GET 返回；切仓库往返后释放旧 delivered，行仍为“已读取” |
+| 草稿 ABA | 从空草稿输入 X→发送 hold→清空→重新输入相同 X→放行；输入仍为 X，旧 202 未清除新代际 |
+| 按会话发送状态 | A 在途切 B 发送，A 先结束；B 仍显示“发送中”，切回 A 按 Enter 不产生第二个请求 |
+| 合并目标在途 B | target B 在途时源 A 合并；B 原文/标识保持，源文本 deferred；B 成功后源文本恢复，B 只入库 1 条 |
+| 合并目标丢响应 B | B 响应丢失后源 A 合并；B 按原 key 重试成功，源文本恢复且未随 B 外发 |
 | 初次加载窗口 SSE | 首屏查询完成后 hold 响应，POST 新消息并收到 SSE，再释放旧响应；新消息最终可见且只 1 条 |
 | 合并草稿迁移 | 新 Web 会话首条发送 GitHub 需求 URL 期间继续编辑，跳转 target 后草稿仍在；刷新仍恢复 |
 | 合并保留目标草稿 | target 已有草稿时，合并后的 target 同时包含两段文本，没有覆盖 |
@@ -164,8 +173,8 @@ Before 为 `origin/main` @ `40e857a` 的真实构建，After 为 `docs/evidence/
 | 文件 | sha256 |
 | --- | --- |
 | `apps/api/dist/server.js` | `3774fec8537a82513c5f4706f4f78ab4dc47fc2dea4a532f03aba059d6080c4a` |
-| `apps/web/dist/index.html` | `24b256d19a6b00ff3849cbfc498bf0383f972a8a32e2fda3ca04f6dba31f6fac` |
-| `apps/web/dist/assets/index-CBlITEPY.js` | `5c4bb4a70681481540c3d6e75d0914713fd6dbf2d6a526c21f8ed390f4f53134` |
+| `apps/web/dist/index.html` | `8e6c8f633aadfeeeb63acf48d143bd1eb0e2e187a0b225b25727f82b2c5881f2` |
+| `apps/web/dist/assets/index-afYe7B99.js` | `2a59e88e90d58ff9412c9a828009a835646318479c9b2a569f4596627e556f1c` |
 
 ## 迁移与回滚
 

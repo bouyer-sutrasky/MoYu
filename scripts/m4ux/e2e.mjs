@@ -915,6 +915,26 @@ async function apiFetch(baseURL, token, pathname, options = {}) {
   return { status: response.status, payload };
 }
 
+async function insertPendingInboundMessage(databaseUrl, conversationId, body) {
+  const client = new Client({ connectionString: databaseUrl });
+  await client.connect();
+  try {
+    const result = await client.query(
+      `insert into messages (conversation_id, direction, kind, body, source)
+       values ($1, 'inbound', 'user', $2, 'web') returning id`,
+      [conversationId, body],
+    );
+    const messageId = result.rows[0].id;
+    await client.query(
+      `insert into deliveries (message_id, state, attempt_count) values ($1, 'pending', 0)`,
+      [messageId],
+    );
+    return messageId;
+  } finally {
+    await client.end();
+  }
+}
+
 async function countMessages(databaseUrl, conversationId, body) {
   const client = new Client({ connectionString: databaseUrl });
   await client.connect();
@@ -1096,12 +1116,80 @@ async function functional(browser, api, seeded) {
   } finally {
     await dispatcher.stop();
   }
-  await repositorySelect.selectOption(seeded.repositoryA);
   record(
     'delivery and read update in place',
     'pass',
     'stored -> delivered -> read through the real dispatcher and SSE',
   );
+
+  // 3b2. A stale delivered response must not overwrite the newer read
+  // projection, including after leaving and returning to the conversation.
+  const reorderBody = `投递乱序 ${Date.now()}`;
+  const reorderId = await insertPendingInboundMessage(
+    currentDatabase.url,
+    seeded.otherId,
+    reorderBody,
+  );
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await repositorySelect.selectOption(seeded.repositoryB);
+  await openConversation(page, '另一个仓库的任务');
+  const reorderRow = page.locator(`[data-message-id="${reorderId}"]`);
+  await reorderRow.waitFor();
+  let deliveredHeld;
+  const deliveredHeldPromise = new Promise((resolve) => {
+    deliveredHeld = resolve;
+  });
+  let deliverRelease;
+  const deliverReleasePromise = new Promise((resolve) => {
+    deliverRelease = resolve;
+  });
+  const detailPattern = new RegExp(`/conversations/${seeded.otherId}/messages/${reorderId}$`);
+  let deliveredHeldOnce = false;
+  const holdDelivered = async (route) => {
+    if (deliveredHeldOnce || route.request().method() !== 'GET') {
+      await route.continue();
+      return;
+    }
+    deliveredHeldOnce = true;
+    const response = await route.fetch();
+    deliveredHeld();
+    await deliverReleasePromise;
+    await route.fulfill({ response });
+  };
+  await page.route(detailPattern, holdDelivered);
+  const reorderDispatcher = await startDispatcher('bouyer-sutrasky/m4ux-other');
+  try {
+    await deliveredHeldPromise;
+    bridgeState.readEvent = {
+      seq: 2,
+      id: 'read-2',
+      type: 'message.read',
+      at: new Date().toISOString(),
+      data: { messageId: reorderId, at: new Date().toISOString() },
+    };
+    await reorderRow.getByText('已读取').waitFor({ timeout: 20_000 });
+    await repositorySelect.selectOption(seeded.repositoryA);
+    await openConversation(page, '历史分页验证');
+    await repositorySelect.selectOption(seeded.repositoryB);
+    await openConversation(page, '另一个仓库的任务');
+    deliverRelease();
+    await page.waitForTimeout(500);
+    await reorderRow.getByText('已读取').waitFor();
+    assert(
+      (await reorderRow.getByText('执行器已接收').count()) === 0,
+      'after: the stale delivered response did not overwrite read',
+    );
+  } finally {
+    await reorderDispatcher.stop();
+    await page.unroute(detailPattern, holdDelivered);
+  }
+  record(
+    'out-of-order delivery responses',
+    'pass',
+    'held delivered response cannot overwrite read after a switch round-trip',
+  );
+
+  await repositorySelect.selectOption(seeded.repositoryA);
 
   // 3c. An SSE message that arrives after the initial query but before its
   // response must be caught up after the first page lands.
@@ -1319,6 +1407,103 @@ async function functional(browser, api, seeded) {
   );
   record('ambiguous response retry', 'pass', 'same clientMessageId, one stored message');
 
+  // 7a. ABA guard: clearing and retyping the same text while a send is in
+  // flight creates a new draft lineage; the old 202 must not clear it.
+  await openConversation(page, '草稿与发送验证');
+  if ((await page.getByRole('button', { name: '清除草稿' }).count()) > 0) {
+    await page.getByRole('button', { name: '清除草稿' }).click();
+  }
+  const abaText = `ABA 原文 ${Date.now()}`;
+  const abaGate = makeGate();
+  const abaDelay = delayedFor(abaGate);
+  const abaPattern = new RegExp(`/conversations/${seeded.secondId}/messages$`);
+  await page.route(abaPattern, abaDelay);
+  const abaResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      response.url().includes(`/${seeded.secondId}/messages`),
+  );
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(abaText);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await page.getByRole('textbox', { name: '消息输入区' }).fill('');
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(abaText);
+  abaGate.release();
+  const abaReply = await abaResponse;
+  assert(abaReply?.status() === 202, 'after: ABA send accepted');
+  await page.waitForTimeout(300);
+  assert(
+    (await page.getByRole('textbox', { name: '消息输入区' }).inputValue()) === abaText,
+    'after: the retyped same text survives the older response (new lineage)',
+  );
+  await page.unroute(abaPattern, abaDelay);
+  await page.getByRole('button', { name: '清除草稿' }).click();
+  record(
+    'cleared and retyped draft is not cleared by the old response',
+    'pass',
+    'same text, new draft lineage, input preserved',
+  );
+
+  // 7a2. Per-conversation sending state: A's late finally must not unlock B,
+  // and a conversation still sending cannot be re-entered.
+  await openConversation(page, '历史分页验证');
+  if ((await page.getByRole('button', { name: '清除草稿' }).count()) > 0) {
+    await page.getByRole('button', { name: '清除草稿' }).click();
+  }
+  await openConversation(page, '草稿与发送验证');
+  let aRequests = 0;
+  const aGate = makeGate();
+  const aDelay = delayedFor(aGate);
+  const aPattern = new RegExp(`/conversations/${seeded.secondId}/messages$`);
+  await page.route(aPattern, async (route) => {
+    if (route.request().method() === 'POST') aRequests += 1;
+    await aDelay(route);
+  });
+  const aResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      response.url().includes(`/${seeded.secondId}/messages`),
+  );
+  const aText = `A 在途 ${Date.now()}`;
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(aText);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await openConversation(page, '历史分页验证');
+  let bRequests = 0;
+  const bGate = makeGate();
+  const bDelay = delayedFor(bGate);
+  const bPattern = new RegExp(`/conversations/${seeded.historyId}/messages$`);
+  await page.route(bPattern, async (route) => {
+    if (route.request().method() === 'POST') bRequests += 1;
+    await bDelay(route);
+  });
+  const bResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      response.url().includes(`/${seeded.historyId}/messages`),
+  );
+  const bText = `B 在途 ${Date.now()}`;
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(bText);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await openConversation(page, '草稿与发送验证');
+  await page.getByRole('button', { name: '发送中…' }).waitFor();
+  await page.getByRole('textbox', { name: '消息输入区' }).press('Enter');
+  await page.waitForTimeout(200);
+  assert(aRequests === 1, `after: re-entry in the same conversation is blocked (${aRequests})`);
+  aGate.release();
+  await aResponse;
+  await openConversation(page, '历史分页验证');
+  await page.getByRole('button', { name: '发送中…' }).waitFor();
+  assert(bRequests === 1, `after: B runs once (${bRequests})`);
+  bGate.release();
+  await bResponse;
+  await page.getByRole('button', { name: '发送', exact: true }).waitFor();
+  await page.unroute(aPattern);
+  await page.unroute(bPattern);
+  record(
+    'per-conversation send state and late finally',
+    'pass',
+    'A/B stay independently locked; A finishing does not unlock B',
+  );
+
   // 7b. A merged first message carries a newer draft to the GitHub target
   // instead of leaving it under the hidden source alias.
   const mergeUrl = 'https://github.com/bouyer-sutrasky/m4ux-main/issues/42';
@@ -1394,6 +1579,144 @@ async function functional(browser, api, seeded) {
     'merge preserves an existing target draft',
     'pass',
     'target and source text are joined, neither is overwritten',
+  );
+
+  // 7c2. Target already has an in-flight send: merging must not settle or
+  // retarget it. The source text is deferred until the target send resolves.
+  const sourceE = await createWebConversation(baseURL, token, seeded.repositoryA);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openConversation(page, 'GitHub 汇入任务');
+  if ((await page.getByRole('button', { name: '清除草稿' }).count()) > 0) {
+    await page.getByRole('button', { name: '清除草稿' }).click();
+  }
+  const targetBText = `目标在途 B ${Date.now()}`;
+  const targetBGate = makeGate();
+  const targetBDelay = delayedFor(targetBGate);
+  const targetBPattern = new RegExp(`/conversations/${seeded.githubId}/messages$`);
+  await page.route(targetBPattern, targetBDelay);
+  const targetBResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      response.url().includes(`/${seeded.githubId}/messages`),
+  );
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(targetBText);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await openConversationById(page, sourceE);
+  const sourceEText = `源 A 新草稿 ${Date.now()}`;
+  const sourceEGate = makeGate();
+  const sourceEDelay = delayedFor(sourceEGate);
+  const sourceEPattern = new RegExp(`/conversations/${sourceE}/messages$`);
+  await page.route(sourceEPattern, sourceEDelay);
+  const sourceEResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' && response.url().includes(`/${sourceE}/messages`),
+  );
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(mergeUrl);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(sourceEText);
+  sourceEGate.release();
+  await sourceEResponse;
+  await page.getByRole('heading', { name: 'GitHub 汇入任务', exact: true }).waitFor();
+  await waitForComposer(page, targetBText);
+  await page
+    .getByText(/发送结果待确认/)
+    .first()
+    .waitFor();
+  assert(
+    (await page.getByRole('button', { name: '恢复合并草稿' }).count()) === 0,
+    'after: deferred text waits for the target pending send',
+  );
+  targetBGate.release();
+  await targetBResponse;
+  await waitForComposer(page, sourceEText);
+  assert(
+    (await countMessages(currentDatabase.url, seeded.githubId, targetBText)) === 1,
+    'after: target B stored once',
+  );
+  assert(
+    (await countMessages(currentDatabase.url, seeded.githubId, sourceEText)) === 0,
+    'after: deferred source text was not sent with B',
+  );
+  await page.unroute(targetBPattern, targetBDelay);
+  await page.unroute(sourceEPattern, sourceEDelay);
+  await page.getByRole('button', { name: '清除草稿' }).click();
+  record(
+    'merge with a target send in flight',
+    'pass',
+    'B keeps its key; source text deferred then promoted after B settles',
+  );
+
+  // 7c3. The target's send response is lost. Its pending key survives the
+  // merge; retry settles B and only then restores the source text.
+  const sourceF = await createWebConversation(baseURL, token, seeded.repositoryA);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await openConversation(page, 'GitHub 汇入任务');
+  if ((await page.getByRole('button', { name: '清除草稿' }).count()) > 0) {
+    await page.getByRole('button', { name: '清除草稿' }).click();
+  }
+  const lostBText = `目标丢响应 B ${Date.now()}`;
+  const lostBGate = makeGate();
+  let lostBHeld;
+  const lostBHeldPromise = new Promise((resolve) => {
+    lostBHeld = resolve;
+  });
+  const lostBPattern = new RegExp(`/conversations/${seeded.githubId}/messages$`);
+  const lostBHandler = async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    lostBHeld(response);
+    await lostBGate.promise;
+    await route.abort('failed');
+  };
+  await page.route(lostBPattern, lostBHandler);
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(lostBText);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await lostBHeldPromise;
+  const sourceLostText = `源 A 丢响应新草稿 ${Date.now()}`;
+  const sourceFGate = makeGate();
+  const sourceFDelay = delayedFor(sourceFGate);
+  const sourceFPattern = new RegExp(`/conversations/${sourceF}/messages$`);
+  await page.route(sourceFPattern, sourceFDelay);
+  const sourceFResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' && response.url().includes(`/${sourceF}/messages`),
+  );
+  await openConversationById(page, sourceF);
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(mergeUrl);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await page.getByRole('textbox', { name: '消息输入区' }).fill(sourceLostText);
+  sourceFGate.release();
+  await sourceFResponse;
+  await page.getByRole('heading', { name: 'GitHub 汇入任务', exact: true }).waitFor();
+  await waitForComposer(page, lostBText);
+  lostBGate.release();
+  await page
+    .getByText(/网络结果不明确|发送失败/)
+    .first()
+    .waitFor();
+  await waitForComposer(page, lostBText);
+  await page.unroute(lostBPattern, lostBHandler);
+  const retryResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      response.url().includes(`/${seeded.githubId}/messages`),
+  );
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await retryResponse;
+  await waitForComposer(page, sourceLostText);
+  assert(
+    (await countMessages(currentDatabase.url, seeded.githubId, lostBText)) === 1,
+    'after: lost target response retried by its original key, one row',
+  );
+  await page.unroute(sourceFPattern, sourceFDelay);
+  await page.getByRole('button', { name: '清除草稿' }).click();
+  record(
+    'merge with a lost target response',
+    'pass',
+    'B retried by original key; deferred source text restored without resend',
   );
 
   // 7d. Merging while the user moved to another conversation: the late result

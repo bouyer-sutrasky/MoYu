@@ -1,5 +1,5 @@
 {
-  "at": "2026-11-04T11:33:36.859Z",
+  "at": "2026-11-04T12:12:52.829Z",
   "baseSha": "40e857a9081b281fb3a93ebaea6986e0101f005d",
   "results": [
     {
@@ -33,6 +33,11 @@
       "detail": "stored -> delivered -> read through the real dispatcher and SSE"
     },
     {
+      "name": "out-of-order delivery responses",
+      "status": "pass",
+      "detail": "held delivered response cannot overwrite read after a switch round-trip"
+    },
+    {
       "name": "SSE during initial load",
       "status": "pass",
       "detail": "held first-page response, event arrived, catch-up showed it once"
@@ -58,6 +63,16 @@
       "detail": "same clientMessageId, one stored message"
     },
     {
+      "name": "cleared and retyped draft is not cleared by the old response",
+      "status": "pass",
+      "detail": "same text, new draft lineage, input preserved"
+    },
+    {
+      "name": "per-conversation send state and late finally",
+      "status": "pass",
+      "detail": "A/B stay independently locked; A finishing does not unlock B"
+    },
+    {
       "name": "merge carries edited draft",
       "status": "pass",
       "detail": "newer source draft appears in the merged target and survives refresh"
@@ -66,6 +81,16 @@
       "name": "merge preserves an existing target draft",
       "status": "pass",
       "detail": "target and source text are joined, neither is overwritten"
+    },
+    {
+      "name": "merge with a target send in flight",
+      "status": "pass",
+      "detail": "B keeps its key; source text deferred then promoted after B settles"
+    },
+    {
+      "name": "merge with a lost target response",
+      "status": "pass",
+      "detail": "B retried by original key; deferred source text restored without resend"
     },
     {
       "name": "merge while switching conversation",

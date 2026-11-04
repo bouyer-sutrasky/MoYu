@@ -7,7 +7,7 @@
 
 | 文件 | 内容 |
 | --- | --- |
-| `m4ux-e2e.json` | `scripts/m4ux/e2e.mjs` 的最终结果（17 项全部通过、基线 SHA、时间） |
+| `m4ux-e2e.json` | `scripts/m4ux/e2e.mjs` 的最终结果（22 项全部通过、基线 SHA、时间） |
 | `runtime-evidence.json` | 独立 profile 中固定 0021 制品的真实 Bridge 分支与平台偏好请求/响应摘要、制品 sha256 |
 | `m4ux-before-*.png` | 基线 commit `40e857a` 的真实构建，经同一隔离 API、数据库、Playwright、视口与主题采集 |
 | `m4ux-after-*.png` | 本分支构建，与 Before 同场景同视口同主题 |
