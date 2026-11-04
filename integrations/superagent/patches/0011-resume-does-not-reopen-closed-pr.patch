@@ -1,0 +1,19 @@
+diff --git a/src/core/tickets.ts b/src/core/tickets.ts
+index a1596a9..35f257e 100644
+--- a/src/core/tickets.ts
++++ b/src/core/tickets.ts
+@@ -22,10 +22,12 @@ const readBefore = (input: Extract<TicketInput, { kind: 'trigger' }>, until: str
+ const STATUS_REQUEST = 'Report the current ticket status with orchestrator_report. This is a status-only request: do not resume implementation or perform external actions.'
+ /** What a resumed worker is told: a person stopped it and now continues the original assignment on the same ticket. */
+ const RESUME_TEXT = 'A person stopped this ticket and has now resumed it. Continue the original assignment in the same worktree and keep '
+-  + 'the existing ticket and pull request. Messages sent while it was paused follow this one in order.'
++  + 'the existing ticket and pull request. Messages sent while it was paused follow this one in order. '
++  + 'If the existing pull request was closed unmerged, do not reopen it; report that a new task is needed.'
+ /** What a started discussion worker is told: the owner approved its plan revision and execution begins on the same ticket. */
+ export const START_TEXT = (planRevision: number): string =>
+-  `The owner approved plan revision ${planRevision}. Implement the plan now in the same worktree; update the existing PR.`
++  `The owner approved plan revision ${planRevision}. Implement the plan now in the same worktree; update the existing PR. `
++  + 'If an existing pull request was closed unmerged, do not reopen it; report that a new task is needed.'
+ 
+ /**
+  * Manages each ticket's lifecycle: creates the ticket for an accept decision with its Mandate, Subscriptions, and first

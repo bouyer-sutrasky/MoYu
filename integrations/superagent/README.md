@@ -41,6 +41,22 @@ integrations/superagent/verify-lock.sh
 node --test integrations/superagent/tests/verify-lock.test.mjs
 ```
 
+## M4 补丁
+
+在 M3 的 `0001`–`0004` 之后追加有序补丁：
+
+| 补丁 | 作用 |
+| --- | --- |
+| `0005-discussion-mode.patch` | 只读讨论工具/权限、`discussing` 投影 |
+| `0006-recoverable-pause.patch` | 可恢复暂停、停止证据、resume admission、start |
+| `0007-bridge-execution-control.patch` | pause/resume/start/retry、operation 日志、`targetTicketId` |
+| `0008-github-import.patch` | `ticket.imported` 投影 |
+| `0009-discussion-ready-stays-open.patch` | 讨论 ready 不结束 Ticket，owner 仍可 start |
+| `0010-projection-current-assignment.patch` | 新 Assignment 后不再用旧 ready report 挡住运行态 |
+| `0011-resume-does-not-reopen-closed-pr.patch` | resume/start 指示不重开已关闭未合并的 PR |
+
+构建与验证见 [`docs/M4-VERIFICATION.md`](../../docs/M4-VERIFICATION.md)。
+
 ## 约束
 
 - 不把 `/root/dsh-superagent` 当作可编辑发布物；补丁在固定 commit 的 checkout 上生成，并作为有序 patch 提交。

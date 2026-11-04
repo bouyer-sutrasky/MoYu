@@ -1,0 +1,61 @@
+diff --git a/src/core/assignments.ts b/src/core/assignments.ts
+index 2264b42..bfb76d8 100644
+--- a/src/core/assignments.ts
++++ b/src/core/assignments.ts
+@@ -127,8 +127,12 @@ export class Assignments extends EnginePart {
+     this.repo.tickets.save(ticket)
+     // A ticket that follows Threads ends with them: a ready report ends it only once followsDone holds, with that outcome.
+     const ready = !ticket.follows?.length ? 'completed' : this.tickets.followsDone(ticket)?.outcome
++    // A discussion's ready report is a plan for the owner, not a result: the Ticket stays open so the owner can start it
++    // into execution. Ending it here would make the plan unstartable.
++    const willStart = ticket.mode === 'discuss'
+     // A dropped report after a close the ticket deferred ends it as the close did, which its final notice tells.
+-    const outcome = report.state === 'dropped' ? this.tickets.followsDone(ticket)?.outcome ?? 'dropped' : report.state === 'ready' ? ready : undefined
++    const outcome = report.state === 'dropped' ? this.tickets.followsDone(ticket)?.outcome ?? 'dropped'
++      : report.state === 'ready' && !willStart ? ready : undefined
+     if (outcome) this.tickets.end(ticketId, 'executor', outcome, at)
+     return this.require(ticketId)
+   }
+diff --git a/tests/pause.spec.ts b/tests/pause.spec.ts
+index b8e2c76..fbc9dc8 100644
+--- a/tests/pause.spec.ts
++++ b/tests/pause.spec.ts
+@@ -3,6 +3,7 @@ import { Context } from '@deepseek-ai/cordis'
+ import { Engine, MemoryRepositories, canRetry, latestAssignment, ticketStage, type Assessor, type Candidate, type Executor, type Outbox,
+   type Policy, type Ticket, type Trigger } from '../src/core/index.ts'
+ import { DshExecutor, ticketExecution } from '../src/executor/dsh.ts'
++import { projectTicketState } from '../src/app/bridge.ts'
+ import { SettingsSchema } from '../src/policy.ts'
+ 
+ const MODEL = { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash', reasoningEffort: 'high' }
+@@ -49,6 +50,30 @@ function harness() {
+   return { repo, engine, accept, starts, stops, pauses }
+ }
+ 
++describe('a discussion plan', () => {
++  it('keeps the discuss ticket open after a ready report so the owner can still start it', () => {
++    const h = harness()
++    const accepted = h.accept('discuss')
++    h.engine.report(accepted.id, { state: 'ready', summary: 'Proposed plan: fix README line 5' })
++    const discussed = h.repo.tickets.get(accepted.id)!
++    expect(discussed.ended).toBeUndefined()
++    expect(discussed.mode).toBe('discuss')
++    expect(projectTicketState(discussed)).toBe('awaiting_review')
++    // The owner's explicit start works on the same ticket, worktree, and identity.
++    const started = h.engine.startTicket(accepted.id, 1)
++    expect(started.id).toBe(accepted.id)
++    expect(started.mode).toBe('execute')
++    expect(started.planRevision).toBe(1)
++  })
++
++  it('still ends an execute ticket on a ready report, as before', () => {
++    const h = harness()
++    const accepted = h.accept('execute')
++    h.engine.report(accepted.id, { state: 'ready', summary: 'Done' })
++    expect(h.repo.tickets.get(accepted.id)!.ended?.outcome).toBe('completed')
++  })
++})
++
+ describe('a human pause', () => {
+   it('keeps the ticket open with its Inputs, undelivered messages, and attention, and ends only the Assignment', () => {
+     const h = harness()

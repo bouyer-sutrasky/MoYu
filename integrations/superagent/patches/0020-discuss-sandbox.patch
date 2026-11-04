@@ -1,0 +1,342 @@
+diff --git a/src/executor/dsh.ts b/src/executor/dsh.ts
+index edcf8eb..bae4df7 100644
+--- a/src/executor/dsh.ts
++++ b/src/executor/dsh.ts
+@@ -2,8 +2,9 @@
+ import type { Context } from '@deepseek-ai/cordis'
+ import type { SessionId } from '@deepseek-ai/dsh-session'
+ import type { Agent } from '@deepseek-ai/dsh-agent'
+-import { readdirSync, readFileSync } from 'node:fs'
+-import { mkdir, rmdir, stat } from 'node:fs/promises'
++import type { SubprocessHandle } from '@deepseek-ai/dsh-subprocess'
++import { readdirSync, readFileSync, rmSync } from 'node:fs'
++import { mkdir, rm, rmdir, stat, writeFile } from 'node:fs/promises'
+ import { dirname, join } from 'node:path'
+ import { key, latestAssignment, latestReport, liveTicket, runningAssignment, threadKey, waitsForPerson } from '../core/index.ts'
+ import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Executor, Mandate, PolicyEffect, Ticket, TicketInput, Trigger }
+@@ -36,6 +37,8 @@ const BACKGROUND_LIMIT_MS = 30 * 60_000
+ const SHUTDOWN_STOP_MS = 10_000
+ /** How long a human pause waits for the worker's background work to stop, and then for its turn to go idle. */
+ const PAUSE_STOP_MS = 10_000, PAUSE_IDLE_MS = 10_000
++/** Root of per-assignment discussion snapshots and homes. */
++const DISCUSS_ROOT = process.env.DSH_DISCUSS_ROOT ?? '/srv/m4-discuss/runs'
+ /** How long a worker that goes on after a passing failure waits for a worker slot, or for processing to resume, between looks. */
+ const SLOT_WAIT_MS = 5000
+ /** True when an input comes from a person (a non-context human trigger or a direct text input such as a status request). */
+@@ -101,8 +104,39 @@ export function processTree(root = process.pid, limit = 20): { pid: number; ppid
+     return found.sort((a, b) => a.pid - b.pid).slice(0, limit)
+   } catch { return [] }
+ }
++/** The processes in one discussion's own process group, never unrelated harness workers. */
++function processGroupTree(pgid: number): { pid: number; ppid: number; command: string }[] {
++  const nodes: { pid: number; ppid: number; command: string }[] = []
++  try {
++    for (const name of readdirSync('/proc')) {
++      if (!/^\d+$/.test(name)) continue
++      const pid = Number(name)
++      try {
++        const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
++        const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
++        const ppid = Number(fields[1])
++        const group = Number(fields[2])
++        if (group !== pgid) continue
++        const command = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean).join(' ').slice(0, 160)
++        nodes.push({ pid, ppid, command })
++      } catch { /* the process exited while it was read */ }
++    }
++    return nodes.sort((a, b) => a.pid - b.pid).slice(0, 20)
++  } catch { return [] }
++}
+ /** Appends a stable 12-character ticket ID suffix to a validated English worktree name. */
+ const ticketWorktreeName = (name: string, id: string): string => `${WorktreeNameSchema.parse(name)}-${id.slice(0, 12)}`
++/** One running external discussion process, tracked for assignment-scoped pause and restart guards. */
++interface DiscussRun {
++  ticketId: string
++  assignmentId: string
++  sessionId: string
++  controller: AbortController
++  handle?: SubprocessHandle
++  startedAt: string
++  finished: Promise<void>
++  finish: () => void
++}
+ /** Host dependencies used by `DshExecutor`. */
+ export interface ExecutorHost {
+   /** DSH Cordis context: agents and their events, and the subprocess service used to run prepare commands. */
+@@ -281,6 +315,8 @@ export class DshExecutor implements Executor {
+   private readonly personal = new Map<string, string>()
+   /** The timers of workers that go on after a passing failure, which dispose clears. */
+   private readonly timers = new Set<ReturnType<typeof setTimeout>>()
++  /** External discussion processes by ticket, so pause, shutdown and restart guards can target the assignment's child. */
++  private readonly discuss = new Map<string, DiscussRun>()
+   /** Registers the `launch` and `delivery` effect handlers; both are held (concurrency limit 0) while processing is paused. */
+   constructor(private readonly host: ExecutorHost) {
+     this.slots = new WorkerSlots(() => host.store.tickets.open().filter(ticket => this.running(ticket)).map(ticket => ticket.id),
+@@ -437,6 +473,11 @@ export class DshExecutor implements Executor {
+     this.host.store.afterCommit(() => { void this.background(this.pauseWork(ticket.id, assignment.id, operationId)) })
+   }
+   private async pauseWork(ticketId: string, assignmentId: string, operationId: string): Promise<void> {
++    const discuss = this.discuss.get(ticketId)
++    if (discuss?.assignmentId === assignmentId) {
++      await this.pauseDiscuss(ticketId, assignmentId, operationId, discuss)
++      return
++    }
+     const startedAt = now()
+     const sessionId = workerSessionId(ticketId)
+     const agent = this.host.context.agents.get(sessionId as SessionId)
+@@ -510,6 +551,8 @@ export class DshExecutor implements Executor {
+    * of the jobs left to a person, which were killed, and cancel a worker turn that started meanwhile, keeping its inbox.
+    */
+   async shutdown(): Promise<void> {
++    for (const run of this.discuss.values()) { run.controller.abort(); run.handle?.terminate() }
++    await Promise.allSettled([...this.discuss.values()].map(run => run.finished))
+     const agents = this.host.store.tickets.list().map(ticket => this.host.context.agents.get(workerSessionId(ticket.id) as SessionId))
+       .filter((agent): agent is Agent => agent !== undefined)
+     const stop = async () => {
+@@ -526,7 +569,7 @@ export class DshExecutor implements Executor {
+   /** Whether a ticket's worker holds a worker slot: its turn runs, or its shell jobs or subagents do after its turn ended. */
+   private running(ticket: Ticket): boolean {
+     if (!runningAssignment(ticket)) return false
+-    return this.host.context.agents.get(workerSessionId(ticket.id) as SessionId)?.status === 'running' || this.settling.has(ticket.id)
++    return this.discuss.has(ticket.id) || this.host.context.agents.get(workerSessionId(ticket.id) as SessionId)?.status === 'running' || this.settling.has(ticket.id)
+   }
+   /** Marks a ticket failed after its launch fails; the ticket waits until new human input or an explicit retry arrives. */
+   private launchFailed(ticketId: string, assignmentId: string, error: unknown): void {
+@@ -556,6 +599,13 @@ export class DshExecutor implements Executor {
+     // A frozen model that the provider no longer serves refuses this launch; the ticket is reported failed and never runs on
+     // the instance default instead. The model itself is chosen by `Sessions.ensure` below.
+     if (ticket.model) await verifyTicketModel(this.host.context, ticket.model)
++    // A configured external discussion command runs the model in its own
++    // environment (separate UID and read-only worktree); it never shares the
++    // execute worker's credentials.
++    if (ticket.mode === 'discuss' && this.host.store.settings().executor.discussCommand.trim()) {
++      await this.launchDiscussSandbox(ticket, assignment, this.host.store.settings().executor.discussCommand.trim())
++      return
++    }
+     // Prepare the workspace directory once; an existing directory counts as already prepared, including worktrees created before `prepare` commands existed.
+     if (!await stat(workspace).then(() => true, () => false)) {
+       await this.prepareDirectory(ticket)
+@@ -593,6 +643,128 @@ export class DshExecutor implements Executor {
+       () => { this.host.engine.assignmentStarted(ticket.id, assignment.id) })
+     this.host.engine.assignmentStarted(ticket.id, assignment.id)
+   }
++  /** Registers an assignment-scoped discussion run before any await that pause may interleave with. */
++  private startDiscussRun(ticket: Ticket, assignment: Assignment): DiscussRun {
++    const controller = new AbortController()
++    let finish = () => {}
++    const finished = new Promise<void>(resolve => { finish = resolve })
++    const run: DiscussRun = { ticketId: ticket.id, assignmentId: assignment.id, sessionId: `discuss-${ticket.id}`,
++      controller, startedAt: now(), finished, finish }
++    this.discuss.set(ticket.id, run)
++    this.host.lifetime.addEventListener('abort', () => controller.abort(), { once: true })
++    return run
++  }
++  /** Removes a discussion run only when it is still the current one for its ticket. */
++  private finishDiscussRun(run: DiscussRun): void {
++    if (this.discuss.get(run.ticketId) === run) this.discuss.delete(run.ticketId)
++    run.finish()
++  }
++  /** Whether the assignment is still the live, unpaused assignment the run belongs to. */
++  private discussCurrent(ticketId: string, assignmentId: string, run: DiscussRun): boolean {
++    const ticket = this.host.store.tickets.get(ticketId)
++    return !!ticket && liveTicket(ticket) && !ticket.paused && latestAssignment(ticket)?.id === assignmentId
++      && this.discuss.get(ticketId) === run && !run.controller.signal.aborted
++  }
++  /** Runs a discussion in a separate, read-only environment and reports its plan only for the current assignment. */
++  private async launchDiscussSandbox(ticket: Ticket, assignment: Assignment, command: string): Promise<void> {
++    const run = this.startDiscussRun(ticket, assignment)
++    const source = sourceTrigger(this.host, ticket)
++    const directory = ticket.execution?.directory ?? ''
++    const promptFile = join(dirname(directory), `.discuss-${ticket.id}-${assignment.id}.txt`)
++    try {
++      if (!directory) {
++        this.reportDiscussIfCurrent(ticket.id, assignment.id, run, { state: 'failed', summary: 'The discussion has no worktree' })
++        return
++      }
++      if (!await stat(directory).then(() => true, () => false)) {
++        await this.prepareDirectory(ticket)
++      }
++      if (!this.discussCurrent(ticket.id, assignment.id, run)) return
++      const runRoot = join(DISCUSS_ROOT, ticket.id, assignment.id)
++      const view = join(runRoot, 'workspace')
++      const prompt = [`Read-only worktree: ${view}`, `Base: ${ticket.base?.branch ?? ''}@${ticket.base?.commit ?? ''}`,
++        ticket.planRevision ? `Approved plan revision: ${ticket.planRevision}` : '',
++        ticket.execution?.assignment ?? '', source?.text ? `Source request:\n${source.text}` : ''].filter(Boolean).join('\n\n')
++      this.host.engine.assignmentStarted(ticket.id, assignment.id)
++      if (!this.discussCurrent(ticket.id, assignment.id, run)) return
++      await writeFile(promptFile, prompt, { mode: 0o600 })
++      if (!this.discussCurrent(ticket.id, assignment.id, run)) return
++      const env: Record<string, string> = { DSH_DISCUSS_WORKTREE: directory, DSH_DISCUSS_PROMPT_FILE: promptFile,
++        DSH_DISCUSS_RUN: runRoot, DSH_DISCUSS_VIEW: view, DSH_DISCUSS_WORKSPACE: view }
++      // Use the Ticket's frozen model, or the instance default when none was frozen;
++      // never fall back to the profile's template model.
++      const discussModel = ticket.model ?? this.host.store.settings().executor.model
++      if (discussModel) {
++        env.DSH_DISCUSS_PROVIDER = discussModel.provider
++        env.DSH_DISCUSS_MODEL = discussModel.model
++        if (discussModel.reasoningEffort) env.DSH_DISCUSS_REASONING = discussModel.reasoningEffort
++      }
++      const handle = this.host.context.subprocess.spawn({ argv: ['sh', '-c', `exec setsid ${command}`], cwd: dirname(directory),
++        signal: run.controller.signal, graceMs: 5000, env,
++        stdio: { stdin: 'ignore', stdout: { maxBytes: 1 << 20 }, stderr: { maxBytes: 1 << 16 } } })
++      run.handle = handle
++      const { exitCode } = await handle.done
++      if (!this.discussCurrent(ticket.id, assignment.id, run)) return
++      const output = handle.collected.stdout?.readFrom(0).text.trim() ?? ''
++      const error = handle.collected.stderr?.readFrom(0).text.trim() ?? ''
++      this.reportDiscussIfCurrent(ticket.id, assignment.id, run, exitCode === 0
++        ? { state: 'ready', summary: output || 'Discussion completed.' }
++        : { state: 'failed', summary: `Discussion sandbox exited with ${exitCode ?? 'a signal'}: ${error || output}` })
++    } catch (error) {
++      if (this.discussCurrent(ticket.id, assignment.id, run)) {
++        this.reportDiscussIfCurrent(ticket.id, assignment.id, run, { state: 'failed',
++          summary: `Discussion sandbox failed: ${error instanceof Error ? error.message : String(error)}` })
++      }
++    } finally {
++      await rm(promptFile, { force: true }).catch(() => undefined)
++      this.finishDiscussRun(run)
++    }
++  }
++  /** Reports only while this run is still the current assignment; a stale run cannot overwrite a pause or newer assignment. */
++  private reportDiscussIfCurrent(ticketId: string, assignmentId: string, run: DiscussRun, report: Parameters<EngineForExecutor['report']>[1]): void {
++    if (!this.discussCurrent(ticketId, assignmentId, run)) return
++    try { this.host.engine.report(ticketId, report) } catch { /* the assignment ended before this report */ }
++  }
++  /** Stops one external discussion run and records the same stop evidence as an in-process pause. */
++  private async pauseDiscuss(ticketId: string, assignmentId: string, operationId: string, run: DiscussRun): Promise<void> {
++    const startedAt = now()
++    const sessionId = run.sessionId
++    let pgid: number | undefined
++    try { pgid = Number(readFileSync(join(DISCUSS_ROOT, ticketId, assignmentId, 'shell.pid'), 'utf8').trim()) } catch { pgid = undefined }
++    // Only this assignment's process group is evidence. Other discussions and
++    // execute workers are unrelated and must not keep this pause from settling.
++    const processesBefore = pgid !== undefined && Number.isFinite(pgid) ? processGroupTree(pgid) : []
++    run.controller.abort()
++    run.handle?.terminate()
++    if (pgid !== undefined && Number.isFinite(pgid)) {
++      try { process.kill(-pgid, 'SIGTERM') } catch { /* already gone */ }
++    }
++    const finished = await until(run.finished, this.host.lifetime, PAUSE_STOP_MS)
++    const processBeforePids = processesBefore.map(item => item.pid)
++    const aliveBefore = () => processBeforePids.filter(pid => {
++      try { process.kill(pid, 0); return true } catch { return false }
++    })
++    let lingeringPids = aliveBefore()
++    for (let wait = 0; lingeringPids.length > 0 && wait < 20; wait++) {
++      if (wait === 10 && pgid !== undefined && Number.isFinite(pgid)) {
++        try { process.kill(-pgid, 'SIGKILL') } catch { /* already gone */ }
++      }
++      await new Promise(resolve => setTimeout(resolve, 100))
++      lingeringPids = aliveBefore()
++    }
++    const processesAfter = pgid !== undefined && Number.isFinite(pgid) ? processGroupTree(pgid) : []
++    const stoppedAt = now()
++    const evidence = { ticketId, assignmentId, operationId, sessionId, harnessPid: process.pid, startedAt, stoppedAt,
++      agentStatus: 'idle', jobsBefore: [], jobsAfter: [], subagentsAfter: 0, processesBefore, processesAfter, lingeringPids,
++      cancelledTurn: true }
++    if (finished !== false && lingeringPids.length === 0) {
++      this.host.engine.pauseSettled(ticketId, assignmentId, evidence)
++      return
++    }
++    this.host.engine.pauseFailed(ticketId, assignmentId,
++      `The isolated discussion did not stop cleanly: ${lingeringPids.length} process(es) remain`)
++  }
++
+   /** Returns the stored ticket for `agent` when it is a worker session, or undefined otherwise. */
+   private ticketOf(agent: Agent): Ticket | undefined {
+     const ticketId = ticketOfSession(agent.id)
+@@ -647,6 +819,7 @@ export class DshExecutor implements Executor {
+    * while failed launches (`waitsForPerson`) wait for a person's message or a retry.
+    */
+   resume(): void {
++    this.cleanupDiscussRuns()
+     // Launch pending tickets oldest first (in acceptance order).
+     for (const ticket of this.host.store.tickets.open().sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
+       // A human-paused ticket stays paused across a host restart; only an explicit resume with a lease starts it again.
+@@ -662,6 +835,38 @@ export class DshExecutor implements Executor {
+       else if (latest?.state === 'pending' && !waitsForPerson(ticket)) this.start(ticket, latest)
+     }
+   }
++  /**
++   * A hard restart loses the in-memory run map but may leave a discussion process
++   * group alive. Run directories are assignment-owned; kill only a group whose
++   * command still identifies that run, then remove the stale directory. The
++   * interrupted assignment is reported by `assignmentInterrupted` below.
++   */
++  private cleanupDiscussRuns(): void {
++    let tickets: string[]
++    try { tickets = readdirSync(DISCUSS_ROOT) } catch { return }
++    for (const ticketId of tickets) {
++      if (!/^[A-Za-z0-9_-]+$/.test(ticketId)) continue
++      const ticketRoot = join(DISCUSS_ROOT, ticketId)
++      let assignments: string[]
++      try { assignments = readdirSync(ticketRoot) } catch { continue }
++      for (const assignmentId of assignments) {
++        if (!/^[A-Za-z0-9_-]+$/.test(assignmentId)) continue
++        const runRoot = join(ticketRoot, assignmentId)
++        let pgid: number | undefined
++        try { pgid = Number(readFileSync(join(runRoot, 'shell.pid'), 'utf8').trim()) } catch { pgid = undefined }
++        if (pgid !== undefined && Number.isFinite(pgid)) {
++          try {
++            const command = readFileSync(`/proc/${pgid}/cmdline`, 'utf8')
++            if (/m4-discuss-sandbox|dsh --profile discuss/.test(command)) {
++              try { process.kill(-pgid, 'SIGTERM') } catch { /* already gone */ }
++              try { process.kill(-pgid, 'SIGKILL') } catch { /* already gone */ }
++            }
++          } catch { /* not alive or not this run */ }
++        }
++        try { rmSync(runRoot, { recursive: true, force: true }) } catch { /* best effort */ }
++      }
++    }
++  }
+   /** Runs background worker event handling and updates the `worker` health entry on failure or recovery. */
+   private background(work: Promise<void>): Promise<void> {
+     const { health } = this.host
+diff --git a/src/policy.ts b/src/policy.ts
+index b6a66cf..a09dc4a 100644
+--- a/src/policy.ts
++++ b/src/policy.ts
+@@ -93,6 +93,8 @@ export const ExecutorConfigSchema = z.object({
+   maxWorkers: z.number().int().min(LIMITS.maxWorkers.min).max(LIMITS.maxWorkers.max).default(3),
+   directory: z.string().trim().refine(path => path === '' || path.startsWith('/'), 'An absolute path, or empty for <stateDir>/work').default(''),
+   prepare: z.string().max(LIMITS.prepareCommand).default(''),
++  /** Optional environment-isolated discussion command; empty keeps the in-process read-only session. */
++  discussCommand: z.string().max(LIMITS.prepareCommand).default(''),
+   blockedCommands: z.array(CommandNameSchema).default([]),
+ }).strict()
+ export const SourceInstanceSchema = z.object({ enabled: z.boolean().default(true), config: z.record(z.string(), z.unknown()).default({}) }).strict()
+diff --git a/tests/panel-settings.spec.tsx b/tests/panel-settings.spec.tsx
+index 0208e06..6804c1e 100644
+--- a/tests/panel-settings.spec.tsx
++++ b/tests/panel-settings.spec.tsx
+@@ -54,7 +54,7 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
+   expect([...document.querySelectorAll('#dt-worker-model-efforts option')].map(option => option.getAttribute('value'))).toEqual(['high'])
+   await click(zh.save)
+   expect(server.settings.executor).toEqual({ maxWorkers: 5, directory: '/srv/work',
+-    prepare: 'git worktree add "$DSH_SUPERAGENT_DIR"', blockedCommands: ['gh-personal', 'gh.other'], model: { provider: 'worker-provider',
++    prepare: 'git worktree add "$DSH_SUPERAGENT_DIR"', blockedCommands: ['gh-personal', 'gh.other'], discussCommand: '', model: { provider: 'worker-provider',
+       model: 'worker-model', reasoningEffort: 'high' } })
+   expect(server.requests.filter(request => request.method === 'PUT').map(request => request.path)).toEqual(['settings/eval',
+     'settings/executor'])
+diff --git a/tests/policy.spec.ts b/tests/policy.spec.ts
+index 4a25b14..5fe30b5 100644
+--- a/tests/policy.spec.ts
++++ b/tests/policy.spec.ts
+@@ -241,7 +241,7 @@ describe('settings migration', () => {
+       rules: [{ id: 'visual', name: 'V', enabled: true, instruction: 'x' }],
+       sources: { feishu: { allowed: [{ id: MEMBER, name: 'Alice' }, { id: 'ou_bob', name: 'Bob' }], syncChat: CHAT, admission: {} }, github: { allowed: [{ id: 'alice' }, { id: 'carol' }], admission: {} } },
+     })
+-    expect(saved).toMatchObject({ paused: false, executor: { model: null, maxWorkers: 2, directory: '', prepare: '', blockedCommands: [] } })
++    expect(saved).toMatchObject({ paused: false, executor: { model: null, maxWorkers: 2, directory: '', prepare: '', blockedCommands: [], discussCommand: '' } })
+     expect(saved.sources.feishu).toEqual({ enabled: true, config: { chats: [], directMessages: true } })
+     expect(SettingsSchema.parse(migrateSettings(saved))).toEqual(saved)
+     expect(SettingsSchema.parse(migrateSettings({ executor: { maxWorkers: 2, paused: true } }))).toMatchObject({ paused: true, executor: { maxWorkers: 2 } })
+@@ -254,7 +254,7 @@ describe('settings migration', () => {
+       sources: { feishu: feishuSource({ chats: [{ chatId: CHAT, listen: 'mentions' }, { chatId: OBSERVED, listen: 'all' }], directMessages: false }), github: { enabled: true, config: { pollSeconds: 120 } } },
+       policy: { rules: [], sources: { feishu: { allowed: [{ id: MEMBER, name: 'A' }], admission: {} }, github: { allowed: [{ id: 'a' }], admission: {} } } },
+       eval: { mode: 'auto', timeoutSeconds: 90, model: { provider: 'p', model: 'm' } },
+-      executor: { model: null, maxWorkers: 5, directory: '', prepare: '', blockedCommands: [] },
++      executor: { model: null, maxWorkers: 5, directory: '', prepare: '', blockedCommands: [], discussCommand: '' },
+     })
+     expect(migrateSettings(migrated)).toEqual(migrated)
+   })

@@ -1,0 +1,94 @@
+diff --git a/src/executor/dsh.ts b/src/executor/dsh.ts
+index 91fbc0f..efa447b 100644
+--- a/src/executor/dsh.ts
++++ b/src/executor/dsh.ts
+@@ -2,7 +2,7 @@
+ import type { Context } from '@deepseek-ai/cordis'
+ import type { SessionId } from '@deepseek-ai/dsh-session'
+ import type { Agent } from '@deepseek-ai/dsh-agent'
+-import { readFileSync } from 'node:fs'
++import { readdirSync, readFileSync } from 'node:fs'
+ import { mkdir, rmdir, stat } from 'node:fs/promises'
+ import { dirname, join } from 'node:path'
+ import { key, latestAssignment, latestReport, liveTicket, runningAssignment, threadKey, waitsForPerson } from '../core/index.ts'
+@@ -70,6 +70,37 @@ function cgroup(): string | undefined {
+     return line ? line.split(':').slice(2).join(':') || line : undefined
+   } catch { return undefined }
+ }
++/**
++ * The processes below this harness in `/proc`, for stop evidence: PID, parent PID and a truncated command line.
++ * A pause records the tree before stopping and after the worker is idle, so a leftover shell or child is visible.
++ */
++export function processTree(root = process.pid, limit = 20): { pid: number; ppid: number; command: string }[] {
++  const nodes: { pid: number; ppid: number; command: string }[] = []
++  try {
++    for (const name of readdirSync('/proc')) {
++      if (!/^\d+$/.test(name)) continue
++      const pid = Number(name)
++      try {
++        const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
++        const ppid = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1])
++        const command = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean).join(' ').slice(0, 160)
++        nodes.push({ pid, ppid, command })
++      } catch { /* the process exited while it was read */ }
++    }
++    const byParent = new Map<number, typeof nodes>()
++    for (const node of nodes) byParent.set(node.ppid, [...byParent.get(node.ppid) ?? [], node])
++    const found: typeof nodes = []
++    const queue = [root]
++    const seen = new Set([root])
++    while (queue.length) {
++      for (const child of byParent.get(queue.shift()!) ?? []) {
++        if (seen.has(child.pid)) continue
++        seen.add(child.pid); found.push(child); queue.push(child.pid)
++      }
++    }
++    return found.sort((a, b) => a.pid - b.pid).slice(0, limit)
++  } catch { return [] }
++}
+ /** Appends a stable 12-character ticket ID suffix to a validated English worktree name. */
+ const ticketWorktreeName = (name: string, id: string): string => `${WorktreeNameSchema.parse(name)}-${id.slice(0, 12)}`
+ /** Host dependencies used by `DshExecutor`. */
+@@ -411,6 +442,7 @@ export class DshExecutor implements Executor {
+     const agent = this.host.context.agents.get(sessionId as SessionId)
+     const before = runningJobs(this.host.context, sessionId)
+     const jobsBefore = before.map(job => ({ id: job.id, name: jobName(job) }))
++    const processesBefore = processTree()
+     // A look at the worker's background work would keep it busy; the pause ends it before cancelling.
+     this.settling.get(ticketId)?.abort()
+     let cancelledTurn = false
+@@ -429,8 +461,9 @@ export class DshExecutor implements Executor {
+     const agentStatus = agent?.status ?? 'absent'
+     const stoppedAt = now()
+     const controlGroup = cgroup()
++    const processesAfter = processTree()
+     const evidence = { ticketId, assignmentId, operationId, sessionId, harnessPid: process.pid, ...controlGroup ? { cgroup: controlGroup } : {},
+-      startedAt, stoppedAt, agentStatus, jobsBefore, jobsAfter, subagentsAfter, cancelledTurn }
++      startedAt, stoppedAt, agentStatus, jobsBefore, jobsAfter, subagentsAfter, processesBefore, processesAfter, cancelledTurn }
+     // Success needs every part: the stop finished, the worker answered idle in time (an unloaded Session has no turn), and
+     // no shell job or subagent is left.
+     const idleWorker = !agent || agentStatus === 'idle'
+diff --git a/tests/process-tree.spec.ts b/tests/process-tree.spec.ts
+new file mode 100644
+index 0000000..9539a8f
+--- /dev/null
++++ b/tests/process-tree.spec.ts
+@@ -0,0 +1,18 @@
++import { spawn } from 'node:child_process'
++import { once } from 'node:events'
++import { expect, it, vi } from 'vitest'
++import { processTree } from '../src/executor/dsh.ts'
++
++it('records a live child PID and drops it once the process exits', async () => {
++  const child = spawn('sleep', ['30'], { stdio: 'ignore' })
++  try {
++    await vi.waitFor(() => expect(processTree().some(process => process.pid === child.pid)).toBe(true), { timeout: 5000 })
++    const found = processTree().find(process => process.pid === child.pid)!
++    expect(found.ppid).toBe(process.pid)
++    expect(found.command).toContain('sleep 30')
++  } finally {
++    child.kill('SIGKILL')
++    await once(child, 'exit')
++  }
++  await vi.waitFor(() => expect(processTree().some(process => process.pid === child.pid)).toBe(false), { timeout: 5000 })
++})

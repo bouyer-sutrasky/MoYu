@@ -1,4 +1,5 @@
 import type pg from 'pg';
+import { githubRequirementUrl } from '@moyu/contracts';
 
 import { taskStateSchema, type ArtifactSummary } from '@moyu/contracts';
 import type { RuntimeBridgeClient, BridgeEvent } from '@moyu/runtime-client';
@@ -6,7 +7,8 @@ import type { RuntimeBridgeClient, BridgeEvent } from '@moyu/runtime-client';
 import type { DispatcherLogger } from './logger';
 import type { RepositoryBinding } from './runtime';
 import { appendEventSql } from './events-sql';
-import { endedState, TASK_COLUMNS, taskSummary, type TaskRow } from './tasks';
+import { endedState, stateFromSnapshot, TASK_COLUMNS, taskSummary, type TaskRow } from './tasks';
+import { pauseEvidenceProblem, pauseEvidenceProven } from './pause-evidence';
 
 interface ProjectedTask {
   task: TaskRow;
@@ -382,7 +384,7 @@ async function applyArtifactEvent(
   }
   const task = await taskByTicket(client, ticketId, repository.id);
   if (!task) {
-    return;
+    return undefined;
   }
   const inserted = await client.query<{
     id: string;
@@ -429,18 +431,393 @@ async function applyArtifactEvent(
   });
 }
 
-async function applyEvent(
+/**
+ * A recoverable human pause. The runtime emits this when the intent is recorded
+ * and again (with `stoppedAt` and evidence) when the worker and its background
+ * work actually ended. The platform only shows `stopped` for the second form.
+ */
+async function applyPausedEvent(
   client: pg.PoolClient,
   repository: RepositoryBinding,
   event: BridgeEvent,
   logger: DispatcherLogger,
 ): Promise<void> {
+  const data = asRecord(event.data);
+  const ticketId = asString(data.ticketId);
+  if (!ticketId) {
+    return;
+  }
+  const task = await taskByTicket(client, ticketId, repository.id);
+  if (!task) {
+    logger.warn(
+      { event: 'bridge.pause_unmapped', bridgeEvent: event.id, ticketId },
+      'pause evidence arrived before the platform task was linked',
+    );
+    return;
+  }
+  const evidence = asRecord(data.evidence);
+  const pauseError = asString(data.error);
+  const proven = pauseEvidenceProven({ ...evidence, stoppedAt: data.stoppedAt });
+  const problem = proven
+    ? undefined
+    : pauseEvidenceProblem({ ...evidence, stoppedAt: data.stoppedAt });
+  const stoppedAt = proven ? asString(data.stoppedAt) : undefined;
+  const state = proven
+    ? 'stopped'
+    : pauseError || data.stoppedAt !== undefined
+      ? 'blocked'
+      : 'stopping';
+  const storedEvidence = proven
+    ? evidence
+    : {
+        ...evidence,
+        ...(problem ? { problem } : {}),
+        ...(pauseError ? { error: pauseError } : {}),
+      };
+  const updated = await client.query(
+    `update task_links
+        set state = $2,
+            stopped_at = $3::timestamptz,
+            stop_evidence = $4::jsonb,
+            last_event_seq = greatest(coalesce(last_event_seq, 0), $5),
+            version = version + 1,
+            updated_at = now()
+      where id = $1 and (last_event_seq is null or last_event_seq < $5)`,
+    [task.id, state, stoppedAt, JSON.stringify(storedEvidence), event.seq],
+  );
+  if ((updated.rowCount ?? 0) === 0) {
+    return;
+  }
+  // The paused event and the Bridge operation settle independently. Settle the
+  // platform operation from this evidence too, so a stop followed immediately by
+  // resume is not refused as "another command is still being processed".
+  // Only the terminal pause event settles the Bridge operation. The first
+  // event records the intent and has no `stoppedAt`; treating its expected
+  // "did not record when the worker stopped" as a failure would fail the
+  // operation before the settled event with evidence arrives.
+  if (data.stoppedAt !== undefined || pauseError) {
+    await client.query(
+      `update task_operations
+          set state = $2,
+              bridge_operation_id = coalesce($3, bridge_operation_id),
+              evidence = $4::jsonb,
+              error = $5,
+              updated_at = now()
+        where task_id = $1 and kind = 'pause' and state in ('queued', 'running')`,
+      [
+        task.id,
+        proven ? 'succeeded' : 'failed',
+        asString(data.operationId),
+        JSON.stringify(storedEvidence),
+        proven ? null : (pauseError ?? problem),
+      ],
+    );
+  }
+  const next = await taskByTicket(client, ticketId, repository.id);
+  if (next) {
+    await emit(client, repository, event, 'task.state_changed', next.conversationId, next.id, {
+      task: taskSummary(next),
+    });
+  }
+}
+
+/**
+ * Imports one GitHub-origin runtime ticket into Work. `(repository, source,
+ * external_key)` keeps one conversation and `(repository, upstream_ticket_id)`
+ * keeps one task, so a repeated Bridge event or a second entry point reuses the
+ * same work instead of executing it twice.
+ */
+async function applyImportedEvent(
+  client: pg.PoolClient,
+  repository: RepositoryBinding,
+  event: BridgeEvent,
+  logger: DispatcherLogger,
+): Promise<string | undefined> {
+  const data = asRecord(event.data);
+  const ticketId = asString(data.ticketId);
+  const externalId = asString(data.externalId);
+  if (!ticketId || !externalId) {
+    logger.warn(
+      { event: 'bridge.import_invalid', bridgeEvent: event.id },
+      'ticket.imported had no ticketId or externalId',
+    );
+    return;
+  }
+  const state = stateFromSnapshot(data.state) ?? 'queued';
+  const base = asRecord(data.base);
+  const baseBranch = asString(base.branch) ?? repository.defaultBranch;
+  const baseCommit = asString(base.commit);
+  const modelValue = base.model;
+  const modelId =
+    typeof modelValue === 'string' && modelValue.length > 0
+      ? modelValue
+      : (() => {
+          const model = asRecord(modelValue);
+          const provider = asString(model.provider);
+          const name = asString(model.model);
+          return provider && name ? `${provider}/${name}` : null;
+        })();
+  const title = asString(data.title) ?? `GitHub ${externalId}`;
+  const url = asString(data.url);
+  const number = asNumber(data.number);
+  const isPr = data.isPr === true;
+
+  const existingTask = await taskByTicket(client, ticketId, repository.id);
+  if (existingTask) {
+    const updated = await client.query(
+      `update task_links
+          set state = $2,
+              base_branch = coalesce($3, base_branch),
+              base_commit = coalesce($4, base_commit),
+              model_id = coalesce($5, model_id),
+              last_event_seq = greatest(coalesce(last_event_seq, 0), $6),
+              version = case when state is distinct from $2 then version + 1 else version end,
+              updated_at = now()
+        where id = $1 and (last_event_seq is null or last_event_seq < $6)`,
+      [existingTask.id, state, baseBranch, baseCommit, modelId, event.seq],
+    );
+    if ((updated.rowCount ?? 0) > 0) {
+      const next = await taskByTicket(client, ticketId, repository.id);
+      if (next) {
+        await emit(client, repository, event, 'task.state_changed', next.conversationId, next.id, {
+          task: taskSummary(next),
+        });
+      }
+    }
+    return undefined;
+  }
+
+  const ownerResult = await client.query<{ owner_id: string }>(
+    `select owner_id from repositories where id = $1`,
+    [repository.id],
+  );
+  const ownerId = ownerResult.rows[0]?.owner_id;
+  if (!ownerId) {
+    return undefined;
+  }
+
+  let conversation = (
+    await client.query<{ id: string; title: string | null }>(
+      `select id, title from conversations
+        where repository_id = $1 and source = 'github' and external_key = $2 limit 1`,
+      [repository.id, externalId],
+    )
+  ).rows[0];
+  // A requirement first started in Work can be linked from a GitHub mention: claim
+  // the Web conversation that already contains this Issue/PR URL instead of opening
+  // a second one and executing the same requirement twice.
+  if (!conversation && number != null) {
+    const candidates = await client.query<{ id: string; title: string | null; body: string }>(
+      `select c.id, c.title, m.body from conversations c
+         join messages m on m.conversation_id = c.id
+        where c.repository_id = $1 and c.source = 'web' and c.external_key is null
+          and m.body like '%github.com/%'
+        order by c.updated_at desc, m.created_at desc
+        limit 50`,
+      [repository.id],
+    );
+    const web = candidates.rows.find((row) =>
+      githubRequirementUrl(row.body, repository.fullName, isPr, number),
+    );
+    if (web) {
+      await client.query(
+        `update conversations
+            set source = 'github', external_key = $2, external_url = $3, updated_at = now()
+          where id = $1`,
+        [web.id, externalId, url ?? null],
+      );
+      conversation = { id: web.id, title: web.title };
+    }
+  }
+  if (!conversation) {
+    conversation = (
+      await client.query<{ id: string; title: string | null }>(
+        `insert into conversations
+           (owner_id, repository_id, mode, execution_mode, source, external_key, external_url,
+            base_branch, base_commit, model_id, title)
+         values ($1, $2, 'work', 'execute', 'github', $3, $4, $5, $6, $7, $8)
+         returning id, title`,
+        [ownerId, repository.id, externalId, url, baseBranch, baseCommit, modelId, title],
+      )
+    ).rows[0];
+  }
+  if (!conversation) {
+    return undefined;
+  }
+
+  // The conversation can already hold a task for a different runtime Ticket for the
+  // same requirement (a replay or a second GitHub entry). Reuse that task instead of
+  // inserting a second one, which would violate the conversation unique key and
+  // abort the whole event page, leaving the cursor stuck.
+  const existingConversationTask = (
+    await client.query<TaskRow>(
+      `select ${TASK_COLUMNS.replaceAll('t.', 'task_links.')}
+         from task_links where conversation_id = $1 limit 1`,
+      [conversation.id],
+    )
+  ).rows[0];
+  if (existingConversationTask && existingConversationTask.upstreamTicketId !== ticketId) {
+    const terminal = new Set(['completed', 'closed_unmerged', 'not_accepted', 'failed', 'dropped']);
+    if (!terminal.has(existingConversationTask.state)) {
+      await client.query(
+        `insert into messages
+           (conversation_id, direction, kind, body, source, source_event_id, created_at)
+         values ($1, 'inbound', 'notice', $2, 'bridge', $3, now())
+         on conflict (conversation_id, source_event_id) where source_event_id is not null
+         do nothing`,
+        [
+          conversation.id,
+          `A second GitHub ticket (${externalId}) for this requirement was linked to the task that is already running; it is not executed separately.`,
+          `import-duplicate:${ticketId}`,
+        ],
+      );
+      logger.warn(
+        {
+          event: 'bridge.import_duplicate',
+          bridgeEvent: event.id,
+          ticketId,
+          existingTicketId: existingConversationTask.upstreamTicketId,
+          taskId: existingConversationTask.id,
+        },
+        'ignored a duplicate GitHub ticket for an active Work task',
+      );
+      // The runtime already has this second Ticket. Queue a durable pause so a
+      // failed call or a restart retries it; the platform task remains the only
+      // execution.
+      await client.query(
+        `insert into duplicate_tickets (repository_id, task_id, ticket_id)
+         values ($1, $2, $3)
+         on conflict (repository_id, ticket_id) do nothing`,
+        [repository.id, existingConversationTask.id, ticketId],
+      );
+      return ticketId;
+    }
+    // The previous ticket ended: the same conversation starts a new attempt on the
+    // newer ticket, clearing the old PR/stop fields but preserving message history.
+    const updated = await client.query<TaskRow>(
+      `update task_links
+          set upstream_ticket_id = $2,
+              upstream_thread_id = $3,
+              state = $4,
+              base_branch = coalesce($5, base_branch),
+              base_commit = coalesce($6, base_commit),
+              model_id = coalesce($7, model_id),
+              runtime_lease_id = null,
+              stopped_at = null,
+              stop_evidence = '{}'::jsonb,
+              pr_url = null,
+              pr_number = null,
+              plan_revision = null,
+              last_event_seq = greatest(coalesce(last_event_seq, 0), $8),
+              version = version + 1,
+              updated_at = now()
+        where id = $1
+        returning ${TASK_COLUMNS.replaceAll('t.', 'task_links.')}`,
+      [
+        existingConversationTask.id,
+        ticketId,
+        externalId,
+        state,
+        baseBranch,
+        baseCommit,
+        modelId,
+        event.seq,
+      ],
+    );
+    const next = updated.rows[0];
+    if (next) {
+      await emit(client, repository, event, 'task.state_changed', conversation.id, next.id, {
+        task: taskSummary(next),
+      });
+    }
+    return undefined;
+  }
+
+  const insertedTask = (
+    await client.query<{ id: string }>(
+      `insert into task_links
+         (conversation_id, repository_id, upstream_ticket_id, upstream_thread_id, state,
+          base_branch, base_commit, model_id, execution_mode, last_event_seq)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, 'execute', $9)
+       on conflict (repository_id, upstream_ticket_id) where upstream_ticket_id is not null
+       do nothing
+       returning id`,
+      [
+        conversation.id,
+        repository.id,
+        ticketId,
+        externalId,
+        state,
+        baseBranch,
+        baseCommit,
+        modelId,
+        event.seq,
+      ],
+    )
+  ).rows[0];
+  const task = await taskByTicket(client, ticketId, repository.id);
+  if (!task) {
+    return undefined;
+  }
+
+  if (insertedTask) {
+    await emit(client, repository, event, 'task.linked', conversation.id, task.id, {
+      task: taskSummary(task),
+    });
+  }
+
+  const text = asString(data.text);
+  const triggerId = asString(data.triggerId);
+  if (text && triggerId) {
+    const inserted = await client.query<{ id: string }>(
+      `insert into messages
+         (conversation_id, direction, kind, body, source, source_event_id, created_at)
+       values ($1, 'inbound', 'user', $2, 'github', $3, $4)
+       on conflict (conversation_id, source_event_id) where source_event_id is not null
+       do nothing
+       returning id`,
+      [conversation.id, text, `import:${triggerId}`, event.at],
+    );
+    const messageId = inserted.rows[0]?.id;
+    if (messageId) {
+      await emit(
+        client,
+        repository,
+        { ...event, id: `${event.id}:message` },
+        'message.created',
+        conversation.id,
+        task.id,
+        { messageId, direction: 'inbound' },
+      );
+    }
+  }
+
+  logger.info(
+    {
+      event: 'bridge.ticket_imported',
+      bridgeEvent: event.id,
+      ticketId,
+      externalId,
+      isPr,
+      number,
+    },
+    'imported a GitHub-origin ticket into Work',
+  );
+  return undefined;
+}
+
+export async function applyEvent(
+  client: pg.PoolClient,
+  repository: RepositoryBinding,
+  event: BridgeEvent,
+  logger: DispatcherLogger,
+): Promise<string | undefined> {
   const seen = await client.query(
     `select 1 from events where source = 'bridge' and source_event_id = $1 limit 1`,
     [event.id],
   );
   if ((seen.rowCount ?? 0) > 0) {
-    return;
+    return undefined;
   }
   switch (event.type) {
     case 'ticket.linked':
@@ -449,6 +826,11 @@ async function applyEvent(
     case 'ticket.ended':
       await applyTaskEvent(client, repository, event, logger);
       return;
+    case 'ticket.paused':
+      await applyPausedEvent(client, repository, event, logger);
+      return;
+    case 'ticket.imported':
+      return applyImportedEvent(client, repository, event, logger);
     case 'message.read':
       await applyReadEvent(client, repository, event, logger);
       return;
@@ -497,7 +879,29 @@ export async function syncOnce(
       // A failed projection rolls back the whole page and keeps the cursor
       // before it, so the next sync retries the event instead of silently
       // losing a task-state or message-read update.
-      await applyEvent(client, repository, event, logger);
+      await client.query('savepoint bridge_event');
+      try {
+        const duplicate = await applyEvent(client, repository, event, logger);
+        if (duplicate) {
+          logger.info(
+            { event: 'bridge.import_duplicate_queued', bridgeEvent: event.id, ticketId: duplicate },
+            'queued a duplicate runtime ticket for a durable pause',
+          );
+        }
+        await client.query('release savepoint bridge_event');
+      } catch (error) {
+        if (!isUniqueViolation(error)) {
+          throw error;
+        }
+        // An unexpected duplicate is one bad event, not a reason to keep the
+        // whole page (and its cursor) stuck forever. Keep the projection that
+        // already exists and advance past this event.
+        await client.query('rollback to savepoint bridge_event');
+        logger.warn(
+          { event: 'bridge.event_duplicate', bridgeEvent: event.id, type: event.type },
+          'skipped an event that conflicted with an existing row',
+        );
+      }
     }
     const last = page.events[page.events.length - 1]?.seq ?? cursor;
     await client.query(
@@ -512,6 +916,17 @@ export async function syncOnce(
     client.release();
   }
   return true;
+}
+
+export { githubRequirementUrl } from '@moyu/contracts';
+
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === '23505'
+  );
 }
 
 export type { ProjectedTask };

@@ -15,6 +15,23 @@ export const conversationMode = pgEnum('conversation_mode', ['work', 'chat']);
 
 export const executionMode = pgEnum('execution_mode', ['execute', 'discuss']);
 
+/** Where a Work conversation was started: the web composer, or an imported GitHub ticket. */
+export const conversationSource = pgEnum('conversation_source', ['web', 'github']);
+
+export const taskOperationKind = pgEnum('task_operation_kind', [
+  'start',
+  'pause',
+  'resume',
+  'retry',
+]);
+
+export const taskOperationState = pgEnum('task_operation_state', [
+  'queued',
+  'running',
+  'succeeded',
+  'failed',
+]);
+
 export const messageDirection = pgEnum('message_direction', ['inbound', 'outbound']);
 
 export const deliveryState = pgEnum('delivery_state', [

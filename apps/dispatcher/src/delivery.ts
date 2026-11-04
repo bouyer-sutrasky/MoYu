@@ -33,7 +33,14 @@ interface DeliveryDetailRow {
   ownerName: string;
   ownerId: string;
   fullName: string;
+  conversationSource: 'web' | 'github';
   taskId: string | null;
+  taskState: string | null;
+  taskUpstreamTicketId: string | null;
+  taskPlanRevision: number | null;
+  taskStoppedAt: Date | null;
+  taskStopEvidence: Record<string, unknown>;
+  taskRuntimeLeaseId: string | null;
   taskBaseBranch: string | null;
   taskBaseCommit: string | null;
   taskModelId: string | null;
@@ -53,10 +60,20 @@ async function claimDelivery(
          from deliveries d
          join messages m on m.id = d.message_id
          join conversations c on c.id = m.conversation_id
+         join task_links t on t.conversation_id = c.id
         where c.repository_id = $1
           and d.state in ('pending', 'delivering')
           and d.next_attempt_at <= now()
           and (d.state = 'pending' or d.lease_expires_at is null or d.lease_expires_at <= now())
+          -- A stopped task keeps its new messages stored until resume; a closed or
+          -- completed task never auto-executes another message.
+          and t.state::text not in ('stopping', 'stopped', 'completed', 'closed_unmerged', 'not_accepted')
+          -- A pending start/pause/resume/retry holds delivery so the frozen mode and
+          -- base cannot change under a message that is being sent.
+          and not exists (
+            select 1 from task_operations op
+             where op.task_id = t.id and op.state in ('queued', 'running')
+          )
           and not exists (
             select 1
               from deliveries d2
@@ -99,7 +116,11 @@ async function loadDetail(pool: pg.Pool, messageId: string): Promise<DeliveryDet
             c.id as "conversationId", c.repository_id as "repositoryId", c.base_branch as "baseBranch",
             c.base_commit as "baseCommit", c.model_id as "modelId", c.model_reasoning_effort as "modelReasoningEffort",
             c.execution_mode as "executionMode", o.display_name as "ownerName", o.id as "ownerId", r.full_name as "fullName",
-            t.id as "taskId", t.base_branch as "taskBaseBranch", t.base_commit as "taskBaseCommit",
+            c.source as "conversationSource",
+            t.id as "taskId", t.state as "taskState", t.upstream_ticket_id as "taskUpstreamTicketId",
+            t.plan_revision as "taskPlanRevision", t.stopped_at as "taskStoppedAt",
+            t.stop_evidence as "taskStopEvidence", t.runtime_lease_id as "taskRuntimeLeaseId",
+            t.base_branch as "taskBaseBranch", t.base_commit as "taskBaseCommit",
             t.model_id as "taskModelId", t.model_reasoning_effort as "taskModelEffort", t.execution_mode as "taskExecutionMode"
        from messages m
        join conversations c on c.id = m.conversation_id
@@ -176,9 +197,14 @@ export async function deliverOnce(
         id: detail.taskId,
         conversationId: detail.conversationId,
         repositoryId: detail.repositoryId,
-        state: 'pending_admission',
-        upstreamTicketId: null,
+        state: detail.taskState ?? 'pending_admission',
+        upstreamTicketId: detail.taskUpstreamTicketId,
         upstreamThreadId: null,
+        planRevision: detail.taskPlanRevision,
+        stopRequestedAt: null,
+        stoppedAt: detail.taskStoppedAt,
+        stopEvidence: detail.taskStopEvidence,
+        runtimeLeaseId: detail.taskRuntimeLeaseId,
         baseBranch: detail.taskBaseBranch ?? detail.baseBranch,
         baseCommit: detail.taskBaseCommit,
         modelId: detail.taskModelId,
@@ -204,6 +230,11 @@ export async function deliverOnce(
           state: 'pending_admission',
           upstreamTicketId: null,
           upstreamThreadId: null,
+          planRevision: null,
+          stopRequestedAt: null,
+          stoppedAt: null,
+          stopEvidence: {},
+          runtimeLeaseId: null,
           baseBranch: detail.baseBranch,
           baseCommit: detail.baseCommit,
           modelId: detail.modelId,
@@ -228,6 +259,11 @@ export async function deliverOnce(
       actor: { id: detail.ownerId, name: detail.ownerName },
       text: detail.body,
       at: detail.createdAt.toISOString(),
+      // An imported GitHub conversation continues its existing ticket; every
+      // other conversation opens its own workspace ticket.
+      ...(detail.conversationSource === 'github' && detail.taskUpstreamTicketId
+        ? { targetTicketId: detail.taskUpstreamTicketId }
+        : {}),
       executionSpec: {
         repository: detail.fullName,
         baseBranch: taskLike?.baseBranch ?? detail.baseBranch,

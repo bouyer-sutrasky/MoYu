@@ -1,0 +1,509 @@
+diff --git a/docs/007-architecture.md b/docs/007-architecture.md
+index e1e204d..661ce6b 100644
+--- a/docs/007-architecture.md
++++ b/docs/007-architecture.md
+@@ -413,6 +413,7 @@ Some generic modules still refer directly to GitHub or Feishu:
+ | `tests/workspace.spec.ts` | The workspace Source kind and plugin entry: its non-secret schema, owner-only Policy part, one-page Thread context, frozen-spec environment, the reply id prefixes, and its Channel's `sent`/`gone`/retry answers against a loopback platform stand-in |
+ | `tests/bridge.spec.ts` | The machine Bridge: bearer auth and readiness, capabilities and models, Trigger delivery and its 409/422/503 answers, the duplicate ticket lookup, event paging and the fsynced append-only log across a restart, the ticket snapshot, `projectTicketState` row by row, and `task.progress` from worker Session events |
+ | `tests/ticket-freeze.spec.ts` | The frozen execution spec: parsing it from a workspace Trigger, copying model/base/mode onto the accepted Ticket, leaving other Sources without one, and the launch-time model validation that never falls back |
++| `tests/discussion.spec.ts` | Discussion mode: the read-only tool allow-list and permission preset, the work tools and `danger-full-access` for execute, replacing the restriction when the mode changes, the discussion assignment text, and `discussing` state projection |
+ | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
+ | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
+ | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
+diff --git a/src/app/bridge.ts b/src/app/bridge.ts
+index b3d5c5c..1de4509 100644
+--- a/src/app/bridge.ts
++++ b/src/app/bridge.ts
+@@ -35,13 +35,14 @@ const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost'])
+ type FrozenTicket = Ticket & { model?: RoleModel; base?: { repository: string; branch: string; commit: string } }
+ /** The platform task_state a stored Ticket projects to (`docs/M3-BRIDGE-PROTOCOL.md` §3). */
+ export type BridgeTicketState = 'waiting_input' | 'running' | 'queued' | 'blocked' | 'failed' | 'awaiting_review' | 'completed'
+-  | 'closed_unmerged' | 'stopped'
++  | 'closed_unmerged' | 'stopped' | 'discussing'
+ 
+ /**
+  * Projects an upstream Ticket onto the platform's task_state. The order follows upstream `ticketStage` (`src/core/stage.ts`):
+  * an open question first, then the latest report's waiting state (a blocked, failed, or ready report arrives while its
+  * Assignment is still `running`, so the report wins over the Assignment state), then a running turn, then a pending launch.
+  * A blocked or failed report whose person has already written again is queued for the worker's next turn.
++ * A live discuss ticket is `discussing` unless it has an open question or a ready report, which win as they do for execute.
+  */
+ export function projectTicketState(ticket: Ticket): BridgeTicketState {
+   if (ticket.ended) {
+@@ -54,6 +55,8 @@ export function projectTicketState(ticket: Ticket): BridgeTicketState {
+   if (ticket.attention) return 'waiting_input'
+   const report = latestReport(ticket)
+   if (report?.state === 'ready') return 'awaiting_review'
++  // Discussion is read-only work in progress; its owner's question and a ready plan take precedence above.
++  if (ticket.mode === 'discuss') return 'discussing'
+   if (report?.state === 'blocked') return waitsForPerson(ticket) ? 'blocked' : 'queued'
+   if (report?.state === 'failed') return waitsForPerson(ticket) ? 'failed' : 'queued'
+   const assignment = latestAssignment(ticket)
+@@ -199,7 +202,7 @@ const ExecutionSpecSchema = z.object({
+   baseCommit: z.string().trim().regex(/^[0-9a-fA-F]{7,64}$/, 'a commit sha').nullable().default(null),
+   // Null asks for the instance's model; the route resolves what it can and records which choice it froze.
+   model: ModelSchema.nullable(),
+-  // `discuss` is refused by the route (422), not by the schema, so the platform gets the protocol's own answer.
++  // `discuss` is accepted from M4 on: the ticket freezes it and its worker gets the read-only tool list and preset.
+   mode: z.enum(['execute', 'discuss']),
+ }).strict()
+ const TriggerRequestSchema = z.object({
+@@ -454,7 +457,7 @@ export class Bridge {
+     json(res, 200, {
+       protocolVersion: PROTOCOL_VERSION,
+       upstream: { ...UPSTREAM },
+-      capabilities: { trigger: true, events: true, tickets: true, models: true, pause: false, resume: false, retry: false, readOnlyDiscussion: false },
++      capabilities: { trigger: true, events: true, tickets: true, models: true, pause: false, resume: false, retry: false, readOnlyDiscussion: true, start: true },
+       source: { kind: 'workspace', enabled: this.host.workspaceEnabled() },
+     })
+   }
+@@ -483,7 +486,6 @@ export class Bridge {
+       }
+       return this.duplicate(res, request.triggerId)
+     }
+-    if (request.executionSpec.mode === 'discuss') return json(res, 422, { error: 'discuss mode is not supported in this phase' })
+     // An explicitly requested model must resolve, and a delivery that names none freezes the instance's Executor model
+     // instead, so a later settings change cannot move an accepted task. When the instance has none either, the ticket
+     // records `model: null, modelSource: 'instance'`: the instance default is not representable, and the ticket says so.
+diff --git a/src/app/sessions.ts b/src/app/sessions.ts
+index ef66b14..48ae327 100644
+--- a/src/app/sessions.ts
++++ b/src/app/sessions.ts
+@@ -42,7 +42,9 @@ export interface SessionsHost {
+  * What Sessions registered for an agent it decorated: the releases of its prompt section, tools and skill scope, the scope
+  * its skills are registered in, and the skills of one prompt revision; for a worker's subagent, only its tool limits.
+  */
+-interface SessionBinding { disposers: (() => void)[]; scope?: Context; skills?: { revision: number; dispose: () => void }; subagent?: true }
++interface SessionBinding { disposers: (() => void)[]; scope?: Context; skills?: { revision: number; dispose: () => void }; subagent?: true
++  /** The tool restriction binding this Session currently runs with, and the mode it enforces (see `applyMode`). */
++  restriction?: () => void; mode?: 'execute' | 'discuss' }
+ 
+ /** The agent presets Executor Sessions and the main Session are created with, which the bundle's patch defines. */
+ export const WORKER_PRESET = 'dsh-superagent-worker', ROUTER_PRESET = 'dsh-superagent-router'
+@@ -60,6 +62,17 @@ declare module '@deepseek-ai/cordis' {
+  */
+ const WORK_TOOLS = ['read', 'write', 'edit', 'read_image', 'glob', 'grep', 'bash', 'pwsh', 'job_output', 'job_list', 'job_kill', 'web_search',
+   'web_fetch', 'skill', 'todo_write', 'subagent', 'list_subagent_models', 'send_message', 'list_agents', 'interrupt_agent']
++/**
++ * The only tools a discussion Session may use: reading, searching, the web, skills, and its todo list. There is no write,
++ * edit, shell, job, subagent, or message tool, so a discussion worker cannot change the worktree or reach another Session.
++ * The tool allow-list is one of the three execution constraints of discussion mode; the permission preset and the credential
++ * environment are the others (`docs/M4-EXECUTION-CONTROL.md` §1.1).
++ */
++export const DISCUSS_TOOLS = ['read', 'read_image', 'glob', 'grep', 'web_search', 'web_fetch', 'skill', 'todo_write']
++/** DSH's base permission preset for a discussion: a read-only sandbox with approvals asked. */
++export const DISCUSS_PRESET = 'read-only'
++/** DSH's base permission preset for an executing worker. */
++export const EXECUTE_PRESET = 'danger-full-access'
+ /** What the main Session is told when it would wait: what it waits for comes to it, and a waiting step holds back the next. */
+ const NO_WAIT = 'Reports, follow_up notices, new candidates and a background job\'s end with its output arrive by themselves as messages; '
+   + 'end the turn instead of waiting for them.'
+@@ -136,10 +149,15 @@ export class Sessions {
+   }
+   /**
+    * Resolves or creates session `id` in workspace `cwd`, initializes its role model, decorates it with prompts/skills/tools,
+-   * sets `danger-full-access` permissions, and renames it to `title`. A worker uses the ticket's frozen `model` when it has
+-   * one, else the Executor setting; the main Session always uses the Eval setting.
++   * applies the permission preset and tool restriction of its execution mode, and renames it to `title`. A worker uses the
++   * ticket's frozen `model` when it has one, else the Executor setting; the main Session always uses the Eval setting.
++   *
++   * A worker's mode is the ticket's current `mode` (execute when it records none). Re-decorating an existing Session with
++   * `mode` replaces the previous tool restriction binding, which is how starting a discuss ticket on the same Ticket moves
++   * its Session to the work tools and `danger-full-access`.
+    */
+-  async ensure(id: string, cwd: string, title: string, role: 'orchestrator' | 'worker', model?: TicketModel | null): Promise<Agent> {
++  async ensure(id: string, cwd: string, title: string, role: 'orchestrator' | 'worker', model?: TicketModel | null,
++    mode?: 'execute' | 'discuss'): Promise<Agent> {
+     const ctx = this.ctx
+     let result = await ctx.sessionController.resolveAgent(id as SessionId)
+     if ('error' in result && result.error.code === 'session/not-found') {
+@@ -153,7 +171,12 @@ export class Sessions {
+     const settings = this.host.store.settings()
+     await initializeRoleModel(ctx, result.agent, role === 'orchestrator' ? settings.eval.model : model ?? settings.executor.model)
+     await this.decorate(result.agent)
+-    ctx.permissionPresets.set(result.agent.session, 'danger-full-access')
++    if (role === 'worker') {
++      const ticket = this.ticketOf(result.agent)
++      this.applyMode(result.agent, ticket?.id, mode ?? ticket?.mode ?? 'execute')
++    } else {
++      ctx.permissionPresets.set(result.agent.session, EXECUTE_PRESET)
++    }
+     await ctx.sessionController.rename({ sessionId: id as SessionId, title })
+     return result.agent
+   }
+@@ -267,9 +290,38 @@ export class Sessions {
+       binding.disposers.push(agent.ctx.tools.restrict({ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill'] }),
+         agent.ctx.tools.guard(execution => noWait(execution, () => this.routed(agent))))
+     } else {
+-      // An Executor Session keeps the profile's work tools it has, which DSH requires to be known; its own tools are not masked.
+-      binding.disposers.push(...this.workOnly(agent, ticket!.id))
++      // An Executor Session keeps only the tools of its mode, which DSH requires to be known; its own tools are not masked.
++      this.applyMode(agent, ticket!.id, ticket!.mode ?? 'execute')
++      binding.disposers.push(() => binding.restriction?.())
++    }
++  }
++  /**
++   * Apply a worker Session's execution mode: the tool allow-list (see `DISCUSS_TOOLS`/`WORK_TOOLS`) and DSH's permission
++   * preset (`read-only` for discussion, `danger-full-access` for execute). The mode is kept on the binding, so a later
++   * `ensure` that changes it disposes the previous restriction binding and registers the new one instead of stacking both.
++   * Prompt text is not the enforcement: the tool list and the sandbox/approval preset are.
++   */
++  private applyMode(agent: Agent, ticketId: string | undefined, mode: 'execute' | 'discuss'): void {
++    const binding = this.bindings.get(agent)
++    if (!binding || binding.subagent) return
++    if (!ticketId) {
++      this.ctx.permissionPresets.set(agent.session, mode === 'discuss' ? DISCUSS_PRESET : EXECUTE_PRESET)
++      return
+     }
++    // The same mode already bound (a repeated `ensure` of a running Session) keeps its restriction and preset: re-registering
++    // would stack them, and the preset is a set, so re-applying it is only noise.
++    if (binding.mode === mode && binding.restriction) return
++    binding.restriction?.()
++    this.ctx.permissionPresets.set(agent.session, mode === 'discuss' ? DISCUSS_PRESET : EXECUTE_PRESET)
++    const parent = scopeParentOf(agent)
++    const allow = (mode === 'discuss' ? DISCUSS_TOOLS : WORK_TOOLS).filter(name => agent.ctx.tools.get(name, parent))
++    const disposeRestrict = agent.ctx.tools.restrict({ allow })
++    const disposeGuard = agent.ctx.tools.guard(() => {
++      const current = this.host.store.tickets.get(ticketId)
++      return !current || !liveTicket(current) ? 'Ticket ended; new work needs a new authorized ticket' : undefined
++    })
++    binding.mode = mode
++    binding.restriction = () => { disposeGuard(); disposeRestrict() }
+   }
+   /**
+    * Whether a Session runs the router preset: as DSH's preset registry last selected it, read through the session projection
+diff --git a/src/core/model.ts b/src/core/model.ts
+index fb0f413..53c77c4 100644
+--- a/src/core/model.ts
++++ b/src/core/model.ts
+@@ -29,8 +29,8 @@ export type TicketModelSource = 'spec' | 'executor' | 'instance'
+  * The execution spec a workspace Trigger carried in `meta.spec`, as the machine Bridge froze it. `model` is null when the
+  * platform asked for the instance default and the instance had no Executor model to freeze either; `modelSource` records that.
+  */
+-export interface TicketSpec { repository: string; baseBranch: string; baseCommit: string; model: TicketModel | null; mode: 'execute'
+-  modelSource: TicketModelSource }
++export interface TicketSpec { repository: string; baseBranch: string; baseCommit: string; model: TicketModel | null
++  mode: 'execute' | 'discuss'; modelSource: TicketModelSource }
+ /**
+  * Reads the frozen execution spec of a workspace Trigger, or undefined when it is missing or invalid. Only the workspace
+  * Source carries one; a ticket accepted from another Source keeps none and runs on the instance's role defaults.
+@@ -47,8 +47,7 @@ export function frozenSpec(trigger: Pick<Trigger, 'source' | 'meta'> | undefined
+   if (typeof repository !== 'string' || !repository) return undefined
+   if (typeof baseBranch !== 'string' || !baseBranch) return undefined
+   if (typeof baseCommit !== 'string' || !baseCommit) return undefined
+-  // `discuss` never reaches a ticket: the Bridge refuses it before intake.
+-  if (mode !== 'execute') return undefined
++  if (mode !== 'execute' && mode !== 'discuss') return undefined
+   if (source !== undefined && source !== 'spec' && source !== 'executor' && source !== 'instance') return undefined
+   let frozen: TicketModel | null
+   if (model === null) {
+@@ -354,8 +353,13 @@ export interface Ticket {
+   modelSource?: TicketModelSource
+   /** Repository and starting commit frozen at acceptance; absent for tickets the workspace Source did not start. */
+   base?: TicketBase
+-  /** Execution mode frozen at acceptance; `discuss` is refused before a ticket exists, so only `execute` is stored. */
+-  mode?: 'execute'
++  /**
++   * Execution mode frozen at acceptance. A discuss ticket's worker gets read-only tools and the `read-only` permission
++   * preset until its owner starts it; starting it on the same Ticket switches the Session to execute.
++   */
++  mode?: 'execute' | 'discuss'
++  /** The plan revision an owner approved when a discuss ticket was started; it stays on the same Ticket. */
++  planRevision?: number
+   /** The latest failed delivery of an Input to its worker, until a delivery succeeds. */
+   delivery?: { error: string; at: string }
+ }
+diff --git a/src/executor/dsh.ts b/src/executor/dsh.ts
+index fe6b996..0a0bf37 100644
+--- a/src/executor/dsh.ts
++++ b/src/executor/dsh.ts
+@@ -94,6 +94,13 @@ export function mandateInstructions(mandate: Pick<Mandate, 'strength'>): string
+     + 'internal to one module within the accepted rule scope. If it requires public-interface or behavior changes, new interaction, product '
+     + 'decisions or clarification, stop and report dropped; do not expand scope.' : ''
+ }
++/**
++ * What a discussion worker is told: it is a read-only discussion, so it analyzes the request and proposes a plan instead of
++ * changing anything. This is guidance only; `Sessions.applyMode` enforces the read-only tool list and permission preset.
++ */
++export const DISCUSSION_ASSIGNMENT = 'You are in a read-only discussion. Analyze the request, inspect the repository and any relevant '
++  + 'context, and propose a concrete implementation plan. Do not modify files, run shell commands, or start other agents: the tools '
++  + 'available to you are read-only, and the owner decides whether to start execution. End with the plan and its open questions.'
+ /** Builds a newly accepted ticket's Execution metadata: its worktree name, workspace directory, and assignment text. */
+ export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>, settings: Settings,
+   stateDir: string): Execution {
+@@ -105,9 +112,11 @@ export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutco
+     .map(rule => `\n- ${rule.name} (${rule.id}): ${rule.instruction}`).join('')
+   const precedence = rules ? `\nMatched rules; their procedure and communication instructions take precedence over the default acknowledgement and messaging policy for this ticket:${rules}` : ''
+   // The origin trigger is delivered alongside the assignment, so `assignment` omits the trigger text.
+-  const assignment = ticket.mandate.strength === 'inferred' && ruleIds
++  const requested = ticket.mandate.strength === 'inferred' && ruleIds
+     ? `Proactively accepted under ${ruleIds.join(', ')}. Scope: ${outcome.scope}.${precedence}${note}`
+     : note.trim()
++  // A discussion ticket's brief says so too, ahead of any routing note; the mode itself is enforced by `Sessions`.
++  const assignment = ticket.mode === 'discuss' ? [DISCUSSION_ASSIGNMENT, requested].filter(Boolean).join('\n\n') : requested
+   return { name, directory: join(executionRoot(settings, stateDir), name), assignment }
+ }
+ /** Character limits for inline assignment and trigger text in worker messages; longer text is read via its resource. */
+@@ -313,7 +322,7 @@ export class DshExecutor implements Executor {
+         try {
+           // Recreate the worker session if it was externally deleted.
+           if (!this.host.context.agents.get(sessionId as SessionId)) {
+-            await this.host.sessions.ensure(sessionId, ticket.execution?.directory ?? '', ticket.title, 'worker', ticket.model)
++            await this.host.sessions.ensure(sessionId, ticket.execution?.directory ?? '', ticket.title, 'worker', ticket.model, ticket.mode)
+           }
+           if (input) await this.deliverInput(ticket, assignment, input)
+         } catch (error) {
+@@ -442,7 +451,7 @@ export class DshExecutor implements Executor {
+     }
+     if (!current()) return
+     const sessionId = workerSessionId(ticket.id)
+-    const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker', ticket.model)
++    const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker', ticket.model, ticket.mode)
+     if (!current()) return
+     // The background work of the Assignment this one replaces stops first, so its end does not clear this one's message.
+     await this.stopped(ticket.id)
+diff --git a/tests/bridge.spec.ts b/tests/bridge.spec.ts
+index 8c66b5d..25e125a 100644
+--- a/tests/bridge.spec.ts
++++ b/tests/bridge.spec.ts
+@@ -101,7 +101,7 @@ describe('the machine Bridge boundary', () => {
+     const capabilities = await call('GET', '/bridge/v1/capabilities')
+     expect(capabilities).toMatchObject({ status: 200, body: { protocolVersion: 'moyu-bridge/1',
+       upstream: { package: 'dsh-superagent', version: '0.1.0', commit: '6337fc823ce20251c8de8085948165c81aaa701e' },
+-      capabilities: { trigger: true, events: true, tickets: true, models: true, pause: false, resume: false, retry: false, readOnlyDiscussion: false },
++      capabilities: { trigger: true, events: true, tickets: true, models: true, pause: false, resume: false, retry: false, readOnlyDiscussion: true, start: true },
+       source: { kind: 'workspace', enabled: true } } })
+   })
+ 
+@@ -217,13 +217,19 @@ describe('POST /bridge/v1/triggers', () => {
+     expect(await call('POST', '/bridge/v1/triggers', body())).toMatchObject({ status: 200, body: { result: 'filtered', ticketId: null } })
+   })
+ 
+-  it('refuses a repository mismatch, discuss mode, an unavailable model, a bad commit, and a pending runtime', async () => {
++  it('accepts discuss mode and freezes it on the delivered Trigger', async () => {
++    const h = harness()
++    const { call } = await serve(h)
++    expect(await call('POST', '/bridge/v1/triggers', body({ executionSpec: { ...body().executionSpec as object, mode: 'discuss' } })))
++      .toMatchObject({ status: 200, body: { result: 'stored', baseCommit: 'branch-sha' } })
++    expect(h.received.at(-1)!.meta.spec).toMatchObject({ mode: 'discuss' })
++  })
++
++  it('refuses a repository mismatch, an unavailable model, a bad commit, and a pending runtime', async () => {
+     const h = harness()
+     const { call } = await serve(h)
+     expect(await call('POST', '/bridge/v1/triggers', body({ executionSpec: { ...body().executionSpec as object, repository: 'acme/other' } })))
+       .toMatchObject({ status: 409 })
+-    expect(await call('POST', '/bridge/v1/triggers', body({ executionSpec: { ...body().executionSpec as object, mode: 'discuss' } })))
+-      .toMatchObject({ status: 422 })
+     h.host.verifyModel = async () => { throw new Error('no such route') }
+     expect(await call('POST', '/bridge/v1/triggers', body())).toMatchObject({ status: 422, body: { error: expect.stringContaining('unavailable') } })
+     h.host.verifyModel = async () => {}
+diff --git a/tests/discussion.spec.ts b/tests/discussion.spec.ts
+new file mode 100644
+index 0000000..5d29b26
+--- /dev/null
++++ b/tests/discussion.spec.ts
+@@ -0,0 +1,187 @@
++import { describe, expect, it, vi } from 'vitest'
++import { Context } from '@deepseek-ai/cordis'
++import { bindScopeParent } from '@deepseek-ai/dsh-scope'
++import { MemoryRepositories, type Ticket } from '../src/core/index.ts'
++import { DISCUSS_PRESET, DISCUSS_TOOLS, EXECUTE_PRESET, Sessions } from '../src/app/sessions.ts'
++import { projectTicketState } from '../src/app/bridge.ts'
++import { DshExecutor, DISCUSSION_ASSIGNMENT } from '../src/executor/dsh.ts'
++import { SettingsSchema } from '../src/policy.ts'
++
++const ticket = (id: string, overrides: Partial<Ticket> = {}): Ticket => ({
++  id, title: `Fix ${id}`, decisionId: 'd1',
++  mandate: { strength: 'explicit', policyVersion: 'v1', basis: { via: 'listed' }, actor: { source: 'workspace', id: 'owner' }, scope: 'web' },
++  channels: [{ source: 'workspace', thread: 'workspace:c1', address: { conversationId: 'c1' } }],
++  assignments: [], inputs: [], undelivered: [], createdAt: '2026-11-03T12:00:00.000Z', updatedAt: '2026-11-03T12:00:00.000Z',
++  origin: { triggerId: 'workspace:m1', triggerIds: ['workspace:m1'] }, ...overrides,
++})
++
++/** Every tool the mock worker preset inherits, so the allow-list filters nothing away and can be asserted exactly. */
++const INHERITED = ['read', 'write', 'edit', 'read_image', 'glob', 'grep', 'bash', 'pwsh', 'job_output', 'job_list', 'job_kill',
++  'web_search', 'web_fetch', 'skill', 'todo_write', 'subagent', 'list_subagent_models', 'send_message', 'list_agents', 'interrupt_agent']
++
++interface Restriction { sessionId: string; allow: string[]; dispose: ReturnType<typeof vi.fn> }
++interface Harness {
++  sessions: Sessions
++  repo: MemoryRepositories
++  presets: { session: unknown; preset: string }[]
++  restrictions: Restriction[]
++  agents: Map<string, unknown>
++  settings: ReturnType<typeof SettingsSchema.parse>
++}
++
++/**
++ * A Cordis context and Agent mock as the existing runtime tests build them: a real `Context` per Agent, a preset scope with
++ * the tools a worker preset inherits, and the session controller, workspace registry, and permission presets `Sessions` uses.
++ */
++function harness(): Harness {
++  const repo = new MemoryRepositories()
++  repo.tickets.save(ticket('t1', { mode: 'discuss' }))
++  const settings = SettingsSchema.parse({})
++  const ctx = new Context()
++  const agents = new Map<string, unknown>()
++  const presets: Harness['presets'] = []
++  const restrictions: Restriction[] = []
++  const inherited = new Set(INHERITED)
++  const controller = {
++    create: vi.fn(async ({ sessionId }: { sessionId: string }) => {
++      if (agents.has(sessionId)) return
++      const agentCtx = new Context()
++      const preset = {}
++      agentCtx.reflect.provide('tools', {
++        register: () => () => {},
++        // Preset tools are inherited through the scope parent, exactly as the worker preset registers them.
++        get: (name: string, scope?: object) => (scope === preset || scope === agents.get(sessionId)) && inherited.has(name) ? { name } : undefined,
++        restrict: (rule: { allow: string[] }) => {
++          const dispose = vi.fn()
++          restrictions.push({ sessionId, allow: rule.allow, dispose })
++          return dispose
++        },
++        guard: () => () => {},
++      })
++      agentCtx.reflect.provide('skills', { register: () => () => {} })
++      agentCtx.reflect.provide('systemPrompt', { section: () => () => {} })
++      const agent = { id: sessionId, ctx: agentCtx, status: 'idle', inbox: { remove: () => false }, cancel: vi.fn(), whenIdle: async () => {},
++        session: { id: sessionId, header: { agentPreset: 'dsh-superagent-worker' }, requestHeader: () => undefined, snapshotEvents: () => [], append: () => {} } }
++      agents.set(sessionId, agent)
++      bindScopeParent(agent, preset)
++    }),
++    resolveAgent: vi.fn(async (id: string) => agents.has(id) ? { agent: agents.get(id) } : { error: { code: 'session/not-found' } }),
++    rename: vi.fn(async () => {}),
++  }
++  ctx.reflect.provide('sessionController', controller)
++  ctx.reflect.provide('workspaceRegistry', { create: async (cwd: string) => ({ id: cwd }) })
++  ctx.reflect.provide('permissionPresets', { set: (session: unknown, preset: string) => { presets.push({ session, preset }) } })
++  const store = { tickets: repo.tickets, settings: () => settings, get: () => undefined, set: () => {}, keys: () => [] }
++  const sessions = new Sessions({
++    context: ctx,
++    store: store as never,
++    prompts: { current: () => ({ revision: 0, config: {} }), compose: () => '', skills: () => new Map() } as never,
++    effects: { handle: () => {}, enqueue: () => {}, idle: async () => {}, pending: () => false } as never,
++    health: { set: () => {}, get: () => undefined } as never,
++    masterId: 'orchestrator',
++    lifetime: new AbortController().signal,
++    closing: () => false,
++    environment: () => [],
++    tools: () => [],
++  })
++  return { sessions, repo, presets, restrictions, agents, settings }
++}
++
++const ensure = (h: Harness, id: string, mode?: 'execute' | 'discuss') =>
++  h.sessions.ensure(id, `/tmp/${id}`, `Work ${id}`, 'worker', null, mode)
++
++describe('discussion tool boundary', () => {
++  it('offers only read-only tools: no write, shell, job, subagent, or message tool', () => {
++    expect(DISCUSS_TOOLS).toEqual(['read', 'read_image', 'glob', 'grep', 'web_search', 'web_fetch', 'skill', 'todo_write'])
++    for (const forbidden of ['write', 'edit', 'bash', 'pwsh', 'job_output', 'job_list', 'job_kill', 'subagent', 'list_subagent_models',
++      'send_message', 'list_agents', 'interrupt_agent']) {
++      expect(DISCUSS_TOOLS).not.toContain(forbidden)
++    }
++  })
++
++  it('restricts a discuss worker to DISCUSS_TOOLS and applies the read-only permission preset', async () => {
++    const h = harness()
++    await ensure(h, 'worker-t1', 'discuss')
++    expect(h.presets).toEqual([{ session: expect.anything(), preset: DISCUSS_PRESET }])
++    expect(h.restrictions).toHaveLength(1)
++    expect(h.restrictions[0]!.allow).toEqual(DISCUSS_TOOLS)
++    for (const forbidden of ['write', 'edit', 'bash', 'pwsh', 'job_output', 'job_list', 'job_kill', 'subagent', 'send_message']) {
++      expect(h.restrictions[0]!.allow).not.toContain(forbidden)
++    }
++  })
++
++  it('gives an execute worker the work tools and danger-full-access', async () => {
++    const h = harness()
++    h.repo.tickets.save(ticket('t2', { mode: 'execute' }))
++    await ensure(h, 'worker-t2', 'execute')
++    expect(h.presets).toEqual([{ session: expect.anything(), preset: EXECUTE_PRESET }])
++    expect(h.restrictions).toHaveLength(1)
++    expect(h.restrictions[0]!.allow).toContain('write')
++    expect(h.restrictions[0]!.allow).toContain('bash')
++    expect(h.restrictions[0]!.allow).toContain('subagent')
++  })
++
++  it('applies execute when a ticket records no mode, as for a Source that does not freeze one', async () => {
++    const h = harness()
++    h.repo.tickets.save(ticket('t3'))
++    await ensure(h, 'worker-t3')
++    expect(h.presets.at(-1)!.preset).toBe(EXECUTE_PRESET)
++    expect(h.restrictions[0]!.allow).toContain('write')
++  })
++
++  it('replaces the restriction binding when the same session moves from discuss to execute', async () => {
++    const h = harness()
++    await ensure(h, 'worker-t1', 'discuss')
++    const first = h.restrictions[0]!
++    h.repo.tickets.save(ticket('t1', { mode: 'execute' }))
++    await ensure(h, 'worker-t1', 'execute')
++    expect(first.dispose).toHaveBeenCalledTimes(1)
++    expect(h.restrictions).toHaveLength(2)
++    expect(h.restrictions[1]!.allow).toContain('write')
++    expect(h.restrictions[1]!.allow).toContain('bash')
++    expect(h.restrictions[1]!.allow).not.toEqual(DISCUSS_TOOLS)
++    expect(h.presets.map(item => item.preset)).toEqual([DISCUSS_PRESET, EXECUTE_PRESET])
++  })
++
++  it('keeps the binding when the mode did not change, instead of stacking restrictions', async () => {
++    const h = harness()
++    await ensure(h, 'worker-t1', 'discuss')
++    await ensure(h, 'worker-t1', 'discuss')
++    expect(h.restrictions).toHaveLength(1)
++    expect(h.restrictions[0]!.dispose).not.toHaveBeenCalled()
++  })
++})
++
++describe('the discussion assignment text', () => {
++  it('tells the worker it is a read-only discussion that proposes a plan', () => {
++    expect(DISCUSSION_ASSIGNMENT).toMatch(/read-only discussion/)
++    expect(DISCUSSION_ASSIGNMENT).toMatch(/plan/)
++    const executor = new DshExecutor({ store: { settings: () => SettingsSchema.parse({}) }, machine: { stateDir: '/tmp/state' },
++      effects: { handle: () => {} } } as never)
++    const prepared = executor.prepare(ticket('d1', { mode: 'discuss' }),
++      { kind: 'accept', title: 'Plan the margin', scope: 'small', reason: 'asked', name: 'plan-margin' })
++    expect(prepared.execution?.assignment).toContain(DISCUSSION_ASSIGNMENT)
++    const executing = executor.prepare(ticket('d2', { mode: 'execute' }),
++      { kind: 'accept', title: 'Fix the margin', scope: 'small', reason: 'asked', name: 'fix-margin' })
++    expect(executing.execution?.assignment).not.toContain(DISCUSSION_ASSIGNMENT)
++  })
++})
++
++describe('discussion state projection', () => {
++  const running = { id: 'as1', state: 'running' as const, createdAt: '2026-11-03T12:00:00.000Z' }
++  it('projects a live discuss ticket as discussing', () => {
++    expect(projectTicketState(ticket('d1', { mode: 'discuss' }))).toBe('discussing')
++    expect(projectTicketState(ticket('d2', { mode: 'discuss', assignments: [running] }))).toBe('discussing')
++    expect(projectTicketState(ticket('e1'))).toBe('queued')
++  })
++
++  it('lets an open question and a ready report win over discussing', () => {
++    expect(projectTicketState(ticket('d3', { mode: 'discuss', attention: { id: 'a1', question: 'Which approach?' } }))).toBe('waiting_input')
++    expect(projectTicketState(ticket('d4', { mode: 'discuss', assignments: [{ ...running,
++      report: { state: 'ready', summary: 'Plan ready', at: '2026-11-03T12:00:01.000Z' } }] }))).toBe('awaiting_review')
++  })
++
++  it('keeps the execute projection for an execute ticket', () => {
++    expect(projectTicketState(ticket('x1', { mode: 'execute', assignments: [running] }))).toBe('running')
++  })
++})
+diff --git a/tests/ticket-freeze.spec.ts b/tests/ticket-freeze.spec.ts
+index b821010..7cef0a0 100644
+--- a/tests/ticket-freeze.spec.ts
++++ b/tests/ticket-freeze.spec.ts
+@@ -55,8 +55,9 @@ describe('frozenSpec', () => {
+     expect(frozenSpec(trigger({ meta: { spec: { ...SPEC, model: null } } }))).toBeUndefined()
+     expect(frozenSpec(trigger({ meta: { spec: { ...SPEC, model: null, modelSource: 'spec' } } }))).toBeUndefined()
+     expect(frozenSpec(trigger({ meta: { spec: { ...SPEC, modelSource: 'instance' } } }))).toBeUndefined()
+-    // Only execute reaches a ticket; discuss is refused by the Bridge.
+-    expect(frozenSpec(trigger({ meta: { spec: { ...SPEC, mode: 'discuss' } } }))).toBeUndefined()
++    // M4 freezes both execution modes; anything else is still refused.
++    expect(frozenSpec(trigger({ meta: { spec: { ...SPEC, mode: 'discuss' } } }))).toEqual({ ...SPEC, mode: 'discuss' })
++    expect(frozenSpec(trigger({ meta: { spec: { ...SPEC, mode: 'plan' } } }))).toBeUndefined()
+   })
+ })
+ 

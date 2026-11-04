@@ -1,0 +1,20 @@
+M4 discussion run ownership, concurrent pause and restart reconciliation (final build)
+at=2026-11-04T07:33-07:35Z
+build_lib_sha256=8d80bb7f27f4f1a8c2d3b9e73eea91c81e8f57eee5ef90a9bfcc7db2033c6252
+
+concurrent live discussions:
+ticket_A=8709031b3815a2322b93070a0b99df56
+ticket_B=f41d6fcfc0b167508d971a4387a23ac8
+A_process_group=own setsid group; B process continued while A paused
+A_state=stopped stoppedAt=2026-11-04T15:33:58.497+08 lingeringPids=[]
+B_state_at_A_stop=discussing bStoppedAt=null
+B_final=awaiting_review (B completed its own plan)
+run_dirs=A and B distinct
+
+hard restart:
+ticket=967e9a9e85a5af70994d4958d26ece15
+runtime_sigkill=yes
+after_restart: old discuss pid gone; stale run dir removed; assignment interrupted
+no unrelated process required to exit
+
+evidence source: /tmp/ab-concurrent.log, psql task_links, process checks

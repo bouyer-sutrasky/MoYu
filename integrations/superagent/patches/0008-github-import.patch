@@ -1,0 +1,298 @@
+diff --git a/docs/007-architecture.md b/docs/007-architecture.md
+index 84eb46d..0e75c43 100644
+--- a/docs/007-architecture.md
++++ b/docs/007-architecture.md
+@@ -343,7 +343,7 @@ Some generic modules still refer directly to GitHub or Feishu:
+ | `src/app/tools/main.ts` | The main Session's tools |
+ | `src/app/tools/executor.ts` | An Executor Session's tools |
+ | `src/app/http.ts` | The `/orchestrator/api` routes: the same-origin check, request limits and one status per kind of failure |
+-| `src/app/bridge.ts` | The machine Bridge of the MoYu platform: its loopback server and bearer check, `POST /bridge/v1/triggers` (repository, mode, model and base commit checks, and `targetTicketId` attachment to an existing Ticket), the pause/resume/start/retry operations and `GET /bridge/v1/operations/:id`, `GET /bridge/v1/{capabilities,models,events,tickets}`, the `EventLog` under `<stateDir>/bridge/events.jsonl` with fsynced append-only events, `projectTicketState`, and the once-a-second projection of stored Tickets and worker `task.progress` |
++| `src/app/bridge.ts` | The machine Bridge of the MoYu platform: its loopback server and bearer check, `POST /bridge/v1/triggers` (repository, mode, model and base commit checks, and `targetTicketId` attachment to an existing Ticket), the pause/resume/start/retry operations and `GET /bridge/v1/operations/:id`, `GET /bridge/v1/{capabilities,models,events,tickets}`, the `EventLog` under `<stateDir>/bridge/events.jsonl` with fsynced append-only events, `projectTicketState`, the one-time `ticket.imported` event of a GitHub-origin Ticket, and the once-a-second projection of stored Tickets and worker `task.progress` |
+ | `src/app/operations.ts` | `OperationLog`, the fsynced append-only log of machine operations under `<stateDir>/bridge/operations.jsonl`, its latest record per operation id, and the queued or running operations the Bridge settles from Ticket state |
+ | `src/app/api.ts` | `Api`, every route with its parameters, query, body and response, and the filters of the lists; it imports only types, so the panel bundles it |
+ | `src/app/views/text.ts` | The two forms of a view's text: `preview`, plain text on one line, and `markdown` without HTML; `plain` and `readable` |
+@@ -416,7 +416,7 @@ Some generic modules still refer directly to GitHub or Feishu:
+ | `tests/ticket-freeze.spec.ts` | The frozen execution spec: parsing it from a workspace Trigger, copying model/base/mode onto the accepted Ticket, leaving other Sources without one, and the launch-time model validation that never falls back |
+ | `tests/discussion.spec.ts` | Discussion mode: the read-only tool allow-list and permission preset, the work tools and `danger-full-access` for execute, replacing the restriction when the mode changes, the discussion assignment text, and `discussing` state projection |
+ | `tests/pause.spec.ts` | A human pause and resume: Inputs and attention kept, the Executor pause, `stoppedAt` evidence and failures, resume admission and ticket identity, starting a discuss plan, non-retryability, and `DshExecutor.pause` stopping jobs with its evidence |
+-| `tests/bridge-control.spec.ts` | M4 execution control: the operation log across a reopen, pause/resume/start/retry endpoints and their 202/404/409/422 answers, idempotency, settlement from Ticket state, operation persistence across a Bridge restart, the M4 ticket snapshot, `targetTicketId` attach/conflict/ended cases, and `ticket.paused` events |
++| `tests/bridge-control.spec.ts` | M4 execution control: the operation log across a reopen, pause/resume/start/retry endpoints and their 202/404/409/422 answers, idempotency, settlement from Ticket state, operation persistence across a Bridge restart, the M4 ticket snapshot, `targetTicketId` attach/conflict/ended cases, `ticket.paused` events, and one-time GitHub `ticket.imported` events |
+ | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
+ | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
+ | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
+diff --git a/src/app/bridge.ts b/src/app/bridge.ts
+index a51dd44..0e02951 100644
+--- a/src/app/bridge.ts
++++ b/src/app/bridge.ts
+@@ -299,6 +299,32 @@ async function readJson(req: IncomingMessage, maxBytes = REQUEST_LIMIT): Promise
+   catch { throw new RequestError(400, 'The request body is not JSON') }
+ }
+ 
++/** The GitHub number a ticket's origin Trigger, Channel, followed PR thread, or thread names. */
++function githubNumber(ticket: Ticket, origin: Trigger | undefined): number | undefined {
++  const raw = origin?.meta.number
++  if (typeof raw === 'number' && Number.isInteger(raw) && raw > 0) return raw
++  if (typeof raw === 'string' && /^\d+$/.test(raw) && Number(raw) > 0) return Number(raw)
++  for (const channel of ticket.channels) {
++    if (channel.source !== 'github') continue
++    const number = Number(channel.address.number)
++    if (Number.isInteger(number) && number > 0) return number
++  }
++  for (const follow of ticket.follows ?? []) {
++    const match = /^github:(\d+)$/.exec(follow.thread)
++    if (match) return Number(match[1])
++  }
++  for (const ref of origin?.threads ?? []) {
++    if (ref.source !== 'github') continue
++    const match = /^(\d+)$/.exec(ref.id)
++    if (match) return Number(match[1])
++  }
++  return undefined
++}
++/** Whether a GitHub ticket is a pull request, from its Trigger metadata, its Channel URL, or its origin URL. */
++const isPr = (ticket: Ticket, origin: Trigger | undefined): boolean =>
++  origin?.meta.isPr === true || /\/pull\//.test(origin?.url ?? '')
++  || ticket.channels.some(channel => channel.source === 'github' && /\/pull\//.test(channel.address.url ?? ''))
++
+ /**
+  * Serves the machine protocol on a loopback port. The Runtime starts it after the Store, Engine, Sessions, and Commands
+  * exist, projects tickets every second, and stops it before the Store closes.
+@@ -390,10 +416,13 @@ export class Bridge {
+     for (const ticket of this.host.store.tickets.list()) {
+       const origin = this.host.store.triggers.get(ticket.origin.triggerId)
+       const workspace = origin?.source === 'workspace' || ticket.channels.some(channel => channel.source === 'workspace')
+-      if (!workspace) continue
++      // A GitHub-origin ticket is imported into the platform's Work list; it is not a workspace ticket and gets no link event.
++      const github = !workspace && (origin?.source === 'github' || ticket.channels.some(channel => channel.source === 'github'))
++      if (!workspace && !github) continue
+       const frozen = ticket as FrozenTicket
+       const state = projectTicketState(ticket)
+-      if (!this.log.has(`ticket-linked:${ticket.id}`)) {
++      if (github) this.importTicket(ticket, origin)
++      if (workspace && !this.log.has(`ticket-linked:${ticket.id}`)) {
+         const meta = origin?.meta ?? {}
+         this.log.append(`ticket-linked:${ticket.id}`, 'ticket.linked', ticket.createdAt, {
+           triggerId: ticket.origin.triggerId, ticketId: ticket.id,
+@@ -403,7 +432,7 @@ export class Bridge {
+           base: { branch: frozen.base?.branch ?? '', commit: frozen.base?.commit ?? '', model: modelLabel(frozen.model) },
+         })
+       }
+-      for (const input of ticket.inputs) {
++      if (workspace) for (const input of ticket.inputs) {
+         if (input.kind !== 'trigger') continue
+         const meta = this.host.store.triggers.get(input.triggerId)?.meta
+         const messageId = typeof meta?.messageId === 'string' ? meta.messageId : ''
+@@ -424,9 +453,9 @@ export class Bridge {
+               ...paused.error ? { error: paused.error } : {} })
+         }
+       }
+-      if (ticket.attention) this.log.append(`ticket-question:${ticket.attention.id}`, 'ticket.question', ticket.updatedAt,
++      if (workspace && ticket.attention) this.log.append(`ticket-question:${ticket.attention.id}`, 'ticket.question', ticket.updatedAt,
+         { ticketId: ticket.id, question: ticket.attention.question, attentionId: ticket.attention.id })
+-      if (repository) for (const follow of ticket.follows ?? []) {
++      if (workspace && repository) for (const follow of ticket.follows ?? []) {
+         const match = /^github:(\d+)$/.exec(follow.thread)
+         if (!match) continue
+         const number = Number(match[1])
+@@ -435,7 +464,11 @@ export class Bridge {
+           { ticketId: ticket.id, type: 'pull_request', url, number, at: ticket.updatedAt })
+       }
+       const previous = this.log.previousState(ticket.id)
+-      if (previous !== undefined && previous !== state) {
++      if (previous === undefined) {
++        // A GitHub ticket has no `ticket.linked` to seed its state; emit the initial projection so the platform tracks it.
++        if (github) this.log.append(`ticket-state:${ticket.id}:${ticket.updatedAt}:${state}`, 'ticket.state_changed', ticket.updatedAt,
++          { ticketId: ticket.id, previousState: null, state, ...ticket.attention ? { question: ticket.attention.question } : {}, at: ticket.updatedAt })
++      } else if (previous !== state) {
+         this.log.append(`ticket-state:${ticket.id}:${ticket.updatedAt}:${state}`, 'ticket.state_changed', ticket.updatedAt,
+           { ticketId: ticket.id, previousState: previous, state, ...ticket.attention ? { question: ticket.attention.question } : {}, at: ticket.updatedAt })
+       }
+@@ -444,6 +477,35 @@ export class Bridge {
+     }
+   }
+ 
++  /**
++   * Emits the one `ticket.imported` event of a GitHub-origin ticket: its GitHub identity, title, state, Trigger, text, and
++   * base. The platform deduplicates by `(repository, 'github', externalId)` and binds the Ticket by `upstream_ticket_id`, so
++   * the deterministic id keeps a restart or a repeated projection tick from importing it twice.
++   */
++  private importTicket(ticket: Ticket, origin: Trigger | undefined): void {
++    if (this.log.has(`ticket-imported:${ticket.id}`)) return
++    const number = githubNumber(ticket, origin)
++    // Without a GitHub number there is no external identity to import under; the Ticket stays a workspace-style record.
++    if (number === undefined) return
++    const url = typeof origin?.url === 'string' && origin.url
++      ? origin.url
++      : `https://github.com/${ticket.base?.repository ?? (this.host.configured() ? this.host.deployment.repository : '')}/${isPr(ticket, origin) ? 'pull' : 'issues'}/${number}`
++    this.log.append(`ticket-imported:${ticket.id}`, 'ticket.imported', ticket.createdAt, {
++      ticketId: ticket.id,
++      source: 'github',
++      externalId: `github:${number}`,
++      number,
++      isPr: isPr(ticket, origin),
++      url,
++      title: ticket.title,
++      state: projectTicketState(ticket),
++      triggerId: ticket.origin.triggerId,
++      text: origin?.text ?? '',
++      base: { branch: ticket.base?.branch ?? '', commit: ticket.base?.commit ?? '', model: modelLabel(ticket.model) },
++      at: ticket.createdAt,
++    })
++  }
++
+   /** Turns one worker `assistant/message` into a `task.progress` event; streaming chunks never become events. */
+   sessionEvent(sessionId: string, event: { type: string; data: unknown }): void {
+     if (!this.running || event.type !== 'assistant/message') return
+@@ -576,9 +638,9 @@ export class Bridge {
+     this.operations.append({ operationId: body.operationId, ticketId, kind: 'pause', state: 'queued', updatedAt: new Date().toISOString(),
+       baseline: this.baseline(ticket) })
+     try {
++      // The 202 reports the operation as queued; the ticker moves it to running and then to its settled state.
+       this.host.engine.pauseTicket(ticketId, body.operationId)
+-      // The Executor stops the worker asynchronously; the ticker settles it once `ticket.paused.stoppedAt` lands.
+-      return this.accepted(res, this.operations.update(body.operationId, { state: 'running' }, new Date().toISOString())!)
++      return this.accepted(res, this.operations.get(body.operationId)!)
+     } catch (error) {
+       this.operations.update(body.operationId, { state: 'failed', error: errorText(error) }, new Date().toISOString())
+       return this.refuse(res, error)
+@@ -597,7 +659,7 @@ export class Bridge {
+       baseline: this.baseline(ticket) })
+     try {
+       this.host.engine.resumeTicket(ticketId, body.admission)
+-      return this.accepted(res, this.operations.update(body.operationId, { state: 'running' }, new Date().toISOString())!)
++      return this.accepted(res, this.operations.get(body.operationId)!)
+     } catch (error) {
+       this.operations.update(body.operationId, { state: 'failed', error: errorText(error) }, new Date().toISOString())
+       return this.refuse(res, error)
+@@ -617,7 +679,7 @@ export class Bridge {
+       baseline: this.baseline(ticket) })
+     try {
+       this.host.engine.startTicket(ticketId, body.planRevision)
+-      return this.accepted(res, this.operations.update(body.operationId, { state: 'running' }, new Date().toISOString())!)
++      return this.accepted(res, this.operations.get(body.operationId)!)
+     } catch (error) {
+       this.operations.update(body.operationId, { state: 'failed', error: errorText(error) }, new Date().toISOString())
+       return this.refuse(res, error)
+@@ -634,7 +696,7 @@ export class Bridge {
+       baseline: this.baseline(ticket) })
+     try {
+       this.host.engine.retryTicket(ticketId)
+-      return this.accepted(res, this.operations.update(body.operationId, { state: 'running' }, new Date().toISOString())!)
++      return this.accepted(res, this.operations.get(body.operationId)!)
+     } catch (error) {
+       this.operations.update(body.operationId, { state: 'failed', error: errorText(error) }, new Date().toISOString())
+       return this.refuse(res, error)
+@@ -662,6 +724,8 @@ export class Bridge {
+           if (ticket.paused?.error) failed(ticket.paused.error)
+           else if (ticket.paused?.stoppedAt) succeeded(ticket.paused.evidence)
+           else if (!ticket.paused) failed(ticket.ended ? 'Ticket ended before its worker stopped' : 'The ticket is no longer paused')
++          // The pause is recorded but its worker is still stopping: the operation is running until `stoppedAt` lands.
++          else if (operation.state === 'queued') this.operations.update(operation.operationId, { state: 'running' }, at)
+           break
+         case 'resume':
+           if (!ticket.paused && newer) succeeded()
+diff --git a/tests/bridge-control.spec.ts b/tests/bridge-control.spec.ts
+index 9c03af9..51e5b31 100644
+--- a/tests/bridge-control.spec.ts
++++ b/tests/bridge-control.spec.ts
+@@ -159,7 +159,7 @@ describe('POST /bridge/v1/tickets/:id/pause', () => {
+     h.repo.tickets.save(frozen(ticket('t1', { mode: 'execute', assignments: [{ id: 'as1', state: 'running', createdAt: '2026-11-03T12:00:00.000Z' }] })))
+     const { bridge, call } = await serve(h)
+     const created = await call('POST', '/bridge/v1/tickets/t1/pause', { operationId: 'op-1' })
+-    expect(created).toMatchObject({ status: 202, body: { operationId: 'op-1', ticketId: 't1', kind: 'pause', state: 'running' } })
++    expect(created).toMatchObject({ status: 202, body: { operationId: 'op-1', ticketId: 't1', kind: 'pause', state: 'queued' } })
+     expect(h.engine.pauseTicket).toHaveBeenCalledOnce()
+     expect(h.engine.pauseTicket).toHaveBeenCalledWith('t1', 'op-1')
+     // The snapshot shows the pause and the ticket is stopping, not stopped, until the Executor records evidence.
+@@ -247,7 +247,7 @@ describe('POST /bridge/v1/tickets/:id/resume', () => {
+     h.repo.tickets.save(paused('2026-11-03T12:11:00.000Z'))
+     const { bridge, call } = await serve(h)
+     const response = await call('POST', '/bridge/v1/tickets/t1/resume', { operationId: 'op-1', admission: { leaseId: 'lease-1', fencingToken: 'fence-1' } })
+-    expect(response).toMatchObject({ status: 202, body: { operationId: 'op-1', kind: 'resume', state: 'running' } })
++    expect(response).toMatchObject({ status: 202, body: { operationId: 'op-1', kind: 'resume', state: 'queued' } })
+     expect(h.engine.resumeTicket).toHaveBeenCalledWith('t1', { leaseId: 'lease-1', fencingToken: 'fence-1' })
+     bridge.settle()
+     expect(await call('GET', '/bridge/v1/operations/op-1')).toMatchObject({ body: { state: 'succeeded' } })
+@@ -261,7 +261,7 @@ describe('POST /bridge/v1/tickets/:id/start', () => {
+     h.repo.tickets.save(frozen(ticket('t1', { mode: 'discuss', assignments: [{ id: 'as1', state: 'running', createdAt: '2026-11-03T12:00:00.000Z' }] })))
+     const { bridge, call } = await serve(h)
+     const response = await call('POST', '/bridge/v1/tickets/t1/start', { operationId: 'op-1', planRevision: 2 })
+-    expect(response).toMatchObject({ status: 202, body: { kind: 'start', state: 'running' } })
++    expect(response).toMatchObject({ status: 202, body: { kind: 'start', state: 'queued' } })
+     expect(h.engine.startTicket).toHaveBeenCalledWith('t1', 2)
+     bridge.settle()
+     expect(await call('GET', '/bridge/v1/operations/op-1')).toMatchObject({ body: { state: 'succeeded' } })
+@@ -300,7 +300,7 @@ describe('operation persistence across a Bridge restart', () => {
+     const first = harness({ stateDir: dir })
+     first.repo.tickets.save(frozen(ticket('t1', { assignments: [{ id: 'as1', state: 'running', createdAt: '2026-11-03T12:00:00.000Z' }] })))
+     const before = await serve(first)
+-    expect(await before.call('POST', '/bridge/v1/tickets/t1/pause', { operationId: 'op-1' })).toMatchObject({ status: 202, body: { state: 'running' } })
++    expect(await before.call('POST', '/bridge/v1/tickets/t1/pause', { operationId: 'op-1' })).toMatchObject({ status: 202, body: { state: 'queued' } })
+     await before.bridge.stop()
+ 
+     const second = harness({ stateDir: dir })
+@@ -424,3 +424,64 @@ describe('ticket.paused projection', () => {
+     expect(events.filter(event => event.type === 'ticket.state_changed').map(event => event.data.state)).toEqual(['stopping', 'stopped'])
+   })
+ })
++
++describe('GitHub ticket import', () => {
++  /** A GitHub-origin ticket with its origin Trigger, as the GitHub Source created it. */
++  function importedTicket(overrides: Partial<Ticket> = {}): Ticket {
++    const origin = githubTrigger(42)
++    return ticket('g1', { title: 'Fix #42', origin: { triggerId: origin.id, triggerIds: [origin.id] },
++      channels: [origin.channel as ChannelRef], ...overrides })
++  }
++
++  it('emits one ticket.imported with the GitHub identity, text, base, and an initial state update', async () => {
++    const h = harness()
++    h.repo.triggers.save(githubTrigger(42))
++    h.repo.tickets.save(importedTicket())
++    const { bridge, call } = await serve(h)
++    bridge.project()
++    bridge.project()
++    const events = (await call('GET', '/bridge/v1/events')).body.events as { id: string; type: string; data: Record<string, unknown> }[]
++    const imported = events.filter(event => event.type === 'ticket.imported')
++    expect(imported).toHaveLength(1)
++    expect(imported[0]).toMatchObject({ id: 'ticket-imported:g1', data: {
++      ticketId: 'g1', source: 'github', externalId: 'github:42', number: 42, isPr: true,
++      url: 'https://github.com/acme/widgets/pull/42', title: 'Fix #42', state: 'queued', triggerId: 'github-comment:42',
++      text: 'Please fix it', base: { branch: '', commit: '', model: '' }, at: '2026-11-03T12:00:00.000Z' } })
++    const states = events.filter(event => event.type === 'ticket.state_changed')
++    expect(states).toHaveLength(1)
++    expect(states[0]!.data).toMatchObject({ ticketId: 'g1', previousState: null, state: 'queued' })
++  })
++
++  it('imports once across a Bridge restart and continues its state projection', async () => {
++    const dir = stateDir()
++    const first = harness({ stateDir: dir })
++    first.repo.triggers.save(githubTrigger(42))
++    first.repo.tickets.save(importedTicket())
++    const before = await serve(first)
++    before.bridge.project()
++    expect(((await before.call('GET', '/bridge/v1/events')).body.events as unknown[]).length).toBe(2)
++    await before.bridge.stop()
++
++    const second = harness({ stateDir: dir })
++    second.repo.triggers.save(githubTrigger(42))
++    second.repo.tickets.save(importedTicket({ assignments: [{ id: 'as1', state: 'running', createdAt: '2026-11-03T12:00:00.000Z' }],
++      updatedAt: '2026-11-03T12:05:00.000Z' }))
++    const after = await serve(second)
++    after.bridge.project()
++    after.bridge.project()
++    const events = (await after.call('GET', '/bridge/v1/events')).body.events as { type: string; data: Record<string, unknown> }[]
++    expect(events.filter(event => event.type === 'ticket.imported')).toHaveLength(1)
++    expect(events.filter(event => event.type === 'ticket.state_changed').at(-1)!.data).toMatchObject({ ticketId: 'g1', previousState: 'queued', state: 'running' })
++  })
++
++  it('does not import workspace tickets', async () => {
++    const h = harness()
++    h.repo.triggers.save(workspaceTrigger())
++    h.repo.tickets.save(frozen(ticket('t1')))
++    const { bridge, call } = await serve(h)
++    bridge.project()
++    const events = (await call('GET', '/bridge/v1/events')).body.events as { type: string }[]
++    expect(events.some(event => event.type === 'ticket.imported')).toBe(false)
++    expect(events.some(event => event.type === 'ticket.linked')).toBe(true)
++  })
++})

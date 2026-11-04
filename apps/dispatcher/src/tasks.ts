@@ -18,6 +18,11 @@ export interface TaskRow {
   questionMessageId: string | null;
   prUrl: string | null;
   prNumber: number | null;
+  planRevision: number | null;
+  stopRequestedAt: Date | null;
+  stoppedAt: Date | null;
+  stopEvidence: Record<string, unknown>;
+  runtimeLeaseId: string | null;
   version: number;
   createdAt: Date;
   updatedAt: Date;
@@ -29,6 +34,8 @@ export const TASK_COLUMNS = `
   t.base_branch as "baseBranch", t.base_commit as "baseCommit", t.model_id as "modelId",
   t.model_reasoning_effort as "modelReasoningEffort", t.execution_mode as "executionMode",
   t.question, t.question_message_id as "questionMessageId", t.pr_url as "prUrl", t.pr_number as "prNumber",
+  t.plan_revision as "planRevision", t.stop_requested_at as "stopRequestedAt", t.stopped_at as "stoppedAt",
+  t.stop_evidence as "stopEvidence", t.runtime_lease_id as "runtimeLeaseId",
   t.version, t.created_at as "createdAt", t.updated_at as "updatedAt"
 `;
 
@@ -59,10 +66,25 @@ export function taskSummary(row: TaskRow): TaskSummary {
     questionMessageId: row.questionMessageId,
     prUrl: row.prUrl,
     prNumber: row.prNumber,
+    planRevision: row.planRevision,
+    stopRequestedAt: row.stopRequestedAt?.toISOString() ?? null,
+    stoppedAt: row.stoppedAt?.toISOString() ?? null,
+    stopEvidence: row.stopEvidence,
+    lastOperation: null,
     version: row.version,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
+}
+
+/**
+ * The platform projection of a runtime ticket snapshot. The Bridge already uses
+ * the platform's state names; a snapshot value outside the enum is refused
+ * instead of being coerced into a wrong state.
+ */
+export function stateFromSnapshot(value: unknown): string | null {
+  const parsed = taskStateSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
 }
 
 /** Maps an upstream ticket outcome to the platform's projection state. */

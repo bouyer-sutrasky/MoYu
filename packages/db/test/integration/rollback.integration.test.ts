@@ -6,10 +6,12 @@ import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
+import { sql } from 'drizzle-orm';
+
 import type { Database } from '../../src/client';
 import { migrateDatabase } from '../../src/migrate';
-import { conversations, messages, owners, repositories, taskLinks } from '../../src/schema';
-import { createTestDatabase, type TestDatabase } from './helpers';
+import { messages, owners, repositories } from '../../src/schema';
+import { createTestDatabaseUpTo, type TestDatabase } from './helpers';
 
 const REPOSITORY_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 const FORWARD_MIGRATION = path.join(
@@ -25,7 +27,9 @@ let forwardMigrationHash = '';
 const databases: TestDatabase[] = [];
 
 async function createDatabase(): Promise<TestDatabase> {
-  const database = await createTestDatabase();
+  // The 0004 rollback only applies while 0004 is the latest migration, so the
+  // suite builds a database at 0004 and lets 0005 run later through migrate.
+  const database = await createTestDatabaseUpTo(4);
   databases.push(database);
   return database;
 }
@@ -102,17 +106,18 @@ async function seedBusinessData(database: Database): Promise<void> {
   if (!repository) {
     throw new Error('repository insert returned no row');
   }
-  const [conversation] = await database
-    .insert(conversations)
-    .values({ ownerId: owner.id, repositoryId: repository.id, baseBranch: 'main' })
-    .returning();
-  if (!conversation) {
+  const conversationResult = await database.execute(
+    sql`insert into conversations (owner_id, repository_id, base_branch)
+        values (${owner.id}, ${repository.id}, 'main') returning id`,
+  );
+  const conversationId = conversationResult.rows[0]?.id;
+  if (typeof conversationId !== 'string') {
     throw new Error('conversation insert returned no row');
   }
   const [parent] = await database
     .insert(messages)
     .values({
-      conversationId: conversation.id,
+      conversationId: conversationId,
       direction: 'inbound',
       body: 'parent',
       source: 'web',
@@ -122,18 +127,16 @@ async function seedBusinessData(database: Database): Promise<void> {
     throw new Error('message insert returned no row');
   }
   await database.insert(messages).values({
-    conversationId: conversation.id,
+    conversationId: conversationId,
     direction: 'inbound',
     body: 'reply',
     source: 'web',
     replyToMessageId: parent.id,
   });
-  await database.insert(taskLinks).values({
-    conversationId: conversation.id,
-    repositoryId: repository.id,
-    state: 'pending_admission',
-    baseBranch: 'main',
-  });
+  await database.execute(
+    sql`insert into task_links (conversation_id, repository_id, state, base_branch)
+        values (${conversationId}, ${repository.id}, 'pending_admission', 'main')`,
+  );
 }
 
 describe('0004 rollback script on real PostgreSQL', () => {
@@ -169,7 +172,7 @@ describe('0004 rollback script on real PostgreSQL', () => {
     expect(await readState(database)).toMatchObject({
       constraints: 2,
       indexes: 2,
-      migrations: 5,
+      migrations: 9,
       messages: 2,
       taskLinks: 1,
     });

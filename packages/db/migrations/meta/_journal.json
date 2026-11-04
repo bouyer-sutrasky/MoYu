@@ -36,6 +36,34 @@
       "when": 1793722263382,
       "tag": "0004_nappy_yellowjacket",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793728781323,
+      "tag": "0005_colossal_brood",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793765222753,
+      "tag": "0006_aspiring_fenris",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793777176694,
+      "tag": "0007_loose_tiger_shark",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793777177694,
+      "tag": "0008_defer_reply_fk",
+      "breakpoints": true
     }
   ]
 }

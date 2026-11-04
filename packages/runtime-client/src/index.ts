@@ -2,11 +2,25 @@ import {
   bridgeCapabilitiesSchema,
   bridgeEventPageSchema,
   bridgeModelListSchema,
+  bridgeOperationAcceptedSchema,
+  bridgeOperationSchema,
+  bridgePauseInputSchema,
+  bridgeResumeInputSchema,
+  bridgeRetryInputSchema,
+  bridgeStartInputSchema,
+  bridgeTicketSnapshotSchema,
   bridgeTriggerInputSchema,
   bridgeTriggerResultSchema,
   type BridgeCapabilities,
   type BridgeEventPage,
   type BridgeModelList,
+  type BridgeOperation,
+  type BridgeOperationAccepted,
+  type BridgePauseInput,
+  type BridgeResumeInput,
+  type BridgeRetryInput,
+  type BridgeStartInput,
+  type BridgeTicketSnapshot,
   type BridgeTriggerInput,
   type BridgeTriggerResult,
 } from '@moyu/contracts';
@@ -22,6 +36,13 @@ export type {
   BridgeEvent,
   BridgeEventPage,
   BridgeModelList,
+  BridgeOperation,
+  BridgeOperationAccepted,
+  BridgePauseInput,
+  BridgeResumeInput,
+  BridgeRetryInput,
+  BridgeStartInput,
+  BridgeTicketSnapshot,
   BridgeTriggerInput,
   BridgeTriggerResult,
 } from '@moyu/contracts';
@@ -102,14 +123,66 @@ export class RuntimeBridgeClient {
     return this.request(`/bridge/v1/events?${query.toString()}`, bridgeEventPageSchema, { signal });
   }
 
-  async ticket(ticketId: string, signal?: AbortSignal): Promise<unknown> {
+  async ticket(ticketId: string, signal?: AbortSignal): Promise<BridgeTicketSnapshot> {
     return this.request(
       `/bridge/v1/tickets/${encodeURIComponent(ticketId)}`,
-      {
-        safeParse(value: unknown) {
-          return { success: true as const, data: value };
-        },
-      } as unknown as z.ZodType<unknown>,
+      bridgeTicketSnapshotSchema,
+      { signal },
+    );
+  }
+
+  async pause(
+    ticketId: string,
+    input: BridgePauseInput,
+    signal?: AbortSignal,
+  ): Promise<BridgeOperationAccepted> {
+    return this.request(
+      `/bridge/v1/tickets/${encodeURIComponent(ticketId)}/pause`,
+      bridgeOperationAcceptedSchema,
+      { method: 'POST', body: bridgePauseInputSchema.parse(input), signal, timeoutMs: 30_000 },
+    );
+  }
+
+  async resume(
+    ticketId: string,
+    input: BridgeResumeInput,
+    signal?: AbortSignal,
+  ): Promise<BridgeOperationAccepted> {
+    return this.request(
+      `/bridge/v1/tickets/${encodeURIComponent(ticketId)}/resume`,
+      bridgeOperationAcceptedSchema,
+      { method: 'POST', body: bridgeResumeInputSchema.parse(input), signal, timeoutMs: 30_000 },
+    );
+  }
+
+  async start(
+    ticketId: string,
+    input: BridgeStartInput,
+    signal?: AbortSignal,
+  ): Promise<BridgeOperationAccepted> {
+    return this.request(
+      `/bridge/v1/tickets/${encodeURIComponent(ticketId)}/start`,
+      bridgeOperationAcceptedSchema,
+      { method: 'POST', body: bridgeStartInputSchema.parse(input), signal, timeoutMs: 30_000 },
+    );
+  }
+
+  async retry(
+    ticketId: string,
+    input: BridgeRetryInput,
+    signal?: AbortSignal,
+  ): Promise<BridgeOperationAccepted> {
+    return this.request(
+      `/bridge/v1/tickets/${encodeURIComponent(ticketId)}/retry`,
+      bridgeOperationAcceptedSchema,
+      { method: 'POST', body: bridgeRetryInputSchema.parse(input), signal, timeoutMs: 30_000 },
+    );
+  }
+
+  async operation(operationId: string, signal?: AbortSignal): Promise<BridgeOperation> {
+    return this.request(
+      `/bridge/v1/operations/${encodeURIComponent(operationId)}`,
+      bridgeOperationSchema,
       { signal },
     );
   }

@@ -184,7 +184,7 @@ describe('work loop API on real PostgreSQL', () => {
     expect(count?.count).toBe(1);
   });
 
-  it('rejects the M4 discussion mode instead of pretending it works', async () => {
+  it('accepts the read-only discussion mode and freezes it on the conversation and task', async () => {
     const response = await harness.app.inject({
       method: 'POST',
       url: '/api/v1/conversations',
@@ -197,8 +197,15 @@ describe('work loop API on real PostgreSQL', () => {
         clientRequestId: `discuss-${randomUUID()}`,
       },
     });
-    expect(response.statusCode).toBe(422);
-    expect(response.json()).toMatchObject({ error: { code: 'invalid_request' } });
+    expect(response.statusCode).toBe(201);
+    const conversation = conversationDetailDataSchema.parse(envelope(response.json())).conversation;
+    expect(conversation.executionMode).toBe('discuss');
+    expect(conversation.source).toBe('web');
+    expect(conversation.task).toMatchObject({
+      executionMode: 'discuss',
+      state: 'pending_admission',
+      planRevision: null,
+    });
   });
 
   it('writes a message and its delivery in one transaction and deduplicates retries', async () => {

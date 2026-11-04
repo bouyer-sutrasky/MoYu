@@ -1,0 +1,16 @@
+diff --git a/docs/007-architecture.md b/docs/007-architecture.md
+index 0e75c43..cadd548 100644
+--- a/docs/007-architecture.md
++++ b/docs/007-architecture.md
+@@ -414,9 +414,10 @@ Some generic modules still refer directly to GitHub or Feishu:
+ | `tests/workspace.spec.ts` | The workspace Source kind and plugin entry: its non-secret schema, owner-only Policy part, one-page Thread context, frozen-spec environment, the reply id prefixes, and its Channel's `sent`/`gone`/retry answers against a loopback platform stand-in |
+ | `tests/bridge.spec.ts` | The machine Bridge: bearer auth and readiness, capabilities and models, Trigger delivery and its 409/422/503 answers, the duplicate ticket lookup, event paging and the fsynced append-only log across a restart, the ticket snapshot, `projectTicketState` row by row, and `task.progress` from worker Session events |
+ | `tests/ticket-freeze.spec.ts` | The frozen execution spec: parsing it from a workspace Trigger, copying model/base/mode onto the accepted Ticket, leaving other Sources without one, and the launch-time model validation that never falls back |
+-| `tests/discussion.spec.ts` | Discussion mode: the read-only tool allow-list and permission preset, the work tools and `danger-full-access` for execute, replacing the restriction when the mode changes, the discussion assignment text, and `discussing` state projection |
++| `tests/discussion.spec.ts` | Discussion mode: the read-only tool allow-list and permission preset, the read-only worktree boundary and refusal of local tools such as subagent, the work tools and `danger-full-access` for execute, replacing the restriction when the mode changes, the discussion assignment text, and `discussing` state projection |
+ | `tests/pause.spec.ts` | A human pause and resume: Inputs and attention kept, the Executor pause, `stoppedAt` evidence and failures, resume admission and ticket identity, starting a discuss plan, non-retryability, and `DshExecutor.pause` stopping jobs with its evidence |
+ | `tests/bridge-control.spec.ts` | M4 execution control: the operation log across a reopen, pause/resume/start/retry endpoints and their 202/404/409/422 answers, idempotency, settlement from Ticket state, operation persistence across a Bridge restart, the M4 ticket snapshot, `targetTicketId` attach/conflict/ended cases, `ticket.paused` events, and one-time GitHub `ticket.imported` events |
++| `tests/process-tree.spec.ts` | The harness process tree used as stop evidence: a live child PID and its command, and its disappearance after exit |
+ | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
+ | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
+ | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |

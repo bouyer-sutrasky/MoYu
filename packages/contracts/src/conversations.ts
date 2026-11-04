@@ -5,6 +5,9 @@ import { modelSelectionSchema, taskSummarySchema } from './tasks';
 
 export const conversationModeSchema = z.enum(['work', 'chat']);
 
+/** Where a Work conversation came from: the web composer or an imported GitHub ticket. */
+export const conversationSourceSchema = z.enum(['web', 'github']);
+
 /**
  * Creates one Work conversation and freezes its repository, branch start,
  * execution mode and model. `clientRequestId` is the creation idempotency key.
@@ -27,6 +30,12 @@ export const conversationSummarySchema = z.object({
   repositoryId: uuidSchema,
   mode: conversationModeSchema,
   executionMode: z.enum(['execute', 'discuss']),
+  source: conversationSourceSchema,
+  /** `github:<number>` for an imported ticket; null for a web conversation. */
+  externalKey: z.string().nullable(),
+  externalUrl: z.string().nullable(),
+  /** Approved plan revision after a discussion became execution. */
+  planRevision: z.number().int().positive().nullable(),
   baseBranch: z.string().min(1),
   baseCommit: z.string().nullable(),
   model: modelSelectionSchema.nullable(),

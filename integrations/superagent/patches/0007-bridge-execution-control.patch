@@ -1,0 +1,1094 @@
+diff --git a/docs/007-architecture.md b/docs/007-architecture.md
+index 81eb590..84eb46d 100644
+--- a/docs/007-architecture.md
++++ b/docs/007-architecture.md
+@@ -343,7 +343,8 @@ Some generic modules still refer directly to GitHub or Feishu:
+ | `src/app/tools/main.ts` | The main Session's tools |
+ | `src/app/tools/executor.ts` | An Executor Session's tools |
+ | `src/app/http.ts` | The `/orchestrator/api` routes: the same-origin check, request limits and one status per kind of failure |
+-| `src/app/bridge.ts` | The machine Bridge of the MoYu platform: its loopback server and bearer check, `POST /bridge/v1/triggers` (repository, mode, model and base commit checks), `GET /bridge/v1/{capabilities,models,events,tickets}`, the `EventLog` under `<stateDir>/bridge/events.jsonl` with fsynced append-only events, `projectTicketState`, and the once-a-second projection of stored Tickets and worker `task.progress` |
++| `src/app/bridge.ts` | The machine Bridge of the MoYu platform: its loopback server and bearer check, `POST /bridge/v1/triggers` (repository, mode, model and base commit checks, and `targetTicketId` attachment to an existing Ticket), the pause/resume/start/retry operations and `GET /bridge/v1/operations/:id`, `GET /bridge/v1/{capabilities,models,events,tickets}`, the `EventLog` under `<stateDir>/bridge/events.jsonl` with fsynced append-only events, `projectTicketState`, and the once-a-second projection of stored Tickets and worker `task.progress` |
++| `src/app/operations.ts` | `OperationLog`, the fsynced append-only log of machine operations under `<stateDir>/bridge/operations.jsonl`, its latest record per operation id, and the queued or running operations the Bridge settles from Ticket state |
+ | `src/app/api.ts` | `Api`, every route with its parameters, query, body and response, and the filters of the lists; it imports only types, so the panel bundles it |
+ | `src/app/views/text.ts` | The two forms of a view's text: `preview`, plain text on one line, and `markdown` without HTML; `plain` and `readable` |
+ | `src/app/views/records.ts` | The rows the views share: Triggers, Tickets, Threads, Decisions and Channel links, and `ownersOf`, the owners of follow-ups as one request reads them |
+@@ -415,6 +416,7 @@ Some generic modules still refer directly to GitHub or Feishu:
+ | `tests/ticket-freeze.spec.ts` | The frozen execution spec: parsing it from a workspace Trigger, copying model/base/mode onto the accepted Ticket, leaving other Sources without one, and the launch-time model validation that never falls back |
+ | `tests/discussion.spec.ts` | Discussion mode: the read-only tool allow-list and permission preset, the work tools and `danger-full-access` for execute, replacing the restriction when the mode changes, the discussion assignment text, and `discussing` state projection |
+ | `tests/pause.spec.ts` | A human pause and resume: Inputs and attention kept, the Executor pause, `stoppedAt` evidence and failures, resume admission and ticket identity, starting a discuss plan, non-retryability, and `DshExecutor.pause` stopping jobs with its evidence |
++| `tests/bridge-control.spec.ts` | M4 execution control: the operation log across a reopen, pause/resume/start/retry endpoints and their 202/404/409/422 answers, idempotency, settlement from Ticket state, operation persistence across a Bridge restart, the M4 ticket snapshot, `targetTicketId` attach/conflict/ended cases, and `ticket.paused` events |
+ | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
+ | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
+ | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
+diff --git a/src/app/bridge.ts b/src/app/bridge.ts
+index 1de4509..a51dd44 100644
+--- a/src/app/bridge.ts
++++ b/src/app/bridge.ts
+@@ -13,12 +13,14 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse }
+ import { dirname, join } from 'node:path'
+ import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
+ import { z } from 'zod'
+-import { latestAssignment, latestReport, waitsForPerson, type ChannelRef, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
++import { UserError, latestAssignment, latestReport, waitsForPerson, type ChannelRef, type EngineForPeople, type ReceiveResult, type Ticket,
++  type Trigger } from '../core/index.ts'
+ import type { RoleModel } from '../policy.ts'
+ import type { Deployment } from '../deployment.ts'
+ import type { Commands } from '../infra/commands.ts'
+ import { ticketOfSession } from '../executor/dsh.ts'
+ import type { Store } from './store.ts'
++import { OperationLog, operationView, type BridgeOperation, type OperationBaseline, type OperationKind } from './operations.ts'
+ 
+ /** Protocol version this Bridge speaks; the platform refuses a different major version. */
+ export const PROTOCOL_VERSION = 'moyu-bridge/1'
+@@ -35,13 +37,14 @@ const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost'])
+ type FrozenTicket = Ticket & { model?: RoleModel; base?: { repository: string; branch: string; commit: string } }
+ /** The platform task_state a stored Ticket projects to (`docs/M3-BRIDGE-PROTOCOL.md` §3). */
+ export type BridgeTicketState = 'waiting_input' | 'running' | 'queued' | 'blocked' | 'failed' | 'awaiting_review' | 'completed'
+-  | 'closed_unmerged' | 'stopped' | 'discussing'
++  | 'closed_unmerged' | 'stopped' | 'discussing' | 'stopping'
+ 
+ /**
+  * Projects an upstream Ticket onto the platform's task_state. The order follows upstream `ticketStage` (`src/core/stage.ts`):
+  * an open question first, then the latest report's waiting state (a blocked, failed, or ready report arrives while its
+  * Assignment is still `running`, so the report wins over the Assignment state), then a running turn, then a pending launch.
+  * A blocked or failed report whose person has already written again is queued for the worker's next turn.
++ * A human pause wins over every other open state: `stopping` until the Executor records `stoppedAt`, then `stopped`.
+  * A live discuss ticket is `discussing` unless it has an open question or a ready report, which win as they do for execute.
+  */
+ export function projectTicketState(ticket: Ticket): BridgeTicketState {
+@@ -52,6 +55,8 @@ export function projectTicketState(ticket: Ticket): BridgeTicketState {
+       case 'stopped': return 'stopped'
+     }
+   }
++  // A pause is authoritative: the platform shows stopping until the evidence lands, and never guesses that it stopped.
++  if (ticket.paused) return ticket.paused.stoppedAt ? 'stopped' : 'stopping'
+   if (ticket.attention) return 'waiting_input'
+   const report = latestReport(ticket)
+   if (report?.state === 'ready') return 'awaiting_review'
+@@ -155,6 +160,8 @@ export interface BridgeHost {
+   readonly stateDir: string
+   readonly store: Pick<Store, 'tickets' | 'triggers'>
+   readonly commands: Pick<Commands, 'api'>
++  /** The Engine commands pause, resume, start, and retry run through; the Bridge decides nothing about a Ticket itself. */
++  readonly engine: Pick<EngineForPeople, 'pauseTicket' | 'resumeTicket' | 'startTicket' | 'retryTicket'>
+   /** Whether deployment setup finished; a Trigger posted before that is answered 503. */
+   configured(): boolean
+   /** The resolved deployment; throws while setup is pending. */
+@@ -205,6 +212,13 @@ const ExecutionSpecSchema = z.object({
+   // `discuss` is accepted from M4 on: the ticket freezes it and its worker gets the read-only tool list and preset.
+   mode: z.enum(['execute', 'discuss']),
+ }).strict()
++const OperationIdSchema = z.string().trim().min(1).max(200)
++const PauseSchema = z.object({ operationId: OperationIdSchema, reason: z.string().trim().max(2000).optional() }).strict()
++const AdmissionSchema = z.object({ leaseId: z.string().trim().min(1).max(200), fencingToken: z.string().trim().min(1).max(200) }).strict()
++const ResumeSchema = z.object({ operationId: OperationIdSchema, admission: AdmissionSchema }).strict()
++// `planRevision` is checked by the Engine (`>= 1`, an integer) so the domain's own refusal carries the answer.
++const StartSchema = z.object({ operationId: OperationIdSchema, planRevision: z.number().int() }).strict()
++const RetrySchema = z.object({ operationId: OperationIdSchema }).strict()
+ const TriggerRequestSchema = z.object({
+   triggerId: z.string().trim().min(1).max(200),
+   conversationId: z.string().trim().min(1).max(200),
+@@ -215,6 +229,9 @@ const TriggerRequestSchema = z.object({
+   at: z.string().trim().min(1).refine(value => Number.isFinite(Date.parse(value)), 'an ISO timestamp'),
+   // Not part of the platform body today; the Source keeps it so an assessment can read the replied-to message without a fetch.
+   parentText: z.string().max(64 * 1024).optional(),
++  // Attach the message to an existing Ticket (a GitHub-imported conversation continuing on the Web): use its origin threads,
++  // workspace Channel, and frozen model/base/mode instead of creating a new Ticket.
++  targetTicketId: z.string().trim().min(1).max(200).optional(),
+   executionSpec: ExecutionSpecSchema,
+ }).strict()
+ type TriggerRequest = z.infer<typeof TriggerRequestSchema>
+@@ -261,6 +278,8 @@ export function workspaceTrigger(request: TriggerRequest, baseCommit: string, fr
+ }
+ 
+ const modelLabel = (model: RoleModel | null | undefined): string => model ? `${model.provider}/${model.model}` : ''
++/** Reads an error's message without trusting its type. */
++const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error)
+ const json = (res: ServerResponse, status: number, value: unknown): void => {
+   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
+   res.end(JSON.stringify(value))
+@@ -291,7 +310,11 @@ export class Bridge {
+   private running = false
+   private port?: number
+   private readonly log: EventLog
+-  constructor(private readonly host: BridgeHost) { this.log = new EventLog(join(host.stateDir, 'bridge', 'events.jsonl')) }
++  private readonly operations: OperationLog
++  constructor(private readonly host: BridgeHost) {
++    this.log = new EventLog(join(host.stateDir, 'bridge', 'events.jsonl'))
++    this.operations = new OperationLog(join(host.stateDir, 'bridge', 'operations.jsonl'))
++  }
+ 
+   /** Whether the Bridge is listening (false when `MOYU_BRIDGE_TOKEN` is unset). */
+   get listening(): boolean { return this.server !== undefined }
+@@ -299,6 +322,8 @@ export class Bridge {
+   get boundPort(): number | undefined { return this.port }
+   /** The event log, exposed for tests and for a shutdown flush. */
+   get events(): EventLog { return this.log }
++  /** The operation log, exposed for tests; the platform reads it through `GET /bridge/v1/operations/:id`. */
++  get operationLog(): OperationLog { return this.operations }
+   /** The token this Bridge demands, for tests; undefined while not listening. */
+   private token = ''
+ 
+@@ -308,12 +333,15 @@ export class Bridge {
+     const config = bridgeConfig(env)
+     if (!config) return
+     this.log.open()
++    this.operations.open()
+     try {
+       // An unreadable stored Ticket must not keep the machine endpoint down; the ticker reports the same failure later.
+       try { this.project() } catch (error) { this.host.onError?.(error) }
++      try { this.settle() } catch (error) { this.host.onError?.(error) }
+       this.unsubscribe = this.host.subscribeSessionEvents((sessionId, event) => { this.sessionEvent(sessionId, event) })
+       this.timer = setInterval(() => {
+         try { this.project() } catch (error) { this.host.onError?.(error) }
++        try { this.settle() } catch (error) { this.host.onError?.(error) }
+       }, TICK_MS)
+       this.timer.unref()
+       const server = this.server = createServer((req, res) => { void this.handle(req, res) })
+@@ -334,6 +362,7 @@ export class Bridge {
+       this.server?.close()
+       this.server = undefined
+       this.log.close()
++      this.operations.close()
+       throw error
+     }
+   }
+@@ -352,6 +381,7 @@ export class Bridge {
+       await new Promise<void>(resolve => { server.close(() => { resolve() }); server.closeAllConnections() })
+     }
+     this.log.close()
++    this.operations.close()
+   }
+ 
+   /** Projects every stored Ticket to events; the ticker runs it once a second, and tests call it directly. */
+@@ -382,6 +412,18 @@ export class Bridge {
+         if (input.readAt) this.log.append(`message-read:${input.triggerId}`, 'message.read', input.readAt,
+           { triggerId: input.triggerId, messageId, at: input.readAt })
+       }
++      if (ticket.paused) {
++        const paused = ticket.paused, operation = paused.operationId ?? paused.at
++        // The request and its settlement are two deterministic events: `stopping` first, with the evidence once it lands.
++        this.log.append(`ticket-paused:${ticket.id}:${operation}:stopping`, 'ticket.paused', paused.at,
++          { ticketId: ticket.id, at: paused.at, ...paused.operationId ? { operationId: paused.operationId } : {} })
++        if (paused.stoppedAt || paused.error) {
++          this.log.append(`ticket-paused:${ticket.id}:${operation}:settled`, 'ticket.paused', paused.stoppedAt ?? ticket.updatedAt,
++            { ticketId: ticket.id, at: paused.at, ...paused.operationId ? { operationId: paused.operationId } : {},
++              ...paused.stoppedAt ? { stoppedAt: paused.stoppedAt } : {}, ...paused.evidence ? { evidence: paused.evidence } : {},
++              ...paused.error ? { error: paused.error } : {} })
++        }
++      }
+       if (ticket.attention) this.log.append(`ticket-question:${ticket.attention.id}`, 'ticket.question', ticket.updatedAt,
+         { ticketId: ticket.id, question: ticket.attention.question, attentionId: ticket.attention.id })
+       if (repository) for (const follow of ticket.follows ?? []) {
+@@ -441,8 +483,15 @@ export class Bridge {
+       if (name === 'triggers' && req.method === 'POST' && rest.length === 0) return await this.triggers(req, res)
+       if (name === 'events' && req.method === 'GET' && rest.length === 0) return this.eventsRoute(url, res)
+       if (name === 'tickets' && rest.length === 1 && req.method === 'GET') return this.ticket(decodeURIComponent(rest[0]!), res)
+-      if (name === 'tickets' && rest.length === 2 && ['pause', 'resume', 'retry'].includes(rest[1]!) && req.method === 'POST')
+-        return json(res, 501, { error: `unsupported: ${rest[1]} is a phase 4 operation` })
++      if (name === 'operations' && rest.length === 1 && req.method === 'GET') return this.operation(decodeURIComponent(rest[0]!), res)
++      if (name === 'tickets' && rest.length === 2 && req.method === 'POST') {
++        const ticketId = decodeURIComponent(rest[0]!)
++        const action = rest[1]
++        if (action === 'pause') return await this.pauseOperation(req, res, ticketId)
++        if (action === 'resume') return await this.resumeOperation(req, res, ticketId)
++        if (action === 'start') return await this.startOperation(req, res, ticketId)
++        if (action === 'retry') return await this.retryOperation(req, res, ticketId)
++      }
+       return json(res, 404, { error: 'Unknown operation' })
+     } catch (error) {
+       if (error instanceof RequestError) return json(res, error.status, { error: error.message })
+@@ -457,7 +506,7 @@ export class Bridge {
+     json(res, 200, {
+       protocolVersion: PROTOCOL_VERSION,
+       upstream: { ...UPSTREAM },
+-      capabilities: { trigger: true, events: true, tickets: true, models: true, pause: false, resume: false, retry: false, readOnlyDiscussion: true, start: true },
++      capabilities: { trigger: true, events: true, tickets: true, models: true, pause: true, resume: true, retry: true, readOnlyDiscussion: true, start: true },
+       source: { kind: 'workspace', enabled: this.host.workspaceEnabled() },
+     })
+   }
+@@ -468,6 +517,241 @@ export class Bridge {
+       displayName: model.name, reasoningEfforts: model.reasoning?.efforts.map(effort => effort.id) ?? [] }))) })
+   }
+ 
++  /** One operation's state as `GET /bridge/v1/operations/:id` returns it. */
++  private operation(id: string, res: ServerResponse): void {
++    const operation = this.operations.get(id)
++    if (!operation) return json(res, 404, { error: 'Operation not found' })
++    json(res, 200, operationView(operation))
++  }
++
++  /** The baseline a queued operation compares the Ticket against when the ticker settles it. */
++  private baseline(ticket: Ticket): OperationBaseline {
++    const latest = latestAssignment(ticket)
++    return {
++      ...latest ? { assignmentId: latest.id } : {},
++      ...ticket.mode ? { mode: ticket.mode } : {},
++      ...ticket.planRevision === undefined ? {} : { planRevision: ticket.planRevision },
++      ...ticket.paused ? { paused: { at: ticket.paused.at, ...ticket.paused.stoppedAt ? { stoppedAt: ticket.paused.stoppedAt } : {} } } : {},
++    }
++  }
++
++  /** Map a domain refusal to the protocol's status: missing is 404, invalid input 422, a refused state 409. */
++  private refuse(res: ServerResponse, error: unknown): void {
++    if (!(error instanceof UserError)) throw error
++    const status = error.missing ? 404 : error.code === 'invalidPlanRevision' || error.code === 'admissionRequired' ? 422 : 409
++    json(res, status, { error: error.message, code: error.code, values: error.values })
++  }
++
++  private accepted(res: ServerResponse, operation: BridgeOperation): void { json(res, 202, operationView(operation)) }
++
++  /** A repeated operation id is idempotent for the same Ticket and kind, and a conflict for any other use. */
++  private replay(res: ServerResponse, operationId: string, ticketId: string, kind: OperationKind): boolean {
++    const existing = this.operations.get(operationId)
++    if (!existing) return false
++    if (existing.ticketId !== ticketId || existing.kind !== kind) {
++      json(res, 409, { error: `operationId ${operationId} is already used by another operation` })
++      return true
++    }
++    this.accepted(res, existing)
++    return true
++  }
++
++  /** `POST /bridge/v1/tickets/:id/pause`: stop the worker but keep the Ticket, its Inputs, worktree, and pull request. */
++  private async pauseOperation(req: IncomingMessage, res: ServerResponse, ticketId: string): Promise<void> {
++    const body = PauseSchema.parse(await readJson(req))
++    const ticket = this.host.store.tickets.get(ticketId)
++    if (!ticket) return json(res, 404, { error: 'Ticket not found' })
++    if (ticket.ended) return json(res, 409, { error: 'ticket_ended', code: 'ticketEnded' })
++    // A duplicate request gets the recorded operation; an already-paused Ticket gets the operation that paused it.
++    if (this.replay(res, body.operationId, ticketId, 'pause')) return
++    if (ticket.paused) {
++      const prior = ticket.paused.operationId ? this.operations.get(ticket.paused.operationId) : undefined
++      if (prior) return this.accepted(res, prior)
++      // Paused before this operation log existed: keep the operation id the pause recorded, so a later query finds it.
++      const mirror = this.operations.append({ operationId: ticket.paused.operationId ?? body.operationId, ticketId, kind: 'pause',
++        state: ticket.paused.stoppedAt ? 'succeeded' : 'running', updatedAt: new Date().toISOString(), baseline: this.baseline(ticket),
++        ...ticket.paused.evidence ? { evidence: ticket.paused.evidence } : {}, ...ticket.paused.error ? { error: ticket.paused.error } : {} })
++      return this.accepted(res, mirror)
++    }
++    this.operations.append({ operationId: body.operationId, ticketId, kind: 'pause', state: 'queued', updatedAt: new Date().toISOString(),
++      baseline: this.baseline(ticket) })
++    try {
++      this.host.engine.pauseTicket(ticketId, body.operationId)
++      // The Executor stops the worker asynchronously; the ticker settles it once `ticket.paused.stoppedAt` lands.
++      return this.accepted(res, this.operations.update(body.operationId, { state: 'running' }, new Date().toISOString())!)
++    } catch (error) {
++      this.operations.update(body.operationId, { state: 'failed', error: errorText(error) }, new Date().toISOString())
++      return this.refuse(res, error)
++    }
++  }
++
++  /** `POST /bridge/v1/tickets/:id/resume`: only after `stoppedAt` and an execution lease admission. */
++  private async resumeOperation(req: IncomingMessage, res: ServerResponse, ticketId: string): Promise<void> {
++    const body = ResumeSchema.parse(await readJson(req))
++    const ticket = this.host.store.tickets.get(ticketId)
++    if (!ticket) return json(res, 404, { error: 'Ticket not found' })
++    if (!ticket.paused) return json(res, 409, { error: 'not_paused', code: 'notPaused' })
++    if (!ticket.paused.stoppedAt) return json(res, 409, { error: 'still_stopping', code: 'pauseStopping' })
++    if (this.replay(res, body.operationId, ticketId, 'resume')) return
++    this.operations.append({ operationId: body.operationId, ticketId, kind: 'resume', state: 'queued', updatedAt: new Date().toISOString(),
++      baseline: this.baseline(ticket) })
++    try {
++      this.host.engine.resumeTicket(ticketId, body.admission)
++      return this.accepted(res, this.operations.update(body.operationId, { state: 'running' }, new Date().toISOString())!)
++    } catch (error) {
++      this.operations.update(body.operationId, { state: 'failed', error: errorText(error) }, new Date().toISOString())
++      return this.refuse(res, error)
++    }
++  }
++
++  /** `POST /bridge/v1/tickets/:id/start`: an owner-approved plan revision moves the discuss Ticket to execute. */
++  private async startOperation(req: IncomingMessage, res: ServerResponse, ticketId: string): Promise<void> {
++    const body = StartSchema.parse(await readJson(req))
++    const ticket = this.host.store.tickets.get(ticketId)
++    if (!ticket) return json(res, 404, { error: 'Ticket not found' })
++    if (ticket.ended) return json(res, 409, { error: 'ticket_ended', code: 'ticketEnded' })
++    if (ticket.mode !== 'discuss') return json(res, 409, { error: 'not_discussing', code: 'notDiscussing' })
++    if (ticket.paused) return json(res, 409, { error: 'ticket_paused', code: 'ticketPaused' })
++    if (this.replay(res, body.operationId, ticketId, 'start')) return
++    this.operations.append({ operationId: body.operationId, ticketId, kind: 'start', state: 'queued', updatedAt: new Date().toISOString(),
++      baseline: this.baseline(ticket) })
++    try {
++      this.host.engine.startTicket(ticketId, body.planRevision)
++      return this.accepted(res, this.operations.update(body.operationId, { state: 'running' }, new Date().toISOString())!)
++    } catch (error) {
++      this.operations.update(body.operationId, { state: 'failed', error: errorText(error) }, new Date().toISOString())
++      return this.refuse(res, error)
++    }
++  }
++
++  /** `POST /bridge/v1/tickets/:id/retry`: the upstream `canRetry` rule, on the same Ticket. */
++  private async retryOperation(req: IncomingMessage, res: ServerResponse, ticketId: string): Promise<void> {
++    const body = RetrySchema.parse(await readJson(req))
++    const ticket = this.host.store.tickets.get(ticketId)
++    if (!ticket) return json(res, 404, { error: 'Ticket not found' })
++    if (this.replay(res, body.operationId, ticketId, 'retry')) return
++    this.operations.append({ operationId: body.operationId, ticketId, kind: 'retry', state: 'queued', updatedAt: new Date().toISOString(),
++      baseline: this.baseline(ticket) })
++    try {
++      this.host.engine.retryTicket(ticketId)
++      return this.accepted(res, this.operations.update(body.operationId, { state: 'running' }, new Date().toISOString())!)
++    } catch (error) {
++      this.operations.update(body.operationId, { state: 'failed', error: errorText(error) }, new Date().toISOString())
++      return this.refuse(res, error)
++    }
++  }
++
++  /**
++   * Settle queued and running operations from the Ticket's authoritative state; the ticker calls it once a second. A pause
++   * succeeds only once `paused.stoppedAt` landed; start, resume, and retry succeed only once a newer Assignment exists (and,
++   * for start, the Ticket is execute); a failure is recorded with its error and never looks like success.
++   */
++  settle(): void {
++    for (const operation of this.operations.pending()) {
++      const ticket = this.host.store.tickets.get(operation.ticketId)
++      const at = new Date().toISOString()
++      if (!ticket) { this.operations.update(operation.operationId, { state: 'failed', error: 'Ticket not found' }, at); continue }
++      const latest = latestAssignment(ticket)
++      const newer = latest !== undefined && latest.id !== operation.baseline?.assignmentId
++      const succeeded = (evidence?: Record<string, unknown>) => {
++        this.operations.update(operation.operationId, { state: 'succeeded', ...evidence ? { evidence } : {} }, at)
++      }
++      const failed = (error: string) => { this.operations.update(operation.operationId, { state: 'failed', error }, at) }
++      switch (operation.kind) {
++        case 'pause':
++          if (ticket.paused?.error) failed(ticket.paused.error)
++          else if (ticket.paused?.stoppedAt) succeeded(ticket.paused.evidence)
++          else if (!ticket.paused) failed(ticket.ended ? 'Ticket ended before its worker stopped' : 'The ticket is no longer paused')
++          break
++        case 'resume':
++          if (!ticket.paused && newer) succeeded()
++          else if (ticket.paused?.error) failed(ticket.paused.error)
++          else if (ticket.ended) failed('Ticket ended before it resumed')
++          break
++        case 'start':
++          if (ticket.mode !== 'discuss' && newer) succeeded()
++          else if (ticket.ended) failed('Ticket ended before it started')
++          break
++        case 'retry':
++          if (newer) succeeded()
++          else if (ticket.ended) failed('Ticket ended before it retried')
++          break
++      }
++    }
++  }
++
++  /**
++   * `POST /bridge/v1/triggers` with `targetTicketId`: continue an existing Ticket, such as a GitHub-imported conversation
++   * whose owner answers on the Web. The Trigger runs on the Ticket's origin Threads, so intake fans it out to that Ticket;
++   * it carries the workspace Channel for acknowledgements and questions, and the Ticket's frozen model, base, and mode.
++   * An ended Ticket is refused, as is an executionSpec that conflicts with what the Ticket froze.
++   */
++  private async targetTrigger(res: ServerResponse, request: TriggerRequest): Promise<void> {
++    const ticket = this.host.store.tickets.get(request.targetTicketId!)
++    if (!ticket) return json(res, 404, { error: 'Ticket not found' })
++    if (ticket.ended) return json(res, 409, { error: 'ticket_ended', code: 'ticketEnded' })
++    const origin = this.host.store.triggers.get(ticket.origin.triggerId)
++    if (!origin || !origin.threads.length) return json(res, 409, { error: 'ticket_origin_missing' })
++    const spec = request.executionSpec
++    const base = ticket.base
++    if (base) {
++      if (spec.baseBranch !== base.branch) {
++        return json(res, 409, { error: `The ticket froze base branch ${base.branch}, not ${spec.baseBranch}` })
++      }
++      if (spec.baseCommit !== null && spec.baseCommit !== base.commit) {
++        return json(res, 409, { error: `The ticket froze base commit ${base.commit}, not ${spec.baseCommit}` })
++      }
++    }
++    if (ticket.model !== undefined) {
++      const differs = spec.model !== null && (ticket.model === null || spec.model.provider !== ticket.model.provider
++        || spec.model.model !== ticket.model.model || (spec.model.reasoningEffort ?? '') !== (ticket.model.reasoningEffort ?? ''))
++      if (differs) return json(res, 409, { error: 'The ticket froze a different model' })
++    }
++    const mode = ticket.mode ?? spec.mode
++    if (ticket.mode !== undefined && spec.mode !== ticket.mode) {
++      return json(res, 409, { error: `The ticket is in ${ticket.mode} mode, not ${spec.mode}` })
++    }
++    const frozen: FrozenModel = ticket.model !== undefined
++      ? { model: ticket.model, source: ticket.modelSource ?? (ticket.model ? 'spec' : 'instance') }
++      : { model: spec.model, source: 'spec' }
++    const baseCommit = base?.commit ?? spec.baseCommit ?? ''
++    const channel: ChannelRef = { source: 'workspace', thread: `workspace:${request.conversationId}`,
++      address: { conversationId: request.conversationId, ...request.messageId ? { messageId: request.messageId } : {} } }
++    const trigger: Trigger = {
++      id: request.triggerId,
++      source: 'workspace',
++      // The Ticket's origin Thread, so intake's subscription fan-out reaches that Ticket and no Eval runs for it.
++      threads: origin.threads.map(ref => ({ ...ref })),
++      actor: { source: 'workspace', id: request.actor.id },
++      human: true,
++      addressed: 'direct',
++      at: request.at,
++      text: request.text,
++      channel,
++      meta: {
++        conversationId: request.conversationId,
++        messageId: request.messageId,
++        replyToMessageId: request.replyToMessageId ?? null,
++        triggerId: request.triggerId,
++        targetTicketId: ticket.id,
++        spec: {
++          repository: base?.repository ?? spec.repository,
++          baseBranch: base?.branch ?? spec.baseBranch,
++          baseCommit,
++          model: frozen.model,
++          modelSource: frozen.source,
++          mode,
++        },
++        ...request.parentText ? { parentText: request.parentText } : {},
++      },
++    }
++    let result: ReceiveResult
++    try { result = this.host.receive(trigger) }
++    catch (error) { return json(res, 503, { error: `The runtime did not accept the trigger: ${errorText(error)}` }) }
++    if (result === 'duplicate') return this.duplicate(res, request.triggerId)
++    json(res, 200, { result, triggerId: trigger.id, baseCommit, ticketId: ticket.id })
++  }
++
+   private async triggers(req: IncomingMessage, res: ServerResponse): Promise<void> {
+     const request = TriggerRequestSchema.parse(await readJson(req))
+     if (!this.host.configured()) return json(res, 503, { error: 'The runtime is not ready' })
+@@ -486,6 +770,9 @@ export class Bridge {
+       }
+       return this.duplicate(res, request.triggerId)
+     }
++    // A message for an existing GitHub-imported Ticket continues that Ticket: it uses the Ticket's origin thread and frozen
++    // model, base, and mode, and goes out over this workspace Channel so acknowledgements land in the Web conversation.
++    if (request.targetTicketId) return await this.targetTrigger(res, request)
+     // An explicitly requested model must resolve, and a delivery that names none freezes the instance's Executor model
+     // instead, so a later settings change cannot move an accepted task. When the instance has none either, the ticket
+     // records `model: null, modelSource: 'instance'`: the instance default is not representable, and the ticket says so.
+@@ -556,6 +843,11 @@ export class Bridge {
+       base: frozen.base ?? null,
+       assignmentId: latestAssignment(ticket)?.id ?? null,
+       report: latestReport(ticket) ?? null,
++      // M4 additions: the mode and plan revision, the human pause with its evidence, and the execution directory/name.
++      mode: ticket.mode ?? 'execute',
++      planRevision: ticket.planRevision ?? null,
++      paused: ticket.paused ?? null,
++      execution: ticket.execution ?? null,
+       ...pr ? { pr } : {},
+       ended: ticket.ended ?? null,
+     })
+diff --git a/src/app/operations.ts b/src/app/operations.ts
+new file mode 100644
+index 0000000..813acdd
+--- /dev/null
++++ b/src/app/operations.ts
+@@ -0,0 +1,102 @@
++/**
++ * Append-only log of machine operations (pause, resume, start, retry) under `<stateDir>/bridge/operations.jsonl`, the same
++ * durability style as the Bridge event log: every transition is a full record written and fsynced before it is readable, the
++ * latest record per operation id wins on reopen, and a truncated final line from a crash is dropped. An operation stays
++ * queryable across a Bridge restart, and its state is only moved forward by `Bridge` from the Ticket's authoritative state.
++ */
++import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, writeFileSync, writeSync } from 'node:fs'
++import { dirname } from 'node:path'
++
++/** What a machine operation asks for; each maps to one operation of the Engine's `EngineForPeople` surface. */
++export type OperationKind = 'pause' | 'resume' | 'start' | 'retry'
++/** A queued operation waits for the Bridge tick; a running one waits for the Ticket to show its result. */
++export type OperationState = 'queued' | 'running' | 'succeeded' | 'failed'
++/** What the Ticket looked like when the operation was queued, which is how settlement tells a new Assignment from the old one. */
++export interface OperationBaseline {
++  assignmentId?: string
++  mode?: 'execute' | 'discuss'
++  planRevision?: number
++  paused?: { at: string; stoppedAt?: string }
++}
++/** One operation record as stored; every transition appends the whole record again. */
++export interface BridgeOperation {
++  operationId: string
++  ticketId: string
++  kind: OperationKind
++  state: OperationState
++  error?: string
++  evidence?: Record<string, unknown>
++  updatedAt: string
++  baseline?: OperationBaseline
++}
++/** The public shape of `GET /bridge/v1/operations/:id`; `baseline` is bookkeeping and not returned. */
++export interface OperationView {
++  operationId: string
++  ticketId: string
++  kind: OperationKind
++  state: OperationState
++  error?: string
++  evidence?: Record<string, unknown>
++  updatedAt: string
++}
++
++/** The view of an operation the Bridge returns to the platform. */
++export const operationView = (operation: BridgeOperation): OperationView => ({
++  operationId: operation.operationId, ticketId: operation.ticketId, kind: operation.kind, state: operation.state, updatedAt: operation.updatedAt,
++  ...operation.error === undefined ? {} : { error: operation.error },
++  ...operation.evidence === undefined ? {} : { evidence: operation.evidence },
++})
++
++/** The append-only machine-operation log: fsynced records, latest state per operation id, and the pending ones to settle. */
++export class OperationLog {
++  private fd: number | undefined
++  private readonly records = new Map<string, BridgeOperation>()
++  constructor(readonly file: string) {}
++
++  /** Reads the existing log, repairs a truncated final line, keeps the latest record per id, and opens it for appending. */
++  open(): void {
++    if (this.fd !== undefined) return
++    mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 })
++    let text = ''
++    try { text = readFileSync(this.file, 'utf8') }
++    catch (error) { if ((error as { code?: string }).code !== 'ENOENT') throw error }
++    if (text && !text.endsWith('\n')) {
++      // Drop a partial trailing line: it was never fsynced, cannot be parsed, and appending after it would corrupt the file.
++      text = text.slice(0, text.lastIndexOf('\n') + 1)
++      writeFileSync(this.file, text, { mode: 0o600 })
++    }
++    for (const line of text.split('\n')) {
++      if (!line) continue
++      let record: BridgeOperation
++      try { record = JSON.parse(line) as BridgeOperation } catch { continue }
++      if (!record || typeof record.operationId !== 'string' || typeof record.ticketId !== 'string' || typeof record.kind !== 'string') continue
++      this.records.set(record.operationId, record)
++    }
++    this.fd = openSync(this.file, 'a', 0o600)
++  }
++
++  /** Appends a whole record and fsyncs it before returning, so the platform can read it right after the 202. */
++  append(operation: BridgeOperation): BridgeOperation {
++    if (this.fd === undefined) throw new Error('The bridge operation log is not open')
++    writeSync(this.fd, `${JSON.stringify(operation)}\n`)
++    fsyncSync(this.fd)
++    this.records.set(operation.operationId, operation)
++    return operation
++  }
++
++  /** Appends a new state of an existing operation; undefined when the id is unknown. */
++  update(operationId: string, patch: Partial<Omit<BridgeOperation, 'operationId' | 'ticketId' | 'kind'>>, at: string): BridgeOperation | undefined {
++    const current = this.records.get(operationId)
++    if (!current) return undefined
++    return this.append({ ...current, ...patch, operationId: current.operationId, ticketId: current.ticketId, kind: current.kind, updatedAt: at })
++  }
++
++  get(operationId: string): BridgeOperation | undefined { return this.records.get(operationId) }
++  /** Operations that still wait for the Ticket to show their result, oldest first. */
++  pending(): BridgeOperation[] { return [...this.records.values()].filter(item => item.state === 'queued' || item.state === 'running') }
++  close(): void {
++    if (this.fd === undefined) return
++    closeSync(this.fd)
++    this.fd = undefined
++  }
++}
+diff --git a/src/app/runtime.ts b/src/app/runtime.ts
+index 491b6b9..cb7d68a 100644
+--- a/src/app/runtime.ts
++++ b/src/app/runtime.ts
+@@ -169,7 +169,7 @@ export class Runtime extends Service implements SourceHost {
+       // The machine Bridge is created only after the Store, Engine, Sessions, and Commands exist, and listens from
+       // `initialize` (it answers 503 until setup resolves the deployment). It is not part of the public `orchestrator` service.
+       this.bridge = new Bridge({
+-        stateDir: machine.stateDir, store, commands,
++        stateDir: machine.stateDir, store, commands, engine,
+         configured: () => setup.configured(),
+         get deployment() { return setup.deployment },
+         receive: trigger => passes.receive(trigger),
+diff --git a/tests/bridge-control.spec.ts b/tests/bridge-control.spec.ts
+new file mode 100644
+index 0000000..9c03af9
+--- /dev/null
++++ b/tests/bridge-control.spec.ts
+@@ -0,0 +1,426 @@
++import { afterEach, describe, expect, it, vi } from 'vitest'
++import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import { MemoryRepositories, UserError, canRetry, latestAssignment, type ChannelRef, type Ticket, type Trigger } from '../src/core/index.ts'
++import { Bridge, projectTicketState, type BridgeHost } from '../src/app/bridge.ts'
++import { OperationLog } from '../src/app/operations.ts'
++import { testDeployment } from './fixtures/deployment.ts'
++
++const MODEL = { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash', reasoningEffort: 'high' }
++const stateDirs: string[] = []
++const bridges: Bridge[] = []
++afterEach(async () => {
++  await Promise.all(bridges.splice(0).map(bridge => bridge.stop()))
++  for (const dir of stateDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
++})
++const stateDir = (): string => {
++  const dir = mkdtempSync(join(tmpdir(), 'bridge-control-'))
++  stateDirs.push(dir)
++  return dir
++}
++
++const workspaceTrigger = (id = 'workspace:m1'): Trigger => ({
++  id, source: 'workspace', threads: [{ source: 'workspace', id: 'workspace:c1' }], actor: { source: 'workspace', id: 'owner' },
++  human: true, addressed: 'direct', at: '2026-11-03T12:00:00.000Z', text: 'Fix the margin',
++  channel: { source: 'workspace', thread: 'workspace:c1', address: { conversationId: 'c1' } },
++  meta: { conversationId: 'c1', messageId: 'm1', triggerId: id, spec: {} },
++})
++const githubTrigger = (number = 7): Trigger => ({
++  id: `github-comment:${number}`, source: 'github', threads: [{ source: 'github', id: String(number) }],
++  actor: { source: 'github', id: 'alice' }, human: true, at: '2026-11-03T11:00:00.000Z', text: 'Please fix it',
++  channel: { source: 'github', thread: `github:${number}`, address: { number: String(number) } }, meta: { number, isPr: true, kind: 'conversation' },
++})
++
++const ticket = (id: string, overrides: Partial<Ticket> = {}): Ticket => ({
++  id, title: `Fix ${id}`, decisionId: 'd1',
++  mandate: { strength: 'explicit', policyVersion: 'v1', basis: { via: 'listed' }, actor: { source: 'workspace', id: 'owner' }, scope: 'web' },
++  channels: [{ source: 'workspace', thread: 'workspace:c1', address: { conversationId: 'c1' } }],
++  assignments: [], inputs: [], undelivered: [], createdAt: '2026-11-03T12:00:00.000Z', updatedAt: '2026-11-03T12:00:00.000Z',
++  origin: { triggerId: 'workspace:m1', triggerIds: ['workspace:m1'] }, ...overrides,
++})
++const frozen = (value: Ticket): Ticket => ({ ...value, model: MODEL, modelSource: 'spec',
++  ...value.base ? {} : { base: { repository: 'acme/widgets', branch: 'main', commit: 'abc123' } } })
++
++interface ControlHarness {
++  host: BridgeHost
++  repo: MemoryRepositories
++  received: Trigger[]
++  commands: { api: ReturnType<typeof vi.fn> }
++  engine: { pauseTicket: ReturnType<typeof vi.fn>; resumeTicket: ReturnType<typeof vi.fn>; startTicket: ReturnType<typeof vi.fn>; retryTicket: ReturnType<typeof vi.fn> }
++}
++function harness(overrides: Partial<BridgeHost> = {}): ControlHarness {
++  const repo = new MemoryRepositories()
++  const received: Trigger[] = []
++  const commands = { api: vi.fn(async () => ({ sha: 'branch-sha' })) }
++  const addAssignment = (t: Ticket, reason?: string) => {
++    t.assignments.push({ id: `as-${t.assignments.length + 1}`, state: 'pending', createdAt: '2026-11-03T12:20:00.000Z' })
++  }
++  const engine = {
++    pauseTicket: vi.fn((id: string, operationId: string) => {
++      const t = repo.tickets.get(id)!
++      t.paused = { at: '2026-11-03T12:10:00.000Z', by: 'human', operationId }
++      const latest = latestAssignment(t)
++      if (latest && latest.state !== 'ended') { latest.state = 'ended'; latest.endedAt = t.paused.at; latest.endedReason = 'paused' }
++      repo.tickets.save(t)
++      return t
++    }),
++    resumeTicket: vi.fn((id: string, admission: { leaseId: string; fencingToken: string }) => {
++      const t = repo.tickets.get(id)!
++      delete t.paused
++      t.admission = admission
++      addAssignment(t)
++      repo.tickets.save(t)
++      return t
++    }),
++    startTicket: vi.fn((id: string, planRevision: number) => {
++      const t = repo.tickets.get(id)!
++      if (t.mode !== 'discuss') throw new UserError('notDiscussing')
++      if (!Number.isInteger(planRevision) || planRevision < 1) throw new UserError('invalidPlanRevision')
++      t.mode = 'execute'
++      t.planRevision = planRevision
++      addAssignment(t)
++      repo.tickets.save(t)
++      return t
++    }),
++    retryTicket: vi.fn((id: string) => {
++      const t = repo.tickets.get(id)!
++      if (!canRetry(t)) throw new UserError('notRetryable')
++      addAssignment(t)
++      repo.tickets.save(t)
++      return t
++    }),
++  }
++  const host: BridgeHost = {
++    stateDir: stateDir(), store: repo, commands: commands as never, engine: engine as never,
++    configured: () => true, deployment: testDeployment(),
++    receive: trigger => { received.push(trigger); const seen = repo.triggers.get(trigger.id) !== undefined; repo.triggers.save(trigger); return seen ? 'duplicate' : 'stored' },
++    models: async () => ({ default: { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash' }, routableProviders: ['commandcode'], groups: [], failures: [] }),
++    verifyModel: async () => {},
++    executorModel: () => MODEL,
++    workspaceEnabled: () => true,
++    subscribeSessionEvents: () => () => {},
++    ...overrides,
++  }
++  return { host, repo, received, commands, engine }
++}
++
++let token = 'bridge-token'
++async function serve(h: ControlHarness) {
++  const bridge = new Bridge(h.host)
++  bridges.push(bridge)
++  await bridge.start({ MOYU_BRIDGE_HOST: '127.0.0.1', MOYU_BRIDGE_PORT: '0', MOYU_BRIDGE_TOKEN: token })
++  const origin = `http://127.0.0.1:${bridge.boundPort}`
++  const call = async (method: string, path: string, body?: unknown) => {
++    const response = await fetch(`${origin}${path}`, { method, headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
++      ...body === undefined ? {} : { body: JSON.stringify(body) } })
++    return { status: response.status, body: await response.json() as Record<string, unknown> }
++  }
++  return { bridge, call }
++}
++
++describe('operation log', () => {
++  it('keeps the latest record per operation across a reopen and drops a truncated last line', () => {
++    const file = join(stateDir(), 'bridge', 'operations.jsonl')
++    const first = new OperationLog(file)
++    first.open()
++    first.append({ operationId: 'op-1', ticketId: 't1', kind: 'pause', state: 'queued', updatedAt: 'a', baseline: { assignmentId: 'as1' } })
++    first.append({ operationId: 'op-1', ticketId: 't1', kind: 'pause', state: 'running', updatedAt: 'b' })
++    first.append({ operationId: 'op-2', ticketId: 't2', kind: 'retry', state: 'succeeded', updatedAt: 'c' })
++    expect(first.pending().map(item => item.operationId)).toEqual(['op-1'])
++    first.close()
++
++    // A crash before the fsync leaves a partial final line, which must not corrupt the log.
++    appendFileSync(file, '{"operationId":"op-3","ticketId"')
++    const second = new OperationLog(file)
++    second.open()
++    expect(second.get('op-1')).toMatchObject({ state: 'running', updatedAt: 'b' })
++    expect(second.get('op-2')).toMatchObject({ state: 'succeeded' })
++    expect(second.get('op-3')).toBeUndefined()
++    expect(second.update('op-1', { state: 'succeeded', evidence: { stoppedAt: 'x' } }, 'd')).toMatchObject({ state: 'succeeded', evidence: { stoppedAt: 'x' } })
++    expect(second.pending()).toEqual([])
++    second.close()
++    expect(readFileSync(file, 'utf8').trim().split('\n').length).toBe(4)
++  })
++})
++
++describe('execution-control capabilities', () => {
++  it('advertises pause, resume, retry, start, and read-only discussion', async () => {
++    const { call } = await serve(harness())
++    expect(await call('GET', '/bridge/v1/capabilities')).toMatchObject({ status: 200, body: {
++      capabilities: { trigger: true, events: true, tickets: true, models: true, pause: true, resume: true, retry: true, readOnlyDiscussion: true, start: true } } })
++  })
++})
++
++describe('POST /bridge/v1/tickets/:id/pause', () => {
++  it('queues the operation, keeps the ticket, and succeeds only after stoppedAt and its evidence', async () => {
++    const h = harness()
++    h.repo.triggers.save(workspaceTrigger())
++    h.repo.tickets.save(frozen(ticket('t1', { mode: 'execute', assignments: [{ id: 'as1', state: 'running', createdAt: '2026-11-03T12:00:00.000Z' }] })))
++    const { bridge, call } = await serve(h)
++    const created = await call('POST', '/bridge/v1/tickets/t1/pause', { operationId: 'op-1' })
++    expect(created).toMatchObject({ status: 202, body: { operationId: 'op-1', ticketId: 't1', kind: 'pause', state: 'running' } })
++    expect(h.engine.pauseTicket).toHaveBeenCalledOnce()
++    expect(h.engine.pauseTicket).toHaveBeenCalledWith('t1', 'op-1')
++    // The snapshot shows the pause and the ticket is stopping, not stopped, until the Executor records evidence.
++    expect(await call('GET', '/bridge/v1/tickets/t1')).toMatchObject({ body: { state: 'stopping',
++      paused: { at: '2026-11-03T12:10:00.000Z', by: 'human', operationId: 'op-1' }, ended: null } })
++    bridge.settle()
++    expect(await call('GET', '/bridge/v1/operations/op-1')).toMatchObject({ status: 200, body: { state: 'running' } })
++
++    const paused = h.repo.tickets.get('t1')!
++    paused.paused = { ...paused.paused!, stoppedAt: '2026-11-03T12:11:00.000Z', evidence: { harnessPid: 7, jobsAfter: [], subagentsAfter: 0 } }
++    h.repo.tickets.save(paused)
++    bridge.settle()
++    expect(await call('GET', '/bridge/v1/operations/op-1')).toMatchObject({ status: 200, body: { state: 'succeeded',
++      evidence: { harnessPid: 7, jobsAfter: [], subagentsAfter: 0 } } })
++    expect(await call('GET', '/bridge/v1/tickets/t1')).toMatchObject({ body: { state: 'stopped' } })
++  })
++
++  it('records a failed pause with its error and never reports success', async () => {
++    const h = harness()
++    h.repo.tickets.save(frozen(ticket('t1', { assignments: [{ id: 'as1', state: 'running', createdAt: '2026-11-03T12:00:00.000Z' }] })))
++    const { bridge, call } = await serve(h)
++    expect(await call('POST', '/bridge/v1/tickets/t1/pause', { operationId: 'op-1' })).toMatchObject({ status: 202 })
++    const paused = h.repo.tickets.get('t1')!
++    paused.paused = { ...paused.paused!, error: 'jobs remain' }
++    h.repo.tickets.save(paused)
++    bridge.settle()
++    expect(await call('GET', '/bridge/v1/operations/op-1')).toMatchObject({ body: { state: 'failed', error: 'jobs remain' } })
++    expect(await call('GET', '/bridge/v1/tickets/t1')).toMatchObject({ body: { state: 'stopping', paused: { error: 'jobs remain' } } })
++  })
++
++  it('is idempotent for a repeated operation id and refuses an id reused by another ticket', async () => {
++    const h = harness()
++    h.repo.tickets.save(frozen(ticket('t1', { assignments: [{ id: 'as1', state: 'running', createdAt: '2026-11-03T12:00:00.000Z' }] })))
++    h.repo.tickets.save(frozen(ticket('t2', { assignments: [{ id: 'bs1', state: 'running', createdAt: '2026-11-03T12:00:00.000Z' }] })))
++    const { call } = await serve(h)
++    const first = await call('POST', '/bridge/v1/tickets/t1/pause', { operationId: 'op-1' })
++    const second = await call('POST', '/bridge/v1/tickets/t1/pause', { operationId: 'op-1' })
++    expect(second).toEqual(first)
++    expect(h.engine.pauseTicket).toHaveBeenCalledOnce()
++    expect(await call('POST', '/bridge/v1/tickets/t2/pause', { operationId: 'op-1' })).toMatchObject({ status: 409 })
++  })
++
++  it('returns the operation that already paused an idempotently paused ticket', async () => {
++    const h = harness()
++    h.repo.tickets.save(frozen(ticket('t1', { paused: { at: '2026-11-03T12:10:00.000Z', by: 'human', operationId: 'prior-op' } })))
++    const { call } = await serve(h)
++    const response = await call('POST', '/bridge/v1/tickets/t1/pause', { operationId: 'op-new' })
++    expect(response).toMatchObject({ status: 202, body: { operationId: 'prior-op', kind: 'pause' } })
++    expect(h.engine.pauseTicket).not.toHaveBeenCalled()
++  })
++
++  it('refuses an ended ticket', async () => {
++    const h = harness()
++    h.repo.tickets.save(frozen(ticket('t1', { ended: { at: 'e', by: 'human', outcome: 'stopped' } })))
++    const { call } = await serve(h)
++    expect(await call('POST', '/bridge/v1/tickets/t1/pause', { operationId: 'op-1' })).toMatchObject({ status: 409,
++      body: { error: 'ticket_ended', code: 'ticketEnded' } })
++  })
++})
++
++describe('POST /bridge/v1/tickets/:id/resume', () => {
++  const paused = (stoppedAt?: string): Ticket => frozen(ticket('t1', { assignments: [{ id: 'as1', state: 'ended', createdAt: '2026-11-03T12:00:00.000Z' }],
++    paused: { at: '2026-11-03T12:10:00.000Z', by: 'human', operationId: 'op-pause', ...stoppedAt ? { stoppedAt } : {} } }))
++
++  it('refuses a still-stopping pause with 409', async () => {
++    const h = harness()
++    h.repo.tickets.save(paused())
++    const { call } = await serve(h)
++    expect(await call('POST', '/bridge/v1/tickets/t1/resume', { operationId: 'op-1', admission: { leaseId: 'l', fencingToken: 'f' } }))
++      .toMatchObject({ status: 409, body: { error: 'still_stopping', code: 'pauseStopping' } })
++  })
++
++  it('requires paused state and an admission', async () => {
++    const h = harness()
++    h.repo.tickets.save(frozen(ticket('t1')))
++    const { call } = await serve(h)
++    expect(await call('POST', '/bridge/v1/tickets/t1/resume', { operationId: 'op-1', admission: { leaseId: 'l', fencingToken: 'f' } }))
++      .toMatchObject({ status: 409, body: { error: 'not_paused' } })
++    h.repo.tickets.save(paused('2026-11-03T12:11:00.000Z'))
++    expect(await call('POST', '/bridge/v1/tickets/t1/resume', { operationId: 'op-1' })).toMatchObject({ status: 400 })
++  })
++
++  it('starts a new Assignment under the admission and settles succeeded', async () => {
++    const h = harness()
++    h.repo.tickets.save(paused('2026-11-03T12:11:00.000Z'))
++    const { bridge, call } = await serve(h)
++    const response = await call('POST', '/bridge/v1/tickets/t1/resume', { operationId: 'op-1', admission: { leaseId: 'lease-1', fencingToken: 'fence-1' } })
++    expect(response).toMatchObject({ status: 202, body: { operationId: 'op-1', kind: 'resume', state: 'running' } })
++    expect(h.engine.resumeTicket).toHaveBeenCalledWith('t1', { leaseId: 'lease-1', fencingToken: 'fence-1' })
++    bridge.settle()
++    expect(await call('GET', '/bridge/v1/operations/op-1')).toMatchObject({ body: { state: 'succeeded' } })
++    expect(await call('GET', '/bridge/v1/tickets/t1')).toMatchObject({ body: { paused: null, assignmentId: 'as-2', mode: 'execute' } })
++  })
++})
++
++describe('POST /bridge/v1/tickets/:id/start', () => {
++  it('moves a discuss ticket to execute and succeeds once a newer Assignment exists', async () => {
++    const h = harness()
++    h.repo.tickets.save(frozen(ticket('t1', { mode: 'discuss', assignments: [{ id: 'as1', state: 'running', createdAt: '2026-11-03T12:00:00.000Z' }] })))
++    const { bridge, call } = await serve(h)
++    const response = await call('POST', '/bridge/v1/tickets/t1/start', { operationId: 'op-1', planRevision: 2 })
++    expect(response).toMatchObject({ status: 202, body: { kind: 'start', state: 'running' } })
++    expect(h.engine.startTicket).toHaveBeenCalledWith('t1', 2)
++    bridge.settle()
++    expect(await call('GET', '/bridge/v1/operations/op-1')).toMatchObject({ body: { state: 'succeeded' } })
++    expect(await call('GET', '/bridge/v1/tickets/t1')).toMatchObject({ body: { mode: 'execute', planRevision: 2, assignmentId: 'as-2' } })
++  })
++
++  it('refuses an execute ticket, a paused ticket, and a plan revision below 1', async () => {
++    const h = harness()
++    h.repo.tickets.save(frozen(ticket('e1', { mode: 'execute' })))
++    h.repo.tickets.save(frozen(ticket('d1', { mode: 'discuss', paused: { at: 'p', by: 'human', stoppedAt: 's' } })))
++    h.repo.tickets.save(frozen(ticket('d2', { mode: 'discuss' })))
++    const { call } = await serve(h)
++    expect(await call('POST', '/bridge/v1/tickets/e1/start', { operationId: 'op-1', planRevision: 1 }))
++      .toMatchObject({ status: 409, body: { error: 'not_discussing' } })
++    expect(await call('POST', '/bridge/v1/tickets/d1/start', { operationId: 'op-2', planRevision: 1 }))
++      .toMatchObject({ status: 409, body: { error: 'ticket_paused' } })
++    expect(await call('POST', '/bridge/v1/tickets/d2/start', { operationId: 'op-3', planRevision: 0 }))
++      .toMatchObject({ status: 422, body: { code: 'invalidPlanRevision' } })
++  })
++})
++
++describe('POST /bridge/v1/tickets/:id/retry', () => {
++  it('records a refused retry as a failed operation', async () => {
++    const h = harness()
++    h.repo.tickets.save(frozen(ticket('t1')))
++    const { call } = await serve(h)
++    expect(await call('POST', '/bridge/v1/tickets/t1/retry', { operationId: 'op-1' }))
++      .toMatchObject({ status: 409, body: { code: 'notRetryable' } })
++    expect(await call('GET', '/bridge/v1/operations/op-1')).toMatchObject({ body: { state: 'failed', error: expect.stringMatching(/retried/) } })
++  })
++})
++
++describe('operation persistence across a Bridge restart', () => {
++  it('answers the same operation from the new process', async () => {
++    const dir = stateDir()
++    const first = harness({ stateDir: dir })
++    first.repo.tickets.save(frozen(ticket('t1', { assignments: [{ id: 'as1', state: 'running', createdAt: '2026-11-03T12:00:00.000Z' }] })))
++    const before = await serve(first)
++    expect(await before.call('POST', '/bridge/v1/tickets/t1/pause', { operationId: 'op-1' })).toMatchObject({ status: 202, body: { state: 'running' } })
++    await before.bridge.stop()
++
++    const second = harness({ stateDir: dir })
++    second.repo.tickets.save(frozen(ticket('t1', { paused: { at: '2026-11-03T12:10:00.000Z', by: 'human', operationId: 'op-1',
++      stoppedAt: '2026-11-03T12:11:00.000Z', evidence: { harnessPid: 9 } } })))
++    const after = await serve(second)
++    // The reopened Bridge reads the persisted operation and settles it from the Ticket's stoppedAt right at startup.
++    expect(await after.call('GET', '/bridge/v1/operations/op-1')).toMatchObject({ status: 200, body: { operationId: 'op-1', ticketId: 't1',
++      kind: 'pause', state: 'succeeded', evidence: { harnessPid: 9 } } })
++    after.bridge.settle()
++    expect(await after.call('GET', '/bridge/v1/operations/op-1')).toMatchObject({ body: { state: 'succeeded', updatedAt: expect.any(String) } })
++  })
++})
++
++describe('the M4 ticket snapshot', () => {
++  it('adds mode, planRevision, paused, and execution while keeping the M3 fields', async () => {
++    const h = harness()
++    h.repo.triggers.save(workspaceTrigger())
++    h.repo.tickets.save(frozen(ticket('t1', { mode: 'discuss', planRevision: 3,
++      execution: { name: 'fix-abc', directory: '/work/fix-abc', assignment: 'Plan it' },
++      assignments: [{ id: 'as1', state: 'running', createdAt: '2026-11-03T12:00:00.000Z' }] })))
++    const { call } = await serve(h)
++    expect(await call('GET', '/bridge/v1/tickets/t1')).toMatchObject({ body: {
++      ticketId: 't1', title: 'Fix t1', state: 'discussing', mode: 'discuss', planRevision: 3, paused: null,
++      execution: { name: 'fix-abc', directory: '/work/fix-abc', assignment: 'Plan it' },
++      model: MODEL, base: { repository: 'acme/widgets', branch: 'main', commit: 'abc123' }, assignmentId: 'as1', ended: null } })
++  })
++
++  it('projects paused tickets as stopping and stopped', () => {
++    expect(projectTicketState(ticket('a', { paused: { at: 'p', by: 'human' } }))).toBe('stopping')
++    expect(projectTicketState(ticket('b', { paused: { at: 'p', by: 'human', stoppedAt: 's' } }))).toBe('stopped')
++  })
++})
++
++describe('POST /bridge/v1/triggers with targetTicketId', () => {
++  const body = (overrides: Record<string, unknown> = {}) => ({
++    triggerId: 'workspace:followup', conversationId: 'c9', messageId: 'm9', replyToMessageId: null,
++    actor: { id: 'owner', name: 'MoYu Owner' }, text: 'Also update the docs', at: '2026-11-03T13:00:00.000Z',
++    targetTicketId: 'g1',
++    executionSpec: { repository: 'acme/widgets', baseBranch: 'main', baseCommit: 'abc1234', model: MODEL, mode: 'execute' }, ...overrides,
++  })
++  /** A GitHub-imported ticket with its origin Trigger and frozen execution fields. */
++  function githubTicket(overrides: Partial<Ticket> = {}): Ticket {
++    const origin = githubTrigger()
++    return frozen(ticket('g1', { origin: { triggerId: origin.id, triggerIds: [origin.id] },
++      channels: [origin.channel as ChannelRef], mode: 'execute', base: { repository: 'acme/widgets', branch: 'main', commit: 'abc1234' },
++      ...overrides }))
++  }
++
++  it('attaches to the existing ticket on its origin thread with the workspace Channel and frozen spec', async () => {
++    const h = harness()
++    h.repo.triggers.save(githubTrigger())
++    h.repo.tickets.save(githubTicket())
++    const { call } = await serve(h)
++    expect(await call('POST', '/bridge/v1/triggers', body())).toEqual({ status: 200,
++      body: { result: 'stored', triggerId: 'workspace:followup', baseCommit: 'abc1234', ticketId: 'g1' } })
++    const received = h.received[0]!
++    expect(received).toMatchObject({ id: 'workspace:followup', source: 'workspace', human: true, addressed: 'direct',
++      threads: [{ source: 'github', id: '7' }],
++      channel: { source: 'workspace', thread: 'workspace:c9', address: { conversationId: 'c9', messageId: 'm9' } },
++      meta: { conversationId: 'c9', messageId: 'm9', targetTicketId: 'g1',
++        spec: { repository: 'acme/widgets', baseBranch: 'main', baseCommit: 'abc1234', model: MODEL, modelSource: 'spec', mode: 'execute' } } })
++  })
++
++  it('keeps a discuss ticket in discuss mode even when the platform sends execute', async () => {
++    const h = harness()
++    h.repo.triggers.save(githubTrigger())
++    h.repo.tickets.save(githubTicket({ mode: 'discuss' }))
++    const { call } = await serve(h)
++    expect(await call('POST', '/bridge/v1/triggers', body())).toMatchObject({ status: 409, body: { error: expect.stringMatching(/discuss mode/) } })
++    // The same request with the ticket's mode is accepted and the frozen mode wins.
++    expect(await call('POST', '/bridge/v1/triggers', body({ executionSpec: { ...body().executionSpec as object, mode: 'discuss' } })))
++      .toMatchObject({ status: 200 })
++    expect(h.received[0]!.meta.spec).toMatchObject({ mode: 'discuss' })
++  })
++
++  it('refuses a conflicting model, branch, or commit, and a ticket that ended', async () => {
++    const h = harness()
++    h.repo.triggers.save(githubTrigger())
++    h.repo.tickets.save(githubTicket())
++    h.repo.tickets.save(githubTicket({ id: 'g2', ended: { at: 'e', by: 'executor', outcome: 'completed' }, origin: { triggerId: githubTrigger().id, triggerIds: [githubTrigger().id] } }))
++    const { call } = await serve(h)
++    expect(await call('POST', '/bridge/v1/triggers', body({ executionSpec: { ...body().executionSpec as object, model: { provider: 'other', model: 'x' } } })))
++      .toMatchObject({ status: 409 })
++    expect(await call('POST', '/bridge/v1/triggers', body({ executionSpec: { ...body().executionSpec as object, baseBranch: 'dev' } })))
++      .toMatchObject({ status: 409 })
++    expect(await call('POST', '/bridge/v1/triggers', body({ executionSpec: { ...body().executionSpec as object, baseCommit: 'def4567' } })))
++      .toMatchObject({ status: 409 })
++    expect(await call('POST', '/bridge/v1/triggers', body({ targetTicketId: 'g2' })))
++      .toMatchObject({ status: 409, body: { error: 'ticket_ended', code: 'ticketEnded' } })
++    expect(await call('POST', '/bridge/v1/triggers', body({ targetTicketId: 'missing' }))).toMatchObject({ status: 404 })
++    expect(h.received).toHaveLength(0)
++  })
++})
++
++describe('ticket.paused projection', () => {
++  it('emits a stopping event and then a settled event with the evidence', async () => {
++    const h = harness()
++    h.repo.triggers.save(workspaceTrigger())
++    h.repo.tickets.save(frozen(ticket('t1')))
++    const { bridge, call } = await serve(h)
++    // The ticket is linked first, as it would be before a pause: its linked state is `queued`.
++    bridge.project()
++    const stored = h.repo.tickets.get('t1')!
++    stored.paused = { at: '2026-11-03T12:10:00.000Z', by: 'human', operationId: 'op-1' }
++    stored.updatedAt = '2026-11-03T12:10:00.000Z'
++    h.repo.tickets.save(stored)
++    bridge.project()
++    let events = (await call('GET', '/bridge/v1/events')).body.events as { id: string; type: string; data: Record<string, unknown> }[]
++    expect(events.filter(event => event.type === 'ticket.paused')).toEqual([expect.objectContaining({
++      id: 'ticket-paused:t1:op-1:stopping', data: { ticketId: 't1', operationId: 'op-1', at: '2026-11-03T12:10:00.000Z' } })])
++    const paused = h.repo.tickets.get('t1')!
++    paused.paused = { ...paused.paused!, stoppedAt: '2026-11-03T12:11:00.000Z', evidence: { harnessPid: 7, jobsAfter: [], subagentsAfter: 0 } }
++    paused.updatedAt = '2026-11-03T12:11:00.000Z'
++    h.repo.tickets.save(paused)
++    bridge.project()
++    events = (await call('GET', '/bridge/v1/events')).body.events as { id: string; type: string; data: Record<string, unknown> }[]
++    expect(events.filter(event => event.type === 'ticket.paused').at(-1)).toMatchObject({
++      id: 'ticket-paused:t1:op-1:settled', data: { ticketId: 't1', operationId: 'op-1', stoppedAt: '2026-11-03T12:11:00.000Z',
++        evidence: { harnessPid: 7, jobsAfter: [], subagentsAfter: 0 } } })
++    expect(events.filter(event => event.type === 'ticket.state_changed').map(event => event.data.state)).toEqual(['stopping', 'stopped'])
++  })
++})
+diff --git a/tests/bridge.spec.ts b/tests/bridge.spec.ts
+index 25e125a..36b75b5 100644
+--- a/tests/bridge.spec.ts
++++ b/tests/bridge.spec.ts
+@@ -44,13 +44,17 @@ interface Harness {
+   repo: MemoryRepositories
+   received: Trigger[]
+   commands: { api: ReturnType<typeof vi.fn> }
++  engine: { pauseTicket: ReturnType<typeof vi.fn>; resumeTicket: ReturnType<typeof vi.fn>; startTicket: ReturnType<typeof vi.fn>; retryTicket: ReturnType<typeof vi.fn> }
+ }
+ function harness(overrides: Partial<BridgeHost> = {}): Harness {
+   const repo = new MemoryRepositories()
+   const received: Trigger[] = []
+   const commands = { api: vi.fn(async (_schema: unknown, path: string) => ({ sha: path === 'commits/main' ? 'branch-sha' : 'commit-sha' })) }
++  // The Engine is only invoked by the operation routes; the default implementation mutates nothing, so each test that needs a
++  // Ticket state change overrides the relevant method.
++  const engine = { pauseTicket: vi.fn(), resumeTicket: vi.fn(), startTicket: vi.fn(), retryTicket: vi.fn() }
+   const host: BridgeHost = {
+-    stateDir: stateDir(), store: repo, commands: commands as never,
++    stateDir: stateDir(), store: repo, commands: commands as never, engine: engine as never,
+     configured: () => true, deployment: testDeployment(),
+     // Mirrors the Engine's intake contract: a stored Trigger id is a duplicate, never a second write.
+     receive: trigger => { received.push(trigger); const seen = repo.triggers.get(trigger.id) !== undefined; repo.triggers.save(trigger); return seen ? 'duplicate' : 'stored' },
+@@ -63,7 +67,7 @@ function harness(overrides: Partial<BridgeHost> = {}): Harness {
+     subscribeSessionEvents: () => () => {},
+     ...overrides,
+   }
+-  return { host, repo, received, commands }
++  return { host, repo, received, commands, engine }
+ }
+ 
+ let token = 'bridge-token'
+@@ -101,7 +105,7 @@ describe('the machine Bridge boundary', () => {
+     const capabilities = await call('GET', '/bridge/v1/capabilities')
+     expect(capabilities).toMatchObject({ status: 200, body: { protocolVersion: 'moyu-bridge/1',
+       upstream: { package: 'dsh-superagent', version: '0.1.0', commit: '6337fc823ce20251c8de8085948165c81aaa701e' },
+-      capabilities: { trigger: true, events: true, tickets: true, models: true, pause: false, resume: false, retry: false, readOnlyDiscussion: true, start: true },
++      capabilities: { trigger: true, events: true, tickets: true, models: true, pause: true, resume: true, retry: true, readOnlyDiscussion: true, start: true },
+       source: { kind: 'workspace', enabled: true } } })
+   })
+ 
+@@ -111,12 +115,15 @@ describe('the machine Bridge boundary', () => {
+       model: 'deepseek/deepseek-v4.1-flash', displayName: 'DeepSeek V4.1 Flash', reasoningEfforts: ['low', 'high'] }] } })
+   })
+ 
+-  it('answers 501 for pause, resume, and retry', async () => {
++  it('answers 404 for operations on a missing ticket and for a missing operation', async () => {
+     const { call } = await serve(harness())
+-    for (const operation of ['pause', 'resume', 'retry']) {
+-      expect(await call('POST', `/bridge/v1/tickets/t1/${operation}`)).toMatchObject({ status: 501 })
++    const bodies = { pause: { operationId: 'op-pause' }, retry: { operationId: 'op-retry' },
++      resume: { operationId: 'op-resume', admission: { leaseId: 'l', fencingToken: 'f' } }, start: { operationId: 'op-start', planRevision: 1 } }
++    for (const [operation, body] of Object.entries(bodies)) {
++      expect(await call('POST', `/bridge/v1/tickets/missing/${operation}`, body)).toMatchObject({ status: 404 })
+     }
+     expect(await call('GET', '/bridge/v1/tickets/missing')).toMatchObject({ status: 404 })
++    expect(await call('GET', '/bridge/v1/operations/missing')).toMatchObject({ status: 404 })
+   })
+ })
+ 
+@@ -370,6 +377,7 @@ describe('GET /bridge/v1/tickets/:id', () => {
+       model: { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash', reasoningEffort: 'high' },
+       base: { repository: 'acme/widgets', branch: 'main', commit: 'abc123' },
+       assignmentId: 'as1', report: { state: 'progress', summary: 'working', at: '2026-11-03T12:00:04.000Z' },
++      mode: 'execute', planRevision: null, paused: null, execution: null,
+       pr: { number: 7, url: 'https://github.com/acme/widgets/pull/7' }, ended: null,
+     } })
+   })

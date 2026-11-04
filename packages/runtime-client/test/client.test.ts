@@ -106,3 +106,139 @@ describe('runtime Bridge client', () => {
     expect((error as RuntimeBridgeError).retryable).toBe(true);
   });
 });
+
+describe('M4 execution-control calls', () => {
+  const accepted = {
+    operationId: 'op-1',
+    ticketId: 'ticket-1',
+    kind: 'pause',
+    state: 'queued',
+  };
+
+  it('sends pause, start, resume and retry to their ticket routes with the shared body', async () => {
+    const calls: Array<{ url: string; method: string; body: unknown }> = [];
+    const client = new RuntimeBridgeClient({
+      baseUrl: 'http://127.0.0.1:3190',
+      token: 'machine-token-0123456789',
+      fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+        calls.push({
+          url: String(url),
+          method: String(init?.method),
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        });
+        return jsonResponse(accepted, 202);
+      }) as typeof fetch,
+    });
+
+    await expect(
+      client.pause('ticket-1', { operationId: 'op-1', reason: 'owner stop' }),
+    ).resolves.toMatchObject({ operationId: 'op-1' });
+    await expect(
+      client.start('ticket-1', { operationId: 'op-1', planRevision: 2 }),
+    ).resolves.toMatchObject({ operationId: 'op-1' });
+    await expect(
+      client.resume('ticket-1', {
+        operationId: 'op-1',
+        admission: { leaseId: '00000000-0000-4000-8000-000000000003', fencingToken: '7' },
+      }),
+    ).resolves.toMatchObject({ operationId: 'op-1' });
+    await expect(client.retry('ticket-1', { operationId: 'op-1' })).resolves.toMatchObject({
+      operationId: 'op-1',
+    });
+
+    expect(calls.map((call) => call.url)).toEqual([
+      'http://127.0.0.1:3190/bridge/v1/tickets/ticket-1/pause',
+      'http://127.0.0.1:3190/bridge/v1/tickets/ticket-1/start',
+      'http://127.0.0.1:3190/bridge/v1/tickets/ticket-1/resume',
+      'http://127.0.0.1:3190/bridge/v1/tickets/ticket-1/retry',
+    ]);
+    expect(calls.every((call) => call.method === 'POST')).toBe(true);
+    expect(calls[0]?.body).toEqual({ operationId: 'op-1', reason: 'owner stop' });
+    expect(calls[1]?.body).toEqual({ operationId: 'op-1', planRevision: 2 });
+    expect(calls[2]?.body).toMatchObject({
+      admission: { fencingToken: '7' },
+    });
+  });
+
+  it('reads an operation result and a ticket snapshot with the M4 fields', async () => {
+    const client = new RuntimeBridgeClient({
+      baseUrl: 'http://127.0.0.1:3190',
+      token: 'machine-token-0123456789',
+      fetchImpl: (async (url: string | URL | Request) => {
+        if (String(url).includes('/operations/')) {
+          return jsonResponse({
+            operationId: 'op-1',
+            ticketId: 'ticket-1',
+            kind: 'pause',
+            state: 'succeeded',
+            evidence: { agentStatus: 'idle', harnessPid: 4321 },
+            updatedAt: '2026-11-04T00:00:00.000Z',
+          });
+        }
+        return jsonResponse({
+          ticketId: 'ticket-1',
+          title: 'M4 task',
+          state: 'stopped',
+          mode: 'discuss',
+          planRevision: 1,
+          paused: {
+            at: '2026-11-04T00:00:00.000Z',
+            by: 'human',
+            stoppedAt: '2026-11-04T00:00:01.000Z',
+            evidence: { agentStatus: 'idle' },
+          },
+          execution: { name: 'm4-task', directory: '/tmp/m4-task', assignment: '' },
+        });
+      }) as typeof fetch,
+    });
+
+    await expect(client.operation('op-1')).resolves.toMatchObject({
+      state: 'succeeded',
+      evidence: { harnessPid: 4321 },
+    });
+    await expect(client.ticket('ticket-1')).resolves.toMatchObject({
+      state: 'stopped',
+      mode: 'discuss',
+      planRevision: 1,
+      paused: { by: 'human' },
+      execution: { directory: '/tmp/m4-task' },
+    });
+  });
+
+  it('passes targetTicketId through a trigger request', async () => {
+    let body: Record<string, unknown> = {};
+    const client = new RuntimeBridgeClient({
+      baseUrl: 'http://127.0.0.1:3190',
+      token: 'machine-token-0123456789',
+      fetchImpl: (async (_url: string | URL | Request, init?: RequestInit) => {
+        body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse({
+          result: 'stored',
+          triggerId: 'workspace:message-1',
+          baseCommit: 'a'.repeat(40),
+          ticketId: 'ticket-1',
+        });
+      }) as typeof fetch,
+    });
+
+    await client.trigger({
+      triggerId: 'workspace:message-1',
+      conversationId: '00000000-0000-4000-8000-000000000001',
+      messageId: '00000000-0000-4000-8000-000000000002',
+      replyToMessageId: null,
+      targetTicketId: 'ticket-1',
+      actor: { id: 'owner-1' },
+      text: 'Continue on GitHub',
+      at: '2026-11-04T00:00:00.000Z',
+      executionSpec: {
+        repository: 'Bouyer12/m4-import',
+        baseBranch: 'main',
+        baseCommit: 'a'.repeat(40),
+        model: null,
+        mode: 'discuss',
+      },
+    });
+    expect(body.targetTicketId).toBe('ticket-1');
+    expect((body.executionSpec as Record<string, unknown>).mode).toBe('discuss');
+  });
+});

@@ -3,13 +3,13 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import type { QueryResult } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import type { Database } from '../../src/client';
 import { migrateDatabase } from '../../src/migrate';
-import { conversations, messages, owners, repositories, taskLinks } from '../../src/schema';
+import { messages, owners, repositories, taskLinks } from '../../src/schema';
 import {
   captureError,
   createTestDatabase,
@@ -51,55 +51,67 @@ async function seedConversations(database: Database): Promise<SeededData> {
     throw new Error('repository insert returned no row');
   }
 
-  const [conversationA] = await database
-    .insert(conversations)
-    .values({
-      ownerId: owner.id,
-      repositoryId: repositoryA.id,
-      baseBranch: 'main',
-    })
-    .returning();
-  const [conversationB] = await database
-    .insert(conversations)
-    .values({
-      ownerId: owner.id,
-      repositoryId: repositoryB.id,
-      baseBranch: 'main',
-    })
-    .returning();
-  if (!conversationA || !conversationB) {
-    throw new Error('conversation insert returned no row');
-  }
+  // The 0003 database predates the M4 columns, so the seed uses only the
+  // columns that schema actually has instead of a full current-schema insert.
+  const conversationAId = await insertConversationRaw(database, owner.id, repositoryA.id);
+  const conversationBId = await insertConversationRaw(database, owner.id, repositoryB.id);
 
   const messageAId = await insertMessage(database, {
-    conversationId: conversationA.id,
+    conversationId: conversationAId,
     body: 'message in conversation A',
   });
   const validReplyId = await insertMessage(database, {
-    conversationId: conversationA.id,
+    conversationId: conversationAId,
     body: 'same-conversation reply',
     replyToMessageId: messageAId,
   });
   const nullReplyId = await insertMessage(database, {
-    conversationId: conversationA.id,
+    conversationId: conversationAId,
     body: 'message without a reply target',
   });
-  await database.insert(taskLinks).values({
-    conversationId: conversationA.id,
-    repositoryId: repositoryA.id,
-    state: 'pending_admission',
-    baseBranch: 'main',
-  });
+  await insertTaskLinkRaw(database, conversationAId, repositoryA.id);
 
   return {
     repositoryAId: repositoryA.id,
     repositoryBId: repositoryB.id,
-    conversationAId: conversationA.id,
-    conversationBId: conversationB.id,
+    conversationAId,
+    conversationBId,
     messageAId,
     validReplyId,
     nullReplyId,
   };
+}
+
+async function insertConversationRaw(
+  database: Database,
+  ownerId: string,
+  repositoryId: string,
+): Promise<string> {
+  const result = await database.execute(
+    sql`insert into conversations (owner_id, repository_id, base_branch)
+        values (${ownerId}, ${repositoryId}, 'main') returning id`,
+  );
+  const row = result.rows[0] as { id?: unknown } | undefined;
+  if (!row?.id) {
+    throw new Error('conversation insert returned no row');
+  }
+  return String(row.id);
+}
+
+async function insertTaskLinkRaw(
+  database: Database,
+  conversationId: string,
+  repositoryId: string,
+): Promise<string> {
+  const result = await database.execute(
+    sql`insert into task_links (conversation_id, repository_id, state, base_branch)
+        values (${conversationId}, ${repositoryId}, 'pending_admission', 'main') returning id`,
+  );
+  const row = result.rows[0] as { id?: unknown } | undefined;
+  if (!row?.id) {
+    throw new Error('task link insert returned no row');
+  }
+  return String(row.id);
 }
 
 async function insertMessage(
@@ -174,19 +186,11 @@ describe('message reply and task link integrity on real PostgreSQL', () => {
         body: 'conversation B replies to conversation A',
         replyToMessageId: seeded.messageAId,
       });
-      const [crossRepositoryTask] = await testDatabase.db
-        .insert(taskLinks)
-        .values({
-          conversationId: seeded.conversationBId,
-          repositoryId: seeded.repositoryAId,
-          state: 'pending_admission',
-          baseBranch: 'main',
-        })
-        .returning({ id: taskLinks.id });
-      if (!crossRepositoryTask) {
-        throw new Error('task link insert returned no row');
-      }
-      crossRepositoryTaskLinkId = crossRepositoryTask.id;
+      crossRepositoryTaskLinkId = await insertTaskLinkRaw(
+        testDatabase.db,
+        seeded.conversationBId,
+        seeded.repositoryAId,
+      );
     }, 60_000);
 
     afterAll(async () => {

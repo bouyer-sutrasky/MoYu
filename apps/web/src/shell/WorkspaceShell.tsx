@@ -74,6 +74,8 @@ export function WorkspaceShell({
   const [messagesError, setMessagesError] = useState<string | null>(null);
   const [progress, setProgress] = useState<ProgressEntry[]>([]);
   const [creatingTask, setCreatingTask] = useState(false);
+  const [taskCommandBusy, setTaskCommandBusy] = useState(false);
+  const [taskCommandError, setTaskCommandError] = useState<string | null>(null);
   const [connection, setConnection] = useState<ConnectionStatus>('connecting');
 
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -372,6 +374,14 @@ export function WorkspaceShell({
       }
       try {
         const result = await api.sendMessage(conversationId, { clientMessageId, text });
+        // The API merged a Web message naming an existing GitHub requirement into
+        // that imported conversation and removed the empty Web one.
+        if (result.message.conversationId !== conversationId) {
+          openConversation(result.message.conversationId);
+          const repositoryId = selectedRepositoryIdRef.current;
+          if (repositoryId) void loadConversations(repositoryId, true);
+          return result;
+        }
         if (selectedConversationIdRef.current === conversationId) {
           await Promise.all([
             loadMessages(conversationId, true),
@@ -391,6 +401,52 @@ export function WorkspaceShell({
       }
     },
     [loadConversations, loadConversation, loadMessages, onSessionLost],
+  );
+
+  const runTaskCommand = useCallback(
+    async (action: 'start' | 'stop' | 'resume' | 'retry') => {
+      const task = conversation?.task ?? null;
+      if (!task || taskCommandBusy) {
+        return;
+      }
+      setTaskCommandBusy(true);
+      setTaskCommandError(null);
+      try {
+        const result = await api.taskCommand(task.id, action, {
+          expectedVersion: task.version,
+          clientCommandId: crypto.randomUUID(),
+          ...(action === 'start' ? { planRevision: (task.planRevision ?? 0) + 1 } : {}),
+        });
+        setConversation((current) =>
+          current && current.id === result.task.conversationId
+            ? { ...current, task: result.task }
+            : current,
+        );
+        if (selectedConversationIdRef.current) {
+          void loadConversation(selectedConversationIdRef.current, true);
+          void loadMessages(selectedConversationIdRef.current, true);
+        }
+        if (selectedRepositoryIdRef.current) {
+          void loadConversations(selectedRepositoryIdRef.current, true);
+        }
+      } catch (caught) {
+        if (caught instanceof ApiClientError && caught.status === 401) {
+          onSessionLost();
+          return;
+        }
+        setTaskCommandError(describeApiError(caught));
+      } finally {
+        setTaskCommandBusy(false);
+      }
+    },
+    [
+      conversation?.task,
+      taskCommandBusy,
+      loadConversation,
+      loadMessages,
+      loadConversations,
+      onSessionLost,
+    ],
   );
 
   async function logout() {
@@ -574,6 +630,9 @@ export function WorkspaceShell({
               messagesError={messagesError}
               progress={progress}
               creatingTask={creatingTask}
+              taskCommandBusy={taskCommandBusy}
+              taskCommandError={taskCommandError}
+              onTaskCommand={runTaskCommand}
               onRetryConversation={() => {
                 if (selectedConversationIdRef.current) {
                   void loadConversation(selectedConversationIdRef.current);

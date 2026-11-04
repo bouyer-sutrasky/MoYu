@@ -35,6 +35,9 @@ interface ConversationPaneProps {
   messagesError: string | null;
   progress: ProgressEntry[];
   creatingTask: boolean;
+  taskCommandBusy: boolean;
+  taskCommandError: string | null;
+  onTaskCommand: (action: 'start' | 'stop' | 'resume' | 'retry') => void;
   onRetryConversation: () => void;
   onRetryMessages: () => void;
   onOpenDetails: () => void;
@@ -101,6 +104,9 @@ export function ConversationPane({
   messagesError,
   progress,
   creatingTask,
+  taskCommandBusy,
+  taskCommandError,
+  onTaskCommand,
   onRetryConversation,
   onRetryMessages,
   onOpenDetails,
@@ -215,6 +221,33 @@ export function ConversationPane({
   const baseBranch = task?.baseBranch ?? conversation.baseBranch;
   const baseCommit = task?.baseCommit ?? conversation.baseCommit;
   const latestProgress = progress.length > 0 ? progress[progress.length - 1] : null;
+  const taskState = task?.state ?? null;
+  const pendingOperation =
+    task?.lastOperation &&
+    (task.lastOperation.state === 'queued' || task.lastOperation.state === 'running')
+      ? task.lastOperation
+      : null;
+  const canStart =
+    task?.executionMode === 'discuss' &&
+    !!task.upstreamTicketId &&
+    (taskState === 'discussing' ||
+      taskState === 'waiting_input' ||
+      taskState === 'awaiting_review');
+  const canStop =
+    taskState === 'discussing' ||
+    taskState === 'queued' ||
+    taskState === 'running' ||
+    taskState === 'waiting_input' ||
+    taskState === 'awaiting_review';
+  const canResume = taskState === 'stopped';
+  const canRetry = taskState === 'failed' || taskState === 'blocked';
+  const actionDisabled = taskCommandBusy || !!pendingOperation;
+  const operationLabel: Record<string, string> = {
+    start: '启动执行',
+    pause: '停止',
+    resume: '继续',
+    retry: '重试',
+  };
 
   return (
     <div className={styles.conversationView}>
@@ -246,6 +279,14 @@ export function ConversationPane({
             <span className={styles.metaItem}>
               模型 {formatModel(task?.model ?? conversation.model)}
             </span>
+            {conversation.source === 'github' ? (
+              <span className={styles.metaItem} title={conversation.externalUrl ?? undefined}>
+                GitHub 汇入 · {conversation.externalKey ?? '来源未知'}
+              </span>
+            ) : null}
+            {task?.planRevision ? (
+              <span className={styles.metaItem}>计划 v{task.planRevision}</span>
+            ) : null}
             {task?.prUrl ? (
               <a
                 className={styles.prLink}
@@ -258,11 +299,66 @@ export function ConversationPane({
             ) : null}
           </div>
         </div>
-        <button type="button" className={styles.secondaryButton} onClick={onOpenDetails}>
-          <Icon name="panel" />
-          详情
-        </button>
+        <div className={styles.conversationActions}>
+          {canStart ? (
+            <button
+              type="button"
+              className={styles.primaryButton}
+              disabled={actionDisabled}
+              onClick={() => onTaskCommand('start')}
+              title="同一会话、同一工作目录、同一 PR 转为执行态"
+            >
+              按此方案开始执行
+            </button>
+          ) : null}
+          {canStop ? (
+            <button
+              type="button"
+              className={styles.secondaryButton}
+              disabled={actionDisabled}
+              onClick={() => onTaskCommand('stop')}
+            >
+              停止
+            </button>
+          ) : null}
+          {canResume ? (
+            <button
+              type="button"
+              className={styles.primaryButton}
+              disabled={actionDisabled}
+              onClick={() => onTaskCommand('resume')}
+            >
+              继续
+            </button>
+          ) : null}
+          {canRetry ? (
+            <button
+              type="button"
+              className={styles.secondaryButton}
+              disabled={actionDisabled}
+              onClick={() => onTaskCommand('retry')}
+            >
+              重试
+            </button>
+          ) : null}
+          <button type="button" className={styles.secondaryButton} onClick={onOpenDetails}>
+            <Icon name="panel" />
+            详情
+          </button>
+        </div>
       </header>
+
+      {pendingOperation ? (
+        <p className={styles.operationHint} role="status">
+          正在处理：{operationLabel[pendingOperation.kind] ?? pendingOperation.kind}（
+          {pendingOperation.state === 'queued' ? '等待运行时' : '等待运行时确认'}）
+        </p>
+      ) : null}
+      {taskCommandError ? (
+        <p className={styles.operationHint} data-kind="error" role="alert">
+          {taskCommandError}
+        </p>
+      ) : null}
 
       {latestProgress ? (
         <div className={styles.progressStrip}>

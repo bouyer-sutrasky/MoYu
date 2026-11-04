@@ -22,6 +22,14 @@ const environmentSchema = z.object({
   DELIVERY_LEASE_MS: z.coerce.number().int().min(5_000).max(300_000).default(60_000),
   DELIVERY_RETRY_CAP_MS: z.coerce.number().int().min(1_000).max(600_000).default(60_000),
   EVENT_SYNC_INTERVAL_MS: z.coerce.number().int().min(100).max(60_000).default(1000),
+  // M4 owner commands (start/pause/resume/retry) and runtime leases.
+  OPERATION_INTERVAL_MS: z.coerce.number().int().min(100).max(60_000).default(500),
+  OPERATION_LEASE_MS: z.coerce.number().int().min(5_000).max(300_000).default(60_000),
+  OPERATION_LEASE_TTL_MS: z.coerce.number().int().min(60_000).max(86_400_000).default(3_600_000),
+  OPERATION_RETRY_CAP_MS: z.coerce.number().int().min(1_000).max(600_000).default(60_000),
+  RECONCILE_ON_START: z.enum(['true', 'false']).default('true'),
+  REPORT_CAPTURE_INTERVAL_MS: z.coerce.number().int().min(500).max(60_000).default(2000),
+  DUPLICATE_INTERVAL_MS: z.coerce.number().int().min(100).max(60_000).default(500),
 });
 
 export type DispatcherConfig = {
@@ -36,6 +44,13 @@ export type DispatcherConfig = {
   deliveryLeaseMs: number;
   deliveryRetryCapMs: number;
   eventSyncIntervalMs: number;
+  operationIntervalMs: number;
+  operationLeaseMs: number;
+  operationLeaseTtlMs: number;
+  operationRetryCapMs: number;
+  reconcileOnStart: boolean;
+  reportCaptureIntervalMs: number;
+  duplicateIntervalMs: number;
 };
 
 /**
@@ -67,5 +82,12 @@ export function loadDispatcherConfig(
     deliveryLeaseMs: parsed.data.DELIVERY_LEASE_MS,
     deliveryRetryCapMs: parsed.data.DELIVERY_RETRY_CAP_MS,
     eventSyncIntervalMs: parsed.data.EVENT_SYNC_INTERVAL_MS,
+    operationIntervalMs: parsed.data.OPERATION_INTERVAL_MS,
+    operationLeaseMs: parsed.data.OPERATION_LEASE_MS,
+    operationLeaseTtlMs: parsed.data.OPERATION_LEASE_TTL_MS,
+    operationRetryCapMs: parsed.data.OPERATION_RETRY_CAP_MS,
+    reconcileOnStart: parsed.data.RECONCILE_ON_START === 'true',
+    reportCaptureIntervalMs: parsed.data.REPORT_CAPTURE_INTERVAL_MS,
+    duplicateIntervalMs: parsed.data.DUPLICATE_INTERVAL_MS,
   };
 }

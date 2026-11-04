@@ -24,6 +24,7 @@ import { registerConversationRoutes } from './routes/conversations';
 import { registerEventRoutes } from './routes/events';
 import { registerRuntimeRoutes } from './routes/runtime';
 import { registerRepositoryRoutes } from './routes/repositories';
+import { registerTaskRoutes } from './routes/tasks';
 import { SERVICE_NAME, SERVICE_VERSION } from './version';
 
 export interface BuildAppOptions {
@@ -123,6 +124,7 @@ export function buildApp({
       authenticate,
     });
     registerConversationRoutes(app, { config, database, authenticate, events: eventBus });
+    registerTaskRoutes(app, { config, database, authenticate, events: eventBus });
     registerRuntimeRoutes(app, {
       config,
       database,

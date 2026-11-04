@@ -1,0 +1,46 @@
+diff --git a/src/sources/github.ts b/src/sources/github.ts
+index f9b80b6..b4dfa96 100644
+--- a/src/sources/github.ts
++++ b/src/sources/github.ts
+@@ -402,7 +402,10 @@ async function intakeComments(ctx: SourceContext, ref: PullRef, since: string, r
+   }
+ }
+ export async function pollTicketPulls(ctx: SourceContext, signal?: AbortSignal, round = newRound(signal)): Promise<void> {
+-  const numbers = [...new Set(ctx.tickets.open().flatMap(ticket => pullsOf(ticket, true)))]
++  // Closed follows are polled too: a paused/awaiting ticket can follow a PR closed
++  // during the pause, and a later reopen must be seen and re-bound. Otherwise the
++  // follow stays closed and a second close is never projected.
++  const numbers = [...new Set(ctx.tickets.open().flatMap(ticket => pullsOf(ticket)))]
+   for (const number of numbers) {
+     if (stopped(ctx, round)) return
+     try {
+diff --git a/tests/sources.spec.ts b/tests/sources.spec.ts
+index e2d1e23..7f049f7 100644
+--- a/tests/sources.spec.ts
++++ b/tests/sources.spec.ts
+@@ -8,7 +8,7 @@ import { runFeishu } from '../src/sources/feishu-loops.ts'
+ import { commentTrigger, githubAddress, githubChannel, issueTrigger, type GithubComment, type GithubIssue } from '../src/sources/github-trigger.ts'
+ import { claimPull, observePull, pullEndNotices, pullOf, ticketBranch, type Pull } from '../src/sources/github-pull.ts'
+ import { ciCounts, ciFact, ciSummary } from '../src/sources/github-read.ts'
+-import { apply as applyGithub, githubKind, pollFailure, pollRound } from '../src/sources/github.ts'
++import { apply as applyGithub, githubKind, pollFailure, pollRound, pollTicketPulls } from '../src/sources/github.ts'
+ import { pollThreads as pollGithubThreads } from '../src/sources/github.ts'
+ import { SourceRegistry } from '../src/sources/registry.ts'
+ import { cursorAt, POLL_HORIZON_MS } from '../src/sources/poll.ts'
+@@ -714,6 +714,16 @@ describe('github source', () => {
+     expect(h.receive.mock.calls.filter(([trigger]) => trigger.meta.kind === 'pull')).toEqual([])
+     h.store.close()
+   })
++  it('polls a closed follow of an open ticket so a reopened PR is bound again', async () => {
++    const h = host()
++    h.store.tickets.save({ ...openTicket('ticket'), execution: execution('one'), follows: [
++      { thread: 'github:4', own: true, closed: { at: '2026-09-02T00:00:00.000Z', outcome: 'closed' } } ] })
++    // The agent PR is open again; polling a closed follow must read it and clear the closed mark.
++    github(h, { 'pulls/4': agentsPull(4, 'agent/one') })
++    await pollTicketPulls(h)
++    expect(h.store.tickets.get('ticket')?.follows).toEqual([{ thread: 'github:4', own: true }])
++    h.store.close()
++  })
+   it('reads a subscribed default-branch CI Thread as no Issue, and keeps no poll error on it', async () => {
+     const h = host()
+     h.store.tickets.save(openTicket('ticket'))

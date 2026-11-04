@@ -8,6 +8,9 @@ import type { RuntimeBridgeClient } from '@moyu/runtime-client';
 import type { DispatcherConfig } from './config';
 import { deliverOnce } from './delivery';
 import { createConsoleLogger, type DispatcherLogger } from './logger';
+import { maintainLeases, operationsOnce, reconcileTasks } from './operations';
+import { captureReportsOnce } from './reports';
+import { duplicatesOnce } from './duplicates';
 import { bridgeClient, resolveRepository, type RepositoryBinding } from './runtime';
 import { syncOnce } from './sync';
 
@@ -114,12 +117,44 @@ export async function runDispatcher(
       'dispatching for repository runtime',
     );
 
+    // Reconcile platform state with the runtime's authoritative ticket snapshots
+    // before loops start: stopped tasks stay stopped, running tasks are checked,
+    // and a task the runtime cannot confirm becomes blocked rather than guessed.
+    if (config.reconcileOnStart) {
+      try {
+        await reconcileTasks(pool, repository, bridge, logger);
+      } catch (error) {
+        logger.error(
+          {
+            event: 'dispatcher.reconcile_error',
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'startup reconciliation failed; loops continue with the stored state',
+        );
+      }
+    }
+
     await Promise.allSettled([
       runLoop('delivery', config.deliveryIntervalMs, options.signal, logger, () =>
         deliverOnce(pool, config, repository, bridge, logger),
       ),
       runLoop('event_sync', config.eventSyncIntervalMs, options.signal, logger, () =>
         syncOnce(pool, repository, bridge, logger),
+      ),
+      runLoop('operations', config.operationIntervalMs, options.signal, logger, () =>
+        operationsOnce(pool, config, repository, bridge, logger),
+      ),
+      runLoop('leases', 5000, options.signal, logger, async () => {
+        await maintainLeases(pool, repository, config.operationLeaseTtlMs);
+        return false;
+      }),
+      // A discuss plan and an execute result live in the runtime report; copy
+      // them into the conversation so the owner can read and approve the plan.
+      runLoop('reports', config.reportCaptureIntervalMs, options.signal, logger, () =>
+        captureReportsOnce(pool, repository, bridge, logger),
+      ),
+      runLoop('duplicates', config.duplicateIntervalMs, options.signal, logger, () =>
+        duplicatesOnce(pool, config, repository, bridge, logger),
       ),
     ]);
     logger.info({ event: 'dispatcher.stopped' }, 'dispatcher stopped');

@@ -1,0 +1,118 @@
+diff --git a/src/app/sessions.ts b/src/app/sessions.ts
+index 48ae327..8d45cab 100644
+--- a/src/app/sessions.ts
++++ b/src/app/sessions.ts
+@@ -1,6 +1,8 @@
+ /** Lifecycle, prompt/tool/skill decoration, message delivery, and budget retry tracking for orchestrator and worker DSH sessions. */
+ import type { Context } from '@deepseek-ai/cordis'
+ import type { Agent } from '@deepseek-ai/dsh-agent'
++import { realpathSync } from 'node:fs'
++import { resolve, sep } from 'node:path'
+ import type { MessageId } from '@deepseek-ai/dsh-llm'
+ import { scopeParentOf } from '@deepseek-ai/dsh-scope'
+ import type { SessionId } from '@deepseek-ai/dsh-session'
+@@ -44,7 +46,18 @@ export interface SessionsHost {
+  */
+ interface SessionBinding { disposers: (() => void)[]; scope?: Context; skills?: { revision: number; dispose: () => void }; subagent?: true
+   /** The tool restriction binding this Session currently runs with, and the mode it enforces (see `applyMode`). */
+-  restriction?: () => void; mode?: 'execute' | 'discuss' }
++  restriction?: () => void; mode?: 'execute' | 'discuss'; workspace?: string }
++/** A discussion worker may read files only inside its own worktree; credentials outside it stay unreachable. */
++function outsideWorkspace(execution: { name: string; arguments: unknown }, workspace: string | undefined): boolean {
++  if (!workspace || !['read', 'read_image', 'glob', 'grep'].includes(execution.name)) return false
++  const args = (execution.arguments ?? {}) as { file_path?: unknown; path?: unknown }
++  const target = typeof args.file_path === 'string' ? args.file_path : typeof args.path === 'string' ? args.path : undefined
++  if (!target) return false
++  const root = (() => { try { return realpathSync(workspace) } catch { return resolve(workspace) } })()
++  const candidate = resolve(root, target)
++  const resolved = (() => { try { return realpathSync(candidate) } catch { return candidate } })()
++  return resolved !== root && !resolved.startsWith(root + sep)
++}
+ 
+ /** The agent presets Executor Sessions and the main Session are created with, which the bundle's patch defines. */
+ export const WORKER_PRESET = 'dsh-superagent-worker', ROUTER_PRESET = 'dsh-superagent-router'
+@@ -172,6 +185,8 @@ export class Sessions {
+     await initializeRoleModel(ctx, result.agent, role === 'orchestrator' ? settings.eval.model : model ?? settings.executor.model)
+     await this.decorate(result.agent)
+     if (role === 'worker') {
++      const binding = this.bindings.get(result.agent)
++      if (binding) binding.workspace = cwd
+       const ticket = this.ticketOf(result.agent)
+       this.applyMode(result.agent, ticket?.id, mode ?? ticket?.mode ?? 'execute')
+     } else {
+@@ -316,9 +331,12 @@ export class Sessions {
+     const parent = scopeParentOf(agent)
+     const allow = (mode === 'discuss' ? DISCUSS_TOOLS : WORK_TOOLS).filter(name => agent.ctx.tools.get(name, parent))
+     const disposeRestrict = agent.ctx.tools.restrict({ allow })
+-    const disposeGuard = agent.ctx.tools.guard(() => {
++    const disposeGuard = agent.ctx.tools.guard(execution => {
+       const current = this.host.store.tickets.get(ticketId)
+-      return !current || !liveTicket(current) ? 'Ticket ended; new work needs a new authorized ticket' : undefined
++      if (!current || !liveTicket(current)) return 'Ticket ended; new work needs a new authorized ticket'
++      return mode === 'discuss' && outsideWorkspace(execution, binding.workspace)
++        ? 'Discussion work may read only files inside its worktree'
++        : undefined
+     })
+     binding.mode = mode
+     binding.restriction = () => { disposeGuard(); disposeRestrict() }
+diff --git a/tests/discussion.spec.ts b/tests/discussion.spec.ts
+index acc4377..97adbb8 100644
+--- a/tests/discussion.spec.ts
++++ b/tests/discussion.spec.ts
+@@ -25,6 +25,7 @@ interface Harness {
+   repo: MemoryRepositories
+   presets: { session: unknown; preset: string }[]
+   restrictions: Restriction[]
++  guards: ((execution: { name: string; arguments: unknown }) => string | undefined)[]
+   agents: Map<string, unknown>
+   settings: ReturnType<typeof SettingsSchema.parse>
+ }
+@@ -41,6 +42,7 @@ function harness(): Harness {
+   const agents = new Map<string, unknown>()
+   const presets: Harness['presets'] = []
+   const restrictions: Restriction[] = []
++  const guards: Harness['guards'] = []
+   const inherited = new Set(INHERITED)
+   const controller = {
+     create: vi.fn(async ({ sessionId }: { sessionId: string }) => {
+@@ -56,7 +58,10 @@ function harness(): Harness {
+           restrictions.push({ sessionId, allow: rule.allow, dispose })
+           return dispose
+         },
+-        guard: () => () => {},
++        guard: (fn: (execution: { name: string; arguments: unknown }) => string | undefined) => {
++          guards.push(fn)
++          return () => {}
++        },
+       })
+       agentCtx.reflect.provide('skills', { register: () => () => {} })
+       agentCtx.reflect.provide('systemPrompt', { section: () => () => {} })
+@@ -84,7 +89,7 @@ function harness(): Harness {
+     environment: () => [],
+     tools: () => [],
+   })
+-  return { sessions, repo, presets, restrictions, agents, settings }
++  return { sessions, repo, presets, restrictions, guards, agents, settings }
+ }
+ 
+ const ensure = (h: Harness, id: string, mode?: 'execute' | 'discuss') =>
+@@ -130,6 +135,19 @@ describe('discussion tool boundary', () => {
+     }
+   })
+ 
++  it('denies discussion reads outside the worktree while allowing the worktree itself', async () => {
++    const h = harness()
++    await ensure(h, 'worker-t1', 'discuss')
++    const guard = h.guards.at(-1)!
++    expect(guard({ name: 'read', arguments: { file_path: '/tmp/worker-t1/README.md' } })).toBeUndefined()
++    expect(guard({ name: 'read', arguments: { file_path: '/root/.dsh-m4/env' } })).toMatch(/inside its worktree/)
++    expect(guard({ name: 'grep', arguments: { path: '../../etc' } })).toMatch(/inside its worktree/)
++    // Execute workers keep their full paths.
++    h.repo.tickets.save(ticket('t2', { mode: 'execute' }))
++    await ensure(h, 'worker-t2', 'execute')
++    expect(h.guards.at(-1)!({ name: 'read', arguments: { file_path: '/root/.dsh-m4/env' } })).toBeUndefined()
++  })
++
+   it('gives an execute worker the work tools and danger-full-access', async () => {
+     const h = harness()
+     h.repo.tickets.save(ticket('t2', { mode: 'execute' }))

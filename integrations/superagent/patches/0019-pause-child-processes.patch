@@ -1,0 +1,40 @@
+diff --git a/src/executor/dsh.ts b/src/executor/dsh.ts
+index efa447b..edcf8eb 100644
+--- a/src/executor/dsh.ts
++++ b/src/executor/dsh.ts
+@@ -461,20 +461,32 @@ export class DshExecutor implements Executor {
+     const agentStatus = agent?.status ?? 'absent'
+     const stoppedAt = now()
+     const controlGroup = cgroup()
++    // A cancelled turn may leave a short-lived child (a git/gh call) for a moment.
++    // Wait for every pre-pause process to exit, and only then call the pause clean.
++    const processBeforePids = processesBefore.map(item => item.pid)
++    const aliveBefore = () => processBeforePids.filter(pid => {
++      try { process.kill(pid, 0); return true } catch { return false }
++    })
++    let lingeringPids = aliveBefore()
++    for (let wait = 0; lingeringPids.length > 0 && wait < 20; wait++) {
++      await new Promise(resolve => setTimeout(resolve, 100))
++      lingeringPids = aliveBefore()
++    }
+     const processesAfter = processTree()
+     const evidence = { ticketId, assignmentId, operationId, sessionId, harnessPid: process.pid, ...controlGroup ? { cgroup: controlGroup } : {},
+-      startedAt, stoppedAt, agentStatus, jobsBefore, jobsAfter, subagentsAfter, processesBefore, processesAfter, cancelledTurn }
++      startedAt, stoppedAt, agentStatus, jobsBefore, jobsAfter, subagentsAfter, processesBefore, processesAfter, lingeringPids, cancelledTurn }
+     // Success needs every part: the stop finished, the worker answered idle in time (an unloaded Session has no turn), and
+     // no shell job or subagent is left.
+     const idleWorker = !agent || agentStatus === 'idle'
+-    if (!stopError && stopped !== false && idle !== false && idleWorker && jobsAfter.length === 0 && subagentsAfter === 0) {
++    if (!stopError && stopped !== false && idle !== false && idleWorker && jobsAfter.length === 0 && subagentsAfter === 0
++      && lingeringPids.length === 0) {
+       this.host.engine.pauseSettled(ticketId, assignmentId, evidence)
+       return
+     }
+     const reason = stopError !== undefined ? String(stopError)
+       : stopped === false ? `Stopping the worker's background work timed out after ${PAUSE_STOP_MS} ms`
+       : idle === false ? `The worker did not go idle within ${PAUSE_IDLE_MS} ms`
+-      : `The worker did not stop cleanly: agent ${agentStatus}, ${jobsAfter.length} job(s) and ${subagentsAfter} subagent(s) remain`
++      : `The worker did not stop cleanly: agent ${agentStatus}, ${jobsAfter.length} job(s), ${subagentsAfter} subagent(s) and ${lingeringPids.length} process(es) remain`
+     this.host.engine.pauseFailed(ticketId, assignmentId, reason)
+   }
+   /** Stop what a ticket's worker runs in the background (see `stopBackground`). */

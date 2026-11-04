@@ -1,0 +1,19 @@
+M4 discussion boundary evidence (sanitized)
+at=2026-11-04T03:12:58Z
+harness_pid=3460190
+uid=0 gid=0 user=root
+session_preset=read-only
+session_sandbox=read-only
+--- workdir stat
+root root 700 /root/m4probe-run/discuss-boundary-probe-4a663d813145
+root root 700 /root/m4probe-run/discuss-boundary-probe-4a663d813145/.git
+--- mount
+/      /dev/vda3 ext4   rw,relatime
+--- credential file stat (no content)
+root root 600 /root/.dsh-m4/env
+--- read attempts from the discuss worker
+denied_read_count=10
+read_env_result=Error: Discussion work may read only files inside its worktree
+read_ssh_result=Error: Discussion work may read only files inside its worktree
+--- tool header (discussion)
+tools=glob,grep,orchestrator_ack,orchestrator_read,orchestrator_report,orchestrator_thread_follow,orchestrator_thread_unrelated,orchestrator_trigger_handback,read,read_image,skill,subagent,todo_write,web_search

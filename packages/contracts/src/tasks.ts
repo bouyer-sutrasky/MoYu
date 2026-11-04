@@ -47,6 +47,44 @@ export const modelListDataSchema = z.object({
 
 export type ModelListData = z.infer<typeof modelListDataSchema>;
 
+/** One owner command for a task; `start` also carries the approved plan revision. */
+export const taskOperationKindSchema = z.enum(['start', 'pause', 'resume', 'retry']);
+
+export type TaskOperationKind = z.infer<typeof taskOperationKindSchema>;
+
+export const taskOperationStateSchema = z.enum(['queued', 'running', 'succeeded', 'failed']);
+
+export type TaskOperationState = z.infer<typeof taskOperationStateSchema>;
+
+export const taskOperationSummarySchema = z.object({
+  id: uuidSchema,
+  taskId: uuidSchema,
+  kind: taskOperationKindSchema,
+  state: taskOperationStateSchema,
+  /** Execution evidence the runtime returned, such as the stop evidence object. */
+  evidence: z.record(z.string(), z.unknown()),
+  error: z.string().nullable(),
+  createdAt: isoTimestampSchema,
+  updatedAt: isoTimestampSchema,
+});
+
+export type TaskOperationSummary = z.infer<typeof taskOperationSummarySchema>;
+
+export const taskCommandInputSchema = z
+  .object({
+    expectedVersion: z.number().int().nonnegative(),
+    clientCommandId: z.string().trim().min(1).max(128),
+  })
+  .strict();
+
+export type TaskCommandInput = z.infer<typeof taskCommandInputSchema>;
+
+export const startTaskInputSchema = taskCommandInputSchema
+  .extend({ planRevision: z.number().int().positive() })
+  .strict();
+
+export type StartTaskInput = z.infer<typeof startTaskInputSchema>;
+
 export const taskSummarySchema = z.object({
   id: uuidSchema,
   conversationId: uuidSchema,
@@ -62,12 +100,26 @@ export const taskSummarySchema = z.object({
   questionMessageId: uuidSchema.nullable(),
   prUrl: z.string().nullable(),
   prNumber: z.number().int().positive().nullable(),
+  planRevision: z.number().int().positive().nullable(),
+  stopRequestedAt: isoTimestampSchema.nullable(),
+  stoppedAt: isoTimestampSchema.nullable(),
+  /** Runtime proof the worker and its background work ended; empty until a stop completes. */
+  stopEvidence: z.record(z.string(), z.unknown()),
+  /** The latest owner command for this task, so the UI can show a pending stop or start. */
+  lastOperation: taskOperationSummarySchema.nullable(),
   version: z.number().int().nonnegative(),
   createdAt: isoTimestampSchema,
   updatedAt: isoTimestampSchema,
 });
 
 export type TaskSummary = z.infer<typeof taskSummarySchema>;
+
+export const taskCommandDataSchema = z.object({
+  operation: taskOperationSummarySchema,
+  task: taskSummarySchema,
+});
+
+export type TaskCommandData = z.infer<typeof taskCommandDataSchema>;
 
 export const artifactTypeSchema = z.enum([
   'diff',

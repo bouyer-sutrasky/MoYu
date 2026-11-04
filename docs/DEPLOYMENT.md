@@ -57,3 +57,12 @@ remote: - 2 of 2 required status checks are expected.
 - **真机**：PR 提交后由所有者用自己的设备完成一次真实绑定。
 - **截图**：桌面 ≥1440×900、手机 ≤390×844，浅色与深色各一组，必须真实浏览器产物。
 - **禁止**：mock、静态页面或伪造日志冒充接通；未验证项必须单列。
+
+## 独立讨论 runtime
+
+讨论（`executionMode=discuss`）可配置为独立进程，不共享执行 runtime 的写凭据：
+
+- 部署 `integrations/superagent/discuss-runtime/` 的 `discuss-sandbox.sh` 到 `/usr/local/bin/m4-discuss-sandbox`，profile 到专用用户 `moyu-discuss` 的 `~/.dsh/profiles/discuss/cordis.patch.yml`；profile 只放 `COMMAND_CODE_API_KEY`。
+- 管理面板的 executor 设置 `discussCommand=/usr/local/bin/m4-discuss-sandbox`。
+- 脚本把 ticket worktree 复制成 root 所有的只读快照（目录 555、文件 444），`setpriv` 到 `moyu-discuss` 后启动 headless DSH；讨论进程不可访问 `/root`、GitHub/Bridge token 或 worktree 写权限。
+- 负向证据写入 `/tmp/m4-discuss-evidence.log`：host/discuss UID、快照 owner/mode、`root_env_readable`、`worktree_write`、`ssh_key_readable`。
