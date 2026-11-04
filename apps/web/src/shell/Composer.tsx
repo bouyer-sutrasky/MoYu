@@ -10,8 +10,12 @@ import {
   loadDraft,
   markDraftNotice,
   migrateDraftToConversation,
+  newLineageId,
   removeDraft,
+  restoreDeferredDraft,
+  restorePendingDraft,
   saveDraft,
+  settleSuccessfulSend,
   type Draft,
 } from '../lib/drafts';
 import { describeApiError } from '../lib/errors';
@@ -45,7 +49,9 @@ export function Composer({
   onSend,
 }: ComposerProps) {
   const [text, setText] = useState('');
-  const [sendingFor, setSendingFor] = useState<string | null>(null);
+  const [sendingConversations, setSendingConversations] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [storageWarning, setStorageWarning] = useState<string | null>(null);
@@ -53,6 +59,9 @@ export function Composer({
   const draftRef = useRef<Draft | null>(null);
   const conversationIdRef = useRef<string | null>(conversation?.id ?? null);
   const repositoryIdRef = useRef<string | null>(repository?.id ?? null);
+  /** Distinct request identity per conversation: a late finally cannot unlock a newer send. */
+  const activeSendsRef = useRef<Map<string, number>>(new Map());
+  const sendSequenceRef = useRef(0);
   conversationIdRef.current = conversation?.id ?? null;
   repositoryIdRef.current = repository?.id ?? null;
 
@@ -60,12 +69,13 @@ export function Composer({
     conversation?.task?.state === 'completed' ||
     conversation?.task?.state === 'closed_unmerged' ||
     conversation?.task?.state === 'not_accepted';
-  const sending = conversation?.id != null && sendingFor === conversation.id;
+  const sending = conversation?.id != null && sendingConversations.has(conversation.id);
   const disabled = mode !== 'work' || !conversation || conversationLoading || terminal;
-  const pendingDraft =
-    draftRef.current?.pending && draftRef.current.text === text.trim()
-      ? draftRef.current.pending
-      : null;
+  const draft = draftRef.current;
+  const pendingDraft = draft?.pending ?? null;
+  const pendingTextMismatch =
+    pendingDraft !== null && draft !== null && draft.text.trim() !== text.trim();
+  const deferredText = draft?.deferredText ?? null;
 
   useEffect(() => {
     const conversationId = conversation?.id;
@@ -81,15 +91,19 @@ export function Composer({
     draftRef.current = stored;
     setText(stored?.text ?? '');
     const migrationNotice = consumeDraftNotice(ownerId, repositoryId, conversationId);
-    if (migrationNotice) {
-      setNotice(migrationNotice);
-    } else if (stored?.pending) {
-      setNotice(
-        stored.pending.ambiguous
-          ? '上次发送结果未确认。保留原文重试会复用同一标识核对结果，不会重复写入。'
-          : '上次发送失败，草稿与幂等标识已保留；重试会复用同一标识。',
-      );
-    }
+    const pendingNotice = stored?.pending
+      ? stored.pending.ambiguous
+        ? '上次发送结果未确认。保留原文重试会复用同一标识核对结果，不会重复写入。'
+        : '上次发送结果待确认。按原标识重试不会重复写入。'
+      : null;
+    const deferredNotice = stored?.deferredText
+      ? stored.pending
+        ? '合并来源的未发送内容已单独保留；确认上一条发送后可恢复。'
+        : '合并来源的未发送内容已保留，可点“恢复合并草稿”恢复。'
+      : null;
+    setNotice(
+      migrationNotice ?? ([pendingNotice, deferredNotice].filter(Boolean).join(' ') || null),
+    );
   }, [conversation?.id, repository?.id, ownerId]);
 
   useEffect(() => {
@@ -123,7 +137,31 @@ export function Composer({
               ? '消息按投递证据更新，不提前显示已读取'
               : '消息输入区未启用';
 
-  function updateText(next: string) {
+  function addSending(conversationId: string, token: number): void {
+    activeSendsRef.current.set(conversationId, token);
+    setSendingConversations((current) => {
+      const next = new Set(current);
+      next.add(conversationId);
+      return next;
+    });
+  }
+
+  function settleSending(conversationId: string, token: number): void {
+    if (activeSendsRef.current.get(conversationId) !== token) {
+      return;
+    }
+    activeSendsRef.current.delete(conversationId);
+    setSendingConversations((current) => {
+      if (!current.has(conversationId)) {
+        return current;
+      }
+      const next = new Set(current);
+      next.delete(conversationId);
+      return next;
+    });
+  }
+
+  function updateText(next: string): void {
     setText(next);
     setStorageWarning(null);
     const conversationId = conversationIdRef.current;
@@ -132,6 +170,8 @@ export function Composer({
       return;
     }
     if (next.trim().length === 0) {
+      // Clearing drops the lineage. Retyping the same text later is a new
+      // draft and an old response cannot settle against it.
       removeDraft(ownerId, repositoryId, conversationId);
       draftRef.current = null;
       return;
@@ -142,11 +182,14 @@ export function Composer({
     }
     const draft: Draft = {
       version: (base?.version ?? 0) + 1,
+      // Editing keeps the lineage; clearing (above) is what starts a new one.
+      lineageId: base?.lineageId ?? newLineageId(),
       text: next,
       updatedAt: new Date().toISOString(),
-      // Keep the idempotency id only while the text is unchanged; a different
-      // text is a different message and must not share it.
-      pending: base?.pending && base.pending.text === next ? base.pending : null,
+      // Keep the send snapshot while the user edits: only its own response may
+      // settle it, and a retry must still use its original key.
+      pending: base?.pending ?? null,
+      ...(base?.deferredText ? { deferredText: base.deferredText } : {}),
     };
     draftRef.current = draft;
     if (!saveDraft(ownerId, repositoryId, conversationId, draft)) {
@@ -154,7 +197,7 @@ export function Composer({
     }
   }
 
-  function clearDraft() {
+  function clearDraft(): void {
     const conversationId = conversationIdRef.current;
     const repositoryId = repositoryIdRef.current;
     if (conversationId && repositoryId) {
@@ -166,23 +209,65 @@ export function Composer({
     setNotice(null);
   }
 
-  async function submit() {
+  function restorePending(): void {
+    const conversationId = conversationIdRef.current;
+    const repositoryId = repositoryIdRef.current;
+    if (!conversationId || !repositoryId) {
+      return;
+    }
+    const restored = restorePendingDraft(ownerId, repositoryId, conversationId);
+    if (!restored) {
+      return;
+    }
+    draftRef.current = restored;
+    setText(restored.text);
+    setError(null);
+    setNotice('已恢复待确认内容；再次发送会复用原标识核对结果。');
+  }
+
+  function restoreDeferred(): void {
+    const conversationId = conversationIdRef.current;
+    const repositoryId = repositoryIdRef.current;
+    if (!conversationId || !repositoryId) {
+      return;
+    }
+    const restored = restoreDeferredDraft(ownerId, repositoryId, conversationId);
+    if (!restored) {
+      return;
+    }
+    draftRef.current = restored;
+    setText(restored.text);
+    setError(null);
+    setNotice('已恢复合并会话保留下来的未发送草稿。');
+  }
+
+  async function submit(): Promise<void> {
     const trimmed = text.trim();
     const conversationId = conversationIdRef.current;
     const repositoryId = repositoryIdRef.current;
-    if (!trimmed || !conversationId || !repositoryId || sending || disabled) {
+    if (!trimmed || !conversationId || !repositoryId || disabled) {
+      return;
+    }
+    // Per-conversation request identity, not a single global flag: a late
+    // finally from conversation A must not unlock B or allow a second A send.
+    if (activeSendsRef.current.has(conversationId)) {
+      return;
+    }
+    const previous = loadDraft(ownerId, repositoryId, conversationId);
+    if (previous?.pending && previous.pending.text !== trimmed) {
+      setError('上一条发送结果待确认：请先恢复待确认内容并按原标识核对，避免重复写入。');
       return;
     }
 
     const prepared = draftForSend(ownerId, repositoryId, conversationId, trimmed);
-    const pending = prepared.pending;
-    const clientMessageId = pending?.clientMessageId ?? crypto.randomUUID();
+    const clientMessageId = prepared.pending?.clientMessageId ?? crypto.randomUUID();
     const draft: Draft = {
       ...prepared,
-      pending: {
+      pending: prepared.pending ?? {
         clientMessageId,
         text: trimmed,
         version: prepared.version,
+        lineageId: prepared.lineageId,
         at: new Date().toISOString(),
       },
     };
@@ -191,40 +276,43 @@ export function Composer({
       setStorageWarning('浏览器无法保存本地草稿；当前输入仍保留在本页面，发送不受影响。');
     }
 
-    setSendingFor(conversationId);
+    const token = ++sendSequenceRef.current;
+    addSending(conversationId, token);
     setError(null);
     setNotice(null);
     try {
       const result = await onSend(conversationId, trimmed, clientMessageId);
-      // Reconcile only the exact draft version this request submitted. An edit
-      // made while it was in flight keeps the newer text.
-      const current = loadDraft(ownerId, repositoryId, conversationId);
-      const sentVersionMatches =
-        !current || (current.version === draft.version && current.text === draft.text);
       const targetConversationId = result.message.conversationId;
       if (targetConversationId !== conversationId) {
         // The API merged this Web conversation into an imported GitHub one.
-        // The source is now a hidden alias, so a newer draft must move to the
-        // target; an existing target draft is joined, never overwritten.
-        if (sentVersionMatches) {
-          removeDraft(ownerId, repositoryId, conversationId);
+        // The source is now a hidden alias, so only unsent source content may
+        // move to the target; the target's own pending send is never touched.
+        const source = loadDraft(ownerId, repositoryId, conversationId);
+        const sentOnly =
+          !source ||
+          (source.pending?.clientMessageId === clientMessageId &&
+            source.lineageId === draft.lineageId &&
+            source.text.trim() === draft.text);
+        if (sentOnly) {
+          if (source) {
+            removeDraft(ownerId, repositoryId, conversationId);
+          }
         } else {
-          const migrated = migrateDraftToConversation(
+          const migration = migrateDraftToConversation(
             ownerId,
             repositoryId,
             conversationId,
             targetConversationId,
           );
-          if (migrated && current && current.text.trim().length > 0) {
-            const migrationText =
-              '消息已合并到关联会话；原会话草稿已迁移到这里，未发送内容没有丢失。';
+          if (migration.draft) {
+            const migrationText = migration.deferred
+              ? '消息已合并；目标会话有发送待确认，合并草稿已单独保留，确认后可恢复。'
+              : '消息已合并到关联会话；原会话草稿已迁移到这里，未发送内容没有丢失。';
             markDraftNotice(ownerId, repositoryId, targetConversationId, migrationText);
             if (conversationIdRef.current === targetConversationId) {
-              // Navigation already landed on the target before this response;
-              // apply the migrated draft now instead of waiting for a switch.
               consumeDraftNotice(ownerId, repositoryId, targetConversationId);
-              draftRef.current = migrated;
-              setText(migrated.text);
+              draftRef.current = migration.draft;
+              setText(migration.draft.text);
               setNotice(migrationText);
             }
           }
@@ -234,58 +322,63 @@ export function Composer({
           draftRef.current = null;
           setText('');
         }
-      } else if (sentVersionMatches) {
-        removeDraft(ownerId, repositoryId, conversationId);
-        if (conversationIdRef.current === conversationId) {
-          draftRef.current = null;
-          setText('');
-        }
       } else {
-        const kept: Draft = {
-          ...current,
-          pending:
-            current.pending && current.pending.clientMessageId !== clientMessageId
-              ? current.pending
-              : null,
-        };
-        saveDraft(ownerId, repositoryId, conversationId, kept);
+        const settled = settleSuccessfulSend(
+          ownerId,
+          repositoryId,
+          conversationId,
+          clientMessageId,
+        );
         if (conversationIdRef.current === conversationId) {
-          draftRef.current = kept;
+          draftRef.current = settled.draft;
+          setText(settled.draft?.text ?? '');
+          setNotice(
+            settled.promoted
+              ? '上一条已发送；合并保留的未发送草稿已恢复。'
+              : result.duplicate
+                ? '这条消息此前已提交，已按原标识核对并刷新会话。'
+                : null,
+          );
         }
-      }
-      if (conversationIdRef.current === conversationId && targetConversationId === conversationId) {
-        setNotice(result.duplicate ? '这条消息此前已提交，已按原标识核对并刷新会话。' : null);
       }
     } catch (caught) {
       const ambiguous = !(caught instanceof ApiClientError);
       const current = loadDraft(ownerId, repositoryId, conversationId);
-      if (current) {
-        const kept: Draft = {
-          ...current,
-          pending: current.pending
+      let kept = current;
+      if (current && current.lineageId === draft.lineageId) {
+        const pending =
+          current.pending?.clientMessageId === clientMessageId
             ? { ...current.pending, ambiguous }
-            : {
+            : (current.pending ?? {
                 clientMessageId,
-                text: trimmed,
+                text: draft.text,
                 version: draft.version,
+                lineageId: draft.lineageId,
                 at: new Date().toISOString(),
                 ambiguous,
-              },
-        };
+              });
+        kept = { ...current, pending };
         saveDraft(ownerId, repositoryId, conversationId, kept);
         if (conversationIdRef.current === conversationId) {
           draftRef.current = kept;
         }
       }
       if (conversationIdRef.current === conversationId) {
-        setError(
-          ambiguous
-            ? `${describeApiError(caught)} 网络结果不明确：可直接重试，重试会复用同一标识核对结果，不会重复写入或执行。`
-            : `${describeApiError(caught)} 草稿与幂等标识已保留，可直接重试。`,
-        );
+        if (!kept) {
+          // The user cleared the input while this request was in flight.
+          setError('发送失败；输入已清除，没有恢复旧草稿。');
+        } else if (kept.lineageId !== draft.lineageId) {
+          setError('旧发送失败；当前会话已有新草稿，本次失败没有改动它。');
+        } else {
+          setError(
+            ambiguous
+              ? `${describeApiError(caught)} 网络结果不明确：可先恢复待确认内容，按原标识重试不会重复写入。`
+              : `${describeApiError(caught)} 草稿与幂等标识已保留，可直接重试。`,
+          );
+        }
       }
     } finally {
-      setSendingFor(null);
+      settleSending(conversationId, token);
     }
   }
 
@@ -320,7 +413,16 @@ export function Composer({
         ) : null}
         {pendingDraft ? (
           <p className={styles.composerStatus} data-kind="pending">
-            发送结果待确认：按原标识重试不会重复写入。
+            {pendingTextMismatch
+              ? '上一条发送结果待确认；当前输入是新草稿，先恢复待确认内容按原标识核对。'
+              : '发送结果待确认：按原标识重试不会重复写入。'}
+          </p>
+        ) : null}
+        {deferredText ? (
+          <p className={styles.composerStatus} data-kind="pending">
+            {pendingDraft
+              ? '合并来源的未发送内容已单独保留；上一条确认后可恢复。'
+              : '合并来源的未发送内容已保留；可点“恢复合并草稿”。'}
           </p>
         ) : null}
         {storageWarning ? (
@@ -333,12 +435,33 @@ export function Composer({
             <Icon name="session" size={13} /> {hint}
           </span>
           <div className={styles.composerActions}>
-            {text.trim().length > 0 && !sending ? (
+            {pendingDraft && pendingTextMismatch ? (
+              <button
+                type="button"
+                className={styles.textButton}
+                onClick={restorePending}
+                title="把输入恢复为待确认发送的原文"
+              >
+                恢复待确认内容
+              </button>
+            ) : null}
+            {deferredText && !pendingDraft ? (
+              <button
+                type="button"
+                className={styles.textButton}
+                onClick={restoreDeferred}
+                title="把合并会话保留下来的未发送草稿加入输入"
+              >
+                恢复合并草稿
+              </button>
+            ) : null}
+            {text.trim().length > 0 || pendingDraft || deferredText ? (
               <button
                 type="button"
                 className={styles.textButton}
                 onClick={clearDraft}
                 title="清除当前会话的本地草稿"
+                disabled={sending}
               >
                 清除草稿
               </button>
@@ -346,9 +469,15 @@ export function Composer({
             <button
               type="button"
               className={styles.sendButton}
-              disabled={disabled || sending || text.trim().length === 0}
+              disabled={disabled || sending || text.trim().length === 0 || pendingTextMismatch}
               onClick={() => void submit()}
-              title={disabled ? placeholder : '发送消息'}
+              title={
+                pendingTextMismatch
+                  ? '先恢复待确认内容并按原标识核对'
+                  : disabled
+                    ? placeholder
+                    : '发送消息'
+              }
             >
               {sending ? '发送中…' : '发送'}
             </button>

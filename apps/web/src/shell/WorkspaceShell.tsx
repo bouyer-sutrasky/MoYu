@@ -164,6 +164,8 @@ export function WorkspaceShell({
   const messagesInitialLoadingRef = useRef(false);
   const messagesDirtyRef = useRef(false);
   const pendingDeliveryIdsRef = useRef<Set<string>>(new Set());
+  const deliveryRefreshSeqRef = useRef(0);
+  const deliveryRefreshTokensRef = useRef<Map<string, number>>(new Map());
   const mainRef = useRef<HTMLElement | null>(null);
   const scrollAdjustRef = useRef<{
     conversationId: string;
@@ -352,11 +354,21 @@ export function WorkspaceShell({
       messagesDirtyRef.current = true;
       return;
     }
+    // Delivery events can overlap (delivered, then read). Responses may arrive
+    // out of order, so only the newest request for this message may write; a
+    // stale delivered response must not overwrite a newer read projection.
+    const key = `${conversationId}:${messageId}`;
+    const token = ++deliveryRefreshSeqRef.current;
+    deliveryRefreshTokensRef.current.set(key, token);
     try {
       const result = await api.message(conversationId, messageId);
-      if (selectedConversationIdRef.current !== conversationId) {
+      if (
+        selectedConversationIdRef.current !== conversationId ||
+        deliveryRefreshTokensRef.current.get(key) !== token
+      ) {
         return;
       }
+      deliveryRefreshTokensRef.current.delete(key);
       setMessages((current) =>
         current.map((message) => (message.id === result.message.id ? result.message : message)),
       );
@@ -666,6 +678,7 @@ export function WorkspaceShell({
     messagesInitialLoadingRef.current = false;
     messagesDirtyRef.current = false;
     pendingDeliveryIdsRef.current.clear();
+    deliveryRefreshTokensRef.current.clear();
     scrollAdjustRef.current = null;
     setConversation(null);
     setConversationError(null);
