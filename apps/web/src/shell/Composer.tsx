@@ -72,7 +72,12 @@ export function Composer({
     conversation?.task?.state === 'not_accepted';
   const sending = conversation?.id != null && sendingConversations.has(conversation.id);
   const disabled = mode !== 'work' || !conversation || conversationLoading || terminal;
-  const draft = draftRef.current;
+  // Read the persisted draft during render: a parked-only draft has empty
+  // text, so setting draftRef in an effect may not otherwise trigger a render.
+  const draft =
+    conversation && repository
+      ? loadDraft(ownerId, repository.id, conversation.id)
+      : draftRef.current;
   const pendingDraft = draft?.pending ?? null;
   const pendingTextMismatch = pendingDraft !== null && pendingDraft.text.trim() !== text.trim();
   const deferredText = draft?.deferredText ?? null;

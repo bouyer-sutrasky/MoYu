@@ -342,6 +342,16 @@ export interface DraftMigration {
   moved: boolean;
 }
 
+function mergeParked(...groups: (ParkedDraft[] | undefined)[]): ParkedDraft[] | undefined {
+  const merged = new Map<string, ParkedDraft>();
+  for (const group of groups) {
+    for (const item of group ?? []) {
+      merged.set(item.id, item);
+    }
+  }
+  return merged.size > 0 ? [...merged.values()] : undefined;
+}
+
 export interface SentSnapshot {
   clientMessageId: string;
   text: string;
@@ -373,14 +383,17 @@ export function migrateSentDraftToConversation(
   const unsentText = sentBodyStillOnly ? '' : source.text;
   const unsentDeferred = source.deferredText ?? '';
   const remaining = joinText(unsentText, unsentDeferred);
-  if (remaining.trim().length === 0) {
+  const incomingParked = source.parked ?? [];
+  if (remaining.trim().length === 0 && incomingParked.length === 0) {
     removeDraft(ownerId, repositoryId, sourceConversationId);
     return { draft: target, deferred: false, moved: false };
   }
+  const parked = mergeParked(target?.parked, incomingParked);
   if (target?.pending) {
     const updated: Draft = {
       ...target,
       deferredText: joinText(target.deferredText, remaining),
+      ...(parked ? { parked } : {}),
       updatedAt: new Date().toISOString(),
     };
     saveDraft(ownerId, repositoryId, targetConversationId, updated);
@@ -398,6 +411,7 @@ export function migrateSentDraftToConversation(
     text: combinedText,
     updatedAt: new Date().toISOString(),
     pending: null,
+    ...(parked ? { parked } : {}),
   };
   saveDraft(ownerId, repositoryId, targetConversationId, migrated);
   removeDraft(ownerId, repositoryId, sourceConversationId);
@@ -433,7 +447,6 @@ export function moveDraftToAlias(
     // An alias GET does not prove this clientMessageId was accepted. Never
     // settle or discard it: park the whole source state (body, key, lineage,
     // deferred text) beside the target's own draft for itemized recovery.
-    const parked = [...(target.parked ?? [])];
     const entry: ParkedDraft = {
       id: sourceConversationId,
       sourceConversationId,
@@ -444,15 +457,10 @@ export function moveDraftToAlias(
       ...(source.deferredText ? { deferredText: source.deferredText } : {}),
       updatedAt: source.updatedAt,
     };
-    const index = parked.findIndex((item) => item.id === entry.id);
-    if (index >= 0) {
-      parked[index] = entry;
-    } else {
-      parked.push(entry);
-    }
+    const parked = mergeParked(target.parked, [entry], source.parked);
     const kept: Draft = {
       ...target,
-      parked,
+      ...(parked ? { parked } : {}),
       updatedAt: new Date().toISOString(),
     };
     saveDraft(ownerId, repositoryId, targetConversationId, kept);
@@ -463,6 +471,9 @@ export function moveDraftToAlias(
     const updated: Draft = {
       ...target,
       deferredText: joinText(joinText(target.deferredText, source.text), source.deferredText ?? ''),
+      ...(mergeParked(target.parked, source.parked)
+        ? { parked: mergeParked(target.parked, source.parked) }
+        : {}),
       updatedAt: new Date().toISOString(),
     };
     saveDraft(ownerId, repositoryId, targetConversationId, updated);
@@ -478,6 +489,9 @@ export function moveDraftToAlias(
     text,
     updatedAt: new Date().toISOString(),
     pending: null,
+    ...(mergeParked(target.parked, source.parked)
+      ? { parked: mergeParked(target.parked, source.parked) }
+      : {}),
   };
   saveDraft(ownerId, repositoryId, targetConversationId, merged);
   removeDraft(ownerId, repositoryId, sourceConversationId);
