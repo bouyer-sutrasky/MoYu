@@ -13,6 +13,7 @@ import {
   newLineageId,
   removeDraft,
   restoreDeferredDraft,
+  restoreParkedDraft,
   restorePendingDraft,
   saveDraft,
   settleSuccessfulSend,
@@ -75,6 +76,7 @@ export function Composer({
   const pendingDraft = draft?.pending ?? null;
   const pendingTextMismatch = pendingDraft !== null && pendingDraft.text.trim() !== text.trim();
   const deferredText = draft?.deferredText ?? null;
+  const parkedDrafts = draft?.parked ?? [];
 
   useEffect(() => {
     const conversationId = conversation?.id;
@@ -189,6 +191,7 @@ export function Composer({
       // settle it, and a retry must still use its original key.
       pending: base?.pending ?? null,
       ...(base?.deferredText ? { deferredText: base.deferredText } : {}),
+      ...(base?.parked ? { parked: base.parked } : {}),
     };
     draftRef.current = draft;
     if (!saveDraft(ownerId, repositoryId, conversationId, draft)) {
@@ -238,6 +241,26 @@ export function Composer({
     setText(restored.text);
     setError(null);
     setNotice('已恢复合并会话保留下来的未发送草稿。');
+  }
+
+  function restoreParked(parkedId: string): void {
+    const conversationId = conversationIdRef.current;
+    const repositoryId = repositoryIdRef.current;
+    if (!conversationId || !repositoryId) {
+      return;
+    }
+    if (draftRef.current?.pending) {
+      setError('请先核对当前会话的待确认发送，再恢复合并来源的草稿。');
+      return;
+    }
+    const restored = restoreParkedDraft(ownerId, repositoryId, conversationId, parkedId);
+    if (!restored) {
+      return;
+    }
+    draftRef.current = restored;
+    setText(restored.text);
+    setError(null);
+    setNotice('已恢复合并来源的未确认发送；再次发送会复用其原标识核对结果。');
   }
 
   async function submit(): Promise<void> {
@@ -417,6 +440,20 @@ export function Composer({
               : '合并来源的未发送内容已保留；可点“恢复合并草稿”。'}
           </p>
         ) : null}
+        {parkedDrafts.map((parked) => (
+          <p className={styles.composerStatus} data-kind="pending" key={parked.id}>
+            合并来源还有未确认发送：{parked.text.slice(0, 40)}
+            <button
+              type="button"
+              className={styles.textButton}
+              onClick={() => restoreParked(parked.id)}
+              disabled={Boolean(pendingDraft)}
+              title={pendingDraft ? '先核对当前会话的待确认发送' : '恢复此草稿并按原标识核对'}
+            >
+              恢复此草稿
+            </button>
+          </p>
+        ))}
         {storageWarning ? (
           <p className={styles.composerStatus} data-kind="notice">
             {storageWarning}
@@ -447,7 +484,7 @@ export function Composer({
                 恢复合并草稿
               </button>
             ) : null}
-            {text.trim().length > 0 || pendingDraft || deferredText ? (
+            {text.trim().length > 0 || pendingDraft || deferredText || parkedDrafts.length > 0 ? (
               <button
                 type="button"
                 className={styles.textButton}

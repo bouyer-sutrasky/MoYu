@@ -28,6 +28,19 @@ export interface DraftPending {
   ambiguous?: boolean;
 }
 
+/** An unresolved source draft kept while another conversation has its own pending send. */
+export interface ParkedDraft {
+  /** Source conversation id; also the key within parked. */
+  id: string;
+  sourceConversationId: string;
+  version: number;
+  lineageId: string;
+  text: string;
+  pending: DraftPending;
+  deferredText?: string;
+  updatedAt: string;
+}
+
 export interface Draft {
   version: number;
   /** Stable across edits, replaced when the draft is cleared and recreated. */
@@ -41,6 +54,8 @@ export interface Draft {
    * pending send settles, so the pending retry keeps its own key and body.
    */
   deferredText?: string;
+  /** Unresolved sends parked by an alias resolution so nothing is discarded. */
+  parked?: ParkedDraft[];
 }
 
 interface StorageLike {
@@ -147,6 +162,61 @@ function parseDraft(raw: string | null): Draft | null {
       pending: validPending,
       ...(typeof value.deferredText === 'string' && value.deferredText.length > 0
         ? { deferredText: value.deferredText }
+        : {}),
+      ...(Array.isArray(value.parked) && value.parked.length > 0
+        ? {
+            parked: value.parked.flatMap((item): ParkedDraft[] => {
+              if (!item || typeof item !== 'object') return [];
+              const parked = item as Partial<ParkedDraft>;
+              if (
+                typeof parked.id !== 'string' ||
+                typeof parked.text !== 'string' ||
+                !parked.pending ||
+                typeof parked.pending.clientMessageId !== 'string' ||
+                typeof parked.pending.text !== 'string' ||
+                typeof parked.pending.version !== 'number' ||
+                typeof parked.pending.at !== 'string'
+              ) {
+                return [];
+              }
+              const pending: DraftPending = {
+                clientMessageId: parked.pending.clientMessageId,
+                text: parked.pending.text,
+                version: parked.pending.version,
+                lineageId:
+                  typeof parked.pending.lineageId === 'string' && parked.pending.lineageId
+                    ? parked.pending.lineageId
+                    : typeof parked.lineageId === 'string' && parked.lineageId
+                      ? parked.lineageId
+                      : newLineageId(),
+                at: parked.pending.at,
+                ambiguous: parked.pending.ambiguous === true,
+              };
+              return [
+                {
+                  id: parked.id,
+                  sourceConversationId:
+                    typeof parked.sourceConversationId === 'string'
+                      ? parked.sourceConversationId
+                      : parked.id,
+                  version: typeof parked.version === 'number' ? parked.version : pending.version,
+                  lineageId:
+                    typeof parked.lineageId === 'string' && parked.lineageId
+                      ? parked.lineageId
+                      : pending.lineageId,
+                  text: parked.text,
+                  pending,
+                  ...(typeof parked.deferredText === 'string' && parked.deferredText.length > 0
+                    ? { deferredText: parked.deferredText }
+                    : {}),
+                  updatedAt:
+                    typeof parked.updatedAt === 'string'
+                      ? parked.updatedAt
+                      : new Date().toISOString(),
+                },
+              ];
+            }),
+          }
         : {}),
     };
   } catch {
@@ -359,22 +429,37 @@ export function moveDraftToAlias(
     removeDraft(ownerId, repositoryId, sourceConversationId);
     return source;
   }
-  if (target.pending) {
-    if (source.pending) {
-      // The source send was likely committed (the alias resolved); settle that
-      // snapshot and keep only its unsent text, exactly like a merge response.
-      return migrateSentDraftToConversation(
-        ownerId,
-        repositoryId,
-        sourceConversationId,
-        targetConversationId,
-        {
-          clientMessageId: source.pending.clientMessageId,
-          text: source.pending.text,
-          lineageId: source.pending.lineageId,
-        },
-      ).draft;
+  if (source.pending) {
+    // An alias GET does not prove this clientMessageId was accepted. Never
+    // settle or discard it: park the whole source state (body, key, lineage,
+    // deferred text) beside the target's own draft for itemized recovery.
+    const parked = [...(target.parked ?? [])];
+    const entry: ParkedDraft = {
+      id: sourceConversationId,
+      sourceConversationId,
+      version: source.version,
+      lineageId: source.lineageId,
+      text: source.text,
+      pending: source.pending,
+      ...(source.deferredText ? { deferredText: source.deferredText } : {}),
+      updatedAt: source.updatedAt,
+    };
+    const index = parked.findIndex((item) => item.id === entry.id);
+    if (index >= 0) {
+      parked[index] = entry;
+    } else {
+      parked.push(entry);
     }
+    const kept: Draft = {
+      ...target,
+      parked,
+      updatedAt: new Date().toISOString(),
+    };
+    saveDraft(ownerId, repositoryId, targetConversationId, kept);
+    removeDraft(ownerId, repositoryId, sourceConversationId);
+    return kept;
+  }
+  if (target.pending) {
     const updated: Draft = {
       ...target,
       deferredText: joinText(joinText(target.deferredText, source.text), source.deferredText ?? ''),
@@ -383,18 +468,6 @@ export function moveDraftToAlias(
     saveDraft(ownerId, repositoryId, targetConversationId, updated);
     removeDraft(ownerId, repositoryId, sourceConversationId);
     return updated;
-  }
-  if (source.pending) {
-    // Keep the unresolved source send and its key; the target's own content is
-    // unsent and waits in deferredText until that send settles.
-    const kept: Draft = {
-      ...source,
-      deferredText: joinText(joinText(source.deferredText, target.text), target.deferredText ?? ''),
-      updatedAt: new Date().toISOString(),
-    };
-    saveDraft(ownerId, repositoryId, targetConversationId, kept);
-    removeDraft(ownerId, repositoryId, sourceConversationId);
-    return kept;
   }
   const text = [target.text, source.text, target.deferredText, source.deferredText]
     .filter((part): part is string => Boolean(part && part.trim().length > 0))
@@ -445,9 +518,23 @@ export function settleSuccessfulSend(
         text: draft.deferredText,
         updatedAt: new Date().toISOString(),
         pending: null,
+        ...(draft.parked ? { parked: draft.parked } : {}),
       };
       saveDraft(ownerId, repositoryId, conversationId, promoted);
       return { draft: promoted, settled: true, promoted: true };
+    }
+    if (draft.parked && draft.parked.length > 0) {
+      // The sent body leaves the composer, but other unresolved source sends
+      // remain available for itemized recovery.
+      const cleared: Draft = {
+        ...draft,
+        version: draft.version + 1,
+        lineageId: newLineageId(),
+        text: '',
+        pending: null,
+      };
+      saveDraft(ownerId, repositoryId, conversationId, cleared);
+      return { draft: cleared, settled: true, promoted: false };
     }
     removeDraft(ownerId, repositoryId, conversationId);
     return { draft: null, settled: true, promoted: false };
@@ -514,6 +601,45 @@ export function restoreDeferredDraft(
 }
 
 /**
+ * Restores one parked unresolved send after the current draft has no pending
+ * send of its own. Current unsent text and the parked deferred text are kept
+ * in deferredText, so neither side is lost while the restored key is checked.
+ */
+export function restoreParkedDraft(
+  ownerId: string,
+  repositoryId: string,
+  conversationId: string,
+  parkedId: string,
+): Draft | null {
+  const draft = loadDraft(ownerId, repositoryId, conversationId);
+  if (!draft || draft.pending) {
+    return draft;
+  }
+  const parked = draft.parked ?? [];
+  const index = parked.findIndex((item) => item.id === parkedId);
+  if (index < 0) {
+    return draft;
+  }
+  const item = parked[index];
+  if (!item) {
+    return draft;
+  }
+  const remaining = parked.filter((entry) => entry.id !== parkedId);
+  const deferredText = joinText(joinText(draft.deferredText, draft.text), item.deferredText ?? '');
+  const restored: Draft = {
+    version: Math.max(draft.version, item.version) + 1,
+    lineageId: item.lineageId,
+    text: item.text.trim().length > 0 ? item.text : item.pending.text,
+    pending: item.pending,
+    ...(deferredText.trim().length > 0 ? { deferredText } : {}),
+    updatedAt: new Date().toISOString(),
+    ...(remaining.length > 0 ? { parked: remaining } : {}),
+  };
+  saveDraft(ownerId, repositoryId, conversationId, restored);
+  return restored;
+}
+
+/**
  * Builds the draft for a send. Unchanged text reuses its pending idempotency
  * key; new text belongs to the same editing lineage (unless the draft was
  * cleared), so an old response still cannot clear it.
@@ -548,5 +674,6 @@ export function draftForSend(
     updatedAt: new Date().toISOString(),
     pending,
     ...(previous?.deferredText ? { deferredText: previous.deferredText } : {}),
+    ...(previous?.parked ? { parked: previous.parked } : {}),
   };
 }
