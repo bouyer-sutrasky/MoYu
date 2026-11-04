@@ -1,6 +1,7 @@
 # M5-A 验证记录
 
-日期：2026-11-05。基线：`main@160a22db322571f3a12fcc76748f86260fd34c04`。
+日期：2026-11-05。基线：`main@160a22db322571f3a12fcc76748f86260fd34c04`；返修实现 head：
+`a38b30102708ae1691dac89b8ef78e9d48d225ff`。
 被测环境与设计见 [`M5-INSTANCES.md`](M5-INSTANCES.md)；本文只记实际执行过的命令、结果与未验证项。
 所有实例均使用隔离 `DSH_HOME=/root/.dsh-m5`、独立 profile/state/worktree/端口和私有测试仓库；
 3082 bootstrap、4300 线上实例、生产库 `moyu` 与 Nginx 未改动。
@@ -21,13 +22,24 @@
 构建/制品摘要见 [`evidence/m5/artifacts.txt`](evidence/m5/artifacts.txt)。核心值：
 
 ```
-api dist        3f3a259c…21ad7
-dispatcher dist 050153bc…1713
-supervisor dist fc3afd1b…127
-web js/css      2047786b… / 39a2cbfc…
+api dist        6eccff5e…a50461
+dispatcher dist ab172e05…da7d99
+supervisor dist 5a102dce…2d223
+web js/css      7e475c12…7d83b1 / 39a2cbfc…cb5424
 migration 0010  dd09b7b3…6c55
-upstream index  8d80bb7f…6252
+migration 0011  1e105e7a…4227b0
+upstream index  8d80bb7f…3c6252
 ```
+
+### 本轮返修（2026-11-05）
+
+| 发现 | 处理 | 验证 |
+| --- | --- | --- |
+| P1 `stopProcessTree` 只等父 PID | 改为记录 root/pgid/带 startTime 的子孙；父退出后按 process group 和已记录成员继续追踪；全部身份消失才返回 true；超时先 SIGKILL 再等 | `process.test.ts`：父先退子存活、子忽略 TERM、超时未退出、新服务 200ms 仍保留；live 短超时保留 `stopping/stop_failed` |
+| P1 恢复 stopping/失败路径无条件休眠 | `stopInstance` 仅在全部退出且端口关闭后转 `sleeping`；失败保持 `stopping`、保留 pid/ownership、占容量；重启/启动失败/失联复用同一证明；新增 `retry_stop` | `stop-timeout-retention.json`、`supervisor-lifecycle.log`；DB `members=2` 时未被误报 stopped |
+| P1 <5s 子孙被排除 | 取消年龄阈值；只排除 `gh`/`gh-agent` polling，其他子孙（含刚启动 200ms）保守保留 | `process.test.ts` 新服务保留；sleep/LRU 使用同一 `retainedDescendants` |
+| P2 queued wake 覆盖优先级/时间 | `mergeQueuedWake` 取最高优先级（数值最小）和最早时间；重复 wake 不重置 | 纯函数测试 + live reply 10 → new_task 20 后仍 `queue_priority=10`、`duplicate:true` |
+| 证据 head/日志未随 PR | `artifacts.txt` 记录实现 head/tree 与构建 hash；log 强制提交；新增 0011 回滚、并发、重启、停止失败、浏览器回归证据 | PR 文件列表包含全部脱敏日志；0011 回滚 11/0→12/1 |
 
 ## 2. 最终检查结果
 
@@ -36,10 +48,10 @@ upstream index  8d80bb7f…6252
 | `corepack pnpm@11.7.0 --config.engine-strict=false lint` | 通过（0 error） |
 | `prettier --check "**/*.{ts,tsx,mjs,cjs,json,yml,yaml,css,html}"` | 通过 |
 | `corepack pnpm@11.7.0 -r --if-present typecheck` | 通过（8 个项目） |
-| `corepack pnpm@11.7.0 -r --if-present test` | 通过：contracts 13、runtime-client 13、api 20、dispatcher 3、supervisor 5 |
-| `@moyu/db test:integration` | 通过：8 文件 / 34 测试（含 0010 回滚、旧版本迁移、完整性） |
+| `corepack pnpm@11.7.0 -r --if-present test` | 通过：contracts 13、runtime-client 13、api 20、dispatcher 3、supervisor 12 |
+| `@moyu/db test:integration` | 通过：8 文件 / 34 测试（含 0010/0011 回滚、旧版本迁移、完整性） |
 | `@moyu/api test:integration` | 通过：11 文件 / 65 测试（含 M4 暂停继续、分页、双入口、仓库生命周期） |
-| `@moyu/dispatcher test:integration` | 通过：3 文件 / 29 测试（含多仓库隔离） |
+| `@moyu/dispatcher test:integration` | 通过：3 文件 / 30 测试（含多仓库隔离、等待/审阅释放名额） |
 | `corepack pnpm@11.7.0 -r --if-present build` | 通过（API/dispatcher/supervisor/web） |
 
 完整 CI 还需在 PR head 上跑两次必需检查（`check`、`integration (real PostgreSQL)`）；本文件记录的是本地等价命令结果。
@@ -50,29 +62,33 @@ upstream index  8d80bb7f…6252
 | --- | --- | --- | --- |
 | 1 | 专用账号仓库查询、权限拒绝、重复添加 | **通过**：真实 `gh` 查询返回三个测试仓库与 push 权限；`POST` readonly/不存在 403、重复 409、只建一行 | `apps/api/test/integration/repositories.integration.test.ts`（5 通过）；实际 API 查询见运行记录 |
 | 2 | A/B/C 分别启动、休眠、网页唤醒、容量排队；切换仓库不污染原任务/配置/凭据/cursor | **通过（生命周期）**：三仓库各有独立 profile/state/端口/凭据；A/B 在线后 C 唤醒 `capacity_wait`；LRU 淘汰空闲实例；每仓库 dispatcher 独立循环与 cursor | `evidence/m5/supervisor-lifecycle.log`、`live-snapshot.txt`、dispatcher 集成测试 |
-| 3 | A/B 忙 → C 排队 → 释放/最久无交互淘汰；人工回复优先；等待/审阅释放名额但不抢占运行 | **部分通过**：A/B 有真实运行任务/后台 `sleep 300` 时 C 进入 `capacity_wait`；空闲实例按 `last_activity` 被淘汰；不抢占运行中任务。人工回复优先级已实现（10 vs 20），未用两个真实人工请求做竞态测量 | `supervisor-lifecycle.log`、DB `repository_instances`、dispatch 日志 |
-| 4 | 并发重复唤醒/提交、双入口顺序、启动与人工停止交错、晚到回执 | **部分通过**：并发两次 wake 只产生一个 DSH 进程；启动中收到休眠/重新 wake 由 desired_state + generation 收敛；未重复 Ticket。双入口/M4 幂等由既有集成测试回归，未在本 live 栈重跑 GitHub→Web 全序列 | `evidence/m5/concurrent-wake.log`、supervisor 日志、既有 M4 测试 |
-| 5 | supervisor/dispatcher 重启、实例失联、启动失败、子进程退出；停机保持；后台服务阻止休眠 | **通过**：supervisor 重启接续 alpha/beta 同一 PID，gamma 保持 sleeping；kill -9 beta 后 `instance_lost`/端口关闭/名额回收，wake 恢复；stale lock 导致 `start_failed`，清理后重试在线；beta 有真实后台任务时 sleep 返回 `accepted:false` 且进程保留 | `restart-adoption.log`、`process-exit-fault.log`、`supervisor-lifecycle.log`、`evidence/m5/live-snapshot.txt` |
-| 6 | 状态原因/等待对象/最后进展/恢复动作与现场一致；桌面/手机、浅/深真实浏览器 | **通过（DOM + 截图）**：休眠显示 GitHub 监听暂停、原因、最后进展、唤醒动作；添加仓库对话框列出账号仓库、重复添加显示冲突；before/after 使用同一场景/视口/主题 | `ui-checks.json`、`after-*.png` / `before-*.png` |
-| 7 | M4 暂停/继续、双入口幂等、M4-UX 草稿/分页/偏好回归 | **部分通过**：既有 API/dispatcher 集成测试与 M4-UX 单元测试全部通过；live 停止请求在 GitHub polling 子进程未退出时按既有规则变为 `blocked`，未伪报 stopped。没有重跑完整浏览器草稿/分页回归 | 全量测试输出；`M4-UX-VERIFICATION.md` 既有证据 |
+| 3 | A/B 忙 → C 排队 → 释放/最久无交互淘汰；人工回复优先；等待/审阅释放名额但不抢占运行 | **通过**：A/B 有真实运行任务/后台 `sleep 300` 时 C 进入 `capacity_wait`；空闲实例按 `last_activity` 被淘汰；C 先 reply（10）再 new_task（20）后 DB 仍为 `queue_priority=10` 且重复 wake 返回 `duplicate:true`，不重置 FIFO；等待/审阅释放名额由真实 PostgreSQL 测试覆盖（`waiting_input` lease released，`running` lease active） | `capacity-wake.log`、`concurrent-wake.log`、`operations.integration.test.ts` |
+| 4 | 并发重复唤醒/提交、双入口顺序、启动与人工停止交错、晚到回执 | **通过（可达路径）**：8 个并发同 `clientMessageId` 提交为 1×202 + 7×200，只有 1 条消息/1 次投递；同 id 晚到重试仍 `duplicate:true`，消息/投递数不变；并发 wake 只产生一个 DSH 进程；wake 后立即 sleep 收敛为 `sleeping` 且无残留进程；双入口的 GitHub→Web/Web→GitHub 语义由既有 M4 集成测试回归（本栈在线 GitHub 导入见限制 2） | `concurrent-submit.log`、`late-receipt.log`、`concurrent-wake.log`、`start-stop-interleave.log` |
+| 5 | supervisor/dispatcher 重启、实例失联、启动失败、子进程退出；停机保持；后台服务阻止休眠 | **通过（含返修）**：supervisor 重启接续 alpha 同一 PID；dispatcher 重启前后消息/投递/task 计数不变；kill -9 后 `instance_lost`/端口关闭/名额回收；stale lock 导致 `start_failed`，清理后重试在线；新启动 <5 秒的后台服务也会阻止休眠（`retainedDescendants` 不再按年龄排除） | `supervisor-restart.log`、`dispatcher-restart.log`、`process-exit-fault.log`、`supervisor-lifecycle.log` |
+| 6 | 状态原因/等待对象/最后进展/恢复动作与现场一致；桌面/手机、浅/深真实浏览器 | **通过（DOM + 截图）**：休眠显示 GitHub 监听暂停、原因、最后进展、唤醒动作；停止失败显示 `stopping/stop_failed`、占位进程数和 `retry_stop`；添加仓库对话框列出账号仓库、重复添加显示冲突；before/after 使用同一场景/视口/主题 | `ui-checks.json`、`stop-timeout-retention.json`、`after-*.png` / `before-*.png` |
+| 7 | M4 暂停/继续、双入口幂等、M4-UX 草稿/分页/偏好回归 | **通过（真实浏览器 + 集成测试）**：Chromium 下会话分页 50→56 且追加成功，草稿 reload 后恢复；M4 暂停/继续、双入口幂等、晚到回执由 API/dispatcher 集成测试覆盖。未把旧单仓库 live 停止证据当作多仓库路径证据 | `browser-regression.json`、`concurrent-submit.log`、`late-receipt.log`、全量测试输出 |
 
-### 关键 live 结果
 
-- **容量与淘汰**：alpha 在线；添加 beta 后 beta 启动；添加 gamma 时 alpha 空闲，按 LRU 被
-  `evicted_for_capacity` 停止，beta/gamma 在线；随后 beta/gamma 有真实任务时 alpha 唤醒得到
-  `sleeping/capacity_wait`。
-- **后台服务阻止休眠**：beta 的 DSH 进程下有 `bash -c date -Is; sleep 300` 与 `sleep 300` 两个存活
-  超过 5 秒的后台子孙；`POST /repositories/:id/sleep` 返回 HTTP 200、`accepted:false`、
-  `reasonCode=sleep_refused`，进程仍在，未用状态字段冒充已停止。
-- **进程失联**：对 beta 执行 `kill -9` 后约 3 秒，DB 变为 `fault/instance_lost`、pid 为空、
-  3403/3404 端口关闭；再次 wake 后新进程在线。
-- **启动失败与恢复**：SIGKILL 遗留 `state/m5b.lock`，下一次启动在 120s 后 `start_failed`；
-  修复后的 supervisor 清理该 profile 的陈旧 lock，重试后 `online`。
-- **supervisor 重启**：alpha/beta 同一 PID 被接续，gamma 保持 sleeping，未因重启被错误拉起。
-- **休眠 GitHub @**：beta 休眠且无进程时，在 `Bouyer12/m5a-beta-adf10ad9#1` 写入
-  `@Bouyer12`；50 秒后该仓库会话数不变（仍为原有 1 条），也无新进程。
-- **迁移**：0010 在隔离库回滚后 `repository_instances` 消失、迁移数 10；重放后恢复、迁移数 11；
-  脚本要求正确 hash 且 0010 为最后一条。
+### 关键 live 结果（返修后 head `a38b301`）
+
+- **停止所有权**：在 `STOP_TIMEOUT_MS=100` 的隔离 supervisor 上停止 beta，`POST /sleep` 返回
+  `accepted:false`；DB 保持 `stopping/stop_failed`，`pid=3917683`，`ownership.members=2`，
+  日志 `portClosed:true` 但仍有 2 个进程存活。端口先关闭没有骗过停止证明，名额未释放；随后进程真正
+  退出时 tick 才转为 `sleeping`。单元测试另外覆盖“父先退出、子仍存活”“子忽略 SIGTERM”“超时未退出”
+  与“新启动 200ms 的服务仍保留”。
+- **停止成功路径**：beta 在线时 `POST /sleep` 返回 `accepted:true`，DB 为 `sleeping/-`，进程消失。
+- **容量与优先级**：短超时停止 gamma 期间 active 仍计入 stopping；beta 先 reply（10）再 new_task（20），
+  DB 保留 `queue_priority=10`，第二次 wake `duplicate:true`；alpha 在满容量时 wake 不抢占。
+- **并发提交/晚到回执**：8 个同 `clientMessageId` 请求 1×202 + 7×200，DB 只有 1 条消息、1 次投递；
+  之后同 id 重试 200/duplicate，计数仍为 1/1。
+- **启动/停止交错**：gamma wake 后 150ms 内 sleep，最终 `sleeping/sleeping/-`，没有残留 DSH 进程。
+- **重启**：supervisor 重启后 alpha 仍为 PID 3919012；dispatcher 重启前后消息/投递/task 计数为 1/1/1。
+- **浏览器回归**：Chromium 首次加载 50 条会话，点击“加载更多任务”后 56 条；草稿 reload 后恢复。
+- **在线 GitHub 导入**：在本栈三个测试仓库上用 agent 账号 `Bouyer12` 写入 `@Bouyer12` 探针，Source
+  未产生新会话。原因是探针作者就是 agent 账号，GitHub 通知不把自身评论作为可接单的人工请求；这不等于
+  人工 @ 链路已验证。人工作者的真实 @ 仍需在测试仓库补一次（见未验证项 2）。
+- **迁移**：0010/0011 均在隔离库完成 rollback→reapply；0011 回滚后迁移数 11、`ownership` 列 0，
+  重放后 12、列 1，脚本要求正确 hash 且 0011 为最后一条。
 
 ## 3. 实际命令
 
@@ -109,16 +125,17 @@ M5_SESSION_TOKEN=<isolated session> node scripts/m5/ui-check.mjs
 
 1. **没有在 live 栈完成三个仓库各自的完整 PR 交付**。已用真实 worker Ticket、Session 和后台命令验证
    生命周期与忙闲，但没有让每个仓库都跑到测试/PR 完成；M3/M4 的 PR 闭环证据仍以原阶段记录为准。
-2. **在线 GitHub @ 导入未在本栈重跑**。本单只验证了“休眠时 @ 不唤醒”；在线时 GitHub Source 已由
-   supervisor 配置为启用，但完整通知→Trigger→Ticket 链路沿用 M4 证据。
+2. **在线 GitHub @ 导入仍缺一条人工作者的真实触发**。本栈验证了休眠时 @ 不唤醒；在线探针由 agent 账号
+   `Bouyer12` 写入，Source 不把自身评论当作人工请求，因而没有生成会话。需要所有者在
+   `Bouyer12/m5a-alpha-adf10ad9` 等测试仓库用真实人工账号补一次 @；不是代码失败，但本轮不能声称已闭合。
 3. **并发规模有限**：只验证两次并发唤醒与三仓库容量，没有做多客户端/长时间 soak 或资源压力测量；
    8GB 聚合预算、cgroup 计量与 M5-B 租约扩展不在本单。
 4. **生产 supervisor 身份未落地**：测试 supervisor 仍为 root；生产需专用非 root/systemd、目录和凭据
    权限见设计文档，本单没有做正式部署或 Nginx 变更。
 5. **真实设备 Passkey 未重验**：截图使用隔离测试会话，未绕过产品 Passkey；真实设备验收需所有者参与。
-6. **live 停止的既有边界**：当 GitHub polling 的 `gh` 子进程尚未退出时，M4 暂停证据会判定
-   `blocked` 而不是 `stopped`。这是既有“不伪报停止”的行为；M5-A 没有修改暂停证据算法，只在容量/休眠
-   门控中排除了短命 polling 子进程。该场景需要后续在 GitHub Source 轮询空闲时复测停止成功路径。
+6. **M4 任务停止的 live 路径未重跑**：没有在 live 栈制造一个运行中任务并等待 GitHub polling 空闲后
+   停止；既有 API/dispatcher 集成测试覆盖暂停/继续与 `blocked` 语义，M5 实例停止成功路径已单独验证。
+   本轮不把集成测试等同于 live 任务停止。
 7. **截图对比**：before 为 `main@160a22d` 的 M4-UX Web 构建，after 为当前构建；同一数据库、同一
    仓库选择、视口和主题。截图由真实 Chromium 生成，但本执行模型不能直接读图，因而额外用 DOM 断言
    记录关键文案与动作；仍建议人工目视复核。

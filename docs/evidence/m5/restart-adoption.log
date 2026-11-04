@@ -1,0 +1,18 @@
+before_restart alpha_pid=3872754
+3879850 beta_pid=3879015
+3879850 gamma_pid=3879850
+3879854
+Bouyer12/m5a-alpha-adf10ad9=online/3872754
+Bouyer12/m5a-beta-adf10ad9=online/3879015
+Bouyer12/m5a-gamma-adf10ad9=sleeping/-
+restarted-supervisor
+after_restart alpha_pid=3872754
+3879850
+3879951 beta_pid=3879015
+3879850
+3879951 gamma_pid=3879850
+3879951
+3879987
+Bouyer12/m5a-alpha-adf10ad9=online/3872754/listening
+Bouyer12/m5a-beta-adf10ad9=online/3879015/listening
+Bouyer12/m5a-gamma-adf10ad9=sleeping/-/evicted

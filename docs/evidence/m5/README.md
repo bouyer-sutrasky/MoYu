@@ -9,6 +9,17 @@
 | `process-exit-fault.log` | `kill -9` beta 后 `instance_lost`、端口关闭与后续恢复 |
 | `github-sleeping.log` | 休眠仓库写入 GitHub @ 后 50 秒内无新会话、无进程 |
 | `migration-0010-rollback.log` | 0010 回滚→重放的 psql 输出 |
+| `migration-0011-rollback.log` | 0011（ownership）回滚后 11 条迁移/0 列，重放后 12/1 |
+| `stop-timeout-retention.json` | 100ms 停止超时后 `accepted:false`、`stopping/stop_failed`、pid 与 ownership 保留 |
+| `stop-timeout-request.log` | 短超时 supervisor 的启动记录（含最小配置边界） |
+| `capacity-wake.log` | gamma 停止期间 beta 排队；reply 10 后 new_task 20 仍保留优先级 10 |
+| `concurrent-submit.log` | 8 个同 `clientMessageId` 并发提交：1×202 + 7×200，1 条消息/1 次投递 |
+| `late-receipt.log` | 同 id 晚到重试 200/duplicate，消息/投递仍为 1 |
+| `start-stop-interleave.log` | wake 后立即 sleep，最终 sleeping、无残留进程 |
+| `dispatcher-restart.log` | dispatcher 重启前后消息/投递/task 计数不变 |
+| `supervisor-restart.log` | supervisor 重启后 alpha 同一 PID 接续，beta/gamma 保持休眠 |
+| `browser-regression.json` | 真实 Chromium：会话分页 50→56、reload 后草稿恢复 |
+| `github-online.log` | agent 自写 @ 未产生导入的现场；人工 @ 仍需所有者补测 |
 | `artifacts.txt` | 基线/head、Node/pnpm/PostgreSQL、构建与上游制品 sha256 |
 | `ui-checks.json` | 真实 Chromium DOM 断言：休眠文案、监听暂停、唤醒动作、添加仓库列表、重复冲突、before 无该状态 |
 | `before-*.png` | `main@160a22d` 的 M4-UX Web 构建（同一数据库/仓库/视口/主题） |

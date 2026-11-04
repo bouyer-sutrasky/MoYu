@@ -54,14 +54,15 @@ supervisor 的实例映射来自固定的 `INSTANCES_CONFIG`：
 ## 2. 持久化状态
 
 迁移 `0010_wandering_living_lightning` 新增 `repository_instances`（每仓库一行）和
-`repositories.bridge_callback_token_hash`。状态：
+`repositories.bridge_callback_token_hash`；迁移 `0011_young_jimmy_woo` 增加 `repository_instances.ownership`
+（root pid、process group、带 startTime 的成员快照）。状态：
 
 | state | 含义 | 监听 | 在线名额 | 可执行动作 |
 | --- | --- | --- | --- | --- |
 | `sleeping` | 休眠/排队 | 暂停 | 否 | 唤醒；capacity_wait 时显示已排队 |
 | `starting` | 正在启动并核验 profile/端口/Bridge | 未就绪 | 是 | 停止启动（受限） |
 | `online` | 在线 | 是 | 是 | 休眠（无人工作且无保留后台服务时） |
-| `stopping` | 正在停止并核验进程/端口 | 暂停 | 是（直到退出） | 无 |
+| `stopping` | 正在停止并核验进程/端口 | 暂停 | 是（直到完整退出） | 失败时可重试停止 |
 | `fault` | 启动失败/进程失联 | 否 | 否 | 重试启动 |
 
 `desired_state` 区分“应在线”和“应休眠”，使 supervisor 重启后收敛而不是把人工休眠的仓库重新拉起。
@@ -79,8 +80,19 @@ supervisor 的实例映射来自固定的 `INSTANCES_CONFIG`：
   `blocked`、`failed`、`completed`、`closed_unmerged` 释放执行名额。实例是否在线与是否有执行名额分开。
 - 休眠门控不是“idle 即停”：
   - 有 `pending_admission/queued/discussing/running/stopping` 任务或 queued/running 人工命令：拒绝；
-  - DSH 进程仍有存活超过 5 秒的后台子孙进程（例如 worker 启动的测试服务）：拒绝；
-  - 短命的 GitHub polling 子进程不计入保留服务，避免把瞬时轮询误判为需要保留的工作。
+  - DSH 进程仍有任何非瞬时的后台子孙进程（例如 worker 刚启动的测试服务）：拒绝；不按年龄放宽，
+    新服务即使只有 200ms 也保守保留；
+  - 只有已知的 GitHub polling 短命进程（`gh` / `gh-agent`）不计入保留服务；其他未知进程一律保留。
+- 停止以进程所有权为准，不以父 PID 或端口单独作证：
+  - 启动/停止途中持续记录 root pid、process group 和带 startTime 的子孙；父先退出后仍用 process group
+    和已记录成员查找幸存子进程；
+  - SIGTERM 后等待所有已记录身份退出，超时后 SIGKILL 并继续等待；只有全部身份消失且 Bridge 端口关闭
+    才进入 `sleeping`；
+  - 超时/退出未知时保持 `stopping`（占用在线名额），保存剩余 ownership，返回 `accepted:false`；
+    UI 显示 `retry_stop`，可重试停止；不得用 `pid:null`/`sleeping` 释放名额；
+  - supervisor 重启、启动失败和进程失联路径使用同一停止证明；清理失败继续占用名额，不新建重叠实例。
+- 排队唤醒合并而不是覆盖：同一仓库已在排队时，保留最高优先级（数值最小）和最早
+  `wake_requested_at`；网页回复（10）不会被后到的普通新任务（20）降级或重置 FIFO。
 - 实例进程存活但 Bridge 健康检查失败时，不再杀死进程；状态保持在线并显示 `bridge_unreachable`/
   监听未知，等待下一轮核验。只有进程实际退出才进入 `fault/instance_lost` 并回收名额。
 - supervisor 重启时会核对 DB 的 pid/端口：在线进程被接续（同一 PID），半启动且 Bridge 未就绪的孤儿被

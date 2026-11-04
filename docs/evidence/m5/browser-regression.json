@@ -1,0 +1,17 @@
+{
+  "at": "2026-11-04T17:48:20.716Z",
+  "firstPage": 50,
+  "secondPage": 56,
+  "draftRestored": true,
+  "checks": [
+    {
+      "name": "keyset-pagination-appends",
+      "ok": true
+    },
+    {
+      "name": "draft-restored-after-reload",
+      "ok": true
+    }
+  ],
+  "ok": true
+}
