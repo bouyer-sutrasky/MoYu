@@ -602,6 +602,11 @@ export function registerConversationRoutes(
                 if (!source.mergedIntoConversationId && sourceTask?.state !== 'pending_admission') {
                   return insertInbound(transaction, source, input);
                 }
+                if (source.mergedIntoConversationId === null && sourceTask?.upstreamTicketId) {
+                  throw ApiProblem.conflict(
+                    'The source task already has a runtime ticket; the requirement cannot be merged',
+                  );
+                }
                 const [targetConversion] = await transaction
                   .select()
                   .from(conversations)
@@ -624,44 +629,80 @@ export function registerConversationRoutes(
                 const created = await insertInbound(transaction, targetConversion, input);
                 if (!source.mergedIntoConversationId) {
                   // A supplementary message may have committed while this merge
-                  // waited for the source lock. Move it to the target task rather
-                  // than deleting it with the source task.
+                  // waited for the source lock. Move its whole reply graph to the
+                  // target rather than deleting it with the source task.
                   const sourceMessages = await transaction
                     .select()
                     .from(messages)
                     .where(eq(messages.conversationId, source.id))
                     .for('update');
                   for (const sourceMessage of sourceMessages) {
-                    if (sourceMessage.clientMessageId) {
-                      const [duplicate] = await transaction
-                        .select({
-                          id: messages.id,
-                          body: messages.body,
-                          replyTo: messages.replyToMessageId,
-                        })
-                        .from(messages)
-                        .where(
-                          and(
-                            eq(messages.conversationId, targetConversion.id),
-                            eq(messages.clientMessageId, sourceMessage.clientMessageId),
-                          ),
-                        )
-                        .limit(1);
-                      if (duplicate) {
-                        if (
-                          duplicate.body !== sourceMessage.body ||
-                          (duplicate.replyTo ?? null) !== (sourceMessage.replyToMessageId ?? null)
-                        ) {
-                          throw ApiProblem.conflict(
-                            'A message with this clientMessageId already exists on the target',
-                          );
-                        }
-                        await transaction
-                          .delete(deliveries)
-                          .where(eq(deliveries.messageId, sourceMessage.id));
-                        await transaction.delete(messages).where(eq(messages.id, sourceMessage.id));
-                        continue;
-                      }
+                    const [delivery] = await transaction
+                      .select()
+                      .from(deliveries)
+                      .where(eq(deliveries.messageId, sourceMessage.id))
+                      .for('update');
+                    if (
+                      delivery &&
+                      (delivery.state !== 'pending' ||
+                        delivery.leaseOwner ||
+                        delivery.leaseExpiresAt ||
+                        delivery.attemptCount > 0 ||
+                        delivery.deliveredAt ||
+                        delivery.handedToWorkerAt ||
+                        delivery.readAt ||
+                        delivery.lastAttemptAt ||
+                        Object.keys(delivery.evidence).length > 0)
+                    ) {
+                      throw ApiProblem.conflict(
+                        'A source message delivery is already in flight; the requirement cannot be merged',
+                      );
+                    }
+                  }
+                  const duplicates = new Map<string, string>();
+                  for (const sourceMessage of sourceMessages) {
+                    if (!sourceMessage.clientMessageId) continue;
+                    const [duplicate] = await transaction
+                      .select({
+                        id: messages.id,
+                        body: messages.body,
+                        replyTo: messages.replyToMessageId,
+                      })
+                      .from(messages)
+                      .where(
+                        and(
+                          eq(messages.conversationId, targetConversion.id),
+                          eq(messages.clientMessageId, sourceMessage.clientMessageId),
+                        ),
+                      )
+                      .limit(1);
+                    if (!duplicate) continue;
+                    if (
+                      duplicate.body !== sourceMessage.body ||
+                      (duplicate.replyTo ?? null) !== (sourceMessage.replyToMessageId ?? null)
+                    ) {
+                      throw ApiProblem.conflict(
+                        'A message with this clientMessageId already exists on the target',
+                      );
+                    }
+                    duplicates.set(sourceMessage.id, duplicate.id);
+                  }
+                  // Re-point replies to the surviving target row before deleting
+                  // duplicate source rows. The composite FK is deferred, so the
+                  // whole graph can move inside this transaction.
+                  for (const [sourceMessageId, targetMessageId] of duplicates) {
+                    await transaction
+                      .update(messages)
+                      .set({ replyToMessageId: targetMessageId })
+                      .where(eq(messages.replyToMessageId, sourceMessageId));
+                  }
+                  for (const sourceMessage of sourceMessages) {
+                    if (duplicates.has(sourceMessage.id)) {
+                      await transaction
+                        .delete(deliveries)
+                        .where(eq(deliveries.messageId, sourceMessage.id));
+                      await transaction.delete(messages).where(eq(messages.id, sourceMessage.id));
+                      continue;
                     }
                     await transaction
                       .update(messages)

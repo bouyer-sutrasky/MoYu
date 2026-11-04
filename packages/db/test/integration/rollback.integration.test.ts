@@ -172,7 +172,7 @@ describe('0004 rollback script on real PostgreSQL', () => {
     expect(await readState(database)).toMatchObject({
       constraints: 2,
       indexes: 2,
-      migrations: 8,
+      migrations: 9,
       messages: 2,
       taskLinks: 1,
     });

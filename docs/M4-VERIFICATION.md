@@ -222,6 +222,6 @@ Bridge 在清除暂停前检查目录、`.git` 链接及目标存在；平台在
 - 进程归属：pause 只读该 assignment 的 `setsid` 进程组（`/proc/<pid>/stat` pgrp），不要求其他讨论/执行 worker 退出；双真实讨论 A/B 中 A 停止时 B 仍 discussing 并最终 awaiting_review，A 证据 `lingeringPids: []`。硬重启（SIGKILL）后 `resume` 清理遗留 run 目录和进程组，旧讨论进程不残留。
 - 并发：每个 Ticket/assignment 使用独立 run 目录、HOME、DSH profile 与快照；双进程 ALPHA/BETA 各自读取本仓库标记，停止/清理一个不影响另一个。
 - 模型/基线：sandbox 使用 Ticket 冻结的 provider/model/reasoning；Ticket 未冻结时使用实例 executor 默认，不回退到 profile 模板；prompt 带 base branch/commit 与 plan revision。
-- Web 反向入口：所有消息写入（不只是 URL 分支）在同一事务内 `FOR UPDATE` 锁源会话、重查别名/task/消息与 reply 目标；普通补充消息若遇到已提交的合并会写到目标 task，URL 合并若遇到已提交的普通消息会把它移动到目标 task，因此不会写进无 task 的别名。源会话保留 `merged_into_conversation_id` 别名（迁移 `0007_loose_tiger_shark.sql`），目标 message 为幂等回执；相同 key 重试返回同一 message/delivery，不同 payload 409。真实 PostgreSQL 测试覆盖 ordinary+URL 交错、同 key 并发、不同消息并发、响应丢失重试与 `/issues/10` 不复用。
+- Web 反向入口：所有消息写入（不只是 URL 分支）在同一事务内 `FOR UPDATE` 锁源会话、重查别名/task/消息与 reply 目标；普通补充消息若遇到已提交的合并会写到目标 task，URL 合并若遇到已提交的普通消息会把它移动到目标 task，因此不会写进无 task 的别名。源会话保留 `merged_into_conversation_id` 别名（迁移 `0007_loose_tiger_shark.sql`）；回复图迁移使用 `0008_defer_reply_fk.sql` 的 DEFERRABLE 复合外键，一次事务移动父/子/重复父消息并重映射 reply，避免逐行中间态，目标 message 为幂等回执；相同 key 重试返回同一 message/delivery，不同 payload 409。真实 PostgreSQL 测试覆盖 ordinary+URL 交错、同 key 并发、不同消息并发、响应丢失重试、多层回复链、目标重复父消息重映射、source delivery 已领取/证据存在时拒绝合并，以及 `/issues/10` 不复用。
 - 讨论使用只读快照而非直接挂载可写 worktree；执行阶段仍由主 runtime 使用原 worktree。讨论中的 plan 路径为 `/srv/m4-discuss/runs/<ticket>/<assignment>/workspace`。
 - 本项改变了讨论执行路径（新进程/UID/profile），已获所有者批准；3082 bootstrap 与生产库未改动。

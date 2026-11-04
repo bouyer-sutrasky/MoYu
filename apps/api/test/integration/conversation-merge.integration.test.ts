@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   conversations,
+  deliveries,
   messages,
   owners,
   repositories,
@@ -365,6 +366,240 @@ describe('Web entry after a GitHub import', () => {
     expect((detail.json() as { data: { conversation: { id: string } } }).data.conversation.id).toBe(
       githubConversationId,
     );
+  });
+
+  it('moves a multi-level reply chain atomically during a URL merge', async () => {
+    const [web] = await database
+      .insert(conversations)
+      .values({
+        ownerId: (
+          await database
+            .select({ ownerId: repositories.ownerId })
+            .from(repositories)
+            .where(eq(repositories.id, repositoryId))
+            .limit(1)
+        )[0]!.ownerId,
+        repositoryId,
+        mode: 'work',
+        executionMode: 'execute',
+        source: 'web',
+        baseBranch: 'main',
+      })
+      .returning();
+    await database.insert(taskLinks).values({
+      conversationId: web!.id,
+      repositoryId,
+      state: 'pending_admission',
+      baseBranch: 'main',
+      executionMode: 'execute',
+    });
+    const insert = async (body: string, replyTo: string | null) => {
+      const [message] = await database
+        .insert(messages)
+        .values({
+          conversationId: web!.id,
+          direction: 'inbound',
+          kind: 'user',
+          clientMessageId: `chain-${randomUUID()}`,
+          body,
+          replyToMessageId: replyTo,
+          source: 'web',
+        })
+        .returning();
+      await database
+        .insert(deliveries)
+        .values({ messageId: message!.id, upstreamTriggerId: `workspace:${message!.id}` });
+      return message!.id;
+    };
+    const a = await insert('parent', null);
+    const b = await insert('child', a);
+    const c = await insert('grandchild', b);
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/v1/conversations/${web!.id}/messages`,
+      headers: { cookie },
+      payload: {
+        clientMessageId: `chain-url-${randomUUID()}`,
+        text: 'Same requirement https://github.com/Bouyer12/m4-merge-test/issues/1',
+      },
+    });
+    expect(response.statusCode).toBe(202);
+    const moved = await database
+      .select({ id: messages.id, replyTo: messages.replyToMessageId })
+      .from(messages)
+      .where(inArray(messages.id, [a, b, c]));
+    expect(moved).toHaveLength(3);
+    expect(moved.find((row) => row.id === b)?.replyTo).toBe(a);
+    expect(moved.find((row) => row.id === c)?.replyTo).toBe(b);
+    for (const id of [a, b, c]) {
+      const [row] = await database
+        .select({ conversationId: messages.conversationId })
+        .from(messages)
+        .where(eq(messages.id, id))
+        .limit(1);
+      expect(row?.conversationId).toBe(githubConversationId);
+    }
+  });
+
+  it('remaps replies when the merged parent already exists on the target', async () => {
+    const key = `dup-${randomUUID()}`;
+    const [targetParent] = await database
+      .insert(messages)
+      .values({
+        conversationId: githubConversationId,
+        direction: 'inbound',
+        kind: 'user',
+        clientMessageId: key,
+        body: 'duplicate parent',
+        source: 'web',
+      })
+      .returning();
+    await database
+      .insert(deliveries)
+      .values({ messageId: targetParent!.id, upstreamTriggerId: `workspace:${targetParent!.id}` });
+    const [web] = await database
+      .insert(conversations)
+      .values({
+        ownerId: (
+          await database
+            .select({ ownerId: repositories.ownerId })
+            .from(repositories)
+            .where(eq(repositories.id, repositoryId))
+            .limit(1)
+        )[0]!.ownerId,
+        repositoryId,
+        mode: 'work',
+        executionMode: 'execute',
+        source: 'web',
+        baseBranch: 'main',
+      })
+      .returning();
+    await database.insert(taskLinks).values({
+      conversationId: web!.id,
+      repositoryId,
+      state: 'pending_admission',
+      baseBranch: 'main',
+      executionMode: 'execute',
+    });
+    const [sourceParent] = await database
+      .insert(messages)
+      .values({
+        conversationId: web!.id,
+        direction: 'inbound',
+        kind: 'user',
+        clientMessageId: key,
+        body: 'duplicate parent',
+        source: 'web',
+      })
+      .returning();
+    await database
+      .insert(deliveries)
+      .values({ messageId: sourceParent!.id, upstreamTriggerId: `workspace:${sourceParent!.id}` });
+    const [child] = await database
+      .insert(messages)
+      .values({
+        conversationId: web!.id,
+        direction: 'inbound',
+        kind: 'user',
+        clientMessageId: `child-${randomUUID()}`,
+        body: 'reply to duplicate parent',
+        replyToMessageId: sourceParent!.id,
+        source: 'web',
+      })
+      .returning();
+    await database
+      .insert(deliveries)
+      .values({ messageId: child!.id, upstreamTriggerId: `workspace:${child!.id}` });
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/v1/conversations/${web!.id}/messages`,
+      headers: { cookie },
+      payload: {
+        clientMessageId: `dup-url-${randomUUID()}`,
+        text: 'Same requirement https://github.com/Bouyer12/m4-merge-test/issues/1',
+      },
+    });
+    expect(response.statusCode).toBe(202);
+    const [movedChild] = await database
+      .select({ replyTo: messages.replyToMessageId })
+      .from(messages)
+      .where(eq(messages.id, child!.id))
+      .limit(1);
+    expect(movedChild?.replyTo).toBe(targetParent!.id);
+    const [deadParent] = await database
+      .select({ id: messages.id })
+      .from(messages)
+      .where(eq(messages.id, sourceParent!.id))
+      .limit(1);
+    expect(deadParent).toBeUndefined();
+  });
+
+  it('refuses to merge while a source delivery is already in flight', async () => {
+    const [web] = await database
+      .insert(conversations)
+      .values({
+        ownerId: (
+          await database
+            .select({ ownerId: repositories.ownerId })
+            .from(repositories)
+            .where(eq(repositories.id, repositoryId))
+            .limit(1)
+        )[0]!.ownerId,
+        repositoryId,
+        mode: 'work',
+        executionMode: 'execute',
+        source: 'web',
+        baseBranch: 'main',
+      })
+      .returning();
+    await database.insert(taskLinks).values({
+      conversationId: web!.id,
+      repositoryId,
+      state: 'pending_admission',
+      baseBranch: 'main',
+      executionMode: 'execute',
+    });
+    const [message] = await database
+      .insert(messages)
+      .values({
+        conversationId: web!.id,
+        direction: 'inbound',
+        kind: 'user',
+        clientMessageId: `inflight-${randomUUID()}`,
+        body: 'already claimed',
+        source: 'web',
+      })
+      .returning();
+    await database.insert(deliveries).values({
+      messageId: message!.id,
+      upstreamTriggerId: `workspace:${message!.id}`,
+      state: 'delivering',
+      leaseOwner: 'dispatcher-test',
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      attemptCount: 1,
+    });
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/v1/conversations/${web!.id}/messages`,
+      headers: { cookie },
+      payload: {
+        clientMessageId: `inflight-url-${randomUUID()}`,
+        text: 'Same requirement https://github.com/Bouyer12/m4-merge-test/issues/1',
+      },
+    });
+    expect(response.statusCode).toBe(409);
+    const [task] = await database
+      .select({ conversationId: taskLinks.conversationId })
+      .from(taskLinks)
+      .where(eq(taskLinks.conversationId, web!.id))
+      .limit(1);
+    expect(task?.conversationId).toBe(web!.id);
+    const [still] = await database
+      .select({ id: messages.id })
+      .from(messages)
+      .where(eq(messages.id, message!.id))
+      .limit(1);
+    expect(still?.id).toBe(message!.id);
   });
 
   it('does not merge /issues/10 into the /issues/1 requirement', async () => {
