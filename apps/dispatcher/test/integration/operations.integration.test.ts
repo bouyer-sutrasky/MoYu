@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { once } from 'node:events';
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import type { BridgeEvent, BridgeTicketSnapshot } from '@moyu/runtime-client';
 import { RuntimeBridgeClient } from '@moyu/runtime-client';
@@ -31,6 +31,7 @@ interface FakeBridge {
   operationError: string | null;
   snapshots: Map<string, BridgeTicketSnapshot>;
   events: BridgeEvent[];
+  refuse: { kind: OperationCall['kind']; code: string; message: string } | null;
   close: () => Promise<void>;
 }
 
@@ -57,6 +58,7 @@ async function startFakeBridge(): Promise<FakeBridge> {
     operationError: null,
     snapshots: new Map(),
     events: [],
+    refuse: null,
   };
   const server = createServer(async (request: IncomingMessage, response: ServerResponse) => {
     const send = (status: number, value: unknown) => {
@@ -83,6 +85,10 @@ async function startFakeBridge(): Promise<FakeBridge> {
       }
       const body = (await readBody(request)) as Record<string, unknown>;
       state.calls.push({ kind, ticketId, body });
+      if (state.refuse?.kind === kind) {
+        send(409, { error: { code: state.refuse.code, message: state.refuse.message } });
+        return;
+      }
       send(202, {
         operationId: String(body.operationId ?? ''),
         ticketId,
@@ -164,6 +170,12 @@ async function startFakeBridge(): Promise<FakeBridge> {
     get operationError() {
       return state.operationError;
     },
+    get refuse() {
+      return state.refuse;
+    },
+    set refuse(value) {
+      state.refuse = value;
+    },
     set operationError(value) {
       state.operationError = value;
     },
@@ -197,6 +209,10 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
   let config: DispatcherConfig;
   let client: RuntimeBridgeClient;
   let seedCounter = 0;
+
+  beforeEach(() => {
+    fakeBridge.refuse = null;
+  });
 
   async function seed(options: {
     state: string;
@@ -424,6 +440,46 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
     );
   }, 30_000);
 
+  it('blocks a paused event whose evidence still shows a background job', async () => {
+    const fixture = await seed({ state: 'stopping' });
+    const operationId = await insertOperation(fixture, 'pause', `cmd-busy-${Date.now()}`);
+    await testDatabase.pool.query(
+      `update task_operations set state = 'running', bridge_operation_id = $2 where id = $1`,
+      [operationId, operationId],
+    );
+    fakeBridge.events = [
+      {
+        seq: 1,
+        id: `ticket-paused:${fixture.ticketId}:busy`,
+        type: 'ticket.paused',
+        at: '2026-11-04T03:01:00.000Z',
+        data: {
+          ticketId: fixture.ticketId,
+          operationId,
+          stoppedAt: '2026-11-04T03:01:00.000Z',
+          evidence: {
+            agentStatus: 'idle',
+            harnessPid: 1,
+            jobsAfter: [{ id: 'bash-1', name: 'sleep 300' }],
+            subagentsAfter: 0,
+          },
+        },
+      },
+    ];
+    const logger = createConsoleLogger('test');
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+    const task = await readTask(fixture.taskId);
+    expect(task.state).toBe('blocked');
+    expect(task.stoppedAt).toBeNull();
+    expect(task.stopEvidence).toMatchObject({ problem: expect.stringContaining('background job') });
+    const operation = await testDatabase.pool.query(
+      `select state, error from task_operations where id = $1`,
+      [operationId],
+    );
+    expect(operation.rows[0]?.state).toBe('failed');
+    expect(String(operation.rows[0]?.error)).toContain('background job');
+  }, 30_000);
+
   it('does not show stopped when a succeeded pause has no stop evidence', async () => {
     const fixture = await seed({ state: 'stopping' });
     await insertOperation(fixture, 'pause', `cmd-no-evidence-${Date.now()}`);
@@ -476,6 +532,68 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
       [fixture.conversationId],
     );
     expect(count.rows[0]?.count).toBe(1);
+  }, 30_000);
+
+  it('blocks a resume the runtime refuses because the worktree is missing', async () => {
+    const fixture = await seed({
+      state: 'stopped',
+      stoppedAt: new Date(),
+      stopEvidence: { agentStatus: 'idle', jobsAfter: [], subagentsAfter: 0 },
+    });
+    fakeBridge.snapshots.set(fixture.ticketId, {
+      ticketId: fixture.ticketId,
+      title: 'M4 task',
+      state: 'stopped',
+      mode: 'execute',
+      paused: {
+        at: new Date().toISOString(),
+        by: 'human',
+        stoppedAt: new Date().toISOString(),
+        evidence: { agentStatus: 'idle', jobsAfter: [], subagentsAfter: 0 },
+      },
+      execution: { name: 'gone', directory: '/nonexistent/m4-worktree', assignment: 'Fix it' },
+    });
+    fakeBridge.refuse = {
+      kind: 'resume',
+      code: 'worktreeMissing',
+      message: 'The preserved worktree is missing',
+    };
+    await insertOperation(fixture, 'resume', `cmd-refuse-worktree-${Date.now()}`);
+    const logger = createConsoleLogger('test');
+    await operationsOnce(testDatabase.pool, config, fixture.repository, client, logger);
+    const task = await readTask(fixture.taskId);
+    expect(task.state).toBe('blocked');
+    expect(task.stopEvidence).toMatchObject({ error: expect.stringContaining('worktree') });
+  }, 30_000);
+
+  it('marks a task closed_unmerged when the runtime refuses to resume a closed PR', async () => {
+    const fixture = await seed({
+      state: 'stopped',
+      stoppedAt: new Date(),
+      stopEvidence: { agentStatus: 'idle', jobsAfter: [], subagentsAfter: 0 },
+    });
+    fakeBridge.snapshots.set(fixture.ticketId, {
+      ticketId: fixture.ticketId,
+      title: 'M4 task',
+      state: 'stopped',
+      mode: 'execute',
+      paused: {
+        at: new Date().toISOString(),
+        by: 'human',
+        stoppedAt: new Date().toISOString(),
+        evidence: { agentStatus: 'idle', jobsAfter: [], subagentsAfter: 0 },
+      },
+      execution: { name: 'fix', directory: '/tmp/m4-worktree', assignment: 'Fix it' },
+    });
+    fakeBridge.refuse = {
+      kind: 'resume',
+      code: 'prClosedUnmerged',
+      message: 'The pull request was closed unmerged',
+    };
+    await insertOperation(fixture, 'resume', `cmd-refuse-pr-${Date.now()}`);
+    const logger = createConsoleLogger('test');
+    await operationsOnce(testDatabase.pool, config, fixture.repository, client, logger);
+    expect((await readTask(fixture.taskId)).state).toBe('closed_unmerged');
   }, 30_000);
 
   it('re-acquires a runtime lease and verifies the preserved worktree before resume', async () => {
@@ -646,6 +764,110 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
     expect(state.rows[0]?.state).toBe('awaiting_review');
   }, 30_000);
 
+  it('keeps one task when the same requirement arrives with a different GitHub ticket', async () => {
+    const fixture = await seed({
+      state: 'running',
+      source: 'github',
+      externalKey: 'github:42',
+    });
+    const otherTicket = (seq: number, ticketId: string, state: string): BridgeEvent => ({
+      seq,
+      id: `ticket-imported:${ticketId}`,
+      type: 'ticket.imported',
+      at: '2026-11-04T03:10:00.000Z',
+      data: {
+        ticketId,
+        source: 'github',
+        externalId: 'github:42',
+        number: 42,
+        isPr: true,
+        url: 'https://github.com/Bouyer12/m4-import/pull/42',
+        title: 'Fix the GitHub issue',
+        state,
+        triggerId: `github-comment:42:${seq}`,
+        text: 'Another entry for the same requirement',
+        base: { branch: 'main', commit: 'b'.repeat(40) },
+        at: '2026-11-04T03:10:00.000Z',
+      },
+    });
+    fakeBridge.events = [otherTicket(1, 'github-ticket-99', 'running')];
+    const logger = createConsoleLogger('test');
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+    // The active task keeps its original ticket; the second ticket is only a notice.
+    expect(await readTask(fixture.taskId)).toMatchObject({
+      state: 'running',
+    });
+    const tasks = await testDatabase.pool.query(
+      `select upstream_ticket_id as "ticketId" from task_links where conversation_id = $1`,
+      [fixture.conversationId],
+    );
+    expect(tasks.rows).toEqual([{ ticketId: fixture.ticketId }]);
+    const notice = await testDatabase.pool.query(
+      `select body from messages where conversation_id = $1 and kind = 'notice'`,
+      [fixture.conversationId],
+    );
+    expect(notice.rows[0]?.body).toContain('not executed separately');
+
+    // Once the first attempt ended, the same conversation moves to the newer ticket.
+    await testDatabase.pool.query(`update task_links set state = 'completed' where id = $1`, [
+      fixture.taskId,
+    ]);
+    fakeBridge.events = [otherTicket(2, 'github-ticket-100', 'running')];
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+    const resumed = await testDatabase.pool.query(
+      `select upstream_ticket_id as "ticketId", state, pr_url as "prUrl"
+         from task_links where conversation_id = $1`,
+      [fixture.conversationId],
+    );
+    expect(resumed.rows).toEqual([
+      { ticketId: 'github-ticket-100', state: 'running', prUrl: null },
+    ]);
+  }, 30_000);
+
+  it('claims a Web conversation that already contains the GitHub requirement URL', async () => {
+    const fixture = await seed({ state: 'running' });
+    const fullName = fixture.repository.fullName;
+    await testDatabase.pool.query(
+      `insert into messages (conversation_id, direction, kind, body)
+       values ($1, 'inbound', 'user', $2)`,
+      [fixture.conversationId, `Please fix https://github.com/${fullName}/issues/42`],
+    );
+    fakeBridge.events = [
+      {
+        seq: 1,
+        id: 'ticket-imported:github-ticket-web-42',
+        type: 'ticket.imported',
+        at: '2026-11-04T03:20:00.000Z',
+        data: {
+          ticketId: 'github-ticket-web-42',
+          source: 'github',
+          externalId: 'github:42',
+          number: 42,
+          isPr: false,
+          url: `https://github.com/${fullName}/issues/42`,
+          title: 'Fix the GitHub issue',
+          state: 'running',
+          triggerId: 'github-comment:42:web',
+          text: 'GitHub entry',
+          base: { branch: 'main', commit: 'b'.repeat(40) },
+          at: '2026-11-04T03:20:00.000Z',
+        },
+      },
+    ];
+    const logger = createConsoleLogger('test');
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+    const conversation = await testDatabase.pool.query(
+      `select source, external_key as "externalKey" from conversations where id = $1`,
+      [fixture.conversationId],
+    );
+    expect(conversation.rows[0]).toMatchObject({ source: 'github', externalKey: 'github:42' });
+    const tasks = await testDatabase.pool.query(
+      `select count(*)::int as count from task_links where conversation_id = $1`,
+      [fixture.conversationId],
+    );
+    expect(tasks.rows[0]?.count).toBe(1);
+  }, 30_000);
+
   it('copies a ready runtime report into the conversation exactly once', async () => {
     const fixture = await seed({ state: 'awaiting_review', executionMode: 'discuss' });
     fakeBridge.snapshots.set(fixture.ticketId, {
@@ -759,6 +981,32 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
     expect(await readTask(paused.taskId)).toMatchObject({ state: 'stopped' });
     const evidence = (await readTask(paused.taskId)).stopEvidence as Record<string, unknown>;
     expect(evidence).toMatchObject({ harnessPid: 1234, agentStatus: 'idle' });
+
+    // A snapshot with a timestamp but a live job is incomplete, not stopped.
+    const busy = await seed({ state: 'running' });
+    fakeBridge.snapshots.set(busy.ticketId, {
+      ticketId: busy.ticketId,
+      title: 'M4 busy task',
+      state: 'stopped',
+      mode: 'execute',
+      paused: {
+        at: new Date().toISOString(),
+        by: 'human',
+        stoppedAt: new Date().toISOString(),
+        evidence: {
+          agentStatus: 'idle',
+          harnessPid: 1235,
+          jobsAfter: [{ id: 'bash-1', name: 'sleep 300' }],
+          subagentsAfter: 0,
+        },
+      },
+    });
+    await reconcileTasks(testDatabase.pool, busy.repository, client, logger);
+    const busyTask = await readTask(busy.taskId);
+    expect(busyTask.state).toBe('blocked');
+    expect(busyTask.stopEvidence).toMatchObject({
+      problem: expect.stringContaining('background job'),
+    });
 
     // Reconcile the second repository too; its missing snapshot must block it.
     await reconcileTasks(testDatabase.pool, unconfirmed.repository, client, logger);

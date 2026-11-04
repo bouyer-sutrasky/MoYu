@@ -38,6 +38,11 @@ integrations/superagent/build-patched.sh \
 | `0009-discussion-ready-stays-open.patch` | 61 | 讨论 ready 不结束 Ticket，owner 仍可 start |
 | `0010-projection-current-assignment.patch` | 54 | 新 Assignment 后不再用旧 ready report 挡住运行态 |
 | `0011-resume-does-not-reopen-closed-pr.patch` | 19 | resume/start 指示不重开已关闭未合并的 PR |
+| `0012-poll-closed-follows.patch` | 46 | 轮询已关闭的 follow，PR 重开后重新绑定，二次关闭可投影 |
+| `0013-pause-process-tree.patch` | 94 | 停止证据记录 harness 进程树（PID/PPID/命令） |
+| `0014-resume-worktree-closed-pr.patch` | 157 | resume 前校验 worktree 与 PR 状态，拒绝已关闭 PR |
+| `0015-discuss-read-boundary.patch` | 118 | 讨论态读取限制在工作目录内 |
+| `0016-discuss-local-tool-guard.patch` | 42 | 讨论态拒绝 subagent/消息等非只读本地工具 |
 
 上游测试（干净环境，`corepack pnpm@11.7.0`）：
 
@@ -130,3 +135,52 @@ DOM 断言（Playwright）：After 讨论页有 1 个“按此方案开始执行
 - PR #4 随后由同一 agent 账号关闭，但 3 分钟内 runtime 未投影 `closed`，平台保持 `awaiting_review`；同一账号关闭
   PR #3 时曾正确投影 `closed_unmerged`。差异未在剩余时间内定位，不声称已解决；上游 `sameName` 过滤与 PR 读取路径
   需要下一次真实人工关闭事件复核。
+
+
+## 验收阻塞项返修（2026-11-04）
+
+### 停止证据统一校验
+
+`apps/dispatcher/src/pause-evidence.ts` 统一校验 `stoppedAt`、`agentStatus`、`jobsAfter`、`subagentsAfter`。事件投影、operation 轮询和重启快照都调用同一函数；证据不完整时置 `blocked` 并记录 `problem`，绝不显示 `stopped`。
+
+真实后台作业停止（最终构建）：
+
+- 作业 `bash-49f63fc11c0a4470`，`jobsBefore: [npm test]`；
+- `processesBefore`: PID 3450646 `npm test`，3450657 `sh -c node check.mjs && sleep 300`，3450665 `sleep 300`；
+- `processesAfter: []`、`jobsAfter: []`、`subagentsAfter: 0`、`agentStatus: idle`；
+- 停止后宿主机 `pgrep -f 'sleep 300'` 为空；
+- 平台仅在上述证据齐备后显示 `stopped`。
+- 证据：[`live-stop-background-job.log`](evidence/m4/live-stop-background-job.log)。
+
+### GitHub / Web 去重
+
+- 平台按 GitHub 外部标识复用 conversation/task；同一 conversation 收到不同 Ticket 时：活动任务只写一条 notice 并暂停重复的 runtime Ticket；已结束任务在原 conversation 切换到新 Ticket，保留消息历史。
+- Web 先行的会话若消息包含同一 Issue/PR URL，GitHub 导入会认领该会话而不是新建第二条。
+- 每个事件使用 savepoint，意外唯一冲突只跳过该事件并推进游标，不再回滚整页卡住 cursor。
+- 集成测试新增：不同 Ticket 活动去重、终止后复用、Web URL 认领、重复 runtime Ticket 暂停。
+- **真人 GitHub @ 实跑仍待人工在 `https://github.com/bouyer-sutrasky/m4-github-probe/issues/1` 评论**；探针仓库与运行中的 Web 会话已就绪。
+
+### 关闭未合并 PR
+
+根因：已关闭的 follow 被 `pullsOf(ticket, true)` 排除，PR 重开后 Source 不再读取，二次关闭永远不投影。修复为轮询 open ticket 的全部 follows（含已关闭）；resume/start 前 Bridge 读取 PR 状态，closed 未合并时 409 `prClosedUnmerged`；平台置 `closed_unmerged`，不重开、不投递。
+
+实跑：PR #5 关闭后平台 `closed_unmerged`，PR 保持 `CLOSED`、`mergedAt: null`，会话消息 409。证据：[`live-closed-pr.log`](evidence/m4/live-closed-pr.log)。
+
+### 继续前校验 worktree
+
+Bridge 在清除暂停前检查目录、`.git` 链接及目标存在；平台在 runtime 拒绝后置 `blocked`，worker 不启动。实跑：移走 worktree 后 resume，平台 `blocked`，runtime load 0；证据：[`live-resume-missing-worktree.json`](evidence/m4/live-resume-missing-worktree.json)。
+
+### 讨论态写凭据与文件系统边界
+
+- 讨论 worker 仍为 `permission/preset: read-only`、`sandbox/mode: read-only`，工具表无 `write`/`edit`/`bash`/`pwsh`/job。
+- 新增读取边界：`read`/`read_image`/`glob`/`grep` 仅允许 worktree 内路径（含 realpath 符号链接解析）；`subagent`、消息等非只读本地工具在调用时被 guard 拒绝。
+- 实跑：讨论 worker 读取 `/root/.dsh-m4/env` 与 `/root/.ssh/id_ed25519` 均返回
+  `Error: Discussion work may read only files inside its worktree`，无内容泄漏；10 次拒绝记录。
+- 服务身份：隔离实例 harness 以 root 运行；worktree `root root 700`，`/root/.dsh-m4/env` `root root 600`，根文件系统 ext4 rw。沙箱与 guard 是强制边界，不依赖提示词；生产非 root 身份仍按部署要求执行。
+- 证据：[`live-discuss-boundary.log`](evidence/m4/live-discuss-boundary.log)。
+
+### 最终制品
+
+- 固定上游：`6337fc823ce20251c8de8085948165c81aaa701e`，补丁 `0001`–`0016`。
+- 最终构建目录 `/root/src/upstream/m4-final-verify`；`lib/index.js` sha256 `a6f10720cde97f09468a11c75f06eb5e43038477cc5990fd6884f387e94f5287`；`package.json` `d428e669805ea1dfb6a4900bddbffe3cafb8f06a0b1eb139266c2b2f6b94b021`。
+- 上游定向测试：`discussion`、`bridge-control`、`pause`、`process-tree`、`sources` 相关用例通过；全量结果见 PR/CI。

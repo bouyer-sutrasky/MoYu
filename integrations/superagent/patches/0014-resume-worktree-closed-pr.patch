@@ -1,0 +1,157 @@
+diff --git a/src/app/bridge.ts b/src/app/bridge.ts
+index 361a229..55d9b1e 100644
+--- a/src/app/bridge.ts
++++ b/src/app/bridge.ts
+@@ -8,7 +8,7 @@
+  * through the Engine's intake, and events are a projection of what the Engine stored.
+  */
+ import { timingSafeEqual } from 'node:crypto'
+-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, writeFileSync, writeSync } from 'node:fs'
++import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync, writeSync } from 'node:fs'
+ import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+ import { dirname, join } from 'node:path'
+ import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
+@@ -19,6 +19,7 @@ import type { RoleModel } from '../policy.ts'
+ import type { Deployment } from '../deployment.ts'
+ import type { Commands } from '../infra/commands.ts'
+ import { ticketOfSession } from '../executor/dsh.ts'
++import { pullsOf } from '../sources/github-pull.ts'
+ import type { Store } from './store.ts'
+ import { OperationLog, operationView, type BridgeOperation, type OperationBaseline, type OperationKind } from './operations.ts'
+ 
+@@ -27,6 +28,20 @@ export const PROTOCOL_VERSION = 'moyu-bridge/1'
+ /** Upstream artifact identity, from `docs/M3-BRIDGE-PROTOCOL.md` §2 and `integrations/superagent/upstream.lock.json`. */
+ export const UPSTREAM = { package: 'dsh-superagent', version: '0.1.0', commit: '6337fc823ce20251c8de8085948165c81aaa701e' } as const
+ const DEFAULT_HOST = '127.0.0.1', DEFAULT_PORT = 3190
++const PullStateSchema = z.object({ state: z.string(), merged: z.boolean().optional() })
++/** A worktree is usable when its directory, its `.git` link and that link's target still exist. */
++function usableWorktree(directory: string): boolean {
++  try {
++    if (!statSync(directory).isDirectory()) return false
++    const git = join(directory, '.git')
++    if (!existsSync(git)) return false
++    if (statSync(git).isFile()) {
++      const match = /^gitdir:\s*(.+)$/m.exec(readFileSync(git, 'utf8'))
++      return !!match && existsSync(match[1]!.trim())
++    }
++    return statSync(git).isDirectory()
++  } catch { return false }
++}
+ const REQUEST_LIMIT = 256 * 1024
+ const EVENTS_DEFAULT_LIMIT = 100, EVENTS_MAX_LIMIT = 200
+ const TICK_MS = 1000
+@@ -622,6 +637,14 @@ export class Bridge {
+   }
+ 
+   /** `POST /bridge/v1/tickets/:id/pause`: stop the worker but keep the Ticket, its Inputs, worktree, and pull request. */
++  /** The latest PR this ticket follows, when GitHub reports it closed and not merged. */
++  private async closedPull(ticket: Ticket): Promise<number | undefined> {
++    const number = pullsOf(ticket).at(-1)
++    if (number === undefined) return undefined
++    const pr = await this.host.commands.api(PullStateSchema, `pulls/${number}`)
++    return pr.state === 'closed' && !pr.merged ? number : undefined
++  }
++
+   private async pauseOperation(req: IncomingMessage, res: ServerResponse, ticketId: string): Promise<void> {
+     const body = PauseSchema.parse(await readJson(req))
+     const ticket = this.host.store.tickets.get(ticketId)
+@@ -658,6 +681,17 @@ export class Bridge {
+     if (!ticket.paused) return json(res, 409, { error: 'not_paused', code: 'notPaused' })
+     if (!ticket.paused.stoppedAt) return json(res, 409, { error: 'still_stopping', code: 'pauseStopping' })
+     if (this.replay(res, body.operationId, ticketId, 'resume')) return
++    // The worktree must still be there before the pause is cleared; a missing directory would launch a worker into nowhere.
++    const directory = ticket.execution?.directory
++    if (!directory || !usableWorktree(directory)) {
++      return json(res, 409, { error: { code: 'worktreeMissing', message: 'The preserved worktree is missing' }, directory: directory ?? null })
++    }
++    // A PR closed unmerged while the ticket was paused must not be resumed or reopened by the runtime.
++    let closed: number | undefined
++    try { closed = await this.closedPull(ticket) } catch (error) {
++      return json(res, 409, { error: { code: 'prUnverifiable', message: 'Could not read the pull request state' }, detail: errorText(error) })
++    }
++    if (closed !== undefined) return json(res, 409, { error: { code: 'prClosedUnmerged', message: 'The pull request was closed unmerged' }, number: closed })
+     this.operations.append({ operationId: body.operationId, ticketId, kind: 'resume', state: 'queued', updatedAt: new Date().toISOString(),
+       baseline: this.baseline(ticket) })
+     try {
+@@ -678,6 +712,11 @@ export class Bridge {
+     if (ticket.mode !== 'discuss') return json(res, 409, { error: 'not_discussing', code: 'notDiscussing' })
+     if (ticket.paused) return json(res, 409, { error: 'ticket_paused', code: 'ticketPaused' })
+     if (this.replay(res, body.operationId, ticketId, 'start')) return
++    let closed: number | undefined
++    try { closed = await this.closedPull(ticket) } catch (error) {
++      return json(res, 409, { error: { code: 'prUnverifiable', message: 'Could not read the pull request state' }, detail: errorText(error) })
++    }
++    if (closed !== undefined) return json(res, 409, { error: { code: 'prClosedUnmerged', message: 'The pull request was closed unmerged' }, number: closed })
+     this.operations.append({ operationId: body.operationId, ticketId, kind: 'start', state: 'queued', updatedAt: new Date().toISOString(),
+       baseline: this.baseline(ticket) })
+     try {
+diff --git a/tests/bridge-control.spec.ts b/tests/bridge-control.spec.ts
+index 51e5b31..069740b 100644
+--- a/tests/bridge-control.spec.ts
++++ b/tests/bridge-control.spec.ts
+@@ -1,5 +1,5 @@
+ import { afterEach, describe, expect, it, vi } from 'vitest'
+-import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
++import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+ import { tmpdir } from 'node:os'
+ import { join } from 'node:path'
+ import { MemoryRepositories, UserError, canRetry, latestAssignment, type ChannelRef, type Ticket, type Trigger } from '../src/core/index.ts'
+@@ -10,9 +10,11 @@ import { testDeployment } from './fixtures/deployment.ts'
+ const MODEL = { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash', reasoningEffort: 'high' }
+ const stateDirs: string[] = []
+ const bridges: Bridge[] = []
++const worktrees: string[] = []
+ afterEach(async () => {
+   await Promise.all(bridges.splice(0).map(bridge => bridge.stop()))
+   for (const dir of stateDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
++  for (const dir of worktrees.splice(0)) rmSync(dir, { recursive: true, force: true })
+ })
+ const stateDir = (): string => {
+   const dir = mkdtempSync(join(tmpdir(), 'bridge-control-'))
+@@ -221,7 +223,15 @@ describe('POST /bridge/v1/tickets/:id/pause', () => {
+ })
+ 
+ describe('POST /bridge/v1/tickets/:id/resume', () => {
+-  const paused = (stoppedAt?: string): Ticket => frozen(ticket('t1', { assignments: [{ id: 'as1', state: 'ended', createdAt: '2026-11-03T12:00:00.000Z' }],
++  const worktree = (): string => {
++    const dir = mkdtempSync(join(tmpdir(), 'bridge-worktree-'))
++    mkdirSync(join(dir, '.git'))
++    worktrees.push(dir)
++    return dir
++  }
++  const paused = (stoppedAt?: string): Ticket => frozen(ticket('t1', {
++    assignments: [{ id: 'as1', state: 'ended', createdAt: '2026-11-03T12:00:00.000Z' }],
++    execution: { name: 'fix-t1', directory: worktree(), assignment: 'Fix it' },
+     paused: { at: '2026-11-03T12:10:00.000Z', by: 'human', operationId: 'op-pause', ...stoppedAt ? { stoppedAt } : {} } }))
+ 
+   it('refuses a still-stopping pause with 409', async () => {
+@@ -242,6 +252,29 @@ describe('POST /bridge/v1/tickets/:id/resume', () => {
+     expect(await call('POST', '/bridge/v1/tickets/t1/resume', { operationId: 'op-1' })).toMatchObject({ status: 400 })
+   })
+ 
++  it('refuses a resume when the original worktree is gone, keeping the pause', async () => {
++    const h = harness()
++    const ticket = paused('2026-11-03T12:11:00.000Z')
++    ticket.execution = { name: 'gone', directory: '/nonexistent/m4-worktree', assignment: '' }
++    h.repo.tickets.save(ticket)
++    const { call } = await serve(h)
++    expect(await call('POST', '/bridge/v1/tickets/t1/resume', { operationId: 'op-1', admission: { leaseId: 'l', fencingToken: 'f' } }))
++      .toMatchObject({ status: 409, body: { error: { code: 'worktreeMissing' } } })
++    expect(h.engine.resumeTicket).not.toHaveBeenCalled()
++    expect(h.repo.tickets.get('t1')?.paused).toMatchObject({ stoppedAt: '2026-11-03T12:11:00.000Z' })
++  })
++
++  it('refuses a resume when the followed PR was closed unmerged', async () => {
++    const h = harness()
++    h.repo.tickets.save({ ...paused('2026-11-03T12:11:00.000Z'), follows: [{ thread: 'github:4', own: true }] })
++    vi.mocked(h.commands.api).mockResolvedValueOnce({ state: 'closed', merged: false })
++    const { call } = await serve(h)
++    expect(await call('POST', '/bridge/v1/tickets/t1/resume', { operationId: 'op-1', admission: { leaseId: 'l', fencingToken: 'f' } }))
++      .toMatchObject({ status: 409, body: { error: { code: 'prClosedUnmerged' }, number: 4 } })
++    expect(h.engine.resumeTicket).not.toHaveBeenCalled()
++    expect(h.repo.tickets.get('t1')?.paused).toMatchObject({ stoppedAt: '2026-11-03T12:11:00.000Z' })
++  })
++
+   it('starts a new Assignment under the admission and settles succeeded', async () => {
+     const h = harness()
+     h.repo.tickets.save(paused('2026-11-03T12:11:00.000Z'))

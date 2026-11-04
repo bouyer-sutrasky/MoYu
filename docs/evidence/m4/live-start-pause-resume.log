@@ -1,0 +1,35 @@
+start with version 3 planRevision 1
+start accepted {"op":"queued","kind":"start","task":{"state":"awaiting_review","mode":"discuss","plan":1,"version":3}}
+execute state {"state":"queued","version":4}
+stop accepted {"op":"queued","taskState":"stopping","version":5}
+STOPPED {
+  "state": "stopped",
+  "stoppedAt": "2026-11-03T18:38:31.551Z",
+  "evidence": {
+    "cgroup": "/system.slice/dsh-superagent.service",
+    "ticketId": "8dd09b7269fb5e6e276fb039b26357a5",
+    "jobsAfter": [],
+    "sessionId": "worker-8dd09b7269fb5e6e276fb039b26357a5",
+    "startedAt": "2026-11-03T18:38:31.542Z",
+    "stoppedAt": "2026-11-03T18:38:31.551Z",
+    "harnessPid": 3239225,
+    "jobsBefore": [],
+    "agentStatus": "idle",
+    "operationId": "186f43b9-976b-4ac6-b55f-57f275c983c6",
+    "assignmentId": "407ef5ed041189288cd115f5fc1617b5",
+    "cancelledTurn": true,
+    "subagentsAfter": 0
+  }
+}
+snapshot after stop {"state":"stopped","paused":{"at":"2026-11-03T18:38:31.540Z","by":"human","operationId":"186f43b9-976b-4ac6-b55f-57f275c983c6","stoppedAt":"2026-11-03T18:38:31.551Z","evidence":{"ticketId":"8dd09b7269fb5e6e276fb039b26357a5","assignmentId":"407ef5ed041189288cd115f5fc1617b5","operationId":"186f43b9-976b-4ac6-b55f-57f275c983c6","sessionId":"worker-8dd09b7269fb5e6e276fb039b26357a5","harnessPid":3239225,"cgroup":"/system.slice/dsh-superagent.service","startedAt":"2026-11-03T18:38:31.542Z","stoppedAt":"2026-11-03T18:38:31.551Z","agentStatus":"idle","jobsBefore":[],"jobsAfter":[],"subagentsAfter":0,"cancelledTurn":true}},"mode":"execute","ended":null}
+file:///root/src/execution-control-m4-c7c69b4e1de0/.local/live-lib.mjs:16
+  if (!res.ok) throw new Error(`API ${path}: ${res.status} ${JSON.stringify(payload)}`);
+                     ^
+
+Error: API /api/v1/tasks/9af381fe-a9ba-4c02-979b-54d8021ddc70/resume: 409 {"error":{"code":"conflict","message":"Another task command is still being processed","retryable":false},"requestId":"129e29fe-a5ca-4ff3-aad5-312f5bbdce6b"}
+    at api (file:///root/src/execution-control-m4-c7c69b4e1de0/.local/live-lib.mjs:16:22)
+    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    at async file:///root/src/execution-control-m4-c7c69b4e1de0/.local/live-2.mjs:37:19
+
+Node.js v22.23.3
+EXIT:1

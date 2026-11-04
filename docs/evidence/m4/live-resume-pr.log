@@ -1,0 +1,14 @@
+before {"state":"stopped","pr":"https://github.com/Bouyer12/m3-loop-r3-68fa5d90/pull/4","version":8}
+resume {"task":"stopped","op":"queued"}
+RESUMED {"state":"awaiting_review","pr":"https://github.com/Bouyer12/m3-loop-r3-68fa5d90/pull/4","samePr":true,"version":10}
+✓ Closed pull request Bouyer12/m3-loop-r3-68fa5d90#4 (Add 'M4 resume probe' line after README.md line 2)
+file:///root/src/execution-control-m4-c7c69b4e1de0/.local/live-lib.mjs:22
+  throw new Error(`timeout: ${label}${last ? ` (${last.message})` : ''}`);
+        ^
+
+Error: timeout: closed_unmerged
+    at waitFor (file:///root/src/execution-control-m4-c7c69b4e1de0/.local/live-lib.mjs:22:9)
+    at async file:///root/src/execution-control-m4-c7c69b4e1de0/.local/live-6.mjs:19:16
+
+Node.js v22.23.3
+EXIT:1

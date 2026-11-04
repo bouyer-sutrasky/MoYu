@@ -5,6 +5,7 @@ import type { BridgeOperation, RuntimeBridgeClient } from '@moyu/runtime-client'
 
 import type { DispatcherConfig } from './config';
 import { appendEventSql } from './events-sql';
+import { pauseEvidenceProblem, pauseEvidenceProven } from './pause-evidence';
 import type { DispatcherLogger } from './logger';
 import type { RepositoryBinding } from './runtime';
 import { bridgeErrorMessage, isRetryableBridgeError } from './runtime';
@@ -169,17 +170,12 @@ async function applyOperationResult(
     // A pause is only proven with a stop timestamp, no loaded worker or an idle
     // one, and an empty job/subagent set. `absent` means the runtime restarted and
     // the worker Session is not loaded, so nothing of it can still run.
-    const pauseProven =
-      typeof evidence.stoppedAt === 'string' &&
-      !Number.isNaN(Date.parse(evidence.stoppedAt)) &&
-      (evidence.agentStatus === 'idle' || evidence.agentStatus === 'absent') &&
-      Array.isArray(evidence.jobsAfter) &&
-      evidence.jobsAfter.length === 0 &&
-      (evidence.subagentsAfter === undefined || evidence.subagentsAfter === 0);
+    const pauseProven = pauseEvidenceProven(evidence);
     const succeeded =
       bridgeOperation.state === 'succeeded' && (operation.kind !== 'pause' || pauseProven);
     let nextState: string | null = null;
     let stoppedAt: Date | null | undefined;
+    let storeEvidence = false;
     let executionMode = task.executionMode;
     let clearStop = false;
 
@@ -206,6 +202,7 @@ async function applyOperationResult(
       // A stop that could not be proven is not shown as stopped.
       if (task.state === 'stopping') {
         nextState = 'blocked';
+        storeEvidence = true;
       }
     }
 
@@ -213,6 +210,7 @@ async function applyOperationResult(
     if (
       nextState !== null ||
       stoppedAt !== undefined ||
+      storeEvidence ||
       executionMode !== task.executionMode ||
       clearStop
     ) {
@@ -222,6 +220,7 @@ async function applyOperationResult(
                 stopped_at = case when $3::boolean then $4::timestamptz
                                   when $5::boolean then null else stopped_at end,
                 stop_evidence = case when $5::boolean then '{}'::jsonb
+                                     when $8::boolean then $6::jsonb
                                      when $3::boolean then $6::jsonb else stop_evidence end,
                 execution_mode = $7,
                 version = version + 1,
@@ -234,8 +233,11 @@ async function applyOperationResult(
           stoppedAt !== undefined,
           stoppedAt ?? null,
           clearStop,
-          JSON.stringify(evidence),
+          JSON.stringify(
+            pauseProven ? evidence : { ...evidence, problem: pauseEvidenceProblem(evidence) },
+          ),
           executionMode,
+          storeEvidence,
         ],
       );
       updated = result.rows[0] ?? task;
@@ -350,17 +352,26 @@ async function failOperation(
   repository: RepositoryBinding,
   operation: OperationRow,
   error: string,
+  code?: string,
 ): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query('begin');
     const task = await taskById(client, operation.taskId);
-    if (task && operation.kind === 'pause' && task.state === 'stopping') {
+    if (
+      task &&
+      ((operation.kind === 'pause' && task.state === 'stopping') ||
+        (operation.kind === 'resume' && task.state === 'stopped'))
+    ) {
+      // A resume the runtime cannot satisfy is blocked; a closed PR is terminal for
+      // this task and is shown as closed_unmerged without auto-reopening.
+      const state =
+        operation.kind === 'resume' && code === 'prClosedUnmerged' ? 'closed_unmerged' : 'blocked';
       const updated = await client.query<TaskRow>(
-        `update task_links set state = 'blocked', stop_evidence = $2::jsonb,
+        `update task_links set state = $3, stop_evidence = $2::jsonb,
                 version = version + 1, updated_at = now()
           where id = $1 returning ${TASK_COLUMNS.replaceAll('t.', 'task_links.')}`,
-        [task.id, JSON.stringify({ error })],
+        [task.id, JSON.stringify({ error, ...(code ? { code } : {}) }), state],
       );
       const next = updated.rows[0];
       if (next) {
@@ -549,7 +560,11 @@ async function sendOperation(
       return;
     }
     await applySnapshot(pool, repository, task.id, bridge, logger).catch(() => undefined);
-    await failOperation(pool, repository, operation, bridgeErrorMessage(error));
+    const code =
+      typeof (error as { code?: unknown }).code === 'string'
+        ? (error as { code: string }).code
+        : undefined;
+    await failOperation(pool, repository, operation, bridgeErrorMessage(error), code);
     logger.error(
       { event: 'operation.failed', operationId: operation.id, error: bridgeErrorMessage(error) },
       'task operation was refused permanently',
@@ -702,19 +717,28 @@ export async function reconcileTasks(
         continue;
       }
       const paused = snapshot.paused;
-      const stoppedAt = paused?.stoppedAt ? new Date(paused.stoppedAt) : null;
+      const proven = pauseEvidenceProven(
+        paused?.stoppedAt ? { ...paused.evidence, stoppedAt: paused.stoppedAt } : undefined,
+      );
+      const stoppedAt = proven ? new Date(paused!.stoppedAt!) : null;
+      const problem =
+        paused?.stoppedAt && !proven
+          ? pauseEvidenceProblem({ ...paused.evidence, stoppedAt: paused.stoppedAt })
+          : undefined;
       const contradictory =
         task.state === 'stopped' && state !== 'stopped' && state !== 'closed_unmerged';
-      const nextState = contradictory ? 'blocked' : state;
+      // A restart snapshot with a timestamp but incomplete evidence is not a stopped task.
+      const nextState = contradictory || (state === 'stopped' && !proven) ? 'blocked' : state;
+      const writeEvidence = !!paused && (proven || nextState === 'blocked');
       const client = await pool.connect();
       try {
         await client.query('begin');
-        if (nextState !== task.state || stoppedAt || snapshot.pr) {
+        if (nextState !== task.state || stoppedAt || snapshot.pr || writeEvidence) {
           const result = await client.query<TaskRow>(
             `update task_links
                 set state = $2,
                     stopped_at = coalesce($3::timestamptz, stopped_at),
-                    stop_evidence = case when $3::timestamptz is null then stop_evidence else $4::jsonb end,
+                    stop_evidence = case when $3::timestamptz is null and not $9::boolean then stop_evidence else $4::jsonb end,
                     execution_mode = $5,
                     plan_revision = coalesce($6, plan_revision),
                     pr_url = coalesce($7, pr_url),
@@ -727,11 +751,16 @@ export async function reconcileTasks(
               task.id,
               nextState,
               stoppedAt,
-              JSON.stringify(paused?.evidence ?? {}),
+              JSON.stringify(
+                proven
+                  ? (paused?.evidence ?? {})
+                  : { ...paused?.evidence, ...(problem ? { problem } : {}) },
+              ),
               snapshot.mode === 'discuss' ? 'discuss' : 'execute',
               snapshot.planRevision ?? null,
               snapshot.pr?.url ?? null,
               snapshot.pr?.number ?? null,
+              writeEvidence,
             ],
           );
           const next = result.rows[0];

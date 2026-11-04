@@ -1,0 +1,48 @@
+diff --git a/src/app/sessions.ts b/src/app/sessions.ts
+index 8d45cab..c5192c4 100644
+--- a/src/app/sessions.ts
++++ b/src/app/sessions.ts
+@@ -82,6 +82,9 @@ const WORK_TOOLS = ['read', 'write', 'edit', 'read_image', 'glob', 'grep', 'bash
+  * environment are the others (`docs/M4-EXECUTION-CONTROL.md` §1.1).
+  */
+ export const DISCUSS_TOOLS = ['read', 'read_image', 'glob', 'grep', 'web_search', 'web_fetch', 'skill', 'todo_write']
++/** Worker-local tools a discussion still needs; every other local tool (subagent, messages) stays callable in the schema but is refused. */
++export const DISCUSS_LOCAL_TOOLS = ['orchestrator_ack', 'orchestrator_read', 'orchestrator_report', 'orchestrator_thread_follow',
++  'orchestrator_thread_unrelated', 'orchestrator_trigger_handback']
+ /** DSH's base permission preset for a discussion: a read-only sandbox with approvals asked. */
+ export const DISCUSS_PRESET = 'read-only'
+ /** DSH's base permission preset for an executing worker. */
+@@ -334,6 +337,9 @@ export class Sessions {
+     const disposeGuard = agent.ctx.tools.guard(execution => {
+       const current = this.host.store.tickets.get(ticketId)
+       if (!current || !liveTicket(current)) return 'Ticket ended; new work needs a new authorized ticket'
++      if (mode === 'discuss' && !DISCUSS_TOOLS.includes(execution.name) && !DISCUSS_LOCAL_TOOLS.includes(execution.name)) {
++        return 'Discussion workers may use only read-only tools'
++      }
+       return mode === 'discuss' && outsideWorkspace(execution, binding.workspace)
+         ? 'Discussion work may read only files inside its worktree'
+         : undefined
+diff --git a/tests/discussion.spec.ts b/tests/discussion.spec.ts
+index 97adbb8..3af60af 100644
+--- a/tests/discussion.spec.ts
++++ b/tests/discussion.spec.ts
+@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
+ import { Context } from '@deepseek-ai/cordis'
+ import { bindScopeParent } from '@deepseek-ai/dsh-scope'
+ import { MemoryRepositories, type Ticket } from '../src/core/index.ts'
+-import { DISCUSS_PRESET, DISCUSS_TOOLS, EXECUTE_PRESET, Sessions } from '../src/app/sessions.ts'
++import { DISCUSS_LOCAL_TOOLS, DISCUSS_PRESET, DISCUSS_TOOLS, EXECUTE_PRESET, Sessions } from '../src/app/sessions.ts'
+ import { projectTicketState } from '../src/app/bridge.ts'
+ import { DshExecutor, DISCUSSION_ASSIGNMENT } from '../src/executor/dsh.ts'
+ import { SettingsSchema } from '../src/policy.ts'
+@@ -142,6 +142,10 @@ describe('discussion tool boundary', () => {
+     expect(guard({ name: 'read', arguments: { file_path: '/tmp/worker-t1/README.md' } })).toBeUndefined()
+     expect(guard({ name: 'read', arguments: { file_path: '/root/.dsh-m4/env' } })).toMatch(/inside its worktree/)
+     expect(guard({ name: 'grep', arguments: { path: '../../etc' } })).toMatch(/inside its worktree/)
++    expect(guard({ name: 'subagent', arguments: {} })).toMatch(/read-only tools/)
++    expect(guard({ name: 'bash', arguments: { command: 'id' } })).toMatch(/read-only tools/)
++    expect(guard({ name: 'orchestrator_report', arguments: {} })).toBeUndefined()
++    expect(DISCUSS_LOCAL_TOOLS).toContain('orchestrator_report')
+     // Execute workers keep their full paths.
+     h.repo.tickets.save(ticket('t2', { mode: 'execute' }))
+     await ensure(h, 'worker-t2', 'execute')

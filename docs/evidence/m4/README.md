@@ -7,6 +7,10 @@
 | `live-pause-evidence.json` | 平台停止证据与 runtime Ticket `paused` 快照 |
 | `live-execute-pr-closed.log` | 直接执行任务创建 PR #3；关闭后平台 `closed_unmerged` 与消息 409 |
 | `live-resume-pr.log` | PR #4 绑定、stop、resume 后仍是同一 PR（`samePr: true`） |
+| `live-stop-background-job.log` | 真实 `npm test` 后台作业停止前后 PID/进程树、jobs 与平台 stopped |
+| `live-closed-pr.log` | PR #5 关闭后的 `closed_unmerged`、409 与 PR 状态 |
+| `live-resume-missing-worktree.json` | worktree 缺失时 resume 被拒、平台 blocked |
+| `live-discuss-boundary.log` | 只读 preset/sandbox、凭据读取拒绝、进程/挂载身份 |
 | `upstream-0009-tests.log` / `upstream-0010-tests.log` | 0009/0010 的上游定向回归 |
 
 环境：`/root/.dsh-m4`（profile `m4`、Web 3292、Bridge 3291），平台 API/dispatcher 4302，测试仓库
