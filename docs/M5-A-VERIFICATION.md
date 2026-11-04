@@ -1,7 +1,7 @@
 # M5-A 验证记录
 
 日期：2026-11-05。基线：`main@160a22db322571f3a12fcc76748f86260fd34c04`；返修实现 head：
-`a38b30102708ae1691dac89b8ef78e9d48d225ff`。
+`0c9fa08a7f4e3af8c6c2bf0884a6ac376fc97416`。
 被测环境与设计见 [`M5-INSTANCES.md`](M5-INSTANCES.md)；本文只记实际执行过的命令、结果与未验证项。
 所有实例均使用隔离 `DSH_HOME=/root/.dsh-m5`、独立 profile/state/worktree/端口和私有测试仓库；
 3082 bootstrap、4300 线上实例、生产库 `moyu` 与 Nginx 未改动。
@@ -69,7 +69,7 @@ upstream index  8d80bb7f…3c6252
 | 7 | M4 暂停/继续、双入口幂等、M4-UX 草稿/分页/偏好回归 | **通过（真实浏览器 + 集成测试）**：Chromium 下会话分页 50→56 且追加成功，草稿 reload 后恢复；M4 暂停/继续、双入口幂等、晚到回执由 API/dispatcher 集成测试覆盖。未把旧单仓库 live 停止证据当作多仓库路径证据 | `browser-regression.json`、`concurrent-submit.log`、`late-receipt.log`、全量测试输出 |
 
 
-### 关键 live 结果（返修后 head `a38b301`）
+### 关键 live 结果（返修后 head `0c9fa08`）
 
 - **停止所有权**：在 `STOP_TIMEOUT_MS=100` 的隔离 supervisor 上停止 beta，`POST /sleep` 返回
   `accepted:false`；DB 保持 `stopping/stop_failed`，`pid=3917683`，`ownership.members=2`，
