@@ -13,8 +13,11 @@ import {
   messageListDataSchema,
   modelListDataSchema,
   registrationVerifyDataSchema,
+  repositoryActionDataSchema,
   repositoryBranchListDataSchema,
   repositoryListDataSchema,
+  repositoryRuntimeDataSchema,
+  githubRepositoryListDataSchema,
   repositoryPreferencesDataSchema,
   revokeSessionDataSchema,
   sessionListDataSchema,
@@ -32,8 +35,11 @@ import {
   type MessageListData,
   type ModelListData,
   type PasskeyCredentialSummary,
+  type GithubRepositoryListData,
+  type RepositoryActionData,
   type RepositoryBranchListData,
   type RepositoryPreferencesData,
+  type RepositoryRuntimeData,
   type RepositoryPreferencesInput,
   type RepositorySummary,
   type SessionSummary,
@@ -176,6 +182,38 @@ export const api = {
   },
   repositories(): Promise<{ repositories: RepositorySummary[] }> {
     return request('/api/v1/repositories', repositoryListDataSchema);
+  },
+  githubRepositories(q?: string): Promise<GithubRepositoryListData> {
+    const query = q ? `?q=${encodeURIComponent(q)}` : '';
+    return request(`/api/v1/github/repositories${query}`, githubRepositoryListDataSchema);
+  },
+  addRepository(
+    fullName: string,
+  ): Promise<{ repositoryId: string; runtime: RepositoryRuntimeData['runtime'] }> {
+    return request('/api/v1/repositories', repositoryRuntimeDataSchema, {
+      method: 'POST',
+      body: { fullName },
+    });
+  },
+  repositoryRuntime(repositoryId: string): Promise<RepositoryRuntimeData> {
+    return request(
+      `/api/v1/repositories/${encodeURIComponent(repositoryId)}/runtime`,
+      repositoryRuntimeDataSchema,
+    );
+  },
+  wakeRepository(repositoryId: string): Promise<RepositoryActionData> {
+    return request(
+      `/api/v1/repositories/${encodeURIComponent(repositoryId)}/wake`,
+      repositoryActionDataSchema,
+      { method: 'POST' },
+    );
+  },
+  sleepRepository(repositoryId: string): Promise<RepositoryActionData> {
+    return request(
+      `/api/v1/repositories/${encodeURIComponent(repositoryId)}/sleep`,
+      repositoryActionDataSchema,
+      { method: 'POST' },
+    );
   },
   conversations(
     repositoryId: string,

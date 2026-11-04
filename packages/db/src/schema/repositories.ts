@@ -18,6 +18,12 @@ export const repositories = pgTable(
     bridgeUrl: text('bridge_url'),
     /** Name of the environment reference that holds the Bridge machine token, never the token itself. */
     bridgeCredentialRef: text('bridge_credential_ref'),
+    /**
+     * SHA-256 of this repository's machine callback token. The Bridge proves its
+     * repository by presenting that token; a token from another repository is
+     * rejected even though the platform route itself is shared.
+     */
+    bridgeCallbackTokenHash: text('bridge_callback_token_hash'),
     status: repositoryStatus('status').notNull().default('provisioning'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

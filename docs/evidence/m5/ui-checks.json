@@ -1,0 +1,36 @@
+{
+  "at": "2026-11-04T16:26:43.735Z",
+  "after": "http://127.0.0.1:4500",
+  "before": "http://127.0.0.1:4501",
+  "checks": [
+    {
+      "name": "after-sleeping-status",
+      "ok": true
+    },
+    {
+      "name": "after-listener-paused",
+      "ok": true
+    },
+    {
+      "name": "after-wake-action",
+      "ok": true
+    },
+    {
+      "name": "after-no-fake-eta",
+      "ok": true
+    },
+    {
+      "name": "add-dialog-lists-account-repos",
+      "ok": true
+    },
+    {
+      "name": "duplicate-add-shows-conflict",
+      "ok": true
+    },
+    {
+      "name": "before-has-no-listener-status",
+      "ok": true
+    }
+  ],
+  "ok": true
+}

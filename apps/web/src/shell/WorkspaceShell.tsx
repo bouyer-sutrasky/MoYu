@@ -21,6 +21,7 @@ import { Composer } from './Composer';
 import { ConversationPane } from './ConversationPane';
 import { DetailsPanel } from './DetailsPanel';
 import { SettingsDialog } from './SettingsDialog';
+import { AddRepositoryDialog } from './AddRepositoryDialog';
 import { Sidebar } from './Sidebar';
 import styles from './WorkspaceShell.module.css';
 
@@ -151,6 +152,9 @@ export function WorkspaceShell({
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [addRepositoryOpen, setAddRepositoryOpen] = useState(false);
+  const [repositoryActionBusy, setRepositoryActionBusy] = useState(false);
+  const [repositoryActionError, setRepositoryActionError] = useState<string | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
 
   const conversationRequestRef = useRef(0);
@@ -202,6 +206,32 @@ export function WorkspaceShell({
       setRepositoriesError(describeApiError(caught));
     }
   }, [onSessionLost]);
+
+  const handleRepositoryAction = useCallback(
+    async (action: 'wake' | 'sleep' | 'retry') => {
+      const repositoryId = selectedRepositoryIdRef.current;
+      if (!repositoryId) return;
+      setRepositoryActionBusy(true);
+      setRepositoryActionError(null);
+      try {
+        if (action === 'sleep') {
+          await api.sleepRepository(repositoryId);
+        } else {
+          await api.wakeRepository(repositoryId);
+        }
+        await loadRepositories();
+      } catch (caught) {
+        if (caught instanceof ApiClientError && caught.status === 401) {
+          onSessionLost();
+          return;
+        }
+        setRepositoryActionError(describeApiError(caught));
+      } finally {
+        setRepositoryActionBusy(false);
+      }
+    },
+    [loadRepositories, onSessionLost],
+  );
 
   const loadConversations = useCallback(
     async (repositoryId: string, options: { silent?: boolean; cursor?: string | null } = {}) => {
@@ -990,6 +1020,13 @@ export function WorkspaceShell({
             }
           }}
           onNewTask={startNewTask}
+          onOpenAddRepository={() => {
+            setAddRepositoryOpen(true);
+            setSidebarOpen(false);
+          }}
+          onRepositoryAction={(action) => void handleRepositoryAction(action)}
+          repositoryActionBusy={repositoryActionBusy}
+          repositoryActionError={repositoryActionError}
           onOpenActivity={() => {
             setActivityOpen(true);
             setSidebarOpen(false);
@@ -1147,6 +1184,16 @@ export function WorkspaceShell({
       ) : null}
 
       {activityOpen ? <ActivityDialog onClose={() => setActivityOpen(false)} /> : null}
+
+      {addRepositoryOpen ? (
+        <AddRepositoryDialog
+          onClose={() => setAddRepositoryOpen(false)}
+          onAdded={async (repositoryId) => {
+            await loadRepositories();
+            setSelectedRepositoryId(repositoryId);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

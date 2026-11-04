@@ -7,12 +7,65 @@ export const repositoryStatusSchema = z.enum(['provisioning', 'active', 'sleepin
 
 export type RepositoryStatus = z.infer<typeof repositoryStatusSchema>;
 
+/** Lifecycle state stored by the host supervisor for one repository runtime. */
+export const runtimeInstanceStateSchema = z.enum([
+  'sleeping',
+  'starting',
+  'online',
+  'stopping',
+  'fault',
+]);
+
+export type RuntimeInstanceState = z.infer<typeof runtimeInstanceStateSchema>;
+
+export const runtimeDesiredStateSchema = z.enum(['sleeping', 'online']);
+
+export type RuntimeDesiredState = z.infer<typeof runtimeDesiredStateSchema>;
+
+/** One allowed owner operation on a repository instance. */
+export const repositoryRuntimeActionSchema = z.object({
+  action: z.enum(['wake', 'sleep', 'retry']),
+  label: z.string().min(1),
+  enabled: z.boolean(),
+  unavailableReason: z.string().nullable(),
+});
+
+export type RepositoryRuntimeAction = z.infer<typeof repositoryRuntimeActionSchema>;
+
+/**
+ * The repository runtime projection. `reason` is already sanitised for display;
+ * `reasonCode`/`waitingFor` stay machine-readable so the UI does not infer a
+ * cause or invent an ETA. Unknown or stale facts are represented as unknown,
+ * never as completion.
+ */
+export const repositoryRuntimeSchema = z.object({
+  state: runtimeInstanceStateSchema,
+  desiredState: runtimeDesiredStateSchema,
+  reasonCode: z.string().min(1),
+  reason: z.string().min(1),
+  waitingFor: z.string().nullable(),
+  /** Whether the instance's GitHub listener is active; paused while sleeping. */
+  listener: z.enum(['active', 'paused', 'unknown']),
+  /** The repository's single execution slot, independent of online capacity. */
+  executionSlot: z.enum(['free', 'busy', 'unknown']),
+  lastProgressAt: isoTimestampSchema.nullable(),
+  lastActivityAt: isoTimestampSchema.nullable(),
+  lastStartedAt: isoTimestampSchema.nullable(),
+  lastStoppedAt: isoTimestampSchema.nullable(),
+  lastHealthAt: isoTimestampSchema.nullable(),
+  actions: z.array(repositoryRuntimeActionSchema),
+});
+
+export type RepositoryRuntime = z.infer<typeof repositoryRuntimeSchema>;
+
 export const repositorySummarySchema = z.object({
   id: uuidSchema,
   fullName: z.string().min(1),
   githubRepositoryId: z.number().int().nullable(),
   defaultBranch: z.string().min(1),
   status: repositoryStatusSchema,
+  /** Present on M5 responses; older responses may omit it. */
+  runtime: repositoryRuntimeSchema.nullable().optional(),
   createdAt: isoTimestampSchema,
   updatedAt: isoTimestampSchema,
 });
@@ -73,3 +126,57 @@ export const repositoryBranchListDataSchema = z.object({
 });
 
 export type RepositoryBranchListData = z.infer<typeof repositoryBranchListDataSchema>;
+
+/** A GitHub repository the dedicated account can access and may be added. */
+export const githubRepositorySummarySchema = z.object({
+  fullName: z.string().min(1),
+  defaultBranch: z.string().min(1),
+  private: z.boolean(),
+  permissions: z.object({
+    push: z.boolean(),
+    admin: z.boolean(),
+  }),
+});
+
+export type GithubRepositorySummary = z.infer<typeof githubRepositorySummarySchema>;
+
+export const githubRepositoryListQuerySchema = z.object({
+  q: z.string().trim().max(140).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+
+export const githubRepositoryListDataSchema = z.object({
+  repositories: z.array(githubRepositorySummarySchema),
+  hasMore: z.boolean(),
+});
+
+export type GithubRepositoryListData = z.infer<typeof githubRepositoryListDataSchema>;
+
+/** Adds one existing GitHub repository by full name after a permission check. */
+export const createRepositoryInputSchema = z
+  .object({
+    fullName: z
+      .string()
+      .trim()
+      .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, 'must be owner/name'),
+  })
+  .strict();
+
+export type CreateRepositoryInput = z.infer<typeof createRepositoryInputSchema>;
+
+export const repositoryRuntimeDataSchema = z.object({
+  repositoryId: uuidSchema,
+  runtime: repositoryRuntimeSchema,
+});
+
+export type RepositoryRuntimeData = z.infer<typeof repositoryRuntimeDataSchema>;
+
+/** Result of a wake/sleep request; a duplicate request resolves to the same lifecycle. */
+export const repositoryActionDataSchema = z.object({
+  repositoryId: uuidSchema,
+  accepted: z.boolean(),
+  duplicate: z.boolean(),
+  runtime: repositoryRuntimeSchema,
+});
+
+export type RepositoryActionData = z.infer<typeof repositoryActionDataSchema>;

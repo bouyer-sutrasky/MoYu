@@ -30,6 +30,7 @@ import { loadConfig } from '../../src/config';
 import { createTestDatabase, type TestDatabase } from './helpers';
 
 const BRIDGE_TOKEN = 'm4-preferences-token-0123456789';
+process.env.TEST_BRIDGE_TOKEN = BRIDGE_TOKEN;
 const MODEL = { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash' };
 const PLAIN_MODEL = { provider: 'commandcode', model: 'plain-model' };
 
@@ -197,6 +198,7 @@ describe('repository preferences and branch availability on real PostgreSQL', ()
           fullName,
           defaultBranch,
           bridgeUrl,
+          bridgeCredentialRef: bridgeUrl ? 'TEST_BRIDGE_TOKEN' : null,
           status: bridgeUrl ? 'active' : 'provisioning',
         })
         .returning();

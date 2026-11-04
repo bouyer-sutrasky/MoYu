@@ -44,6 +44,14 @@ const environmentSchema = z
       .optional(),
     BRIDGE_DEFAULT_BRANCH: z.string().trim().min(1).max(255).default('main'),
     BRIDGE_TIMEOUT_MS: z.coerce.number().int().min(1000).max(60_000).default(15_000),
+
+    // M5 host supervisor and per-repository credentials. The API never accepts
+    // a path or command from the browser; it asks the supervisor about a
+    // repository id that it has already authorized.
+    SUPERVISOR_URL: z.string().url().optional(),
+    SUPERVISOR_TOKEN: z.string().min(16).optional(),
+    RUNTIME_CREDENTIALS_DIR: z.string().min(1).optional(),
+    GITHUB_CLI: z.string().min(1).default('gh'),
   })
   .superRefine((value, context) => {
     if (value.BRIDGE_URL && !value.BRIDGE_TOKEN) {
@@ -95,6 +103,10 @@ export type ApiConfig = {
   bridgeCredentialRef?: string;
   bridgeDefaultBranch: string;
   bridgeTimeoutMs: number;
+  supervisorUrl?: string;
+  supervisorToken?: string;
+  runtimeCredentialsDir?: string;
+  githubCli: string;
 };
 
 /**
@@ -136,5 +148,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     bridgeCredentialRef: data.BRIDGE_CREDENTIAL_REF,
     bridgeDefaultBranch: data.BRIDGE_DEFAULT_BRANCH,
     bridgeTimeoutMs: data.BRIDGE_TIMEOUT_MS,
+    supervisorUrl: data.SUPERVISOR_URL,
+    supervisorToken: data.SUPERVISOR_TOKEN,
+    runtimeCredentialsDir: data.RUNTIME_CREDENTIALS_DIR,
+    githubCli: data.GITHUB_CLI,
   };
 }

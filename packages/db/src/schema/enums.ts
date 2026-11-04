@@ -11,6 +11,22 @@ export const repositoryStatus = pgEnum('repository_status', [
   'error',
 ]);
 
+/**
+ * Host supervisor lifecycle for one repository runtime. `fault` means the
+ * supervisor could not start or lost the instance; it is never counted as an
+ * online slot and never retried in a loop without an explicit owner action.
+ */
+export const runtimeInstanceState = pgEnum('runtime_instance_state', [
+  'sleeping',
+  'starting',
+  'online',
+  'stopping',
+  'fault',
+]);
+
+/** What the supervisor should converge to after a restart. */
+export const runtimeDesiredState = pgEnum('runtime_desired_state', ['sleeping', 'online']);
+
 export const conversationMode = pgEnum('conversation_mode', ['work', 'chat']);
 
 export const executionMode = pgEnum('execution_mode', ['execute', 'discuss']);

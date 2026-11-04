@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { migrateDatabase } from '../../src/migrate';
-import { createTestDatabase, type TestDatabase } from './helpers';
+import { createTestDatabaseUpTo, type TestDatabase } from './helpers';
 
 const ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 const FORWARD = path.join(ROOT, 'packages/db/migrations/0009_far_typhoid_mary.sql');
@@ -16,7 +16,8 @@ let hash = '';
 const databases: TestDatabase[] = [];
 
 const createDatabase = async (): Promise<TestDatabase> => {
-  const database = await createTestDatabase();
+  // 0009's rollback is only legal while 0009 is the latest applied migration.
+  const database = await createTestDatabaseUpTo(9);
   databases.push(database);
   return database;
 };
@@ -94,7 +95,7 @@ describe('0009 rollback script on real PostgreSQL', () => {
       table: 1,
       index: 1,
       count: 1,
-      total: 10,
+      total: 11,
     });
   }, 30_000);
 

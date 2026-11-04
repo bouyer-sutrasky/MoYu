@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import type { Database } from '../../src/client';
 import { migrateDatabase } from '../../src/migrate';
-import { messages, owners, repositories, taskLinks } from '../../src/schema';
+import { messages, owners, taskLinks } from '../../src/schema';
 import {
   captureError,
   createTestDatabase,
@@ -39,14 +39,20 @@ async function seedConversations(database: Database): Promise<SeededData> {
     throw new Error('owner insert returned no row');
   }
 
-  const [repositoryA] = await database
-    .insert(repositories)
-    .values({ ownerId: owner.id, fullName: `sutrasky/repo-a-${randomUUID()}`, status: 'active' })
-    .returning();
-  const [repositoryB] = await database
-    .insert(repositories)
-    .values({ ownerId: owner.id, fullName: `sutrasky/repo-b-${randomUUID()}`, status: 'active' })
-    .returning();
+  // The 0003 database predates later columns; use raw SQL with only the
+  // columns that schema has.
+  const repositoryA = (
+    await database.execute(
+      sql`insert into repositories (owner_id, full_name, status)
+          values (${owner.id}, ${`sutrasky/repo-a-${randomUUID()}`}, 'active') returning id`,
+    )
+  ).rows[0] as { id: string } | undefined;
+  const repositoryB = (
+    await database.execute(
+      sql`insert into repositories (owner_id, full_name, status)
+          values (${owner.id}, ${`sutrasky/repo-b-${randomUUID()}`}, 'active') returning id`,
+    )
+  ).rows[0] as { id: string } | undefined;
   if (!repositoryA || !repositoryB) {
     throw new Error('repository insert returned no row');
   }

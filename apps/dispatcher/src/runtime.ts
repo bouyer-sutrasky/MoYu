@@ -5,6 +5,7 @@ import {
   RuntimeBridgeError,
   decodeModelId,
   encodeModelId,
+  resolveRepositoryCredentials,
 } from '@moyu/runtime-client';
 
 import type { DispatcherConfig } from './config';
@@ -23,28 +24,10 @@ interface RepositoryRow {
   default_branch: string;
   bridge_url: string | null;
   bridge_credential_ref: string | null;
+  instance_state: string | null;
 }
 
-/** Resolves the configured repository row (by full name when configured, else the first bound one). */
-export async function resolveRepository(
-  pool: pg.Pool,
-  config: DispatcherConfig,
-): Promise<RepositoryBinding | null> {
-  const result = config.bridgeRepository
-    ? await pool.query<RepositoryRow>(
-        `select id, full_name, default_branch, bridge_url, bridge_credential_ref
-           from repositories where full_name = $1 limit 1`,
-        [config.bridgeRepository],
-      )
-    : await pool.query<RepositoryRow>(
-        `select id, full_name, default_branch, bridge_url, bridge_credential_ref
-           from repositories where bridge_url is not null and status = 'active'
-           order by updated_at desc limit 1`,
-      );
-  const row = result.rows[0];
-  if (!row) {
-    return null;
-  }
+function toBinding(row: RepositoryRow): RepositoryBinding {
   return {
     id: row.id,
     fullName: row.full_name,
@@ -54,32 +37,64 @@ export async function resolveRepository(
   };
 }
 
-/** Resolves the machine token by environment reference; never reads it from the database. */
+/**
+ * Repositories whose runtime is online. The supervisor projection is
+ * authoritative; a legacy single-repository deployment with no instance row
+ * still binds through BRIDGE_REPOSITORY.
+ */
+export async function listActiveRepositories(
+  pool: pg.Pool,
+  config: DispatcherConfig,
+): Promise<RepositoryBinding[]> {
+  const result = await pool.query<RepositoryRow>(
+    `select r.id, r.full_name, r.default_branch, r.bridge_url, r.bridge_credential_ref,
+            i.state as instance_state
+       from repositories r
+       left join repository_instances i on i.repository_id = r.id
+      where r.bridge_url is not null
+        and (i.state = 'online'
+             or (i.repository_id is null and r.full_name = $1 and r.status = 'active'))
+      order by r.full_name`,
+    [config.bridgeRepository ?? ''],
+  );
+  return result.rows.map(toBinding);
+}
+
+/** Resolves one repository binding by id or by the configured full name. */
+export async function resolveRepository(
+  pool: pg.Pool,
+  config: DispatcherConfig,
+): Promise<RepositoryBinding | null> {
+  const repositories = await listActiveRepositories(pool, config);
+  if (config.bridgeRepository) {
+    return repositories.find((row) => row.fullName === config.bridgeRepository) ?? null;
+  }
+  return repositories[0] ?? null;
+}
+
+/** Resolves credentials per repository; a global token cannot serve another repository. */
 export function bridgeToken(config: DispatcherConfig, repository: RepositoryBinding): string {
-  const reference = repository.bridgeCredentialRef ?? config.bridgeCredentialRef;
-  if (reference) {
-    const value = process.env[reference];
-    if (value && value.length >= 16) {
-      return value;
-    }
-  }
-  if (config.bridgeToken) {
-    return config.bridgeToken;
-  }
-  throw new Error(`No Bridge token is available for repository ${repository.fullName}`);
+  return resolveRepositoryCredentials(repository, {
+    ...(config.runtimeCredentialsDir ? { credentialsDir: config.runtimeCredentialsDir } : {}),
+    ...(config.bridgeRepository ? { legacyRepository: config.bridgeRepository } : {}),
+    legacyBridgeUrl: config.bridgeUrl ?? null,
+    legacyBridgeToken: config.bridgeToken ?? null,
+  }).bridgeToken;
 }
 
 export function bridgeClient(
   config: DispatcherConfig,
   repository: RepositoryBinding,
 ): RuntimeBridgeClient {
-  const baseUrl = config.bridgeUrl ?? repository.bridgeUrl;
-  if (!baseUrl) {
-    throw new Error(`Repository ${repository.fullName} has no Bridge endpoint`);
-  }
+  const credentials = resolveRepositoryCredentials(repository, {
+    ...(config.runtimeCredentialsDir ? { credentialsDir: config.runtimeCredentialsDir } : {}),
+    ...(config.bridgeRepository ? { legacyRepository: config.bridgeRepository } : {}),
+    legacyBridgeUrl: config.bridgeUrl ?? null,
+    legacyBridgeToken: config.bridgeToken ?? null,
+  });
   return new RuntimeBridgeClient({
-    baseUrl,
-    token: bridgeToken(config, repository),
+    baseUrl: credentials.bridgeUrl,
+    token: credentials.bridgeToken,
     timeoutMs: 30_000,
   });
 }

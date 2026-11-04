@@ -71,6 +71,13 @@
       "when": 1793784687018,
       "tag": "0009_far_typhoid_mary",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1793808809494,
+      "tag": "0010_wandering_living_lightning",
+      "breakpoints": true
     }
   ]
 }

@@ -3,7 +3,12 @@ import clsx from 'clsx';
 import type { ConversationSummary, RepositorySummary } from '@moyu/contracts';
 
 import { Icon } from '../components/Icon';
-import { formatUpdatedAt, taskStateLabel } from '../lib/format';
+import {
+  formatUpdatedAt,
+  repositoryRuntimeLabel,
+  taskStateLabel,
+  waitingForLabel,
+} from '../lib/format';
 import type { ThemeMode } from '../theme/ThemeProvider';
 import styles from './WorkspaceShell.module.css';
 
@@ -30,6 +35,10 @@ interface SidebarProps {
   onSelectConversation: (id: string) => void;
   onReloadConversations: () => void;
   onNewTask: () => void;
+  onOpenAddRepository: () => void;
+  onRepositoryAction: (action: 'wake' | 'sleep' | 'retry') => void;
+  repositoryActionBusy: boolean;
+  repositoryActionError: string | null;
   onOpenActivity: () => void;
   onOpenSettings: () => void;
   ownerName: string;
@@ -60,6 +69,10 @@ export function Sidebar({
   onSelectConversation,
   onReloadConversations,
   onNewTask,
+  onOpenAddRepository,
+  onRepositoryAction,
+  repositoryActionBusy,
+  repositoryActionError,
   onOpenActivity,
   onOpenSettings,
   ownerName,
@@ -69,6 +82,11 @@ export function Sidebar({
   onClose,
   onLogout,
 }: SidebarProps) {
+  const selectedRepository =
+    repositories.find((repository) => repository.id === selectedRepositoryId) ?? null;
+  const runtime = selectedRepository?.runtime ?? null;
+  const waiting = waitingForLabel(runtime?.waitingFor);
+
   return (
     <aside
       className={clsx(styles.sidebar, mobileOpen && styles.sidebarOpen)}
@@ -161,16 +179,65 @@ export function Sidebar({
           </label>
         )}
 
-        <button
-          type="button"
-          className={styles.disabledAction}
-          disabled
-          title="网页添加仓库、实例调度与资源控制在 M5 接入；请先在服务端完成仓库配置"
-        >
+        <button type="button" className={styles.addRepositoryButton} onClick={onOpenAddRepository}>
           <Icon name="plus" size={15} />
           添加仓库
-          <span className={styles.phaseTag}>M5</span>
         </button>
+
+        {selectedRepository && runtime ? (
+          <div className={styles.repositoryRuntime} aria-live="polite">
+            <div className={styles.runtimeTitle}>
+              <span
+                className={clsx(styles.runtimeDot, styles[`runtime-${runtime.state}`])}
+                aria-hidden="true"
+              />
+              <strong>{repositoryRuntimeLabel(runtime)}</strong>
+              <span className={styles.runtimeListener}>
+                {runtime.listener === 'active'
+                  ? 'GitHub 监听中'
+                  : runtime.listener === 'paused'
+                    ? 'GitHub 监听暂停'
+                    : '监听状态未知'}
+              </span>
+            </div>
+            <p className={styles.runtimeReason}>{runtime.reason}</p>
+            <div className={styles.runtimeMeta}>
+              <span>
+                执行名额：
+                {runtime.executionSlot === 'busy'
+                  ? '使用中'
+                  : runtime.executionSlot === 'free'
+                    ? '空闲'
+                    : '未知'}
+              </span>
+              {waiting ? <span>{waiting}</span> : null}
+              {runtime.lastProgressAt ? (
+                <span>最后进展 {formatUpdatedAt(runtime.lastProgressAt)}</span>
+              ) : (
+                <span>暂无有效进展</span>
+              )}
+            </div>
+            <div className={styles.runtimeActions}>
+              {runtime.actions.map((action) => (
+                <button
+                  key={action.action}
+                  type="button"
+                  className={styles.textButton}
+                  disabled={!action.enabled || repositoryActionBusy}
+                  title={action.unavailableReason ?? action.label}
+                  onClick={() => onRepositoryAction(action.action)}
+                >
+                  {repositoryActionBusy ? '处理中…' : action.label}
+                </button>
+              ))}
+            </div>
+            {repositoryActionError ? (
+              <p className={styles.runtimeError} role="alert">
+                {repositoryActionError}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
       </section>
 
       <section className={styles.sidebarSection} aria-labelledby="conversation-heading">

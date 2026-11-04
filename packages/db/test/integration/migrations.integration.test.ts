@@ -17,6 +17,7 @@ const EXPECTED_TABLES = [
   'owners',
   'passkey_credentials',
   'repositories',
+  'repository_instances',
   'repository_preferences',
   'runtime_cursors',
   'runtime_leases',
@@ -35,6 +36,8 @@ const EXPECTED_ENUMS = [
   'execution_mode',
   'message_direction',
   'repository_status',
+  'runtime_desired_state',
+  'runtime_instance_state',
   'runtime_lease_state',
   'task_operation_kind',
   'task_operation_state',
@@ -67,6 +70,8 @@ const EXPECTED_INDEXES = [
   'duplicate_tickets_repository_ticket_uq',
   'duplicate_tickets_due_idx',
   'repository_preferences_owner_repository_uq',
+  'repository_instances_state_idx',
+  'repository_instances_wake_idx',
 ];
 
 async function stringColumn(database: TestDatabase, query: ReturnType<typeof sql>, column: string) {

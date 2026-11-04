@@ -30,6 +30,9 @@ const environmentSchema = z.object({
   RECONCILE_ON_START: z.enum(['true', 'false']).default('true'),
   REPORT_CAPTURE_INTERVAL_MS: z.coerce.number().int().min(500).max(60_000).default(2000),
   DUPLICATE_INTERVAL_MS: z.coerce.number().int().min(100).max(60_000).default(500),
+  // M5: per-repository credentials written by the host supervisor. A global
+  // BRIDGE_URL/BRIDGE_TOKEN is only a legacy single-repository fallback.
+  RUNTIME_CREDENTIALS_DIR: z.string().min(1).optional(),
 });
 
 export type DispatcherConfig = {
@@ -51,6 +54,7 @@ export type DispatcherConfig = {
   reconcileOnStart: boolean;
   reportCaptureIntervalMs: number;
   duplicateIntervalMs: number;
+  runtimeCredentialsDir?: string;
 };
 
 /**
@@ -89,5 +93,6 @@ export function loadDispatcherConfig(
     reconcileOnStart: parsed.data.RECONCILE_ON_START === 'true',
     reportCaptureIntervalMs: parsed.data.REPORT_CAPTURE_INTERVAL_MS,
     duplicateIntervalMs: parsed.data.DUPLICATE_INTERVAL_MS,
+    runtimeCredentialsDir: parsed.data.RUNTIME_CREDENTIALS_DIR,
   };
 }

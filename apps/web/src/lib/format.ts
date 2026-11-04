@@ -1,4 +1,10 @@
-import type { DeliveryState, MessageKind, ModelSelection, TaskState } from '@moyu/contracts';
+import type {
+  DeliveryState,
+  MessageKind,
+  ModelSelection,
+  RepositoryRuntime,
+  TaskState,
+} from '@moyu/contracts';
 
 /** Task states are rendered with the exact Chinese labels agreed in the design. */
 export const TASK_STATE_LABELS: Record<TaskState, string> = {
@@ -37,6 +43,45 @@ export const MESSAGE_KIND_LABELS: Record<MessageKind, string> = {
 
 export function taskStateLabel(state: TaskState | null | undefined): string {
   return state ? TASK_STATE_LABELS[state] : '状态未知';
+}
+
+/** Short lifecycle label for the repository navigation and status panel. */
+export function repositoryRuntimeLabel(runtime: RepositoryRuntime | null | undefined): string {
+  if (!runtime) return '状态未知';
+  if (runtime.state === 'sleeping' && runtime.reasonCode === 'capacity_wait') return '排队中';
+  switch (runtime.state) {
+    case 'sleeping':
+      return '休眠';
+    case 'starting':
+      return '启动中';
+    case 'online':
+      return '在线';
+    case 'stopping':
+      return '停止中';
+    case 'fault':
+      return '故障';
+    default:
+      return '状态未知';
+  }
+}
+
+export function waitingForLabel(waitingFor: string | null | undefined): string | null {
+  switch (waitingFor) {
+    case 'capacity':
+      return '等待在线名额';
+    case 'execution':
+      return '等待执行结束';
+    case 'background_service':
+      return '等待后台服务结束';
+    case 'owner_input':
+      return '等待你的回复';
+    case 'review':
+      return '等待你审阅';
+    case 'supervisor':
+      return '等待 supervisor';
+    default:
+      return null;
+  }
 }
 
 export function formatModel(model: ModelSelection | null | undefined): string {
