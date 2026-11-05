@@ -1,4 +1,5 @@
-dummy=4177581
-accepted True state sleeping code sleeping
-4177581 sleep 120
-sleeping/sleeping
+dummy=5004
+accepted False state stopping code stopping
+   5004 sleep 300
+state=stopping/stop_failed/sleeping
+after_dummy_exit=sleeping/sleeping/sleeping

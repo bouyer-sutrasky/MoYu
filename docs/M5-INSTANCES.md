@@ -86,8 +86,10 @@ supervisor 的实例映射来自固定的 `INSTANCES_CONFIG`：
 - 停止以进程所有权为准，不以父 PID 或端口单独作证：
   - 启动/停止途中持续记录 root pid、process group 和带 startTime 的子孙；父先退出后仍用 process group
     和已记录成员查找幸存子进程；
-  - 信号发送前校验 root 与成员的 kernel startTime；PID 复用、过期 PGID 或无保存身份时不得杀当前进程；
-    旧实例已退出则只释放自身名额，不触碰复用者；
+  - 每次 SIGTERM/SIGKILL 发送前都重新读取 `/proc` 并比对保存的 startTime；失效成员从集合删除，绝不
+    对 PGID 盲发组信号；PID 复用、过期 PGID 或无保存身份时不杀当前进程；
+  - root 快照后可能 fork 新子：root 已死但保存了 pgid/sid 时，扫描旧 session 中的成员并作为孤儿停止；
+    session 不匹配的组员列为 unknown，保持 `stopping/stop_failed` 占名额，等待人工确认而不是猜杀；
   - SIGTERM 后等待所有已记录身份退出，超时后 SIGKILL 并继续等待；只有全部身份消失且 Bridge 端口关闭
     才进入 `sleeping`；
   - 超时/退出未知时保持 `stopping`（占用在线名额），保存剩余 ownership，返回 `accepted:false`；
@@ -95,8 +97,9 @@ supervisor 的实例映射来自固定的 `INSTANCES_CONFIG`：
   - supervisor 重启、启动失败和进程失联路径使用同一停止证明；清理失败继续占用名额，不新建重叠实例。
 - 排队唤醒合并而不是覆盖：同一仓库已在排队时，保留最高优先级（数值最小）和最早
   `wake_requested_at`；网页回复（10）不会被后到的普通新任务（20）降级或重置 FIFO。
-- 停止期间到达的 wake 是新意图：`markSleeping`/停止失败写回前读取当前 `desired_state`，保留
-  `wake_requested_at`，停止完成后由 tick 恰好启动一次，不被最终 sleeping 写覆盖。
+- 停止期间到达的 wake 是新意图：`stopInstance` 入口不再把 desired 覆盖为 sleeping；`markSleeping`/
+  停止失败写回前读取当前 `desired_state`，保留 `wake_requested_at`，停止完成后由 tick 恰好启动一次。
+  `stop_retry` 分支同样保留已接受 wake，不把 online 重置为 sleeping。
 - 执行命令唤醒：休眠仓库上的 `resume`（reply 10）/`start`/`retry`（retry 5）在写入幂等 operation 后
   请求 supervisor wake；重复 `clientCommandId` 也会重复幂等唤醒，避免首次响应丢失后永久 queued。
 - 分配隔离：`prepare` 全程在 supervisor 锁内；分配器同时保留所有现有（含 sleeping）实例的

@@ -21,11 +21,11 @@
 | `browser-regression.json` | 真实 Chromium：会话分页 50→56、reload 后草稿恢复 |
 | `github-online.log` | agent 自写 @ 未产生导入的现场（自回声过滤） |
 | `github-online-import.log` | sutrasky 人工 @ 导入：1 conversation/message/task、bridge 一次、runtime 复用；17/17 断言 |
-| `root-identity.log` | 过期 root startTime 的无关 sleep 未被信号，实例只释放自身名额 |
+| `root-identity.log` | 过期 root startTime 的无关 sleep 未被信号；实例保持 stop_failed，dummy 退出后才 sleeping |
 | `concurrent-prepare.log` | 并发 prepare 的 delta/epsilon profile 与两对端口不重叠 |
 | `spawn-error.log` | 坏 DSH_BIN 下 failed repo `start_failed`、supervisor health ok、alpha 仍 online |
 | `spawnfail-supervisor.log` | 坏 DSH_BIN supervisor 的 prepare/wake/fault 事件 |
-| `wake-during-stop.log` | `stopping` 时 wake，停止后 online 且单进程 |
+| `wake-during-stop.log` | stop_failed 时 wake 保留 online，fake 退出后 starting→online，单进程 |
 | `stop-port-proof.log` | Bridge 端口仍监听时保持 stop_failed，关闭后才 sleeping |
 | `task-resume-wake.log` | 休眠仓库 resume 202、operation queued、实例转 starting |
 | `migration-0012-rollback.log` | 0012 唯一索引回滚 12/0，重放 13/3 |
