@@ -41,6 +41,15 @@ upstream index  8d80bb7f…3c6252
 | P2 queued wake 覆盖优先级/时间 | `mergeQueuedWake` 取最高优先级（数值最小）和最早时间；重复 wake 不重置 | 纯函数测试 + live reply 10 → new_task 20 后仍 `queue_priority=10`、`duplicate:true` |
 | 证据 head/日志未随 PR | `artifacts.txt` 记录实现 head/tree 与构建 hash；log 强制提交；新增 0011 回滚、并发、重启、停止失败、浏览器回归证据 | PR 文件列表包含全部脱敏日志；0011 回滚 11/0→12/1 |
 
+### 事件契约返修（2026-11-05，approval M5A-link-import-03cee850）
+
+- **可失败回归**：新增 `claims the Web conversation for an import event on an existing workspace task`；旧代码只更新 task 状态，不认领会话，会话保持 source=web。dispatcher integration 25/25 通过。
+- **bridge 0022**：既有 workspace Ticket 后续挂上 GitHub input Trigger 时，从该 Trigger 取 number/url/isPr/text 发 `ticket.imported`；确定性键 `ticket-imported:<ticketId>:github:<number>`，纯 GitHub Ticket 保持旧键；不再用 `follows` 的 PR 编号冒充 Issue 身份。
+- **dispatcher 认领**：import 事件命中既有 task 时，仅当该会话消息精确包含同 repo/number URL 才更新 source/external_key；不新建会话/任务。
+- **live 结果**：conversation `ecca4f49…` 从 `web/null` 变为 `github/github:4`；task `775f5577…`、upstream ticket、assignment 与 PR #5（单文件/单 commit）均未变；正确 import 事件键计数 1；dispatcher 回放 24/25 后只认领一次。
+- **制品**：runtime build `/root/src/upstream/m5a-link-import-build`，`lib/index.js` sha256 `975c73e8…b0910`；patch 0022 sha256 `4a89eaab…ef916`；dispatcher dist `8886a627…52f8`。
+- **ignore 缺口**：仍无 pending_admission 终态事件；安全处置是继续保留 sleep/容量阻塞，不自动关闭未证明任务，需后续事件契约修复。
+
 ### 交付补证（2026-11-05，PR26-73daaa1-live-gate）
 
 - **GitHub→Web（真人目标 issue #2，已闭合）**：sutrasky 05:48:39Z 创建 issue #2；runtime accept decision `1de62edf…`，ticket `dca336de…`，assignment `3e905a89…`，worker session `worker-dca336de…`。平台 task `406e433b…` 先 running v2 等确认；Web 消息 `6765844c…`（05:51:37.222Z，readAt 05:51:37.458Z）在同一 assignment 恢复执行；PR #3 单文件 `M4-DUAL-ENTRY.md`、单 commit `87646c9`、内容 `dual entry probe`；task `awaiting_review/version3`。同 clientMessageId 重发返回 200 duplicate，消息/投递/PR 计数不变。证据 `evidence/m5/m4-dual-entry.log`。

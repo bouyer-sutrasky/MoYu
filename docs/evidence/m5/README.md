@@ -37,6 +37,7 @@
 | `m4-pause-resume.log` | live running→stopped→running→completed，PR #4 单文件/单 commit 无重复 |
 | `m4-dual-entry.log` | GitHub→Web 真人 issue #2：task/assignment/session/readAt、PR #3、重复回执与计数 |
 | `m4-web-first.log` | Web→GitHub 真人 issue #4 执行与 PR #5；平台导入事件缺失证据 |
+| `link-import-fix.log` | 0022 事件 + dispatcher 认领修复、回放与 live 验证 |
 | `artifacts.txt` | 基线/head、Node/pnpm/PostgreSQL、构建与上游制品 sha256 |
 | `ui-checks.json` | 真实 Chromium DOM 断言：休眠文案、监听暂停、唤醒动作、添加仓库列表、重复冲突、before 无该状态 |
 | `before-*.png` | `main@160a22d` 的 M4-UX Web 构建（同一数据库/仓库/视口/主题） |
