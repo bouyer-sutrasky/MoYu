@@ -1,7 +1,7 @@
 # M5-A 验证记录
 
 日期：2026-11-05。基线：`main@160a22db322571f3a12fcc76748f86260fd34c04`；返修实现 head：
-`c4b4335157ecaef621155bec0fc8ca878d0c0e31`。
+`9a77fd2b26af4057d4a88cef8d00675d80cec6c6`。
 被测环境与设计见 [`M5-INSTANCES.md`](M5-INSTANCES.md)；本文只记实际执行过的命令、结果与未验证项。
 所有实例均使用隔离 `DSH_HOME=/root/.dsh-m5`、独立 profile/state/worktree/端口和私有测试仓库；
 3082 bootstrap、4300 线上实例、生产库 `moyu` 与 Nginx 未改动。
