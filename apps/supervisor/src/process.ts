@@ -1,5 +1,13 @@
 import { createConnection } from 'node:net';
-import { mkdirSync, readFileSync, readdirSync, rmdirSync, statSync, writeFileSync } from 'node:fs';
+import {
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmdirSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { basename, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -223,30 +231,41 @@ export function movePidToCgroup(path: string, pid: number): boolean {
   }
 }
 
-export function cgroupTree(path: string): { ok: boolean; pids: number[] } {
+export function cgroupTree(path: string): { ok: boolean; pids: number[]; populated: boolean } {
   const pids: number[] = [];
-  let entries: string[];
-  try {
-    readdirSync(path);
-    entries = readdirSync('/proc');
-  } catch {
-    return { ok: false, pids: [] };
-  }
-  const relative = path.replace(/^\/sys\/fs\/cgroup/, '');
-  for (const entry of entries) {
-    if (!/^\d+$/.test(entry)) continue;
+  const stack = [path];
+  let ok = true;
+  let populated = false;
+  while (stack.length > 0) {
+    const dir = stack.pop() as string;
     try {
-      const raw = readFileSync(`/proc/${entry}/cgroup`, 'utf8');
-      const line = raw.trim().split('\n').at(-1) ?? '';
-      const membership = line.split(':').slice(2).join(':');
-      if (membership === relative || membership.startsWith(`${relative}/`)) {
-        pids.push(Number(entry));
+      const raw = readFileSync(join(dir, 'cgroup.procs'), 'utf8');
+      for (const value of raw.split(/\s+/)) {
+        const pid = Number(value);
+        if (Number.isInteger(pid) && pid > 1) pids.push(pid);
+      }
+      try {
+        const events = readFileSync(join(dir, 'cgroup.events'), 'utf8');
+        if (/^populated\s+1$/m.test(events)) populated = true;
+      } catch {
+        ok = false;
+      }
+      for (const entry of readdirSync(dir)) {
+        const child = join(dir, entry);
+        try {
+          if (lstatSync(child).isDirectory()) stack.push(child);
+        } catch {
+          ok = false;
+        }
       }
     } catch {
-      // A process may exit or hide its cgroup; this is not an empty subtree.
+      ok = false;
     }
   }
-  return { ok: true, pids: [...new Set(pids)] };
+  const unique = [...new Set(pids)];
+  // `populated` covers nested descendants; an unreadable member is not empty.
+  if (populated && unique.length === 0) ok = false;
+  return { ok, pids: unique, populated };
 }
 
 export function cgroupPids(path: string): number[] {
@@ -255,7 +274,7 @@ export function cgroupPids(path: string): number[] {
 
 export function cgroupEmpty(path: string): { ok: boolean; empty: boolean } {
   const tree = cgroupTree(path);
-  return { ok: tree.ok, empty: tree.ok && tree.pids.length === 0 };
+  return { ok: tree.ok, empty: tree.ok && !tree.populated && tree.pids.length === 0 };
 }
 
 export function removeCgroup(path: string | null | undefined): void {

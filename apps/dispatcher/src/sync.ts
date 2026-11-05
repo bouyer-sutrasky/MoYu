@@ -536,14 +536,37 @@ async function applyIgnoredDecision(
   const data = asRecord(event.data);
   const conversationId = asString(data.conversationId);
   const decisionId = asString(data.decisionId);
-  if (!conversationId || !decisionId) return;
+  const messageId = asString(data.messageId);
+  if (!conversationId || !decisionId || !messageId) return;
   const task = await taskByConversation(client, conversationId, repository.id);
   if (!task || task.state !== 'pending_admission') return;
+  const message = await client.query<{ createdAt: Date }>(
+    `select created_at as "createdAt" from messages where id = $1 and conversation_id = $2`,
+    [messageId, conversationId],
+  );
+  const decided = message.rows[0];
+  if (!decided) return;
+  // Close only the admission generation the decision names. A later message or
+  // an accepted-but-not-yet-delivered message must keep the task open, or the
+  // ignore would strand that delivery forever.
   const updated = await client.query(
-    `update task_links
+    `update task_links t
         set state = 'not_accepted', version = version + 1, updated_at = now()
-      where id = $1 and repository_id = $2 and state = 'pending_admission'`,
-    [task.id, repository.id],
+      where t.id = $1 and t.repository_id = $2 and t.state = 'pending_admission'
+        and not exists (
+          select 1 from messages m
+            join messages decided on decided.id = $3
+           where m.conversation_id = t.conversation_id
+             and (m.created_at > decided.created_at
+               or (m.created_at = decided.created_at and m.id > decided.id))
+        )
+        and not exists (
+          select 1 from deliveries d
+            join messages m on m.id = d.message_id
+           where m.conversation_id = t.conversation_id
+             and d.state in ('pending', 'delivering')
+        )`,
+    [task.id, repository.id, messageId],
   );
   if ((updated.rowCount ?? 0) === 0) return;
   const next = await taskByConversation(client, conversationId, repository.id);
@@ -553,8 +576,8 @@ async function applyIgnoredDecision(
     });
   }
   logger.info(
-    { event: 'bridge.decision_ignored', decisionId, taskId: task.id, conversationId },
-    'closed a pending admission after an ignored runtime decision',
+    { event: 'bridge.decision_ignored', decisionId, taskId: task.id, conversationId, messageId },
+    'closed the pending admission named by the ignored decision',
   );
 }
 

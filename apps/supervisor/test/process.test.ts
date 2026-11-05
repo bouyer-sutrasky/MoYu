@@ -1,12 +1,14 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createServer, type Server } from 'node:net';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { mergeQueuedWake } from '../src/manager';
 import {
+  cgroupEmpty,
   cgroupPids,
   cgroupTree,
   childPids,
@@ -165,6 +167,13 @@ describe('supervisor process evidence', () => {
     } finally {
       removeCgroup(cgroup);
     }
+  });
+
+  it('treats an unreadable cgroup boundary as unknown instead of empty', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'moyu-cgroup-unreadable-'));
+    writeFileSync(join(dir, 'cgroup.procs'), '1\n');
+    expect(cgroupTree(dir).ok).toBe(false);
+    expect(cgroupEmpty(dir)).toEqual({ ok: false, empty: false });
   });
 
   it('keeps adopted historical descendants unknown even inside a new cgroup', async () => {

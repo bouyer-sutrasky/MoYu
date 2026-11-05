@@ -945,27 +945,79 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
   it('closes only the pending admission tied to an ignored decision', async () => {
     const pending = await seed({ state: 'pending_admission' });
     const running = await seed({ state: 'running' });
-    const event = (seq: number, fixture: typeof pending): BridgeEvent => ({
+    const pendingMessage = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body) values ($1, 'inbound', 'user', 'probe') returning id`,
+      [pending.conversationId],
+    );
+    const runningMessage = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body) values ($1, 'inbound', 'user', 'probe') returning id`,
+      [running.conversationId],
+    );
+    const event = (seq: number, fixture: typeof pending, messageId: string): BridgeEvent => ({
       seq,
       id: `decision-ignored:${fixture.ticketId}`,
       type: 'decision.ignored',
       at: '2026-11-04T00:00:00.000Z',
       data: {
         decisionId: `decision-${fixture.ticketId}`,
-        triggerIds: [`workspace:${fixture.conversationId}`],
+        triggerIds: [`workspace:${messageId}`],
         conversationId: fixture.conversationId,
+        messageId,
         at: '2026-11-04T00:00:00.000Z',
       },
     });
-    fakeBridge.events = [event(1, pending), event(2, running)];
+    fakeBridge.events = [
+      event(1, pending, pendingMessage.rows[0]!.id),
+      event(2, running, runningMessage.rows[0]!.id),
+    ];
     const logger = createConsoleLogger('test');
     expect(await syncOnce(testDatabase.pool, pending.repository, client, logger)).toBe(true);
     expect(await readTask(pending.taskId)).toMatchObject({ state: 'not_accepted' });
     expect(await readTask(running.taskId)).toMatchObject({ state: 'running' });
     const version = (await readTask(pending.taskId)).version;
-    fakeBridge.events = [event(1, pending)];
+    fakeBridge.events = [event(1, pending, pendingMessage.rows[0]!.id)];
     await syncOnce(testDatabase.pool, pending.repository, client, logger);
     expect((await readTask(pending.taskId)).version).toBe(version);
+  }, 30_000);
+
+  it('does not close a newer accepted admission when an older message is ignored', async () => {
+    const fixture = await seed({ state: 'pending_admission' });
+    const older = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body, created_at)
+       values ($1, 'inbound', 'user', 'older probe', now() - interval '1 minute') returning id`,
+      [fixture.conversationId],
+    );
+    const newer = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body) values ($1, 'inbound', 'user', 'newer probe') returning id`,
+      [fixture.conversationId],
+    );
+    await testDatabase.pool.query(
+      `insert into deliveries (message_id, state) values ($1, 'pending')`,
+      [newer.rows[0]!.id],
+    );
+    fakeBridge.events = [
+      {
+        seq: 1,
+        id: `decision-ignored:${fixture.ticketId}:older`,
+        type: 'decision.ignored',
+        at: '2026-11-04T00:00:00.000Z',
+        data: {
+          decisionId: `decision-${fixture.ticketId}`,
+          triggerIds: [`workspace:${older.rows[0]!.id}`],
+          conversationId: fixture.conversationId,
+          messageId: older.rows[0]!.id,
+          at: '2026-11-04T00:00:00.000Z',
+        },
+      },
+    ];
+    const logger = createConsoleLogger('test');
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+    expect(await readTask(fixture.taskId)).toMatchObject({ state: 'pending_admission' });
+    const delivery = await testDatabase.pool.query(
+      `select state from deliveries where message_id = $1`,
+      [newer.rows[0]!.id],
+    );
+    expect(delivery.rows[0]).toMatchObject({ state: 'pending' });
   }, 30_000);
 
   it('keeps one task when the same requirement arrives with a different GitHub ticket', async () => {

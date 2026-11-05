@@ -1,5 +1,5 @@
 diff --git a/src/app/bridge.ts b/src/app/bridge.ts
-index 55d9b1e..35006d0 100644
+index 55d9b1e..0d8f9fa 100644
 --- a/src/app/bridge.ts
 +++ b/src/app/bridge.ts
 @@ -176,7 +176,7 @@ export class EventLog {
@@ -61,7 +61,7 @@ index 55d9b1e..35006d0 100644
        if (workspace && !this.log.has(`ticket-linked:${ticket.id}`)) {
          const meta = origin?.meta ?? {}
          this.log.append(`ticket-linked:${ticket.id}`, 'ticket.linked', ticket.createdAt, {
-@@ -501,14 +519,21 @@ export class Bridge {
+@@ -501,24 +519,31 @@ export class Bridge {
     * the deterministic id keeps a restart or a repeated projection tick from importing it twice.
     */
    private importTicket(ticket: Ticket, origin: Trigger | undefined): void {
@@ -89,7 +89,9 @@ index 55d9b1e..35006d0 100644
        ticketId: ticket.id,
        source: 'github',
        externalId: `github:${number}`,
-@@ -517,8 +542,8 @@ export class Bridge {
+       number,
+-      isPr: isPr(ticket, origin),
++      isPr: isPr(ticket, identity),
        url,
        title: ticket.title,
        state: projectTicketState(ticket),
