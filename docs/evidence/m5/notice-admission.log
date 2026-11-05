@@ -1,0 +1,6 @@
+# import notice is not an admission input
+fix: newer-input and pending-delivery guards filter m.kind='user'; synthetic inbound/notice/bridge messages do not block an ignored admission
+regression: applyImportedEvent duplicate ticket inserts notice, then decision.ignored covers the user message; task becomes not_accepted, notice remains 1, no pending delivery
+control: batch/single/receipt-lag/lock/alias tests remain; dispatcher integration 34/34
+live: fbb374c3/ed68fff4 not_accepted/v1; 775f5577/406e433b awaiting_review
+artifact: runtime /root/src/upstream/m5a-batch-build sha256=d7743cec...

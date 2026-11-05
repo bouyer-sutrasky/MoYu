@@ -1,7 +1,7 @@
 # M5-A 验证记录
 
 日期：2026-11-05。基线：`main@160a22db322571f3a12fcc76748f86260fd34c04`；返修实现 head：
-`9931abbe736a0ccdaa2e054ae990ccf949e122b9`。
+`03a17172465240435160a300b2befaac6adc799c`。
 被测环境与设计见 [`M5-INSTANCES.md`](M5-INSTANCES.md)；本文只记实际执行过的命令、结果与未验证项。
 所有实例均使用隔离 `DSH_HOME=/root/.dsh-m5`、独立 profile/state/worktree/端口和私有测试仓库；
 3082 bootstrap、4300 线上实例、生产库 `moyu` 与 Nginx 未改动。
@@ -43,23 +43,23 @@ upstream index  8d80bb7f…3c6252
 
 ### 事件契约返修（2026-11-05，approval M5A-link-import-03cee850）
 
-- **可失败回归**：新增 `claims the Web conversation for an import event on an existing workspace task`；旧代码只更新 task 状态，不认领会话，会话保持 source=web。dispatcher integration 25/25 通过。
+- **可失败回归**：新增 `claims the Web conversation for an import event on an existing workspace task`；旧代码只更新 task 状态，不认领会话，会话保持 source=web。dispatcher integration 通过。
 - **bridge 0022**：既有 workspace Ticket 后续挂上 GitHub input Trigger 时，从该 Trigger 取 number/url/isPr/text 发 `ticket.imported`；确定性键 `ticket-imported:<ticketId>:github:<number>`，纯 GitHub Ticket 保持旧键；不再用 `follows` 的 PR 编号冒充 Issue 身份。
 - **dispatcher 认领**：import 事件命中既有 task 时，仅当该会话消息精确包含同 repo/number URL 才更新 source/external_key；不新建会话/任务。
 - **live 结果**：conversation `ecca4f49…` 从 `web/null` 变为 `github/github:4`；task `775f5577…`、upstream ticket、assignment 与 PR #5（单文件/单 commit）均未变；正确 import 事件键计数 1；dispatcher 回放 24/25 后只认领一次。
 - **制品**：runtime build `/root/src/upstream/m5a-batch-build`，`lib/index.js` sha256 `d7743cec…a07b`；patch 0022 与 dispatcher/supervisor dist 见 `artifacts.txt`；profile 模板指 final-build，`m5x-6` 已加载验证。
-- **并发序列化**：dispatcher ignore 与 API message acceptance 共用 conversation 行锁；API 先提交则 ignore 看到新消息/投递后跳过，ignore 先提交则 API 重读 not_accepted 并拒绝。双连接真实 PG 回归覆盖两种顺序、alias→target 锁序与批量集合，33/33。证据 `evidence/m5/admission-serialization.log`、`ignore-delivery-order.log`、`batched-ignore.log`。
-- **ignore 缺口**：仍无 pending_admission 终态事件；安全处置是继续保留 sleep/容量阻塞，不自动关闭未证明任务，需后续事件契约修复。
+- **并发序列化**：dispatcher ignore 与 API message acceptance 共用 conversation 行锁；API 先提交则 ignore 看到新消息/投递后跳过，ignore 先提交则 API 重读 not_accepted 并拒绝。双连接真实 PG 回归覆盖两种顺序、alias→target 锁序与批量集合，34/34。证据 `evidence/m5/admission-serialization.log`、`ignore-delivery-order.log`、`batched-ignore.log`、`notice-admission.log`。
+- **ignore 终态**：已验证；合成 `notice` 不作为准入输入，不会阻塞已忽略批次的收敛。
 
 ### 交付补证（2026-11-05，PR26-73daaa1-live-gate）
 
 - **GitHub→Web（真人目标 issue #2，已闭合）**：sutrasky 05:48:39Z 创建 issue #2；runtime accept decision `1de62edf…`，ticket `dca336de…`，assignment `3e905a89…`，worker session `worker-dca336de…`。平台 task `406e433b…` 先 running v2 等确认；Web 消息 `6765844c…`（05:51:37.222Z，readAt 05:51:37.458Z）在同一 assignment 恢复执行；PR #3 单文件 `M4-DUAL-ENTRY.md`、单 commit `87646c9`、内容 `dual entry probe`；task `awaiting_review/version3`。同 clientMessageId 重发返回 200 duplicate，消息/投递/PR 计数不变。证据 `evidence/m5/m4-dual-entry.log`。
-- **Web→GitHub（issue #4，真人目标，执行已闭合，平台导入未闭合）**：issue #4 无 @ 时先建 Web 会话 `ecca4f49…`，消息 `db4599d1…` 等待确认；owner @ 后 runtime 把 `github:4` 并入原 ticket `1d4215c9…`，input readAt `09:18:56.870Z`，同一 assignment `1f7f9d15…`。Web 确认 `e971e6fb…` readAt `09:22:38.959Z` 后执行，PR #5 单文件 `M4-WEB-FIRST.md`(+1/−0)、单 commit `dcfdb44`、内容 `web first probe`；重复回执 duplicate=true，task/PR 计数仍 1。**但**平台会话仍 `source=web/external_key=null`，无 `github:4` 行；bridge 在既有 workspace ticket 上挂 GitHub 线程时不发 `ticket.imported`，dispatcher 无法认领/记录导入，故不能标平台导入合并通过。证据 `evidence/m5/m4-web-first.log`。
+- **Web→GitHub（issue #4，真人目标，已闭合）**：issue #4 无 @ 时先建 Web 会话 `ecca4f49…`，消息 `db4599d1…` 等待确认；owner @ 后 runtime 把 `github:4` 并入原 ticket `1d4215c9…`，input readAt `09:18:56.870Z`，同一 assignment `1f7f9d15…`。Web 确认 `e971e6fb…` readAt `09:22:38.959Z` 后执行，PR #5 单文件 `M4-WEB-FIRST.md`(+1/−0)、单 commit `dcfdb44`、内容 `web first probe`；重复回执 duplicate=true，task/PR 计数仍 1。平台会话已认领为 `source=github/external_key=github:4`（patch 0022 + dispatcher 认领修复）；task/PR #5 未变。证据 `evidence/m5/m4-web-first.log`。
 
 
 - **pending_admission 根因**：隔离 beta 任务 `fbb374c3` 的 runtime decision 为 `ignore`（无仓库变更的 sleep 探针），平台没有 ignore/not_accepted 事件，task 永远停在 `pending_admission` 并计入 gate active，导致 sleep_refused。不是 runtime 未启动/故障；第二个 alpha 样本同样。证据 `evidence/m5/pending-admission-diagnosis.log`。
 - **M4 live pause→resume**：真实 beta 任务 `26b59a78`：running v3 → stop 202 → stopped v7 → resume 202 → running v8 → completed v10；只产生 PR #4，单文件 `M4-RESUME.md`、单 commit、内容 `resume probe`，无重复 PR/commit。证据 `evidence/m5/m4-pause-resume.log`。
-- **仍未闭合**：GitHub→Web/Web→GitHub 两种入口顺序的 live 全序列仍未同时重跑（已有在线人工 @ 导入与 M4 双入口集成测试，但未把集成测试当 live 证据）；pending_admission 的 ignore 传播仍待后续修复。
+- **双入口**：GitHub→Web（issue #2）与 Web→GitHub（issue #4）均已完成 live 验证；ignore 终态与 link/import 事件已闭合。
 
 ### 第五轮返修（2026-11-05，review-key PR26-b65779e-cgroup-r5）
 
