@@ -47,7 +47,7 @@ upstream index  8d80bb7f…3c6252
 - **bridge 0022**：既有 workspace Ticket 后续挂上 GitHub input Trigger 时，从该 Trigger 取 number/url/isPr/text 发 `ticket.imported`；确定性键 `ticket-imported:<ticketId>:github:<number>`，纯 GitHub Ticket 保持旧键；不再用 `follows` 的 PR 编号冒充 Issue 身份。
 - **dispatcher 认领**：import 事件命中既有 task 时，仅当该会话消息精确包含同 repo/number URL 才更新 source/external_key；不新建会话/任务。
 - **live 结果**：conversation `ecca4f49…` 从 `web/null` 变为 `github/github:4`；task `775f5577…`、upstream ticket、assignment 与 PR #5（单文件/单 commit）均未变；正确 import 事件键计数 1；dispatcher 回放 24/25 后只认领一次。
-- **制品**：runtime build `/root/src/upstream/m5a-link-import-build`，`lib/index.js` sha256 `975c73e8…b0910`；patch 0022 sha256 `4a89eaab…ef916`；dispatcher dist `8886a627…52f8`。
+- **制品**：runtime build `/root/src/upstream/m5a-final-build`，`lib/index.js` sha256 `fef63a9c…f566`；patch 0022 sha256 `617e9d63…9e93`；dispatcher/supervisor dist 见 `artifacts.txt`；profile 模板指 final-build，`m5x-6` 已加载验证。
 - **ignore 缺口**：仍无 pending_admission 终态事件；安全处置是继续保留 sleep/容量阻塞，不自动关闭未证明任务，需后续事件契约修复。
 
 ### 交付补证（2026-11-05，PR26-73daaa1-live-gate）
