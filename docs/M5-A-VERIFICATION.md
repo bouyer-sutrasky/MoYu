@@ -63,7 +63,7 @@ upstream index  8d80bb7f…3c6252
 | 1 | 专用账号仓库查询、权限拒绝、重复添加 | **通过**：真实 `gh` 查询返回三个测试仓库与 push 权限；`POST` readonly/不存在 403、重复 409、只建一行 | `apps/api/test/integration/repositories.integration.test.ts`（5 通过）；实际 API 查询见运行记录 |
 | 2 | A/B/C 分别启动、休眠、网页唤醒、容量排队；切换仓库不污染原任务/配置/凭据/cursor | **通过（生命周期）**：三仓库各有独立 profile/state/端口/凭据；A/B 在线后 C 唤醒 `capacity_wait`；LRU 淘汰空闲实例；每仓库 dispatcher 独立循环与 cursor | `evidence/m5/supervisor-lifecycle.log`、`live-snapshot.txt`、dispatcher 集成测试 |
 | 3 | A/B 忙 → C 排队 → 释放/最久无交互淘汰；人工回复优先；等待/审阅释放名额但不抢占运行 | **通过**：A/B 有真实运行任务/后台 `sleep 300` 时 C 进入 `capacity_wait`；空闲实例按 `last_activity` 被淘汰；C 先 reply（10）再 new_task（20）后 DB 仍为 `queue_priority=10` 且重复 wake 返回 `duplicate:true`，不重置 FIFO；等待/审阅释放名额由真实 PostgreSQL 测试覆盖（`waiting_input` lease released，`running` lease active） | `capacity-wake.log`、`concurrent-wake.log`、`operations.integration.test.ts` |
-| 4 | 并发重复唤醒/提交、双入口顺序、启动与人工停止交错、晚到回执 | **通过（可达路径）**：8 个并发同 `clientMessageId` 提交为 1×202 + 7×200，只有 1 条消息/1 次投递；同 id 晚到重试仍 `duplicate:true`，消息/投递数不变；并发 wake 只产生一个 DSH 进程；wake 后立即 sleep 收敛为 `sleeping` 且无残留进程；双入口的 GitHub→Web/Web→GitHub 语义由既有 M4 集成测试回归（本栈在线 GitHub 导入见限制 2） | `concurrent-submit.log`、`late-receipt.log`、`concurrent-wake.log`、`start-stop-interleave.log` |
+| 4 | 并发重复唤醒/提交、双入口顺序、启动与人工停止交错、晚到回执 | **通过（可达路径）**：8 个并发同 `clientMessageId` 提交为 1×202 + 7×200，只有 1 条消息/1 次投递；同 id 晚到重试仍 `duplicate:true`，消息/投递数不变；并发 wake 只产生一个 DSH 进程；wake 后立即 sleep 收敛为 `sleeping` 且无残留进程；双入口的 GitHub→Web/Web→GitHub 语义由既有 M4 集成测试回归；在线 GitHub 人工 @ 已真实导入（sutrasky 2026-11-05T02:38:11Z，17/17 断言） | `concurrent-submit.log`、`late-receipt.log`、`concurrent-wake.log`、`start-stop-interleave.log`、`github-online-import.log` |
 | 5 | supervisor/dispatcher 重启、实例失联、启动失败、子进程退出；停机保持；后台服务阻止休眠 | **通过（含返修）**：supervisor 重启接续 alpha 同一 PID；dispatcher 重启前后消息/投递/task 计数不变；kill -9 后 `instance_lost`/端口关闭/名额回收；stale lock 导致 `start_failed`，清理后重试在线；新启动 <5 秒的后台服务也会阻止休眠（`retainedDescendants` 不再按年龄排除） | `supervisor-restart.log`、`dispatcher-restart.log`、`process-exit-fault.log`、`supervisor-lifecycle.log` |
 | 6 | 状态原因/等待对象/最后进展/恢复动作与现场一致；桌面/手机、浅/深真实浏览器 | **通过（DOM + 截图）**：休眠显示 GitHub 监听暂停、原因、最后进展、唤醒动作；停止失败显示 `stopping/stop_failed`、占位进程数和 `retry_stop`；添加仓库对话框列出账号仓库、重复添加显示冲突；before/after 使用同一场景/视口/主题 | `ui-checks.json`、`stop-timeout-retention.json`、`after-*.png` / `before-*.png` |
 | 7 | M4 暂停/继续、双入口幂等、M4-UX 草稿/分页/偏好回归 | **通过（真实浏览器 + 集成测试）**：Chromium 下会话分页 50→56 且追加成功，草稿 reload 后恢复；M4 暂停/继续、双入口幂等、晚到回执由 API/dispatcher 集成测试覆盖。未把旧单仓库 live 停止证据当作多仓库路径证据 | `browser-regression.json`、`concurrent-submit.log`、`late-receipt.log`、全量测试输出 |
@@ -84,9 +84,14 @@ upstream index  8d80bb7f…3c6252
 - **启动/停止交错**：gamma wake 后 150ms 内 sleep，最终 `sleeping/sleeping/-`，没有残留 DSH 进程。
 - **重启**：supervisor 重启后 alpha 仍为 PID 3919012；dispatcher 重启前后消息/投递/task 计数为 1/1/1。
 - **浏览器回归**：Chromium 首次加载 50 条会话，点击“加载更多任务”后 56 条；草稿 reload 后恢复。
-- **在线 GitHub 导入**：在本栈三个测试仓库上用 agent 账号 `Bouyer12` 写入 `@Bouyer12` 探针，Source
-  未产生新会话。原因是探针作者就是 agent 账号，GitHub 通知不把自身评论作为可接单的人工请求；这不等于
-  人工 @ 链路已验证。人工作者的真实 @ 仍需在测试仓库补一次（见未验证项 2）。
+- **在线 GitHub 人工 @ 导入（已闭合）**：`sutrasky` 于 2026-11-05T02:38:11Z 在
+  `Bouyer12/m5a-alpha-adf10ad9#1` 写入 `@Bouyer12`；Bridge 于 02:39:02Z 收到一次
+  `ticket.imported`（轮询延迟约 51 秒）。DB 只有 1 个 GitHub conversation、1 条 inbound message、
+  1 个 task，无重复；task 从 running 走到 completed v4，runtime 复用 m5a（pid 3919012，3401/3402），
+  worker session `worker-499f76…` 的标题与导入 ticket 一致。先前 agent 自写评论
+  `6637745507` 导入数为 0，自回声过滤正常。验收脚本 `scripts/m5/online-import-acceptance.sh`
+  在本机重跑 17/17、exit 0；首次重跑时 task 已 completed，断言允许 running/awaiting_review/completed，
+  其余导入/计数/进程断言未放宽。
 - **迁移**：0010/0011 均在隔离库完成 rollback→reapply；0011 回滚后迁移数 11、`ownership` 列 0，
   重放后 12、列 1，脚本要求正确 hash 且 0011 为最后一条。
 
@@ -119,15 +124,18 @@ DATABASE_URL=postgres://moyu@127.0.0.1:55432/moyu_m5a_rollback \
 # UI 截图与 DOM 检查（真实 Chromium，测试会话 cookie 注入）
 M5_SESSION_TOKEN=<isolated session> node scripts/m5/screenshots.mjs
 M5_SESSION_TOKEN=<isolated session> node scripts/m5/ui-check.mjs
+
+# 在线 GitHub 人工 @ 导入验收（只读；M5_* 变量可覆盖）
+bash scripts/m5/online-import-acceptance.sh
 ```
 
 ## 4. 未验证项与限制
 
 1. **没有在 live 栈完成三个仓库各自的完整 PR 交付**。已用真实 worker Ticket、Session 和后台命令验证
    生命周期与忙闲，但没有让每个仓库都跑到测试/PR 完成；M3/M4 的 PR 闭环证据仍以原阶段记录为准。
-2. **在线 GitHub @ 导入仍缺一条人工作者的真实触发**。本栈验证了休眠时 @ 不唤醒；在线探针由 agent 账号
-   `Bouyer12` 写入，Source 不把自身评论当作人工请求，因而没有生成会话。需要所有者在
-   `Bouyer12/m5a-alpha-adf10ad9` 等测试仓库用真实人工账号补一次 @；不是代码失败，但本轮不能声称已闭合。
+2. **在线 GitHub 导入的样本与延迟边界**：本轮只有一次人工 @ 样本（sutrasky，2026-11-05T02:38:11Z），
+  从评论到 Bridge 接收约 51 秒；休眠仓库唤醒后再导入、以及多次/长期轮询没有重跑。导入→会话→task→
+  进程复用已闭合，但不能外推为所有轮询时序的统计结论。
 3. **并发规模有限**：只验证两次并发唤醒与三仓库容量，没有做多客户端/长时间 soak 或资源压力测量；
    8GB 聚合预算、cgroup 计量与 M5-B 租约扩展不在本单。
 4. **生产 supervisor 身份未落地**：测试 supervisor 仍为 root；生产需专用非 root/systemd、目录和凭据

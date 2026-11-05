@@ -19,7 +19,8 @@
 | `dispatcher-restart.log` | dispatcher 重启前后消息/投递/task 计数不变 |
 | `supervisor-restart.log` | supervisor 重启后 alpha 同一 PID 接续，beta/gamma 保持休眠 |
 | `browser-regression.json` | 真实 Chromium：会话分页 50→56、reload 后草稿恢复 |
-| `github-online.log` | agent 自写 @ 未产生导入的现场；人工 @ 仍需所有者补测 |
+| `github-online.log` | agent 自写 @ 未产生导入的现场（自回声过滤） |
+| `github-online-import.log` | sutrasky 人工 @ 导入：1 conversation/message/task、bridge 一次、runtime 复用；17/17 断言 |
 | `artifacts.txt` | 基线/head、Node/pnpm/PostgreSQL、构建与上游制品 sha256 |
 | `ui-checks.json` | 真实 Chromium DOM 断言：休眠文案、监听暂停、唤醒动作、添加仓库列表、重复冲突、before 无该状态 |
 | `before-*.png` | `main@160a22d` 的 M4-UX Web 构建（同一数据库/仓库/视口/主题） |
