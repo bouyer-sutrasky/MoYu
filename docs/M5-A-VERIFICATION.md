@@ -44,7 +44,7 @@ upstream index  8d80bb7f…3c6252
 ### 交付补证（2026-11-05，PR26-73daaa1-live-gate）
 
 - **GitHub→Web（真人目标 issue #2，已闭合）**：sutrasky 05:48:39Z 创建 issue #2；runtime accept decision `1de62edf…`，ticket `dca336de…`，assignment `3e905a89…`，worker session `worker-dca336de…`。平台 task `406e433b…` 先 running v2 等确认；Web 消息 `6765844c…`（05:51:37.222Z，readAt 05:51:37.458Z）在同一 assignment 恢复执行；PR #3 单文件 `M4-DUAL-ENTRY.md`、单 commit `87646c9`、内容 `dual entry probe`；task `awaiting_review/version3`。同 clientMessageId 重发返回 200 duplicate，消息/投递/PR 计数不变。证据 `evidence/m5/m4-dual-entry.log`。
-- **反向 Web→GitHub 未闭合**：issue #1 的导入目标已 completed 且合并逻辑正确拒绝，issue #2 已导入；需要一条**尚未导入的真人 @ 目标**才能跑 Web-first 样本，不能伪造顺序。
+- **Web→GitHub（issue #4，真人目标，执行已闭合，平台导入未闭合）**：issue #4 无 @ 时先建 Web 会话 `ecca4f49…`，消息 `db4599d1…` 等待确认；owner @ 后 runtime 把 `github:4` 并入原 ticket `1d4215c9…`，input readAt `09:18:56.870Z`，同一 assignment `1f7f9d15…`。Web 确认 `e971e6fb…` readAt `09:22:38.959Z` 后执行，PR #5 单文件 `M4-WEB-FIRST.md`(+1/−0)、单 commit `dcfdb44`、内容 `web first probe`；重复回执 duplicate=true，task/PR 计数仍 1。**但**平台会话仍 `source=web/external_key=null`，无 `github:4` 行；bridge 在既有 workspace ticket 上挂 GitHub 线程时不发 `ticket.imported`，dispatcher 无法认领/记录导入，故不能标平台导入合并通过。证据 `evidence/m5/m4-web-first.log`。
 
 
 - **pending_admission 根因**：隔离 beta 任务 `fbb374c3` 的 runtime decision 为 `ignore`（无仓库变更的 sleep 探针），平台没有 ignore/not_accepted 事件，task 永远停在 `pending_admission` 并计入 gate active，导致 sleep_refused。不是 runtime 未启动/故障；第二个 alpha 样本同样。证据 `evidence/m5/pending-admission-diagnosis.log`。
@@ -196,7 +196,7 @@ bash scripts/m5/online-import-acceptance.sh
 6. **M4 任务停止的 live 路径未重跑**：没有在 live 栈制造一个运行中任务并等待 GitHub polling 空闲后
    停止；既有 API/dispatcher 集成测试覆盖暂停/继续与 `blocked` 语义，M5 实例停止成功路径已单独验证。
    本轮不把集成测试等同于 live 任务停止。
-7. **pending_admission ignore 传播（明确处置）**：范围为跨 M4 runtime/平台事件，非 M5 实例生命周期；本轮只诊断和绕行（改用仓库变更任务）。后续修复需新增/转发 ignore/not_accepted 事件并把 task 收敛到 not_accepted，同时补回归；未纳入本 PR，因为改 runtime 事件契约超出当前 M5-A 范围。
+7. **pending_admission ignore + 反向导入事件（明确处置）**：ignore 无终态事件使 task 永久 pending_admission；反向场景在既有 workspace ticket 上挂 GitHub 线程时 bridge 不发 `ticket.imported`，平台无法认领 Web 会话/记录 `external_key=github:4`。两者都是 M4 runtime/平台事件契约缺陷，非 M5 实例生命周期；本轮只诊断、绕行和记录，未改 runtime 契约。需要后续补事件投影/认领与回归，不能以 runtime 线程关联冒充平台导入通过。
 8. **未知/复用身份**：root 已死且旧 session 中无匹配成员时会保持 `stopping/stop_failed` 占名额，不做 PGID 盲杀；需要人工确认后清理，这是有意的保守行为。
 8. **截图对比**：before 为 `main@160a22d` 的 M4-UX Web 构建，after 为当前构建；同一数据库、同一
    仓库选择、视口和主题。截图由真实 Chromium 生成，但本执行模型不能直接读图，因而额外用 DOM 断言

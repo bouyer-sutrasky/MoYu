@@ -1,0 +1,20 @@
+# M4 Web-first live execution
+conversation=ecca4f49-eb1c-42a2-89ec-d2f0cd13e81a
+task=775f5577-1c4e-46c8-903a-205fa0977577 state=awaiting_review/4
+runtime_ticket=1d4215c99fe4741d5f99822e1cf63616 assignment=1f7f9d158ec03fcb890a7be160ca50e6
+prepared_message=db4599d1-2f64-45dd-8498-609154a39a6e at=2026-11-05T17:03:27.980+08 delivery=17:03:29.092+08
+confirm_message=e971e6fb-31ff-41b7-9ee3-65c88844bfca at=2026-11-05T17:22:37.711+08 readAt=09:22:38.959Z deliveredTo=1f7f9d15
+pr=https://github.com/Bouyer12/m5a-alpha-adf10ad9/pull/5 head=dcfdb4470a6e15259dc6773301040b5b043e04ca
+files [('M4-WEB-FIRST.md', 1, 0)]
+commits [('dcfdb44', 'docs: add M4-WEB-FIRST.md with web first probe')]
+pr_count=1
+conversation_source=web/null
+platform_import_github4=0
+dup_receipt=HTTP200 duplicate=true same message e971e6fb
+messages=5 tasks=1
+web first probe
+# platform import gap
+bridge_events_for_ticket: only ticket.linked@09:03:33, ticket.state_changed, task.progress, message.read@09:18:56; no ticket.imported for github:4
+platform conversation after execution: source=web external_key=null; no conversation row with external_key=github:4
+cause: Bridge emits one-time ticket.imported only when a GitHub-origin ticket is created; attaching github:4 to the existing workspace ticket 1d4215c9 emits no import event, so dispatcher never claims ecca4f49 or records github:4
+effect: runtime thread linking and single execution are proven; platform import/claim is NOT proven
