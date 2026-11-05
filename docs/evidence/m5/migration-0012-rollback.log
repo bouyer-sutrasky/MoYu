@@ -1,0 +1,14 @@
+# 0012 rollback
+BEGIN
+SET
+DO
+DROP INDEX
+DROP INDEX
+DROP INDEX
+DELETE 1
+COMMIT
+after_rollback_migrations=12
+after_rollback_indexes=0
+$ tsx src/cli/migrate.ts
+after_reapply_migrations=13
+after_reapply_indexes=3

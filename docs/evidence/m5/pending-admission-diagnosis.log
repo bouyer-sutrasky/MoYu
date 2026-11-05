@@ -1,0 +1,13 @@
+# isolated pending_admission diagnosis (read-only)
+repository=Bouyer12/m5a-beta-adf10ad9 profile=m5b ports=3403/3404
+conversation=2364008d-e5c6-40da-8be6-711b07249fba
+task=fbb374c3-64f0-4532-be81-5f23c602bee7 state=pending_admission version=0
+message=52f25faf-acfd-46d3-98b3-e2f4c04e9893 delivery=delivered attempt=1
+runtime_trigger=workspace:52f25faf-acfd-46d3-98b3-e2f4c04e9893
+runtime_decision=aaa303643e78c5231851c77fd903beef kind=ignore strength=explicit
+reason="Lifecycle test: asks to run `sleep 120` in the background... No repository change is requested, so there is no ticket work"
+ticket=none; bridge ticket.imported=none; worker session=none
+gate_active=1 (pending_admission counts as active), so sleep_refused until resolved
+root_cause=the runtime explicitly ignored a no-repository-change probe; the platform has no ignore/not_accepted event, so task_links stays pending_admission forever
+second_sample=c927278b-bb8f-4056-b801-d9ede31156a2/ed68fff4-4e7e-4d88-9c12-390cdd6b3974 same state after a no-change probe
+next=use repo-changing acceptance tasks; fix ignore propagation separately, do not guess a runtime fault

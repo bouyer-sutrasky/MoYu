@@ -1,0 +1,21 @@
+# M4 dual-entry live: GitHub first, then Web confirmation
+issue=https://github.com/Bouyer12/m5a-alpha-adf10ad9/issues/2
+issue_author=sutrasky issue_created=2026-11-05T05:48:39Z
+platform_conversation=1b54b48e-34ef-44d2-aa76-295f8f88a512 source=github external_key=github:2
+runtime_ticket=dca336de567330a52554e65ccae38fad decision=1de62edf9287e784fe44984db20d6852 kind=accept
+runtime_assignment=3e905a8937f95e10a035db623344ad5b state=running started=2026-11-05T05:49:14.847Z
+worker_session=worker-dca336de567330a52554e65ccae38fad
+platform_task=406e433b-05fc-438b-b41c-2012ce31cd8f (conversation 1b54b48e)
+initial_ack: GitHub reply at 2026-11-05T05:50:29Z, task running v2 waiting for confirmation; no file/commit/PR
+web_confirmation_message=6765844c-34a1-4f26-a8f4-244423c471eb clientMessageId=m4-dual-entry-confirm-1 source=web
+web_confirmation_at=2026-11-05T05:51:37.222Z readAt=2026-11-05T05:51:37.458Z deliveredTo=3e905a89
+worker_resumed_on_same_assignment; PR opened 2026-11-05T05:52:35Z
+task_final=awaiting_review/version3
+pr=https://github.com/Bouyer12/m5a-alpha-adf10ad9/pull/3 head=87646c977ba55dd2b5b998ec0e21a8785b8b38ab
+pr_files=M4-DUAL-ENTRY.md(+1/-0) commits=1 content='dual entry probe'
+counts: conversations=1 tasks=1 runtime_tickets=1 PRs=1
+duplicate_receipt: same clientMessageId -> HTTP 200 duplicate=true same message id, no new message/delivery/PR
+
+# Reverse order (Web first, GitHub import second): NOT run
+# Issue #1 imported target is completed and the merge path correctly refuses it;
+# issue #2 was already imported. A new not-yet-imported human-authored target is needed.

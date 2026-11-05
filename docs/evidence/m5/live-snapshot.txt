@@ -1,0 +1,23 @@
+captured_at=2026-11-04T16:45:46Z
+api_url=http://127.0.0.1:4500 baseline_url=http://127.0.0.1:4501
+database=moyu_m5a_live@127.0.0.1:55432 (isolated; production moyu untouched)
+repositories:
+Bouyer12/m5a-alpha-adf10ad9
+Bouyer12/m5a-beta-adf10ad9
+Bouyer12/m5a-gamma-adf10ad9
+instances:
+Bouyer12/m5a-alpha-adf10ad9 state=online pid=3872754 dshPort=3402 bridgePort=3401 reason=listening
+Bouyer12/m5a-beta-adf10ad9 state=online pid=3881229 dshPort=3404 bridgePort=3403 reason=listening
+Bouyer12/m5a-gamma-adf10ad9 state=sleeping pid=- dshPort=3406 bridgePort=3405 reason=evicted
+ports:
+LISTEN 0      511        127.0.0.1:3402       0.0.0.0:*    users:(("node",pid=3872754,fd=21))                                                                                                                 
+LISTEN 0      511        127.0.0.1:3403       0.0.0.0:*    users:(("node",pid=3881229,fd=28))                                                                                                                 
+LISTEN 0      511        127.0.0.1:3401       0.0.0.0:*    users:(("node",pid=3872754,fd=28))                                                                                                                 
+LISTEN 0      511        127.0.0.1:3404       0.0.0.0:*    users:(("node",pid=3881229,fd=21))                                                                                                                 
+LISTEN 0      511        127.0.0.1:4500       0.0.0.0:*    users:(("node",pid=3872050,fd=21))                                                                                                                 
+LISTEN 0      511        127.0.0.1:4501       0.0.0.0:*    users:(("node",pid=3873573,fd=21))                                                                                                                 
+LISTEN 0      511        127.0.0.1:4490       0.0.0.0:*    users:(("node",pid=3881113,fd=22))                                                                                                                 
+api_runtime_projection:
+Bouyer12/m5a-alpha-adf10ad9 online listening active
+Bouyer12/m5a-beta-adf10ad9 online listening active
+Bouyer12/m5a-gamma-adf10ad9 sleeping evicted paused

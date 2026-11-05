@@ -1,0 +1,10 @@
+# M4 live pause -> stop -> resume on current artifact
+repo=Bouyer12/m5a-beta-adf10ad9 profile=m5b
+conversation=ce208c66-7969-468c-b8ed-658721c54611 ticket=ee3f4dffe1635c319d9034d1f95db89c
+pre=running/version3
+pause_http=202 operation=2929972a-898e-4198-acc7-f5a3fd8de1dc state=succeeded
+paused=stopped/version7 stopped_at=2026-11-05T12:58:40.431+08
+resume_http=202 operation=181bc5d2-d0da-46f4-a658-335ba0d1d99f state=succeeded
+resumed=running/version8 then completed/version10
+pr=https://github.com/Bouyer12/m5a-beta-adf10ad9/pull/4 head=3cde194936b25e192850a61b73eb44ed7566b74d files=M4-RESUME.md(+1/-0) commits=1 content='resume probe'
+pr_count=1; no duplicate PR/commit after pause/resume

@@ -734,6 +734,36 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
     expect(lease.rows[0]?.state).toBe('active');
   }, 30_000);
 
+  it('releases the execution slot for human-waiting and review states but not a running task', async () => {
+    const waiting = await seed({ state: 'waiting_input' });
+    const running = await seed({ state: 'running' });
+    const leaseFor = async (seed: Seed, taskId: string) => {
+      const lease = await testDatabase.pool.query<{ id: string }>(
+        `insert into runtime_leases (repository_id, holder_id, expires_at)
+         values ($1, $2, now() + interval '10 minutes') returning id`,
+        [seed.repository.id, `holder-${taskId}`],
+      );
+      const leaseId = lease.rows[0]!.id;
+      await testDatabase.pool.query('update task_links set runtime_lease_id = $2 where id = $1', [
+        taskId,
+        leaseId,
+      ]);
+      return leaseId;
+    };
+    const waitingLease = await leaseFor(waiting, waiting.taskId);
+    const runningLease = await leaseFor(running, running.taskId);
+
+    await maintainLeases(testDatabase.pool, waiting.repository, 60_000);
+
+    const states = await testDatabase.pool.query<{ id: string; state: string }>(
+      'select id, state from runtime_leases where id = any($1::uuid[])',
+      [[waitingLease, runningLease]],
+    );
+    const byId = new Map(states.rows.map((row) => [row.id, row.state]));
+    expect(byId.get(waitingLease)).toBe('released');
+    expect(byId.get(runningLease)).toBe('active');
+  }, 30_000);
+
   it('keeps a resume queued when a different task holds the repository lease', async () => {
     const first = await seed({ state: 'running' });
     await insertOperation(first, 'pause', `cmd-hold-${Date.now()}`);
@@ -857,6 +887,461 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
       [repository.id],
     );
     expect(state.rows[0]?.state).toBe('awaiting_review');
+  }, 30_000);
+
+  it('claims the Web conversation for an import event on an existing workspace task', async () => {
+    const fixture = await seed({ state: 'running', source: 'web' });
+    const url = `https://github.com/${fixture.repository.fullName}/issues/42`;
+    await testDatabase.pool.query(
+      `insert into messages (conversation_id, direction, kind, body) values ($1, 'inbound', 'user', $2)`,
+      [fixture.conversationId, `Web-first target ${url}`],
+    );
+    fakeBridge.events = [
+      {
+        seq: 1,
+        id: `ticket-imported:${fixture.ticketId}:github:42`,
+        type: 'ticket.imported',
+        at: '2026-11-04T00:00:00.000Z',
+        data: {
+          ticketId: fixture.ticketId,
+          source: 'github',
+          externalId: 'github:42',
+          number: 42,
+          isPr: false,
+          url,
+          title: 'Web-first target',
+          state: 'running',
+          triggerId: 'github-comment:42:1',
+          text: 'Web-first target',
+          base: {
+            branch: 'main',
+            commit: 'b'.repeat(40),
+            model: 'commandcode/deepseek/deepseek-v4.1-flash',
+          },
+          at: '2026-11-04T00:00:00.000Z',
+        },
+      },
+    ];
+    const logger = createConsoleLogger('test');
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+    const conversation = await testDatabase.pool.query(
+      `select source, external_key as "externalKey", external_url as "externalUrl"
+         from conversations where id = $1`,
+      [fixture.conversationId],
+    );
+    expect(conversation.rows[0]).toMatchObject({
+      source: 'github',
+      externalKey: 'github:42',
+      externalUrl: url,
+    });
+    const tasks = await testDatabase.pool.query(
+      `select upstream_ticket_id as "ticketId", state from task_links where repository_id = $1`,
+      [fixture.repository.id],
+    );
+    expect(tasks.rows).toHaveLength(1);
+    expect(tasks.rows[0]).toMatchObject({ ticketId: fixture.ticketId, state: 'running' });
+  }, 30_000);
+
+  it('closes only the pending admission tied to an ignored decision', async () => {
+    const pending = await seed({ state: 'pending_admission' });
+    const running = await seed({ state: 'running' });
+    const pendingMessage = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body) values ($1, 'inbound', 'user', 'probe') returning id`,
+      [pending.conversationId],
+    );
+    const runningMessage = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body) values ($1, 'inbound', 'user', 'probe') returning id`,
+      [running.conversationId],
+    );
+    const event = (seq: number, fixture: typeof pending, messageId: string): BridgeEvent => ({
+      seq,
+      id: `decision-ignored:${fixture.ticketId}`,
+      type: 'decision.ignored',
+      at: '2026-11-04T00:00:00.000Z',
+      data: {
+        decisionId: `decision-${fixture.ticketId}`,
+        triggerIds: [`workspace:${messageId}`],
+        conversationId: fixture.conversationId,
+        messageId,
+        at: '2026-11-04T00:00:00.000Z',
+      },
+    });
+    fakeBridge.events = [
+      event(1, pending, pendingMessage.rows[0]!.id),
+      event(2, running, runningMessage.rows[0]!.id),
+    ];
+    const logger = createConsoleLogger('test');
+    expect(await syncOnce(testDatabase.pool, pending.repository, client, logger)).toBe(true);
+    expect(await readTask(pending.taskId)).toMatchObject({ state: 'not_accepted' });
+    expect(await readTask(running.taskId)).toMatchObject({ state: 'running' });
+    const version = (await readTask(pending.taskId)).version;
+    fakeBridge.events = [event(1, pending, pendingMessage.rows[0]!.id)];
+    await syncOnce(testDatabase.pool, pending.repository, client, logger);
+    expect((await readTask(pending.taskId)).version).toBe(version);
+  }, 30_000);
+
+  it('resolves a merged conversation alias before closing the ignored admission', async () => {
+    const fixture = await seed({ state: 'pending_admission' });
+    const message = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body) values ($1, 'inbound', 'user', 'old') returning id`,
+      [fixture.conversationId],
+    );
+    const alias = await testDatabase.pool.query<{ id: string }>(
+      `insert into conversations
+         (owner_id, repository_id, mode, execution_mode, source, base_branch, base_commit, model_id, title, merged_into_conversation_id)
+       values ($1, $2, 'work', 'execute', 'web', 'main', $3, 'commandcode/deepseek/deepseek-v4.1-flash', 'alias', $4)
+       returning id`,
+      [fixture.ownerId, fixture.repository.id, 'a'.repeat(40), fixture.conversationId],
+    );
+    fakeBridge.events = [
+      {
+        seq: 1,
+        id: `decision-ignored:${fixture.ticketId}:alias`,
+        type: 'decision.ignored',
+        at: '2026-11-04T00:00:00.000Z',
+        data: {
+          decisionId: `decision-${fixture.ticketId}`,
+          conversationId: alias.rows[0]!.id,
+          messageId: message.rows[0]!.id,
+          at: '2026-11-04T00:00:00.000Z',
+        },
+      },
+    ];
+    expect(
+      await syncOnce(testDatabase.pool, fixture.repository, client, createConsoleLogger('test')),
+    ).toBe(true);
+    expect(await readTask(fixture.taskId)).toMatchObject({ state: 'not_accepted' });
+  }, 30_000);
+
+  it('does not let an import notice block the ignored admission', async () => {
+    const fixture = await seed({ state: 'pending_admission' });
+    const url = `https://github.com/${fixture.repository.fullName}/issues/42`;
+    const user = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body, source)
+       values ($1, 'inbound', 'user', $2, 'web') returning id`,
+      [fixture.conversationId, `target ${url}`],
+    );
+    fakeBridge.events = [
+      {
+        seq: 1,
+        id: `ticket-imported:${fixture.ticketId}:duplicate`,
+        type: 'ticket.imported',
+        at: '2026-11-04T00:00:00.000Z',
+        data: {
+          ticketId: `second-ticket-${fixture.ticketId}`,
+          source: 'github',
+          externalId: 'github:42',
+          number: 42,
+          isPr: false,
+          url,
+          title: 'second ticket',
+          state: 'running',
+          triggerId: 'github-comment:42:1',
+          text: 'second entry',
+          base: { branch: 'main', commit: 'b'.repeat(40) },
+          at: '2026-11-04T00:00:00.000Z',
+        },
+      },
+      {
+        seq: 2,
+        id: `decision-ignored:${fixture.ticketId}:notice`,
+        type: 'decision.ignored',
+        at: '2026-11-04T00:00:00.000Z',
+        data: {
+          decisionId: `decision-${fixture.ticketId}`,
+          conversationId: fixture.conversationId,
+          messageId: user.rows[0]!.id,
+          messageIds: [user.rows[0]!.id],
+          at: '2026-11-04T00:00:00.000Z',
+        },
+      },
+    ];
+    expect(
+      await syncOnce(testDatabase.pool, fixture.repository, client, createConsoleLogger('test')),
+    ).toBe(true);
+    expect(await readTask(fixture.taskId)).toMatchObject({ state: 'not_accepted' });
+    const notices = await testDatabase.pool.query(
+      `select count(*)::int as count from messages where conversation_id = $1 and kind = 'notice'`,
+      [fixture.conversationId],
+    );
+    expect(notices.rows[0]?.count).toBe(1);
+  }, 30_000);
+
+  it('closes a batched ignore decision covering every pending message', async () => {
+    const fixture = await seed({ state: 'pending_admission' });
+    const first = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body, created_at)
+       values ($1, 'inbound', 'user', 'batch one', now() - interval '1 minute') returning id`,
+      [fixture.conversationId],
+    );
+    const second = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body) values ($1, 'inbound', 'user', 'batch two') returning id`,
+      [fixture.conversationId],
+    );
+    fakeBridge.events = [
+      {
+        seq: 1,
+        id: `decision-ignored:${fixture.ticketId}:batch`,
+        type: 'decision.ignored',
+        at: '2026-11-04T00:00:00.000Z',
+        data: {
+          decisionId: `decision-${fixture.ticketId}`,
+          conversationId: fixture.conversationId,
+          messageId: first.rows[0]!.id,
+          messageIds: [first.rows[0]!.id, second.rows[0]!.id],
+          triggerIds: [`workspace:${first.rows[0]!.id}`, `workspace:${second.rows[0]!.id}`],
+          at: '2026-11-04T00:00:00.000Z',
+        },
+      },
+    ];
+    expect(
+      await syncOnce(testDatabase.pool, fixture.repository, client, createConsoleLogger('test')),
+    ).toBe(true);
+    expect(await readTask(fixture.taskId)).toMatchObject({ state: 'not_accepted' });
+  }, 30_000);
+
+  it('keeps a batch pending when an uncovered newer input exists', async () => {
+    const fixture = await seed({ state: 'pending_admission' });
+    const first = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body, created_at)
+       values ($1, 'inbound', 'user', 'batch one', now() - interval '1 minute') returning id`,
+      [fixture.conversationId],
+    );
+    const second = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body, created_at)
+       values ($1, 'inbound', 'user', 'batch two', now() - interval '30 seconds') returning id`,
+      [fixture.conversationId],
+    );
+    const third = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body) values ($1, 'inbound', 'user', 'new input') returning id`,
+      [fixture.conversationId],
+    );
+    const event = (seq: number, messageIds: string[], id: string): BridgeEvent => ({
+      seq,
+      id,
+      type: 'decision.ignored',
+      at: '2026-11-04T00:00:00.000Z',
+      data: {
+        decisionId: `decision-${fixture.ticketId}`,
+        conversationId: fixture.conversationId,
+        messageId: messageIds[0]!,
+        messageIds,
+        triggerIds: messageIds.map((messageId) => `workspace:${messageId}`),
+        at: '2026-11-04T00:00:00.000Z',
+      },
+    });
+    fakeBridge.events = [
+      event(
+        1,
+        [first.rows[0]!.id, second.rows[0]!.id],
+        `decision-ignored:${fixture.ticketId}:batch-1`,
+      ),
+    ];
+    expect(
+      await syncOnce(testDatabase.pool, fixture.repository, client, createConsoleLogger('test')),
+    ).toBe(true);
+    expect(await readTask(fixture.taskId)).toMatchObject({ state: 'pending_admission' });
+    fakeBridge.events = [
+      event(
+        2,
+        [first.rows[0]!.id, second.rows[0]!.id, third.rows[0]!.id],
+        `decision-ignored:${fixture.ticketId}:batch-2`,
+      ),
+    ];
+    await syncOnce(testDatabase.pool, fixture.repository, client, createConsoleLogger('test'));
+    expect(await readTask(fixture.taskId)).toMatchObject({ state: 'not_accepted' });
+  }, 30_000);
+
+  it('closes its own admission while that message delivery is still delivering', async () => {
+    const fixture = await seed({ state: 'pending_admission' });
+    const message = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body) values ($1, 'inbound', 'user', 'late ack probe') returning id`,
+      [fixture.conversationId],
+    );
+    await testDatabase.pool.query(
+      `insert into deliveries (message_id, state) values ($1, 'delivering')`,
+      [message.rows[0]!.id],
+    );
+    fakeBridge.events = [
+      {
+        seq: 1,
+        id: `decision-ignored:${fixture.ticketId}:late-ack`,
+        type: 'decision.ignored',
+        at: '2026-11-04T00:00:00.000Z',
+        data: {
+          decisionId: `decision-${fixture.ticketId}`,
+          conversationId: fixture.conversationId,
+          messageId: message.rows[0]!.id,
+          at: '2026-11-04T00:00:00.000Z',
+        },
+      },
+    ];
+    expect(
+      await syncOnce(testDatabase.pool, fixture.repository, client, createConsoleLogger('test')),
+    ).toBe(true);
+    expect(await readTask(fixture.taskId)).toMatchObject({ state: 'not_accepted' });
+    await testDatabase.pool.query(`update deliveries set state='delivered' where message_id=$1`, [
+      message.rows[0]!.id,
+    ]);
+    const version = (await readTask(fixture.taskId)).version;
+    expect(
+      await syncOnce(testDatabase.pool, fixture.repository, client, createConsoleLogger('test')),
+    ).toBe(false);
+    expect((await readTask(fixture.taskId)).version).toBe(version);
+  }, 30_000);
+
+  it('serializes an API message acceptance before an ignored decision', async () => {
+    const fixture = await seed({ state: 'pending_admission' });
+    const old = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body) values ($1, 'inbound', 'user', 'old') returning id`,
+      [fixture.conversationId],
+    );
+    const event: BridgeEvent = {
+      seq: 1,
+      id: `decision-ignored:${fixture.ticketId}:race`,
+      type: 'decision.ignored',
+      at: '2026-11-04T00:00:00.000Z',
+      data: {
+        decisionId: `decision-${fixture.ticketId}`,
+        conversationId: fixture.conversationId,
+        messageId: old.rows[0]!.id,
+        at: '2026-11-04T00:00:00.000Z',
+      },
+    };
+    const api = await testDatabase.pool.connect();
+    const sync = await testDatabase.pool.connect();
+    try {
+      await api.query('begin');
+      await api.query('select id from conversations where id = $1 for update', [
+        fixture.conversationId,
+      ]);
+      const task = await api.query('select state from task_links where id = $1', [fixture.taskId]);
+      expect(task.rows[0]).toMatchObject({ state: 'pending_admission' });
+      const created = await api.query<{ id: string }>(
+        `insert into messages (conversation_id, direction, kind, body) values ($1, 'inbound', 'user', 'accepted while ignore waits') returning id`,
+        [fixture.conversationId],
+      );
+      await api.query(`insert into deliveries (message_id, state) values ($1, 'pending')`, [
+        created.rows[0]!.id,
+      ]);
+      const applying = (async () => {
+        await sync.query('begin');
+        await applyEvent(sync, fixture.repository, event, createConsoleLogger('test'));
+        await sync.query('commit');
+      })();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const blocked = await testDatabase.pool.query('select state from task_links where id = $1', [
+        fixture.taskId,
+      ]);
+      expect(blocked.rows[0]).toMatchObject({ state: 'pending_admission' });
+      await api.query('commit');
+      await applying;
+      expect(await readTask(fixture.taskId)).toMatchObject({ state: 'pending_admission' });
+      const delivery = await testDatabase.pool.query(
+        'select state from deliveries where message_id = $1',
+        [created.rows[0]!.id],
+      );
+      expect(delivery.rows[0]).toMatchObject({ state: 'pending' });
+    } finally {
+      await api.query('rollback').catch(() => undefined);
+      await sync.query('rollback').catch(() => undefined);
+      api.release();
+      sync.release();
+    }
+  }, 30_000);
+
+  it('rejects a later API acceptance after an ignored decision commits first', async () => {
+    const fixture = await seed({ state: 'pending_admission' });
+    const old = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body) values ($1, 'inbound', 'user', 'old') returning id`,
+      [fixture.conversationId],
+    );
+    const event: BridgeEvent = {
+      seq: 1,
+      id: `decision-ignored:${fixture.ticketId}:race-reverse`,
+      type: 'decision.ignored',
+      at: '2026-11-04T00:00:00.000Z',
+      data: {
+        decisionId: `decision-${fixture.ticketId}`,
+        conversationId: fixture.conversationId,
+        messageId: old.rows[0]!.id,
+        at: '2026-11-04T00:00:00.000Z',
+      },
+    };
+    const api = await testDatabase.pool.connect();
+    const sync = await testDatabase.pool.connect();
+    try {
+      await sync.query('begin');
+      await applyEvent(sync, fixture.repository, event, createConsoleLogger('test'));
+      let locked = false;
+      const waiting = (async () => {
+        await api.query('begin');
+        await api.query('select id from conversations where id = $1 for update', [
+          fixture.conversationId,
+        ]);
+        locked = true;
+        const task = await api.query('select state from task_links where id = $1', [
+          fixture.taskId,
+        ]);
+        expect(task.rows[0]).toMatchObject({ state: 'not_accepted' });
+        await api.query('rollback');
+      })();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(locked).toBe(false);
+      await sync.query('commit');
+      await waiting;
+      expect(await readTask(fixture.taskId)).toMatchObject({ state: 'not_accepted' });
+      const messages = await testDatabase.pool.query(
+        'select count(*)::int as count from messages where conversation_id = $1',
+        [fixture.conversationId],
+      );
+      expect(messages.rows[0]?.count).toBe(1);
+    } finally {
+      await api.query('rollback').catch(() => undefined);
+      await sync.query('rollback').catch(() => undefined);
+      api.release();
+      sync.release();
+    }
+  }, 30_000);
+
+  it('does not close a newer accepted admission when an older message is ignored', async () => {
+    const fixture = await seed({ state: 'pending_admission' });
+    const older = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body, created_at)
+       values ($1, 'inbound', 'user', 'older probe', now() - interval '1 minute') returning id`,
+      [fixture.conversationId],
+    );
+    const newer = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body) values ($1, 'inbound', 'user', 'newer probe') returning id`,
+      [fixture.conversationId],
+    );
+    await testDatabase.pool.query(
+      `insert into deliveries (message_id, state) values ($1, 'pending')`,
+      [newer.rows[0]!.id],
+    );
+    fakeBridge.events = [
+      {
+        seq: 1,
+        id: `decision-ignored:${fixture.ticketId}:older`,
+        type: 'decision.ignored',
+        at: '2026-11-04T00:00:00.000Z',
+        data: {
+          decisionId: `decision-${fixture.ticketId}`,
+          triggerIds: [`workspace:${older.rows[0]!.id}`],
+          conversationId: fixture.conversationId,
+          messageId: older.rows[0]!.id,
+          at: '2026-11-04T00:00:00.000Z',
+        },
+      },
+    ];
+    const logger = createConsoleLogger('test');
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+    expect(await readTask(fixture.taskId)).toMatchObject({ state: 'pending_admission' });
+    const delivery = await testDatabase.pool.query(
+      `select state from deliveries where message_id = $1`,
+      [newer.rows[0]!.id],
+    );
+    expect(delivery.rows[0]).toMatchObject({ state: 'pending' });
   }, 30_000);
 
   it('keeps one task when the same requirement arrives with a different GitHub ticket', async () => {

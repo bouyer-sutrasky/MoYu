@@ -28,6 +28,8 @@ import {
 } from '@moyu/contracts';
 import type { z } from 'zod';
 
+export * from './credentials';
+
 /**
  * HTTP client for the repository's private machine Bridge. It only consumes the
  * MoYu Bridge protocol documented in docs/M3-BRIDGE-PROTOCOL.md; it never

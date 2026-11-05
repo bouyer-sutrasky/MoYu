@@ -119,6 +119,40 @@ importers:
         specifier: 3.2.7
         version: 3.2.7(@types/node@24.19.2)(tsx@4.23.15)
 
+  apps/supervisor:
+    dependencies:
+      '@moyu/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@moyu/runtime-client':
+        specifier: workspace:*
+        version: link:../../packages/runtime-client
+      fastify:
+        specifier: 5.12.8
+        version: 5.12.8
+      pg:
+        specifier: 8.23.1
+        version: 8.23.1
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@types/node':
+        specifier: 24.19.2
+        version: 24.19.2
+      '@types/pg':
+        specifier: 8.23.1
+        version: 8.23.1
+      tsup:
+        specifier: 8.5.1
+        version: 8.5.1(postcss@8.5.32)(tsx@4.23.15)(typescript@5.9.3)
+      tsx:
+        specifier: 4.23.15
+        version: 4.23.15
+      vitest:
+        specifier: 3.2.7
+        version: 3.2.7(@types/node@24.19.2)(tsx@4.23.15)
+
   apps/web:
     dependencies:
       '@moyu/contracts':

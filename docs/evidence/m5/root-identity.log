@@ -1,0 +1,5 @@
+dummy=5004
+accepted False state stopping code stopping
+   5004 sleep 300
+state=stopping/stop_failed/sleeping
+after_dummy_exit=sleeping/sleeping/sleeping

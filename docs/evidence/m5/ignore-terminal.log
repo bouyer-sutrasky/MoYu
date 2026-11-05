@@ -1,0 +1,14 @@
+# ignore decision -> bridge event -> dispatcher terminal -> capacity/sleep
+before: beta task fbb374c3 pending_admission; gate active=1; sleep_refused
+bridge: decision-ignored:aaa303643e78c5231851c77fd903beef once in m5b events.jsonl
+dispatcher: bridge.decision_ignored -> task fbb374c3 not_accepted/version1
+alpha: decision-ignored:8612e58af24db6333fd5f765ea971c10 once -> task ed68fff4 not_accepted/version1
+unaffected: task 775f5577 awaiting_review; task 406e433b awaiting_review
+gate_after=0 active, 0 pending operations
+sleep_after=accepted true, state=sleeping, reason=sleeping
+wake_after=accepted true, state=starting -> online/listening
+restart: dispatcher restarted; both ignored tasks stayed not_accepted/version1; no duplicate transition
+event_uniqueness: each decision-ignored id count=1 after runtime and dispatcher restarts
+regression: dispatcher integration 26/26, including ignored only pending task and late ignore not closing running task
+artifact: runtime /root/src/upstream/m5a-ignore-build2/lib/index.js sha256=ee2bb85b727cb93300365bb508c5f6d97edfc600216c4cc8902328afb329017c
+patch: 0022-link-and-ignore-events.patch sha256=2d6ee9d15db3886d3344c751097335666cb7c477399c5ed23ebc091b51106f8b

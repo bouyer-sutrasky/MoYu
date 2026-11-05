@@ -4,6 +4,7 @@ import type { Repository } from '@moyu/db';
 import { owners, repositories, type Database } from '@moyu/db';
 
 import type { ApiConfig } from '../config';
+import { ensureLegacyInstance } from './instances';
 
 /**
  * Binds the configured repository to this API process. The deployment fact is
@@ -43,6 +44,9 @@ export async function ensureConfiguredRepository(
       },
     })
     .returning();
+  if (repository) {
+    await ensureLegacyInstance(database, config, repository);
+  }
   return repository ?? null;
 }
 

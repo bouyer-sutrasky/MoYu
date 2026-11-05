@@ -1,0 +1,7 @@
+# ignored decision while its own delivery is in flight
+fix: the pending/delivering guard excludes the decision's own message id; later messages still block
+test_own_delivery_delivering: ignore event + own delivery delivering -> task not_accepted; later delivered update leaves version unchanged
+test_later_pending: newer accepted message with pending delivery still keeps task pending_admission
+test_two_order_lock: API-first/ignore-first still pass; alias lock pass
+regression: dispatcher integration 31/31; previous code left the task pending_admission when its own delivery was delivering and advanced the cursor
+live: fbb374c3/ed68fff4 not_accepted/v1; 775f5577/406e433b awaiting_review; conversation ecca4f49 github:4; PR3/5 unchanged

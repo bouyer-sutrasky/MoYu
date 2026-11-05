@@ -32,14 +32,10 @@ const OPERATION_COLUMNS = `
   op.bridge_operation_id as "bridgeOperationId", op.attempt_count as "attemptCount", op.evidence
 `;
 
-const ACTIVE_TASK_STATES = [
-  'queued',
-  'running',
-  'discussing',
-  'waiting_input',
-  'awaiting_review',
-  'stopping',
-];
+// The repository's single execution slot is held only while a worker can still
+// execute. Waiting for a person or review releases the slot; the runtime may
+// stay online, but another task on this repository may start.
+const ACTIVE_TASK_STATES = ['queued', 'running', 'discussing', 'stopping'];
 
 async function appendTaskEvent(
   client: pg.PoolClient,

@@ -1,0 +1,8 @@
+issue=https://github.com/Bouyer12/m5a-alpha-adf10ad9/issues/1
+https://github.com/Bouyer12/m5a-alpha-adf10ad9/issues/1#issuecomment-6637745507
+waiting 85s
+                  id                  | source | external_key |       state       | upstream_ticket_id 
+--------------------------------------+--------+--------------+-------------------+--------------------
+ c927278b-bb8f-4056-b801-d9ede31156a2 | web    |              | pending_admission | 
+(1 row)
+

@@ -1,0 +1,5 @@
+bad_dsh_bin=/nonexistent/moyu-dsh
+failed_repo=f8630fba-0922-46c2-b43b-4023d3e93df5
+failed_state=fault/start_failed/-
+bad_supervisor_health={"status":"ok","service":"moyu-supervisor"}
+main_alpha=online/3919012

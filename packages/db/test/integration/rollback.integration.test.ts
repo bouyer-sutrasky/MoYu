@@ -10,7 +10,7 @@ import { sql } from 'drizzle-orm';
 
 import type { Database } from '../../src/client';
 import { migrateDatabase } from '../../src/migrate';
-import { messages, owners, repositories } from '../../src/schema';
+import { messages, owners } from '../../src/schema';
 import { createTestDatabaseUpTo, type TestDatabase } from './helpers';
 
 const REPOSITORY_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
@@ -99,16 +99,19 @@ async function seedBusinessData(database: Database): Promise<void> {
   if (!owner) {
     throw new Error('owner insert returned no row');
   }
-  const [repository] = await database
-    .insert(repositories)
-    .values({ ownerId: owner.id, fullName: `sutrasky/rollback-${randomUUID()}`, status: 'active' })
-    .returning();
-  if (!repository) {
+  // This database intentionally predates later migrations; use the columns
+  // that schema actually has instead of a current-schema insert.
+  const repositoryResult = await database.execute(
+    sql`insert into repositories (owner_id, full_name, status)
+        values (${owner.id}, ${`sutrasky/rollback-${randomUUID()}`}, 'active') returning id`,
+  );
+  const repositoryId = repositoryResult.rows[0]?.id;
+  if (typeof repositoryId !== 'string') {
     throw new Error('repository insert returned no row');
   }
   const conversationResult = await database.execute(
     sql`insert into conversations (owner_id, repository_id, base_branch)
-        values (${owner.id}, ${repository.id}, 'main') returning id`,
+        values (${owner.id}, ${repositoryId}, 'main') returning id`,
   );
   const conversationId = conversationResult.rows[0]?.id;
   if (typeof conversationId !== 'string') {
@@ -135,7 +138,7 @@ async function seedBusinessData(database: Database): Promise<void> {
   });
   await database.execute(
     sql`insert into task_links (conversation_id, repository_id, state, base_branch)
-        values (${conversationId}, ${repository.id}, 'pending_admission', 'main')`,
+        values (${conversationId}, ${repositoryId}, 'pending_admission', 'main')`,
   );
 }
 
@@ -172,7 +175,7 @@ describe('0004 rollback script on real PostgreSQL', () => {
     expect(await readState(database)).toMatchObject({
       constraints: 2,
       indexes: 2,
-      migrations: 10,
+      migrations: 13,
       messages: 2,
       taskLinks: 1,
     });

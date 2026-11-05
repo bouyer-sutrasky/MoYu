@@ -45,7 +45,12 @@ M2 实际 Cookie：https origin 使用 `__Host-moyu_session` 与 `__Host-moyu_bo
 | --- | --- |
 | GET /api/v1/github/repositories | 专用账号当前可访问仓库，分页；没有全量可见性时支持输入owner/name检查 |
 | POST /api/v1/repositories | `{fullName}` → repositoryId；校验repo存在与所需读写权限，异步准备配置 |
-| GET /api/v1/repositories | **M2 已实现只读列表**：状态、默认分支、实例状态；M3 启动时按 `BRIDGE_REPOSITORY` 绑定一行（不存秘密） |
+| GET /api/v1/repositories | **M2 已实现只读列表**；M5 每项增加 `runtime`（生命周期、原因、等待对象、监听、执行名额、动作）；M3 兼容行仍可按 `BRIDGE_REPOSITORY` 绑定（不存秘密） |
+| GET /api/v1/github/repositories | **M5-A 已实现**：专用 GitHub 账号查询可见仓库（`q`/`limit`），返回默认分支、私有标记与 push/admin 权限 |
+| POST /api/v1/repositories | **M5-A 已实现**：`{fullName}`；真实权限校验、重复 409、创建后由 supervisor prepare/wake；不可访问 403 |
+| GET /api/v1/repositories/:id/runtime | **M5-A 已实现**：单仓库生命周期投影与允许动作 |
+| POST /api/v1/repositories/:id/wake | **M5-A 已实现**：只提交 repositoryId；忙时返回排队状态，不承诺立即在线 |
+| POST /api/v1/repositories/:id/sleep | **M5-A 已实现**：有活动任务/命令或保留后台服务时返回 200 + `accepted:false` 与原因；停止未证明全部进程退出时保持 `stopping/stop_failed` 并返回 `accepted:false`，动作 `retry_stop` 可重试；不伪报停止 |
 | GET /api/v1/repositories/:id/models | **M3 已实现**：经仓库 Bridge 读取 Harness 已配置模型白名单（provider/model/displayName/reasoningEfforts），不返回 API Key；运行时不可达返回 503 |
 | GET /api/v1/repositories/:id/branches | **M4-UX 已实现**：经 Bridge `GET /bridge/v1/branches` 读取分支；运行时不支持该能力时返回 `status:'unsupported'` 与空列表，不以错误冒充 |
 | GET/PUT/DELETE /api/v1/repositories/:id/preferences | **M4-UX 已实现**：每仓库默认执行方式、分支、模型与推理强度；GET 返回 saved 与 effective（仓库默认兜底），PUT 经模型目录/分支列表校验，失效值 422、运行时不可达 503，不落库；偏好只影响新任务，旧任务冻结值不变 |

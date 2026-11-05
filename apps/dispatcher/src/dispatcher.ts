@@ -11,40 +11,12 @@ import { createConsoleLogger, type DispatcherLogger } from './logger';
 import { maintainLeases, operationsOnce, reconcileTasks } from './operations';
 import { captureReportsOnce } from './reports';
 import { duplicatesOnce } from './duplicates';
-import { bridgeClient, resolveRepository, type RepositoryBinding } from './runtime';
+import { bridgeClient, listActiveRepositories, type RepositoryBinding } from './runtime';
 import { syncOnce } from './sync';
 
 export interface RunDispatcherOptions {
   signal: AbortSignal;
   logger?: DispatcherLogger;
-}
-
-/**
- * Resolves the repository binding once the platform has created it (the API may
- * start first), then waits for shutdown. A missing binding is a normal startup
- * state, not a crash: the first boot happens before Passkey registration.
- */
-async function waitForRepository(
-  pool: pg.Pool,
-  config: DispatcherConfig,
-  signal: AbortSignal,
-  logger: DispatcherLogger,
-): Promise<RepositoryBinding | null> {
-  while (!signal.aborted) {
-    const repository = await resolveRepository(pool, config);
-    if (repository) {
-      return repository;
-    }
-    logger.info(
-      {
-        event: 'dispatcher.repository_waiting',
-        repository: config.bridgeRepository ?? '(first bound)',
-      },
-      'waiting for the API to bind a repository runtime',
-    );
-    await delay(2000, undefined, { signal }).catch(() => undefined);
-  }
-  return null;
 }
 
 async function runLoop(
@@ -74,16 +46,97 @@ async function runLoop(
 }
 
 /**
- * M3 dispatcher: durable message delivery to the repository Bridge and Bridge
- * event catch-up. Both loops are idempotent; restarting the process resumes from
- * database leases and the persisted Bridge cursor.
+ * One independent loop set per online repository. Each has its own Bridge
+ * client, credential and scoped cursor; a stopped repository's loops are
+ * aborted, so its messages can never be delivered to another runtime.
+ */
+async function runRepositoryWorker(
+  pool: pg.Pool,
+  config: DispatcherConfig,
+  repository: RepositoryBinding,
+  signal: AbortSignal,
+  logger: DispatcherLogger,
+): Promise<void> {
+  let bridge: RuntimeBridgeClient;
+  try {
+    bridge = bridgeClient(config, repository);
+  } catch (error) {
+    logger.error(
+      {
+        event: 'dispatcher.bridge_unconfigured',
+        repository: repository.fullName,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      'refusing to dispatch a repository without its own verified Bridge credentials',
+    );
+    return;
+  }
+
+  logger.info(
+    { event: 'dispatcher.repository', repository: repository.fullName },
+    'dispatching for repository runtime',
+  );
+
+  if (config.reconcileOnStart) {
+    try {
+      await reconcileTasks(pool, repository, bridge, logger);
+    } catch (error) {
+      logger.error(
+        {
+          event: 'dispatcher.reconcile_error',
+          repository: repository.fullName,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'startup reconciliation failed; loops continue with the stored state',
+      );
+    }
+  }
+
+  await Promise.allSettled([
+    runLoop('delivery', config.deliveryIntervalMs, signal, logger, () =>
+      deliverOnce(pool, config, repository, bridge, logger),
+    ),
+    runLoop('event_sync', config.eventSyncIntervalMs, signal, logger, () =>
+      syncOnce(pool, repository, bridge, logger),
+    ),
+    runLoop('operations', config.operationIntervalMs, signal, logger, () =>
+      operationsOnce(pool, config, repository, bridge, logger),
+    ),
+    runLoop('leases', 5000, signal, logger, async () => {
+      await maintainLeases(pool, repository, config.operationLeaseTtlMs);
+      return false;
+    }),
+    runLoop('reports', config.reportCaptureIntervalMs, signal, logger, () =>
+      captureReportsOnce(pool, repository, bridge, logger),
+    ),
+    runLoop('duplicates', config.duplicateIntervalMs, signal, logger, () =>
+      duplicatesOnce(pool, config, repository, bridge, logger),
+    ),
+  ]);
+}
+
+interface WorkerHandle {
+  key: string;
+  controller: AbortController;
+  task: Promise<void>;
+}
+
+function bindingKey(repository: RepositoryBinding): string {
+  return `${repository.bridgeUrl ?? ''}|${repository.bridgeCredentialRef ?? ''}`;
+}
+
+/**
+ * M5 dispatcher: discovers online repository instances from the supervisor
+ * projection and runs an independent loop set for each. Restarting the
+ * dispatcher resumes every repository from its own persisted Bridge cursor.
  */
 export async function runDispatcher(
   config: DispatcherConfig,
   options: RunDispatcherOptions,
 ): Promise<void> {
   const logger = options.logger ?? createConsoleLogger('moyu-dispatcher');
-  const pool = createPool(config.databaseUrl, { max: 4 });
+  const pool = createPool(config.databaseUrl, { max: 8 });
+  const workers = new Map<string, WorkerHandle>();
 
   try {
     await pool.query('select 1');
@@ -92,71 +145,69 @@ export async function runDispatcher(
       'dispatcher connected to PostgreSQL',
     );
 
-    const repository = await waitForRepository(pool, config, options.signal, logger);
-    if (!repository) {
-      logger.info({ event: 'dispatcher.stopped' }, 'dispatcher stopped');
-      return;
-    }
-    let bridge: RuntimeBridgeClient;
-    try {
-      bridge = bridgeClient(config, repository);
-    } catch (error) {
-      logger.error(
-        {
-          event: 'dispatcher.bridge_unconfigured',
-          repository: repository.fullName,
-          error: error instanceof Error ? error.message : String(error),
-        },
-        'the dispatcher has no Bridge token; refusing to pretend delivery works',
-      );
-      throw error;
-    }
+    const stopWorkers = async () => {
+      for (const worker of workers.values()) worker.controller.abort();
+      await Promise.allSettled([...workers.values()].map((worker) => worker.task));
+      workers.clear();
+    };
 
-    logger.info(
-      { event: 'dispatcher.repository', repository: repository.fullName },
-      'dispatching for repository runtime',
-    );
-
-    // Reconcile platform state with the runtime's authoritative ticket snapshots
-    // before loops start: stopped tasks stay stopped, running tasks are checked,
-    // and a task the runtime cannot confirm becomes blocked rather than guessed.
-    if (config.reconcileOnStart) {
+    while (!options.signal.aborted) {
       try {
-        await reconcileTasks(pool, repository, bridge, logger);
+        const repositories = await listActiveRepositories(pool, config);
+        const seen = new Set(repositories.map((repository) => repository.id));
+        for (const [id, worker] of workers) {
+          if (!seen.has(id)) {
+            logger.info(
+              { event: 'dispatcher.repository_offline', repositoryId: id },
+              'repository runtime is no longer online; stopping its loops',
+            );
+            worker.controller.abort();
+            workers.delete(id);
+          }
+        }
+        for (const repository of repositories) {
+          const existing = workers.get(repository.id);
+          if (existing && existing.key === bindingKey(repository)) continue;
+          if (existing) {
+            existing.controller.abort();
+            workers.delete(repository.id);
+          }
+          const controller = new AbortController();
+          const task = runRepositoryWorker(
+            pool,
+            config,
+            repository,
+            controller.signal,
+            logger,
+          ).catch((error) => {
+            logger.error(
+              {
+                event: 'dispatcher.worker_failed',
+                repository: repository.fullName,
+                error: error instanceof Error ? error.message : String(error),
+              },
+              'repository dispatcher worker stopped unexpectedly',
+            );
+          });
+          workers.set(repository.id, {
+            key: bindingKey(repository),
+            controller,
+            task,
+          });
+        }
       } catch (error) {
         logger.error(
           {
-            event: 'dispatcher.reconcile_error',
+            event: 'dispatcher.discovery_error',
             error: error instanceof Error ? error.message : String(error),
           },
-          'startup reconciliation failed; loops continue with the stored state',
+          'could not read online repository instances; retrying',
         );
       }
+      await delay(2000, undefined, { signal: options.signal }).catch(() => undefined);
     }
 
-    await Promise.allSettled([
-      runLoop('delivery', config.deliveryIntervalMs, options.signal, logger, () =>
-        deliverOnce(pool, config, repository, bridge, logger),
-      ),
-      runLoop('event_sync', config.eventSyncIntervalMs, options.signal, logger, () =>
-        syncOnce(pool, repository, bridge, logger),
-      ),
-      runLoop('operations', config.operationIntervalMs, options.signal, logger, () =>
-        operationsOnce(pool, config, repository, bridge, logger),
-      ),
-      runLoop('leases', 5000, options.signal, logger, async () => {
-        await maintainLeases(pool, repository, config.operationLeaseTtlMs);
-        return false;
-      }),
-      // A discuss plan and an execute result live in the runtime report; copy
-      // them into the conversation so the owner can read and approve the plan.
-      runLoop('reports', config.reportCaptureIntervalMs, options.signal, logger, () =>
-        captureReportsOnce(pool, repository, bridge, logger),
-      ),
-      runLoop('duplicates', config.duplicateIntervalMs, options.signal, logger, () =>
-        duplicatesOnce(pool, config, repository, bridge, logger),
-      ),
-    ]);
+    await stopWorkers();
     logger.info({ event: 'dispatcher.stopped' }, 'dispatcher stopped');
   } finally {
     await pool.end();

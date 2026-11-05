@@ -1,0 +1,10 @@
+# batched ignore decision coverage
+bridge: project all workspace triggers in decision.triggerIds, group by conversationId, emit messageIds[] with deterministic key decision-ignored:<decisionId>:<conversationId>
+dispatcher: closes only when every uncovered message is older than the newest covered message and no uncovered message has pending/delivering delivery
+regression:
+  - two covered messages -> not_accepted
+  - covered batch + uncovered newer input -> stays pending; later event covering all three -> not_accepted
+  - single message, receipt-lag, later pending, API/ignore order, alias tests remain
+  - dispatcher integration 33/33
+live: fbb374c3/ed68fff4 not_accepted/v1; 775f5577/406e433b awaiting_review; conversation ecca4f49 github:4; PR3/5 unchanged
+artifact: runtime /root/src/upstream/m5a-batch-build/lib/index.js sha256=d7743cecb590a38ca596c081c362550de571329a67be918955099bf95b1ca07b

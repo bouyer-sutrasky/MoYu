@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 
 import { eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
@@ -180,6 +182,55 @@ describe('M4 task commands', () => {
     expect(after.planRevision).toBe(1);
     expect(after.task?.planRevision).toBe(1);
   }, 30_000);
+
+  it('wakes a sleeping repository when a stopped task is resumed', async () => {
+    const conversation = await createConversation(harness);
+    const task = await makeRuntimeAccepted(harness, conversation.id, 'stopped');
+    const calls: Array<{ url: string; body: unknown }> = [];
+    const server = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+      request.on('end', () => {
+        calls.push({
+          url: request.url ?? '',
+          body: JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'),
+        });
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ data: { repositoryId: harness.repositoryId } }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const address = server.address() as AddressInfo;
+    const config = loadConfig({
+      NODE_ENV: 'test',
+      LOG_LEVEL: 'fatal',
+      DATABASE_URL: harness.config.databaseUrl,
+      WEBAUTHN_ORIGIN: 'http://127.0.0.1:3210',
+      WEBAUTHN_RP_ID: '127.0.0.1',
+      SUPERVISOR_URL: `http://127.0.0.1:${address.port}`,
+      SUPERVISOR_TOKEN: 'task-wake-supervisor-token',
+    });
+    const app = buildApp({ config, database: harness.database });
+    await app.ready();
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/v1/tasks/${task.id}/resume`,
+        ...authCookie(harness),
+        payload: { expectedVersion: task.version, clientCommandId: `resume-${randomUUID()}` },
+      });
+      expect(response.statusCode).toBe(202);
+      expect(calls).toEqual([
+        {
+          url: `/control/v1/instances/${harness.repositoryId}/wake`,
+          body: { reason: 'reply', priority: 10 },
+        },
+      ]);
+    } finally {
+      await app.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
 
   it('deduplicates a task command by clientCommandId and rejects a reused id with a different payload', async () => {
     const conversation = await createConversation(harness, 'execute');

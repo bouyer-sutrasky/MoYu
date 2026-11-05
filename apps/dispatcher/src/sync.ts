@@ -527,6 +527,105 @@ async function applyPausedEvent(
  * keeps one task, so a repeated Bridge event or a second entry point reuses the
  * same work instead of executing it twice.
  */
+async function lockConversationForWrite(
+  client: pg.PoolClient,
+  conversationId: string,
+): Promise<string | null> {
+  const [source] = (
+    await client.query<{ id: string; mergedInto: string | null }>(
+      `select id, merged_into_conversation_id as "mergedInto"
+         from conversations where id = $1 for update`,
+      [conversationId],
+    )
+  ).rows;
+  if (!source) return null;
+  if (!source.mergedInto) return source.id;
+  // Same alias -> target order as the API message transaction.
+  const [target] = (
+    await client.query<{ id: string }>(`select id from conversations where id = $1 for update`, [
+      source.mergedInto,
+    ])
+  ).rows;
+  return target?.id ?? null;
+}
+
+async function applyIgnoredDecision(
+  client: pg.PoolClient,
+  repository: RepositoryBinding,
+  event: BridgeEvent,
+  logger: DispatcherLogger,
+): Promise<void> {
+  const data = asRecord(event.data);
+  const conversationId = asString(data.conversationId);
+  const decisionId = asString(data.decisionId);
+  const messageId = asString(data.messageId);
+  const messageIds = Array.isArray(data.messageIds)
+    ? data.messageIds.filter(
+        (value): value is string => typeof value === 'string' && value.length > 0,
+      )
+    : messageId
+      ? [messageId]
+      : [];
+  if (!conversationId || !decisionId || messageIds.length === 0) return;
+  // Serialize with API message acceptance on the same conversation row. The
+  // conditional UPDATE alone is not enough: an API transaction can read the
+  // pending task before committing its new message.
+  const targetId = await lockConversationForWrite(client, conversationId);
+  if (!targetId) return;
+  const task = await taskByConversation(client, targetId, repository.id);
+  if (!task || task.state !== 'pending_admission') return;
+  const members = await client.query<{ count: number }>(
+    `select count(*)::int as count from messages
+      where conversation_id = $1 and id = any($2::uuid[])`,
+    [targetId, messageIds],
+  );
+  if (members.rows[0]?.count !== messageIds.length) return;
+  // Close only the admission generation the decision names. A later message or
+  // an accepted-but-not-yet-delivered message must keep the task open, or the
+  // ignore would strand that delivery forever.
+  const updated = await client.query(
+    `update task_links t
+        set state = 'not_accepted', version = version + 1, updated_at = now()
+      where t.id = $1 and t.repository_id = $2 and t.state = 'pending_admission'
+        and not exists (
+          select 1 from messages m
+           where m.conversation_id = t.conversation_id
+             and m.kind = 'user'
+             and not (m.id = any($3::uuid[]))
+             and m.created_at > (
+               select max(decided.created_at) from messages decided
+                where decided.id = any($3::uuid[])
+             )
+        )
+        and not exists (
+          select 1 from deliveries d
+            join messages m on m.id = d.message_id
+           where m.conversation_id = t.conversation_id
+             and m.kind = 'user'
+             and not (m.id = any($3::uuid[]))
+             and d.state in ('pending', 'delivering')
+        )`,
+    [task.id, repository.id, messageIds],
+  );
+  if ((updated.rowCount ?? 0) === 0) return;
+  const next = await taskByConversation(client, targetId, repository.id);
+  if (next) {
+    await emit(client, repository, event, 'task.state_changed', targetId, next.id, {
+      task: taskSummary(next),
+    });
+  }
+  logger.info(
+    {
+      event: 'bridge.decision_ignored',
+      decisionId,
+      taskId: task.id,
+      conversationId: targetId,
+      messageId,
+    },
+    'closed the pending admission named by the ignored decision',
+  );
+}
+
 async function applyImportedEvent(
   client: pg.PoolClient,
   repository: RepositoryBinding,
@@ -564,6 +663,25 @@ async function applyImportedEvent(
 
   const existingTask = await taskByTicket(client, ticketId, repository.id);
   if (existingTask) {
+    // A Web-first requirement already has a task before the GitHub thread is
+    // linked. Claim that exact conversation only when one of its messages names
+    // this repository and number; never guess from recent activity.
+    if (number != null) {
+      const bodies = await client.query<{ body: string }>(
+        `select body from messages where conversation_id = $1`,
+        [existingTask.conversationId],
+      );
+      if (
+        bodies.rows.some((row) => githubRequirementUrl(row.body, repository.fullName, isPr, number))
+      ) {
+        await client.query(
+          `update conversations
+              set source = 'github', external_key = $2, external_url = $3, updated_at = now()
+            where id = $1 and source = 'web' and external_key is null`,
+          [existingTask.conversationId, externalId, url ?? null],
+        );
+      }
+    }
     const updated = await client.query(
       `update task_links
           set state = $2,
@@ -831,6 +949,9 @@ export async function applyEvent(
       return;
     case 'ticket.imported':
       return applyImportedEvent(client, repository, event, logger);
+    case 'decision.ignored':
+      await applyIgnoredDecision(client, repository, event, logger);
+      return;
     case 'message.read':
       await applyReadEvent(client, repository, event, logger);
       return;

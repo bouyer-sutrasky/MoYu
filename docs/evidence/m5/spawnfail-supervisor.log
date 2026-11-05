@@ -1,0 +1,4 @@
+{"at":"2026-11-05T03:15:42.338Z","level":"info","service":"moyu-supervisor","message":"supervisor is listening","event":"supervisor.ready","host":"127.0.0.1","port":4491,"maxOnline":2}
+{"at":"2026-11-05T03:16:13.208Z","level":"info","service":"moyu-supervisor","message":"repository instance prepared on wake","event":"supervisor.instance_prepared","repository":"Bouyer12/m5a-spawnfail-adf10ad9","profile":"sp-1"}
+{"at":"2026-11-05T03:16:13.212Z","level":"info","service":"moyu-supervisor","message":"repository wake requested","event":"supervisor.wake_requested","repositoryId":"f8630fba-0922-46c2-b43b-4023d3e93df5","from":"sleeping","priority":20,"reason":"manual"}
+{"at":"2026-11-05T03:16:13.229Z","level":"error","service":"moyu-supervisor","message":"repository runtime failed","event":"supervisor.fault","repositoryId":"f8630fba-0922-46c2-b43b-4023d3e93df5","code":"start_failed","detail":"spawn returned no pid"}

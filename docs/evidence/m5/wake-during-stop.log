@@ -1,0 +1,5 @@
+fake=3503 start=213999186
+at_wake=stopping/stop_failed/sleeping
+after_wake=stopping/stop_failed/online/3503
+after_exit=starting/starting/online/3536
+   3536 node /usr/bin/dsh --profile m5c --no-open

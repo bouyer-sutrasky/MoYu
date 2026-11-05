@@ -71,6 +71,7 @@ async function seedHarness(testDatabase: TestDatabase): Promise<Harness> {
     WEBAUTHN_ORIGIN: 'http://127.0.0.1:3200',
     WEBAUTHN_RP_ID: '127.0.0.1',
     BRIDGE_CALLBACK_TOKEN: 'm3-test-callback-token-0123456789',
+    BRIDGE_REPOSITORY: 'Bouyer12/m3-loop-test',
   });
   const app = buildApp({ config, database });
   await app.ready();

@@ -1,0 +1,4 @@
+alpha_cgroup=/sys/fs/cgroup/moyu-supervisor/m5a-adopt-1793851083593 alpha_pids=3919012
+beta_cgroup=/sys/fs/cgroup/moyu-supervisor/m5b-1793851526633 beta_pids=18754 19113(gh polling)
+sleep accepted=True state=sleeping reason=sleeping
+cgroup_removed

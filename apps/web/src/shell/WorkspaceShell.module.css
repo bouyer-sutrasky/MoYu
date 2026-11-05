@@ -2121,3 +2121,114 @@
     font-size: 13px;
   }
 }
+
+.addRepositoryButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px dashed var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-md);
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xs-13);
+  cursor: pointer;
+}
+
+.addRepositoryButton:hover {
+  border-color: var(--dsw-alias-state-business-primary);
+  color: var(--dsw-alias-label-primary);
+}
+
+.repositoryRuntime {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md);
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 70%, transparent);
+}
+
+.runtimeTitle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--dsw-alias-label-primary);
+  font: var(--dsw-font-xs-strong-13);
+}
+
+.runtimeDot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--dsw-alias-label-caption);
+}
+
+.runtime-online {
+  background: var(--dsw-alias-state-success-primary, #2f9e44);
+}
+
+.runtime-starting,
+.runtime-stopping {
+  background: var(--dsw-alias-state-warning-primary, #e8a317);
+}
+
+.runtime-sleeping {
+  background: var(--dsw-alias-label-caption);
+}
+
+.runtime-fault {
+  background: var(--dsw-alias-state-error-primary, #d92d20);
+}
+
+.runtimeListener {
+  margin-left: auto;
+  color: var(--dsw-alias-label-tertiary);
+  font: var(--dsw-font-xxxs-11);
+  white-space: nowrap;
+}
+
+.runtimeReason {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xxxs-11);
+  line-height: 1.6;
+}
+
+.runtimeMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  color: var(--dsw-alias-label-tertiary);
+  font: var(--dsw-font-xxxs-11);
+}
+
+.runtimeActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.runtimeActions button {
+  min-height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-xs);
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.runtimeActions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.runtimeError {
+  margin: 0;
+  color: var(--dsw-alias-label-error, #b42318);
+  font: var(--dsw-font-xxxs-11);
+  line-height: 1.5;
+}

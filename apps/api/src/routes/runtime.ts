@@ -2,7 +2,14 @@ import { and, eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 
 import { runtimeEventDataSchema, runtimeEventInputSchema, type TaskSummary } from '@moyu/contracts';
-import { conversations, messages, taskLinks, type Database, type TaskLink } from '@moyu/db';
+import {
+  conversations,
+  messages,
+  repositories,
+  taskLinks,
+  type Database,
+  type TaskLink,
+} from '@moyu/db';
 
 import type { Authenticate } from '../auth/guards';
 import type { ApiConfig } from '../config';
@@ -13,6 +20,7 @@ import type { AppEventBus } from '../events/bus';
 import { ApiProblem } from '../lib/errors';
 import { parseInput, sendData } from '../lib/http';
 import { isUniqueViolation } from '../lib/pg';
+import { verifyCallbackToken } from '../runtime/bridge';
 
 export interface RuntimeRouteDependencies {
   config: ApiConfig;
@@ -60,7 +68,7 @@ export function registerRuntimeRoutes(
   app: FastifyInstance,
   dependencies: RuntimeRouteDependencies,
 ): void {
-  const { database, machineAuthenticate, events } = dependencies;
+  const { config, database, machineAuthenticate, events } = dependencies;
 
   app.post(
     '/api/internal/v1/runtime-events',
@@ -74,6 +82,14 @@ export function registerRuntimeRoutes(
         .limit(1);
       if (!conversation) {
         throw ApiProblem.notFound('Conversation not found');
+      }
+      const [repository] = await database
+        .select()
+        .from(repositories)
+        .where(eq(repositories.id, conversation.repositoryId))
+        .limit(1);
+      if (!repository || !verifyCallbackToken(config, repository, request.machineToken ?? '')) {
+        throw ApiProblem.unauthorized('Machine token is not valid for this repository');
       }
       const task = await taskForConversation(database, conversation.id);
       if (input.ticketId && task?.upstreamTicketId && task.upstreamTicketId !== input.ticketId) {

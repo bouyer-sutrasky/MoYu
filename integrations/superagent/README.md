@@ -51,6 +51,7 @@ node --test integrations/superagent/tests/verify-lock.test.mjs
 | `0006-recoverable-pause.patch` | 可恢复暂停、停止证据、resume admission、start |
 | `0007-bridge-execution-control.patch` | pause/resume/start/retry、operation 日志、`targetTicketId` |
 | `0008-github-import.patch` | `ticket.imported` 投影 |
+| `0022-link-and-ignore-events.patch` | 既有 workspace Ticket 关联 GitHub 线程的 import 事件、ignore 决策事件 |
 | `0009-discussion-ready-stays-open.patch` | 讨论 ready 不结束 Ticket，owner 仍可 start |
 | `0010-projection-current-assignment.patch` | 新 Assignment 后不再用旧 ready report 挡住运行态 |
 | `0011-resume-does-not-reopen-closed-pr.patch` | resume/start 指示不重开已关闭未合并的 PR |

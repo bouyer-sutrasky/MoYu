@@ -39,6 +39,7 @@ import type { Authenticate } from '../auth/guards';
 import type { ApiConfig } from '../config';
 import { toConversationSummary, toMessage } from '../domain/serialize';
 import { ensureConfiguredRepository, findOwnedRepository } from '../domain/repositories';
+import { requestWake } from '../domain/instances';
 import {
   advertisesBranches,
   assertBranchAvailable,
@@ -569,6 +570,7 @@ export function registerConversationRoutes(
         return { conversation, task };
       });
 
+      await requestWake(database, config, repository, 'new_task', request.log);
       return sendData(
         reply,
         request,
@@ -996,6 +998,14 @@ export function registerConversationRoutes(
             }
             if (merged) {
               if (merged.event) publish(merged.event);
+              const targetRepository = await findOwnedRepository(
+                database,
+                auth.owner.id,
+                candidate.conversation.repositoryId,
+              );
+              if (targetRepository) {
+                await requestWake(database, config, targetRepository, 'reply', request.log);
+              }
               return sendData(
                 reply,
                 request,
@@ -1129,6 +1139,14 @@ export function registerConversationRoutes(
 
       if (created.event) {
         publish(created.event);
+      }
+      const wakeRepository = await findOwnedRepository(
+        database,
+        auth.owner.id,
+        conversation.repositoryId,
+      );
+      if (wakeRepository) {
+        await requestWake(database, config, wakeRepository, 'reply', request.log);
       }
       return sendData(
         reply,

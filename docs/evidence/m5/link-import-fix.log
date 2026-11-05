@@ -1,0 +1,16 @@
+# M4 link-existing-ticket import fix
+before: conversation ecca4f49 source=web external_key=null; task 775f5577 awaiting_review; bridge had no ticket.imported for github:4
+patch_0022: Bridge emits ticket.imported for a workspace-origin Ticket that later gains a GitHub input Trigger
+  - identity from the GitHub input Trigger (number/url/isPr/text), not ticket.follows PR artifacts
+  - deterministic key ticket-imported:<ticketId>:github:<number> only for linked tickets
+  - pure GitHub tickets keep the old deterministic key
+dispatcher: on an import event for an existing task, claim its own conversation only when a message names the exact repo/number URL
+  - regression: operations.integration.test.ts "claims the Web conversation for an import event on an existing workspace task" (25/25 file pass)
+runtime: /root/src/upstream/m5a-link-import-build (built from pristine + 0022); sha256 lib/index.js=975c73e8...b0910
+platform_after: conversation ecca4f49 source=github external_key=github:4 external_url=https://github.com/Bouyer12/m5a-alpha-adf10ad9/issues/4#issuecomment-6654269382
+task_after: 775f5577 awaiting_review; upstream ticket 1d4215c99fe4741d5f99822e1cf63616 unchanged
+pr_after: PR #5 head dcfdb4470a6e15259dc6773301040b5b043e04ca, 1 file M4-WEB-FIRST.md (+1/-0), 1 commit
+bridge_event_key: ticket-imported:1d4215c99fe4741d5f99822e1cf63616:github:4 count=1
+note: an earlier buggy pre-fix projection wrote ticket-imported:<ticketId> with github:5 from a PR follow; it remains in the append-only bridge log but produced no claim and no github:5 conversation. The corrected event is the one bound to github:4.
+replay: dispatcher cursor 23 -> events 24/25 replayed after the fixed build; claim happened once; no task/PR duplicate
+ignore_gap: no terminal event for pending_admission remains; safe behavior is to keep blocking sleep/capacity rather than auto-close an unproven task
