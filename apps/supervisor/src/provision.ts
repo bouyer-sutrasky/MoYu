@@ -78,18 +78,30 @@ async function allocate(
       'No pinned instance mapping and no PROFILE_TEMPLATE_DIR; cannot prepare this repository',
     );
   }
+  const instances = await store.listInstances();
   const used = new Set(
-    (await store.listInstances())
-      .map((row) => row.profile)
-      .filter((value): value is string => !!value),
+    instances.map((row) => row.profile).filter((value): value is string => !!value),
   );
-  for (const instance of config.pinned.values()) used.add(instance.profile);
+  // A sleeping instance still owns its profile and both ports. Reserving only
+  // the profile would allow another repository to take a port it still needs
+  // (for example a swapped dsh/bridge pair) and overwrite its Source state.
+  const usedPorts = new Set<number>();
+  for (const row of instances) {
+    if (row.port) usedPorts.add(row.port);
+    if (row.bridgePort) usedPorts.add(row.bridgePort);
+  }
+  for (const instance of config.pinned.values()) {
+    used.add(instance.profile);
+    usedPorts.add(instance.dshPort);
+    usedPorts.add(instance.bridgePort);
+  }
   const pairCount = Math.floor((config.portRange.end - config.portRange.start) / 2);
   for (let index = 0; index < pairCount; index += 1) {
     const profile = `${config.profilePrefix}-${index + 1}`;
     const dshPort = config.portRange.start + index * 2;
     const bridgePort = dshPort + 1;
     if (used.has(profile)) continue;
+    if (usedPorts.has(dshPort) || usedPorts.has(bridgePort)) continue;
     if (!(await portFree(dshPort)) || !(await portFree(bridgePort))) continue;
     return { profile, dshPort, bridgePort };
   }

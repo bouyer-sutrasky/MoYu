@@ -1,4 +1,13 @@
-import { index, integer, jsonb, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import {
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from 'drizzle-orm/pg-core';
 
 import { runtimeDesiredState, runtimeInstanceState } from './enums';
 import { repositories } from './repositories';
@@ -57,6 +66,9 @@ export const repositoryInstances = pgTable(
   (table) => [
     index('repository_instances_state_idx').on(table.state),
     index('repository_instances_wake_idx').on(table.wakeRequestedAt),
+    uniqueIndex('repository_instances_profile_uq').on(table.profile),
+    uniqueIndex('repository_instances_port_uq').on(table.port),
+    uniqueIndex('repository_instances_bridge_port_uq').on(table.bridgePort),
   ],
 );
 

@@ -8,6 +8,8 @@ import {
   childPids,
   collectOwnership,
   descendants,
+  identifyProcess,
+  isTransientPolling,
   pidAlive,
   portFree,
   retainedDescendants,
@@ -58,6 +60,49 @@ describe('supervisor process evidence', () => {
     if (!child.pid) throw new Error('no pid');
     expect(descendants(process.pid)).toContain(child.pid);
     const result = await stopProcessTree(child.pid, 3000);
+    expect(result.stopped).toBe(true);
+    expect(pidAlive(child.pid)).toBe(false);
+  });
+
+  it('never signals a reused root PID whose start time does not match', async () => {
+    const child = spawnDetached('sleep', ['30']);
+    if (!child.pid) throw new Error('no pid');
+    const current = identifyProcess(child.pid);
+    if (!current) throw new Error('no identity');
+    const stale = {
+      rootPid: child.pid,
+      pgid: child.pid,
+      members: [{ ...current, startTime: '0', command: 'stale root' }],
+    };
+    expect(collectOwnership(child.pid, stale).members).toEqual([]);
+    const result = await stopProcessTree(child.pid, 1000, stale);
+    expect(result.stopped).toBe(true);
+    expect(pidAlive(child.pid)).toBe(true);
+    await stopProcessTree(child.pid, 3000);
+  });
+
+  it('does not signal a reused process group after the owned members exited', async () => {
+    const victim = spawnDetached('sleep', ['30']);
+    if (!victim.pid) throw new Error('no pid');
+    const stale = {
+      rootPid: victim.pid,
+      pgid: victim.pid,
+      members: [{ pid: victim.pid, startTime: '0', pgid: victim.pid, sid: victim.pid }],
+    };
+    expect(collectOwnership(victim.pid, stale).members).toEqual([]);
+    const result = await stopProcessTree(victim.pid, 1000, stale);
+    expect(result.stopped).toBe(true);
+    expect(pidAlive(victim.pid)).toBe(true);
+    await stopProcessTree(victim.pid, 3000);
+  });
+
+  it('stops a verified root and records its start time', async () => {
+    const child = spawnDetached('sleep', ['30']);
+    if (!child.pid) throw new Error('no pid');
+    const current = identifyProcess(child.pid);
+    if (!current) throw new Error('no identity');
+    const stored = { rootPid: child.pid, pgid: child.pid, members: [current] };
+    const result = await stopProcessTree(child.pid, 3000, stored);
     expect(result.stopped).toBe(true);
     expect(pidAlive(child.pid)).toBe(false);
   });
@@ -118,8 +163,19 @@ describe('supervisor process evidence', () => {
       { pid: 4, startTime: '3', pgid: 4, sid: 4, command: 'sleep 300' },
       { pid: 5, startTime: '4', pgid: 5, sid: 5, command: '/usr/bin/node server.js' },
       { pid: 6, startTime: '5', pgid: 6, sid: 6, command: 'gh-agent-worker --serve' },
+      { pid: 7, startTime: '6', pgid: 7, sid: 7, command: 'gh pr create --title x' },
+      { pid: 8, startTime: '7', pgid: 8, sid: 8, command: 'gh api -X POST repos/x/y' },
+      { pid: 9, startTime: '8', pgid: 9, sid: 9, command: 'gh issue comment 1 --body x' },
     ];
-    expect(retainedIdentities(members).map((member) => member.pid)).toEqual([4, 5, 6]);
+    expect(retainedIdentities(members).map((member) => member.pid)).toEqual([4, 5, 6, 7, 8, 9]);
+    expect(isTransientPolling('gh api repos/x/y')).toBe(true);
+    expect(isTransientPolling('gh api -X GET repos/x/y')).toBe(true);
+    expect(isTransientPolling('gh api --paginate notifications')).toBe(true);
+    expect(isTransientPolling('gh issue list --repo x/y')).toBe(true);
+    expect(isTransientPolling('gh pr list')).toBe(true);
+    expect(isTransientPolling('gh pr create --title x')).toBe(false);
+    expect(isTransientPolling('gh api -X POST repos/x/y')).toBe(false);
+    expect(isTransientPolling('gh issue comment 1 --body x')).toBe(false);
   });
 });
 

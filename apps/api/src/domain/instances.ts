@@ -301,13 +301,14 @@ export async function wakeRepository(
   database: Database,
   config: ApiConfig,
   repository: Repository,
+  reason: 'manual' | 'new_task' | 'reply' | 'retry' = 'manual',
 ): Promise<RepositoryRuntime> {
   const supervisor = createSupervisorClient(config);
   if (!supervisor) {
     throw ApiProblem.unavailable('The host supervisor is not configured');
   }
   try {
-    await supervisor.wake(repository.id, 'manual');
+    await supervisor.wake(repository.id, reason);
   } catch (error) {
     throw ApiProblem.unavailable(
       `The host supervisor could not accept the wake request: ${error instanceof Error ? error.message.slice(0, 300) : 'unknown error'}`,

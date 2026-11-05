@@ -11,6 +11,7 @@ import {
 } from '@moyu/contracts';
 import {
   conversations,
+  repositories,
   taskLinks,
   taskOperations,
   type Conversation,
@@ -22,6 +23,7 @@ import {
 import type { Authenticate } from '../auth/guards';
 import type { ApiConfig } from '../config';
 import { toTaskOperationSummary, toTaskSummary } from '../domain/serialize';
+import { wakeRepository } from '../domain/instances';
 import { appendEvent } from '../events/append';
 import { eventToWorkspaceEvent } from '../events/format';
 import type { AppEventBus } from '../events/bus';
@@ -153,7 +155,7 @@ export function registerTaskRoutes(
   app: FastifyInstance,
   dependencies: TaskRouteDependencies,
 ): void {
-  const { database, authenticate, events } = dependencies;
+  const { config, database, authenticate, events } = dependencies;
 
   const publish = (event: unknown) => {
     const parsed = event
@@ -162,6 +164,22 @@ export function registerTaskRoutes(
     if (parsed) {
       events.publishWorkspaceEvent(parsed);
     }
+  };
+
+  const wakeForCommand = async (repositoryId: string, kind: CommandKind): Promise<void> => {
+    if (kind === 'pause' || !config.supervisorUrl) return;
+    const [repository] = await database
+      .select()
+      .from(repositories)
+      .where(eq(repositories.id, repositoryId))
+      .limit(1);
+    if (!repository) return;
+    await wakeRepository(
+      database,
+      config,
+      repository,
+      kind === 'retry' ? 'retry' : kind === 'resume' ? 'reply' : 'new_task',
+    );
   };
 
   const command =
@@ -187,6 +205,7 @@ export function registerTaskRoutes(
           );
         }
         const current = await loadTask(database, auth.owner.id, taskId);
+        await wakeForCommand(loaded.conversation.repositoryId, kind);
         return sendData(
           reply,
           request,
@@ -277,6 +296,7 @@ export function registerTaskRoutes(
         throw error;
       }
 
+      await wakeForCommand(loaded.conversation.repositoryId, kind);
       publish(result.event);
       return sendData(
         reply,

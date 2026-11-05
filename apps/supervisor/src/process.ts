@@ -138,7 +138,7 @@ function identityKey(identity: Pick<ProcessIdentity, 'pid' | 'startTime'>): stri
 function identityAlive(identity: Pick<ProcessIdentity, 'pid' | 'startTime'>): boolean {
   if (!pidAlive(identity.pid)) return false;
   const current = processStartTime(identity.pid);
-  return !current || current === identity.startTime;
+  return current !== null && current === identity.startTime;
 }
 
 /** All live processes in a process group, including a child that outlived its parent. */
@@ -174,10 +174,25 @@ function normalizeStored(stored: StoredOwnership | undefined): ProcessIdentity[]
 }
 
 /**
- * Captures the root process, its process group, and every descendant. The
- * snapshot keeps start times so a reused PID is never mistaken for the old
- * worker. When the root has already died, stored members and processes still in
- * its old process group are used to find survivors.
+ * Accepts a root only when its saved start time still matches. A live PID with
+ * a different start time is a reused PID and must never be signalled.
+ */
+function verifiedRoot(rootPid: number, stored?: StoredOwnership): ProcessIdentity | null {
+  const current = identifyProcess(rootPid);
+  if (!current) return null;
+  if (!stored) return current;
+  const saved = (stored.members ?? []).find(
+    (member) => member?.pid === rootPid && typeof member.startTime === 'string',
+  );
+  if (!saved || saved.startTime !== current.startTime) return null;
+  return current;
+}
+
+/**
+ * Captures the root process, its owned process groups, and every descendant.
+ * Start times are compared before a PID or PGID is accepted. When the root has
+ * already died, only stored members and groups that still contain a stored
+ * member are used; a reused root PID or PGID is ignored.
  */
 export function collectOwnership(
   rootPid: number,
@@ -189,21 +204,33 @@ export function collectOwnership(
     byKey.set(identityKey(identity), identity);
   };
 
-  const root = identifyProcess(rootPid);
+  const root = verifiedRoot(rootPid, stored);
   add(root);
-  for (const member of normalizeStored(stored)) add(member);
+  const normalized = normalizeStored(stored);
+  for (const member of normalized) add(member);
 
-  const pgid = root?.pgid ?? stored?.pgid ?? rootPid;
-  for (const member of groupMembers(pgid)) add(member);
+  // A group is owned only if the verified root or a verified stored member is
+  // still in it. This avoids killing an unrelated process that reused an old
+  // PGID after every owned member exited.
+  const ownedGroups = new Set<number>();
+  if (root) ownedGroups.add(root.pgid);
+  if (!stored && rootPid > 1) ownedGroups.add(rootPid);
+  for (const member of normalized) ownedGroups.add(member.pgid);
+  const pgid = [...ownedGroups][0] ?? null;
+  for (const group of ownedGroups) {
+    for (const member of groupMembers(group)) add(member);
+  }
 
   const visit = (parent: number) => {
     for (const child of childPids(parent)) {
-      add(identifyProcess(child));
+      const identity = identifyProcess(child);
+      if (!identity) continue;
+      add(identity);
       visit(child);
     }
   };
   if (root) visit(root.pid);
-  for (const member of [...byKey.values()]) visit(member.pid);
+  for (const member of normalized) visit(member.pid);
 
   return {
     rootPid: root?.pid ?? null,
@@ -218,8 +245,63 @@ export function collectOwnership(
  * a service started <5s ago, must be preserved until it exits by itself.
  */
 export function isTransientPolling(command: string): boolean {
-  const first = command.trim().split(/\s+/, 1)[0] ?? '';
-  return basename(first) === 'gh' || basename(first) === 'gh-agent';
+  const normalized = command.trim().replaceAll(/\s+/g, ' ');
+  if (!normalized) return false;
+  const tokens = normalized.split(' ');
+  const binary = basename(tokens[0] ?? '');
+  if (binary !== 'gh' && binary !== 'gh-agent') return false;
+
+  const args = tokens.slice(1);
+  const methodIndex = args.findIndex((arg) => arg === '-X' || arg === '--method');
+  if (methodIndex >= 0) {
+    const method = (args[methodIndex + 1] ?? '').toUpperCase();
+    if (method !== 'GET') return false;
+  }
+  if (
+    args.some(
+      (arg) => arg === '-f' || arg === '--field' || arg === '--raw-field' || arg === '--input',
+    )
+  ) {
+    return false;
+  }
+  if (args[0] === 'api') {
+    // The Source polls with GET requests; pagination/formatting flags are
+    // read-only. Any explicit non-GET method or field was rejected above; an
+    // unknown flag keeps the process because its effects are not proven.
+    const readOnlyFlags = new Set([
+      '--paginate',
+      '--slurp',
+      '--jq',
+      '-q',
+      '--template',
+      '-t',
+      '--include',
+      '-i',
+      '--cache',
+      '--hostname',
+    ]);
+    const apiArgs = args
+      .slice(1)
+      .filter((_, index) => index !== methodIndex - 1 && index !== methodIndex);
+    const flags = apiArgs.filter((arg) => arg.startsWith('-'));
+    return flags.every((flag) => readOnlyFlags.has(flag));
+  }
+  if (args[0] === 'issue' || args[0] === 'pr') {
+    const action = args[1] ?? '';
+    return (
+      action === 'list' ||
+      action === 'view' ||
+      action === 'status' ||
+      action === 'diff' ||
+      action === 'checks'
+    );
+  }
+  if (args[0] === 'search') return true;
+  if (args[0] === 'repo') return args[1] === 'view';
+  if (args[0] === 'auth') return args[1] === 'status';
+  // Anything else, including gh pr create / gh api -X POST, may write or have
+  // unknown effects and must be retained.
+  return false;
 }
 
 /** Applies the retention policy to a captured set; only known polling is disposable. */
@@ -272,6 +354,10 @@ export async function stopProcessTree(
   timeoutMs: number,
   stored?: StoredOwnership,
 ): Promise<StopProcessResult> {
+  if (!stored) {
+    const initial = collectOwnership(rootPid);
+    stored = { rootPid, pgid: initial.pgid, members: initial.members };
+  }
   const merged = new Map<string, ProcessIdentity>();
   const merge = (identity: ProcessIdentity | null | undefined) => {
     if (identity && identityAlive(identity)) merged.set(identityKey(identity), identity);
@@ -283,7 +369,7 @@ export async function stopProcessTree(
       members: [...(stored?.members ?? []), ...merged.values()],
     });
     for (const member of snapshot.members) merge(member);
-    for (const member of groupMembers(snapshot.pgid ?? rootPid)) merge(member);
+    if (snapshot.pgid) for (const member of groupMembers(snapshot.pgid)) merge(member);
     return snapshot.pgid;
   };
 
@@ -296,8 +382,6 @@ export async function stopProcessTree(
   const termSent = new Set<string>();
   let killSent = false;
   const send = (signal: NodeJS.Signals) => {
-    signalGroup(pgid, signal);
-    if (pidAlive(rootPid)) signalPid(rootPid, signal);
     for (const member of merged.values()) {
       const key = identityKey(member);
       if (signal === 'SIGTERM' && termSent.has(key)) continue;

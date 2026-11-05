@@ -136,10 +136,12 @@ describe('multi-repository dispatcher isolation on real PostgreSQL', () => {
     repositoryBId = repositoryB.id;
     const tokenA = 'bridge-token-a-0123456789abcdef';
     const tokenB = 'bridge-token-b-0123456789abcdef';
-    for (const [repository, bridge, token] of [
-      [repositoryA, bridgeA, tokenA],
-      [repositoryB, bridgeB, tokenB],
-    ] as const) {
+    for (const [index, [repository, bridge, token]] of (
+      [
+        [repositoryA, bridgeA, tokenA],
+        [repositoryB, bridgeB, tokenB],
+      ] as const
+    ).entries()) {
       const name = `${repository.id}.json`;
       const path = join(tempDir, name);
       writeFileSync(path, JSON.stringify({ bridgeUrl: bridge.url, bridgeToken: token }), {
@@ -155,8 +157,8 @@ describe('multi-repository dispatcher isolation on real PostgreSQL', () => {
         state: 'online',
         desiredState: 'online',
         reasonCode: 'listening',
-        port: 1,
-        bridgePort: 1,
+        port: 3901 + index * 2,
+        bridgePort: 3902 + index * 2,
         pid: 1,
       });
     }

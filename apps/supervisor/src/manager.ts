@@ -293,21 +293,23 @@ export class InstanceManager {
   }
 
   async prepare(repositoryId: string): Promise<InstanceRow> {
-    const prepared = await prepareInstance(this.config, this.store, repositoryId);
-    await this.store.syncRepositoryStatus(repositoryId, 'sleeping');
-    const instance = await this.store.getInstance(repositoryId);
-    if (!instance) throw new Error('Instance row was not created');
-    this.logger.info(
-      {
-        event: 'supervisor.instance_prepared',
-        repository: prepared.repository.fullName,
-        profile: prepared.profile,
-        dshPort: prepared.dshPort,
-        bridgePort: prepared.bridgePort,
-      },
-      'repository instance prepared',
-    );
-    return instance;
+    return this.withLock(async () => {
+      const prepared = await prepareInstance(this.config, this.store, repositoryId);
+      await this.store.syncRepositoryStatus(repositoryId, 'sleeping');
+      const instance = await this.store.getInstance(repositoryId);
+      if (!instance) throw new Error('Instance row was not created');
+      this.logger.info(
+        {
+          event: 'supervisor.instance_prepared',
+          repository: prepared.repository.fullName,
+          profile: prepared.profile,
+          dshPort: prepared.dshPort,
+          bridgePort: prepared.bridgePort,
+        },
+        'repository instance prepared',
+      );
+      return instance;
+    });
   }
 
   async wake(repositoryId: string, input: WakeInput): Promise<WakeResult> {
@@ -515,6 +517,25 @@ export class InstanceManager {
 
         if (live.length === 0) {
           if (row.state === 'stopping') {
+            if (bridgeUp) {
+              // No owned process remains, but the Bridge port still accepts
+              // connections. It may be an unrelated listener or a process we
+              // could not identify; do not release the slot on a guess.
+              const current = (await this.store.getInstance(row.repositoryId)) ?? row;
+              await this.store.updateInstance(row.repositoryId, {
+                state: 'stopping',
+                desiredState: current.desiredState,
+                pid: null,
+                ownership: {},
+                reasonCode: 'stop_failed',
+                reasonDetail: `The Bridge port ${row.bridgePort ?? '(none)'} is still listening after the owned process tree exited`,
+                waitingFor: 'process_exit',
+                errorCode: 'stop_failed',
+                errorDetail: 'port still listening after process exit',
+              });
+              await this.store.syncRepositoryStatus(row.repositoryId, 'stopping');
+              continue;
+            }
             await this.markSleeping(row, 'stop_completed');
           } else if (row.state === 'starting' || row.state === 'online') {
             await this.failInstance(
@@ -528,9 +549,10 @@ export class InstanceManager {
 
         if (row.state === 'stopping') {
           if (row.reasonCode === 'stop_failed') {
+            const current = (await this.store.getInstance(row.repositoryId)) ?? row;
             await this.store.updateInstance(row.repositoryId, {
               state: 'stopping',
-              desiredState: 'sleeping',
+              desiredState: current.desiredState,
               ownership: ownershipPayload(row.pid, snapshot.pgid, live),
               reasonCode: 'stop_failed',
               reasonDetail: `Stopping is incomplete: ${live.length} process(es) still alive`,
@@ -729,6 +751,27 @@ export class InstanceManager {
         detached: true,
         stdio: ['ignore', logFd, logFd],
       });
+      child.once('error', (error) => {
+        this.handles.delete(instance.repositoryId);
+        this.generation += 1;
+        void this.withLock(async () => {
+          try {
+            const row = await this.store.getInstance(instance.repositoryId);
+            if (row && ['starting', 'online', 'sleeping'].includes(row.state) && !this.stopped) {
+              await this.failInstance(row, 'start_failed', safeError(error));
+            }
+          } catch (failure) {
+            this.logger.error(
+              {
+                event: 'supervisor.spawn_error_handler_failed',
+                repositoryId: instance.repositoryId,
+                error: safeError(failure),
+              },
+              'could not record a spawn error',
+            );
+          }
+        });
+      });
       child.unref();
     } catch (error) {
       closeSync(logFd);
@@ -750,11 +793,7 @@ export class InstanceManager {
       port: prepared.dshPort,
       bridgePort: prepared.bridgePort,
       profile: prepared.profile,
-      ownership: ownershipPayload(
-        pid,
-        pid,
-        collectOwnership(pid, { rootPid: pid, pgid: pid, members: [] }).members,
-      ),
+      ownership: ownershipPayload(pid, pid, collectOwnership(pid).members),
       reasonCode: 'starting',
       reasonDetail: null,
       waitingFor: null,
@@ -914,24 +953,39 @@ export class InstanceManager {
   }
 
   private async markSleeping(instance: InstanceRow, reason: string): Promise<void> {
+    const current = (await this.store.getInstance(instance.repositoryId)) ?? instance;
+    // A reply/start wake may arrive while the process is being stopped. That
+    // intent is newer than the stop and must survive it; otherwise an accepted
+    // wake is silently cancelled by the final sleeping write.
+    const pendingWake = current.desiredState === 'online' && current.wakeRequestedAt !== null;
     await this.store.updateInstance(instance.repositoryId, {
       state: 'sleeping',
-      desiredState: 'sleeping',
+      desiredState: pendingWake ? 'online' : 'sleeping',
       pid: null,
       ownership: {},
-      reasonCode: reason === 'evicted_for_capacity' ? 'evicted' : 'sleeping',
-      reasonDetail:
-        reason === 'evicted_for_capacity'
+      reasonCode: pendingWake
+        ? 'wake_queued'
+        : reason === 'evicted_for_capacity'
+          ? 'evicted'
+          : 'sleeping',
+      reasonDetail: pendingWake
+        ? 'The runtime stopped after a newer wake request arrived; starting again'
+        : reason === 'evicted_for_capacity'
           ? 'Stopped to free an online slot for a waiting repository'
           : null,
-      waitingFor: null,
+      waitingFor: pendingWake ? 'capacity' : null,
       errorCode: null,
       errorDetail: null,
       lastStoppedAt: new Date(),
     });
     await this.store.syncRepositoryStatus(instance.repositoryId, 'sleeping');
     this.logger.info(
-      { event: 'supervisor.instance_sleeping', repositoryId: instance.repositoryId, reason },
+      {
+        event: 'supervisor.instance_sleeping',
+        repositoryId: instance.repositoryId,
+        reason,
+        pendingWake,
+      },
       'repository runtime stopped',
     );
   }
@@ -981,9 +1035,11 @@ export class InstanceManager {
     const detail = result.stopped
       ? `The Bridge port ${instance.bridgePort ?? '(none)'} remained open after the process tree exited`
       : `Stopping is incomplete: ${remaining.length} process(es) still alive after the timeout`;
+    const current = (await this.store.getInstance(instance.repositoryId)) ?? instance;
+    const pendingWake = current.desiredState === 'online' && current.wakeRequestedAt !== null;
     await this.store.updateInstance(instance.repositoryId, {
       state: 'stopping',
-      desiredState: 'sleeping',
+      desiredState: pendingWake ? 'online' : 'sleeping',
       pid: instance.pid,
       ownership: ownershipPayload(pid > 1 ? pid : null, result.pgid, remaining),
       reasonCode: 'stop_failed',
