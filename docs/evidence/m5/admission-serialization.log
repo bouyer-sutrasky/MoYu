@@ -2,6 +2,7 @@
 lock: dispatcher locks conversation FOR UPDATE (source -> merged target order, same as API) before reading the task and deciding ignore
 order_api_first: API locks conversation, reads pending task, inserts newer message + pending delivery, holds; ignore waits; API commits; ignore then sees newer message/delivery and leaves task pending_admission. Test passes.
 order_ignore_first: ignore locks conversation, sets not_accepted, holds; API waits on the same lock; ignore commits; API re-reads not_accepted and rolls back, no accepted message inserted. Test passes.
-regression: dispatcher integration 29/29; both tests fail on the previous no-lock code (ignore-first API not blocked; API-first task wrongly not_accepted)
+alias_merge: conversation alias -> target lock order covered; target pending admission closes through alias
+regression: dispatcher integration 30/30; the two-connection tests fail on the previous no-lock code (ignore-first API not blocked; API-first task wrongly not_accepted)
 live: fbb374c3/ed68fff4 remain not_accepted/version1; task 775f5577/406e433b awaiting_review; conversation ecca4f49 github:4; PR3/5 unchanged
 artifact: dispatcher dist sha256 current; runtime unchanged /root/src/upstream/m5a-final-build sha256=fef63a9c9b73c64ef98d24268c0a58bccf8475abc8c110f0836ec4d7dc72f566
