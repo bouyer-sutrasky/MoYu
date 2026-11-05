@@ -980,6 +980,39 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
     expect((await readTask(pending.taskId)).version).toBe(version);
   }, 30_000);
 
+  it('resolves a merged conversation alias before closing the ignored admission', async () => {
+    const fixture = await seed({ state: 'pending_admission' });
+    const message = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body) values ($1, 'inbound', 'user', 'old') returning id`,
+      [fixture.conversationId],
+    );
+    const alias = await testDatabase.pool.query<{ id: string }>(
+      `insert into conversations
+         (owner_id, repository_id, mode, execution_mode, source, base_branch, base_commit, model_id, title, merged_into_conversation_id)
+       values ($1, $2, 'work', 'execute', 'web', 'main', $3, 'commandcode/deepseek/deepseek-v4.1-flash', 'alias', $4)
+       returning id`,
+      [fixture.ownerId, fixture.repository.id, 'a'.repeat(40), fixture.conversationId],
+    );
+    fakeBridge.events = [
+      {
+        seq: 1,
+        id: `decision-ignored:${fixture.ticketId}:alias`,
+        type: 'decision.ignored',
+        at: '2026-11-04T00:00:00.000Z',
+        data: {
+          decisionId: `decision-${fixture.ticketId}`,
+          conversationId: alias.rows[0]!.id,
+          messageId: message.rows[0]!.id,
+          at: '2026-11-04T00:00:00.000Z',
+        },
+      },
+    ];
+    expect(
+      await syncOnce(testDatabase.pool, fixture.repository, client, createConsoleLogger('test')),
+    ).toBe(true);
+    expect(await readTask(fixture.taskId)).toMatchObject({ state: 'not_accepted' });
+  }, 30_000);
+
   it('serializes an API message acceptance before an ignored decision', async () => {
     const fixture = await seed({ state: 'pending_admission' });
     const old = await testDatabase.pool.query<{ id: string }>(
