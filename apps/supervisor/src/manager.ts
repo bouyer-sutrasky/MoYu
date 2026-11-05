@@ -8,6 +8,9 @@ import type { SupervisorLogger } from './logger';
 import { configureProfile, waitForPanel } from './panel';
 import {
   collectOwnership,
+  ensureCgroup,
+  movePidToCgroup,
+  removeCgroup,
   pidAlive,
   portFree,
   retainedDescendants,
@@ -41,14 +44,21 @@ function storedOwnership(row: InstanceRow): StoredOwnership {
   return {
     rootPid: typeof value.rootPid === 'number' ? value.rootPid : row.pid,
     pgid: typeof value.pgid === 'number' ? value.pgid : row.pid,
+    cgroup: typeof value.cgroup === 'string' ? value.cgroup : null,
     members: Array.isArray(value.members) ? (value.members as StoredOwnership['members']) : [],
   };
 }
 
-function ownershipPayload(rootPid: number | null, pgid: number | null, members: ProcessIdentity[]) {
+function ownershipPayload(
+  rootPid: number | null,
+  pgid: number | null,
+  members: ProcessIdentity[],
+  cgroup: string | null = null,
+) {
   return {
     rootPid,
     pgid,
+    cgroup,
     members: members.map((member) => ({
       pid: member.pid,
       startTime: member.startTime,
@@ -200,18 +210,66 @@ export class InstanceManager {
    * that is gone is not enough to release capacity: stored descendants and the
    * old process group are checked, and a failed cleanup stays `stopping`.
    */
+  /**
+   * Moves an adopted runtime (and its current descendants) into a new cgroup.
+   * Existing rows predate the cgroup boundary; without this migration a stop
+   * after an upgrade would have no durable proof for setsid children.
+   */
+  private async attachCgroup(row: InstanceRow, stored: StoredOwnership): Promise<StoredOwnership> {
+    if (stored.cgroup || !row.pid || !row.profile || !pidAlive(row.pid)) return stored;
+    const snapshot = collectOwnership(row.pid, stored);
+    const cgroup = ensureCgroup(`${row.profile}-adopt-${Date.now()}`);
+    if (!cgroup) return stored;
+    let moved = movePidToCgroup(cgroup, row.pid);
+    for (const member of snapshot.members) {
+      if (member.pid !== row.pid && movePidToCgroup(cgroup, member.pid)) moved = true;
+    }
+    if (!moved) {
+      removeCgroup(cgroup);
+      return stored;
+    }
+    const next = {
+      ...stored,
+      cgroup,
+      members: [...(stored.members ?? []), ...snapshot.members],
+    };
+    await this.store.updateInstance(row.repositoryId, { ownership: next });
+    return next;
+  }
+
   private async reconcileRestart(row: InstanceRow): Promise<void> {
-    const stored = storedOwnership(row);
-    const snapshot = collectOwnership(row.pid ?? 0, stored);
-    const live = snapshot.members;
+    let stored = storedOwnership(row);
+    let snapshot = collectOwnership(row.pid ?? 0, stored);
+    let live = snapshot.members;
     const rootAlive = row.pid ? pidAlive(row.pid) : false;
+    if (!stored.cgroup && rootAlive) {
+      stored = await this.attachCgroup(row, stored);
+      snapshot = collectOwnership(row.pid ?? 0, stored);
+      live = snapshot.members;
+    }
+    if (snapshot.unknown) {
+      await this.store.updateInstance(row.repositoryId, {
+        state: 'stopping',
+        desiredState: row.desiredState,
+        pid: row.pid,
+        ownership: { ...stored, members: [...(stored.members ?? []), ...live] },
+        reasonCode: 'stop_failed',
+        reasonDetail:
+          'Process ownership is unverified; capacity remains occupied until it is cleared',
+        waitingFor: 'process_exit',
+        errorCode: 'stop_failed',
+        errorDetail: 'unverified process group/session members',
+      });
+      await this.store.syncRepositoryStatus(row.repositoryId, 'stopping');
+      return;
+    }
 
     if (row.state === 'online') {
       if (rootAlive) {
         const bridgeUp = row.bridgePort ? await portOpen(row.bridgePort) : false;
         await this.store.updateInstance(row.repositoryId, {
           lastHealthAt: bridgeUp ? new Date() : row.lastHealthAt,
-          ownership: ownershipPayload(row.pid, snapshot.pgid, live),
+          ownership: ownershipPayload(row.pid, snapshot.pgid, live, stored.cgroup),
           reasonCode: bridgeUp ? 'listening' : 'bridge_unreachable',
           reasonDetail: bridgeUp
             ? null
@@ -245,7 +303,7 @@ export class InstanceManager {
         await this.store.updateInstance(row.repositoryId, {
           state: 'online',
           lastHealthAt: new Date(),
-          ownership: ownershipPayload(row.pid, snapshot.pgid, live),
+          ownership: ownershipPayload(row.pid, snapshot.pgid, live, stored.cgroup),
           reasonCode: 'listening',
           reasonDetail: null,
           waitingFor: null,
@@ -499,6 +557,26 @@ export class InstanceManager {
         const stored = storedOwnership(row);
         const snapshot = collectOwnership(row.pid ?? 0, stored);
         const live = snapshot.members;
+
+        if (snapshot.unknown) {
+          const current = (await this.store.getInstance(row.repositoryId)) ?? row;
+          await this.store.updateInstance(row.repositoryId, {
+            state: 'stopping',
+            desiredState: current.desiredState,
+            pid: row.pid,
+            ownership: { ...stored, members: [...(stored.members ?? []), ...live] },
+            reasonCode: 'stop_failed',
+            reasonDetail:
+              'Process ownership is unverified; capacity remains occupied until it is cleared',
+            waitingFor: 'process_exit',
+            errorCode: 'stop_failed',
+            errorDetail: 'unverified process group/session members',
+          });
+          await this.store.syncRepositoryStatus(row.repositoryId, 'stopping');
+          await this.store.recordProgress(row.repositoryId);
+          continue;
+        }
+
         const rootAlive = row.pid ? pidAlive(row.pid) : false;
         const bridgeUp = row.bridgePort ? await portOpen(row.bridgePort) : false;
         this.logger.debug(
@@ -553,7 +631,7 @@ export class InstanceManager {
             await this.store.updateInstance(row.repositoryId, {
               state: 'stopping',
               desiredState: current.desiredState,
-              ownership: ownershipPayload(row.pid, snapshot.pgid, live),
+              ownership: ownershipPayload(row.pid, snapshot.pgid, live, stored.cgroup),
               reasonCode: 'stop_failed',
               reasonDetail: `Stopping is incomplete: ${live.length} process(es) still alive`,
               waitingFor: 'process_exit',
@@ -580,7 +658,7 @@ export class InstanceManager {
         }
 
         await this.store.updateInstance(row.repositoryId, {
-          ownership: ownershipPayload(row.pid, snapshot.pgid, live),
+          ownership: ownershipPayload(row.pid, snapshot.pgid, live, stored.cgroup),
         });
 
         if (row.state === 'online') {
@@ -743,14 +821,35 @@ export class InstanceManager {
       await this.failInstance(instance, 'start_failed', safeError(error));
       return;
     }
+    const cgroup = ensureCgroup(`${prepared.profile}-${Date.now()}`);
+    const cgroupProcs = cgroup ? join(cgroup, 'cgroup.procs') : null;
     let child;
     try {
-      child = spawn(this.config.dshBin, ['--profile', prepared.profile, '--no-open'], {
-        cwd: this.config.dshHome,
-        env,
-        detached: true,
-        stdio: ['ignore', logFd, logFd],
-      });
+      const dshArgs = ['--profile', prepared.profile, '--no-open'];
+      child = cgroupProcs
+        ? spawn(
+            '/bin/sh',
+            [
+              '-c',
+              'echo $$ > "$1" || exit 1; shift; exec "$@"',
+              'moyu-cgroup',
+              cgroupProcs,
+              this.config.dshBin,
+              ...dshArgs,
+            ],
+            {
+              cwd: this.config.dshHome,
+              env,
+              detached: true,
+              stdio: ['ignore', logFd, logFd],
+            },
+          )
+        : spawn(this.config.dshBin, dshArgs, {
+            cwd: this.config.dshHome,
+            env,
+            detached: true,
+            stdio: ['ignore', logFd, logFd],
+          });
       child.once('error', (error) => {
         this.handles.delete(instance.repositoryId);
         this.generation += 1;
@@ -781,6 +880,7 @@ export class InstanceManager {
     closeSync(logFd);
     const pid = child.pid;
     if (!pid) {
+      removeCgroup(cgroup);
       await this.failInstance(instance, 'start_failed', 'spawn returned no pid');
       return;
     }
@@ -793,7 +893,7 @@ export class InstanceManager {
       port: prepared.dshPort,
       bridgePort: prepared.bridgePort,
       profile: prepared.profile,
-      ownership: ownershipPayload(pid, pid, collectOwnership(pid).members),
+      ownership: ownershipPayload(pid, pid, collectOwnership(pid).members, cgroup),
       reasonCode: 'starting',
       reasonDetail: null,
       waitingFor: null,
@@ -929,7 +1029,7 @@ export class InstanceManager {
 
   private async failInstance(instance: InstanceRow, code: string, detail: string): Promise<void> {
     const snapshot = collectOwnership(instance.pid ?? 0, storedOwnership(instance));
-    if (snapshot.members.length > 0) {
+    if (snapshot.members.length > 0 || snapshot.unknown) {
       await this.stopInstance(instance, 'failure_cleanup', 'process_exit');
       return;
     }

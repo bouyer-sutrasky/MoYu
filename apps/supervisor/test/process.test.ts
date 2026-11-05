@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { join } from 'node:path';
 import { writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 
@@ -6,9 +7,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { mergeQueuedWake } from '../src/manager';
 import {
+  cgroupPids,
   childPids,
   collectOwnership,
   descendants,
+  ensureCgroup,
+  removeCgroup,
   identifyProcess,
   isTransientPolling,
   pidAlive,
@@ -107,14 +111,41 @@ describe('supervisor process evidence', () => {
     await stopProcessTree(victim.pid, 3000);
   });
 
-  it('stops a verified root and records its start time', async () => {
+  it('finds a setsid child through the per-instance cgroup after the root exits', async () => {
+    const cgroup = ensureCgroup(`test-${process.pid}-${Date.now()}`);
+    if (!cgroup) throw new Error('cgroup unavailable');
+    try {
+      const parent = spawnDetached('sh', [
+        '-c',
+        'echo $$ > "$1"; shift; exec sh -c "sleep 30 & exit 0"',
+        'sh',
+        join(cgroup, 'cgroup.procs'),
+      ]);
+      if (!parent.pid) throw new Error('no parent pid');
+      const rootPid = parent.pid;
+      const rootIdentity = identifyProcess(rootPid);
+      if (!rootIdentity) throw new Error('no root identity');
+      const stored = { rootPid, pgid: rootIdentity.pgid, members: [rootIdentity], cgroup };
+      await waitUntil(() => !pidAlive(rootPid), 5000);
+      const snapshot = collectOwnership(rootPid, stored);
+      expect(snapshot.members.some((member) => member.pid !== rootPid)).toBe(true);
+      const result = await stopProcessTree(rootPid, 3000, stored);
+      expect(result.stopped).toBe(true);
+      expect(cgroupPids(cgroup)).toEqual([]);
+    } finally {
+      removeCgroup(cgroup);
+    }
+  });
+
+  it('stops a verified root and reports an unproven boundary without a cgroup', async () => {
     const child = spawnDetached('sleep', ['30']);
     if (!child.pid) throw new Error('no pid');
     const current = identifyProcess(child.pid);
     if (!current) throw new Error('no identity');
     const stored = { rootPid: child.pid, pgid: child.pid, members: [current] };
     const result = await stopProcessTree(child.pid, 3000, stored);
-    expect(result.stopped).toBe(true);
+    expect(result.stopped).toBe(false);
+    expect(result.unknown).toBe(true);
     expect(pidAlive(child.pid)).toBe(false);
   });
 
@@ -138,7 +169,8 @@ describe('supervisor process evidence', () => {
       const children = snapshot.members.filter((member) => member.pid !== rootPid);
       expect(children.length).toBeGreaterThan(0);
       const result = await stopProcessTree(rootPid, 3000, stored);
-      expect(result.stopped).toBe(true);
+      expect(result.stopped).toBe(false);
+      expect(result.unknown).toBe(true);
       await waitUntil(() => collectOwnership(rootPid, stored).members.length === 0, 3000);
     } finally {
       try {

@@ -1,5 +1,11 @@
 import { createConnection } from 'node:net';
-import { readFileSync, readdirSync } from 'node:fs';
+import {
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmdirSync,
+  writeFileSync,
+} from 'node:fs';
 import { basename, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -41,13 +47,18 @@ export interface ProcessOwnershipSnapshot {
   rootPid: number | null;
   pgid: number | null;
   members: ProcessIdentity[];
-  /** Live group members that cannot be tied to the saved identity. */
-  unknown: ProcessIdentity[];
+  /** Ownership cannot be proven for at least one live process boundary. */
+  unknown: boolean;
+  /** Live members that cannot be tied to the saved identity. */
+  unknownMembers: ProcessIdentity[];
 }
 
 export interface StoredOwnership {
   rootPid?: number | null;
   pgid?: number | null;
+  cgroup?: string | null;
+  /** Discovery-only callers without a persisted boundary may accept best-effort. */
+  allowUnproven?: boolean;
   members?: Array<Partial<ProcessIdentity> & { pid?: number; startTime?: string }>;
 }
 
@@ -192,6 +203,69 @@ function verifiedRoot(rootPid: number, stored?: StoredOwnership): ProcessIdentit
   return current;
 }
 
+export const CGROUP_ROOT = process.env.MOYU_CGROUP_ROOT ?? '/sys/fs/cgroup/moyu-supervisor';
+
+/** Creates a per-instance cgroup. It is the durable boundary for setsid/setpgid children. */
+export function ensureCgroup(profile: string): string | null {
+  const path = join(CGROUP_ROOT, profile.replaceAll(/[^a-zA-Z0-9_.-]/g, '-'));
+  try {
+    mkdirSync(path, { recursive: true, mode: 0o755 });
+    // The kernel creates cgroup.procs; reading proves the hierarchy is usable.
+    readFileSync(join(path, 'cgroup.procs'), 'utf8');
+    return path;
+  } catch {
+    return null;
+  }
+}
+
+export function movePidToCgroup(path: string, pid: number): boolean {
+  try {
+    writeFileSync(join(path, 'cgroup.procs'), String(pid));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function cgroupPids(path: string): number[] {
+  try {
+    return readFileSync(join(path, 'cgroup.procs'), 'utf8')
+      .split(/\s+/)
+      .filter(Boolean)
+      .map(Number)
+      .filter((pid) => Number.isInteger(pid) && pid > 1);
+  } catch {
+    return [];
+  }
+}
+
+export function removeCgroup(path: string | null | undefined): void {
+  if (!path) return;
+  try {
+    if (cgroupPids(path).length === 0) rmdirSync(path);
+  } catch {
+    // A non-empty cgroup is kept for a later retry.
+  }
+}
+
+/** Processes in the saved session, even when they changed process group with setpgid. */
+export function sessionMembers(sid: number): ProcessIdentity[] {
+  if (!Number.isInteger(sid) || sid <= 1) return [];
+  const members: ProcessIdentity[] = [];
+  let entries: string[];
+  try {
+    entries = readdirSync('/proc');
+  } catch {
+    return [];
+  }
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const identity = identifyProcess(Number(entry));
+    if (identity && identity.sid === sid) members.push(identity);
+  }
+  return members;
+}
+
 /**
  * Captures the root process, its owned process groups, and every descendant.
  * Start times are compared before a PID or PGID is accepted. When the root has
@@ -217,7 +291,11 @@ export function collectOwnership(
   const normalized = normalizeStored(stored);
   for (const member of normalized) add(member);
 
-  const unknown: ProcessIdentity[] = [];
+  const unknownMembers: ProcessIdentity[] = [];
+  const cgroup = stored?.cgroup ?? null;
+  if (cgroup) {
+    for (const pid of cgroupPids(cgroup)) add(identifyProcess(pid));
+  }
   const ownedGroups = new Set<number>();
   if (root) ownedGroups.add(root.pgid);
   for (const member of normalized) ownedGroups.add(member.pgid);
@@ -231,11 +309,29 @@ export function collectOwnership(
   if (rootReused && savedRoot && typeof savedRoot.pgid === 'number') {
     // The root PID has been reused. We cannot prove the old group is ours, so
     // report its members as unknown and never signal them.
-    for (const member of groupMembers(savedRoot.pgid)) unknown.push(member);
+    for (const member of groupMembers(savedRoot.pgid)) unknownMembers.push(member);
   }
   if (!stored && rootPid > 1) {
     // Discovery-only calls (tests, descendants()) have no persisted identity.
     ownedGroups.add(rootPid);
+  }
+  if (savedRoot && typeof savedRoot.sid === 'number' && (!root || !pidAlive(rootPid))) {
+    for (const member of sessionMembers(savedRoot.sid)) {
+      if (member.pid !== rootPid) add(member);
+    }
+  }
+  if (
+    !cgroup &&
+    !root &&
+    savedRoot &&
+    typeof savedRoot.sid === 'number' &&
+    pidAlive(rootPid) === false
+  ) {
+    // Without a cgroup, a setsid child can escape every group/session scan.
+    // This is not proof of exit; keep it unknown until the owner clears it.
+    unknownMembers.push(
+      ...sessionMembers(savedRoot.sid).filter((member) => member.pid !== rootPid),
+    );
   }
   const pgid = [...ownedGroups][0] ?? null;
   for (const group of ownedGroups) {
@@ -245,7 +341,7 @@ export function collectOwnership(
       } else if (savedRoot && typeof savedRoot.sid === 'number' && member.sid === savedRoot.sid) {
         add(member);
       } else {
-        unknown.push(member);
+        unknownMembers.push(member);
       }
     }
   }
@@ -265,7 +361,14 @@ export function collectOwnership(
     rootPid: root?.pid ?? null,
     pgid,
     members: [...byKey.values()].filter(identityAlive),
-    unknown: unknown.filter(identityAlive),
+    unknown:
+      unknownMembers.filter(identityAlive).length > 0 ||
+      (!cgroup &&
+        !stored?.allowUnproven &&
+        !root &&
+        !!savedRoot &&
+        typeof savedRoot.sid === 'number'),
+    unknownMembers: unknownMembers.filter(identityAlive),
   };
 }
 
@@ -377,7 +480,7 @@ export async function stopProcessTree(
 ): Promise<StopProcessResult> {
   if (!stored) {
     const initial = collectOwnership(rootPid);
-    stored = { rootPid, pgid: initial.pgid, members: initial.members };
+    stored = { rootPid, pgid: initial.pgid, members: initial.members, allowUnproven: true };
   }
   const merged = new Map<string, ProcessIdentity>();
   let unknown = false;
@@ -388,10 +491,15 @@ export async function stopProcessTree(
     const snapshot = collectOwnership(rootPid, {
       rootPid: stored?.rootPid ?? rootPid,
       pgid: stored?.pgid ?? rootPid,
+      cgroup: stored?.cgroup ?? null,
+      allowUnproven: stored?.allowUnproven,
       members: [...(stored?.members ?? []), ...merged.values()],
     });
     for (const member of snapshot.members) merge(member);
-    unknown = snapshot.unknown.length > 0;
+    if (stored?.cgroup) {
+      for (const pid of cgroupPids(stored.cgroup)) merge(identifyProcess(pid));
+    }
+    unknown = snapshot.unknown;
     return snapshot.pgid;
   };
 
@@ -437,7 +545,9 @@ export async function stopProcessTree(
       // parent exited and was not observed in the previous iteration.
       refresh();
       const finalAlive = [...merged.values()].filter(identityAlive);
-      if (finalAlive.length === 0) {
+      const cgroupAlive = stored?.cgroup ? cgroupPids(stored.cgroup).length : 0;
+      if (finalAlive.length === 0 && cgroupAlive === 0) {
+        if (!unknown) removeCgroup(stored?.cgroup);
         return { stopped: !unknown, rootPid, pgid, remaining: [], unknown };
       }
       merged.clear();
