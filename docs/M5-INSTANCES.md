@@ -86,6 +86,8 @@ supervisor 的实例映射来自固定的 `INSTANCES_CONFIG`：
 - 停止以进程所有权为准，不以父 PID 或端口单独作证：
   - 启动/停止途中持续记录 root pid、process group 和带 startTime 的子孙；父先退出后仍用 process group
     和已记录成员查找幸存子进程；
+  - 信号发送前校验 root 与成员的 kernel startTime；PID 复用、过期 PGID 或无保存身份时不得杀当前进程；
+    旧实例已退出则只释放自身名额，不触碰复用者；
   - SIGTERM 后等待所有已记录身份退出，超时后 SIGKILL 并继续等待；只有全部身份消失且 Bridge 端口关闭
     才进入 `sleeping`；
   - 超时/退出未知时保持 `stopping`（占用在线名额），保存剩余 ownership，返回 `accepted:false`；
@@ -93,6 +95,20 @@ supervisor 的实例映射来自固定的 `INSTANCES_CONFIG`：
   - supervisor 重启、启动失败和进程失联路径使用同一停止证明；清理失败继续占用名额，不新建重叠实例。
 - 排队唤醒合并而不是覆盖：同一仓库已在排队时，保留最高优先级（数值最小）和最早
   `wake_requested_at`；网页回复（10）不会被后到的普通新任务（20）降级或重置 FIFO。
+- 停止期间到达的 wake 是新意图：`markSleeping`/停止失败写回前读取当前 `desired_state`，保留
+  `wake_requested_at`，停止完成后由 tick 恰好启动一次，不被最终 sleeping 写覆盖。
+- 执行命令唤醒：休眠仓库上的 `resume`（reply 10）/`start`/`retry`（retry 5）在写入幂等 operation 后
+  请求 supervisor wake；重复 `clientCommandId` 也会重复幂等唤醒，避免首次响应丢失后永久 queued。
+- 分配隔离：`prepare` 全程在 supervisor 锁内；分配器同时保留所有现有（含 sleeping）实例的
+  profile、DSH 端口和 Bridge 端口，数据库再加 profile/port/bridge_port 唯一索引；并发 prepare 不会
+  复用 state/worktree/端口/凭据。
+- 启动 error：`ChildProcess` 的异步 `error`（ENOENT/EACCES）有监听并收敛为该仓库 `start_failed`，
+  supervisor 与其他在线实例继续服务；不再因单实例 spawn error 退出。
+- tick 释放停止名额前重新读取 Bridge 端口：进程身份全部消失但端口仍在监听时保持
+  `stopping/stop_failed` 并占名额，端口关闭后才 sleeping。
+- 可丢弃 polling 只限只读 `gh`/`gh-agent`：`issue/pr list|view|status|diff|checks`、`search`、
+  `repo view`、只读 `gh api`（含 pagination 等只读 flag）。`pr create`、`issue comment`、
+  `api -X POST`、`-f/--field/--input` 等未知/写入命令一律保留。
 - 实例进程存活但 Bridge 健康检查失败时，不再杀死进程；状态保持在线并显示 `bridge_unreachable`/
   监听未知，等待下一轮核验。只有进程实际退出才进入 `fault/instance_lost` 并回收名额。
 - supervisor 重启时会核对 DB 的 pid/端口：在线进程被接续（同一 PID），半启动且 Bridge 未就绪的孤儿被

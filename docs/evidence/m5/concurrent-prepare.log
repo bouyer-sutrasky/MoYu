@@ -1,0 +1,6 @@
+           full_name           | profile | port | bridge_port |  state   | reason_code 
+-------------------------------+---------+------+-------------+----------+-------------
+ Bouyer12/m5a-delta-adf10ad9   | m5x-5   | 3409 |        3410 | online   | listening
+ Bouyer12/m5a-epsilon-adf10ad9 | m5x-4   | 3407 |        3408 | sleeping | evicted
+(2 rows)
+
