@@ -527,6 +527,28 @@ async function applyPausedEvent(
  * keeps one task, so a repeated Bridge event or a second entry point reuses the
  * same work instead of executing it twice.
  */
+async function lockConversationForWrite(
+  client: pg.PoolClient,
+  conversationId: string,
+): Promise<string | null> {
+  const [source] = (
+    await client.query<{ id: string; mergedInto: string | null }>(
+      `select id, merged_into_conversation_id as "mergedInto"
+         from conversations where id = $1 for update`,
+      [conversationId],
+    )
+  ).rows;
+  if (!source) return null;
+  if (!source.mergedInto) return source.id;
+  // Same alias -> target order as the API message transaction.
+  const [target] = (
+    await client.query<{ id: string }>(`select id from conversations where id = $1 for update`, [
+      source.mergedInto,
+    ])
+  ).rows;
+  return target?.id ?? null;
+}
+
 async function applyIgnoredDecision(
   client: pg.PoolClient,
   repository: RepositoryBinding,
@@ -538,11 +560,16 @@ async function applyIgnoredDecision(
   const decisionId = asString(data.decisionId);
   const messageId = asString(data.messageId);
   if (!conversationId || !decisionId || !messageId) return;
-  const task = await taskByConversation(client, conversationId, repository.id);
+  // Serialize with API message acceptance on the same conversation row. The
+  // conditional UPDATE alone is not enough: an API transaction can read the
+  // pending task before committing its new message.
+  const targetId = await lockConversationForWrite(client, conversationId);
+  if (!targetId) return;
+  const task = await taskByConversation(client, targetId, repository.id);
   if (!task || task.state !== 'pending_admission') return;
   const message = await client.query<{ createdAt: Date }>(
     `select created_at as "createdAt" from messages where id = $1 and conversation_id = $2`,
-    [messageId, conversationId],
+    [messageId, targetId],
   );
   const decided = message.rows[0];
   if (!decided) return;
@@ -569,14 +596,20 @@ async function applyIgnoredDecision(
     [task.id, repository.id, messageId],
   );
   if ((updated.rowCount ?? 0) === 0) return;
-  const next = await taskByConversation(client, conversationId, repository.id);
+  const next = await taskByConversation(client, targetId, repository.id);
   if (next) {
-    await emit(client, repository, event, 'task.state_changed', conversationId, next.id, {
+    await emit(client, repository, event, 'task.state_changed', targetId, next.id, {
       task: taskSummary(next),
     });
   }
   logger.info(
-    { event: 'bridge.decision_ignored', decisionId, taskId: task.id, conversationId, messageId },
+    {
+      event: 'bridge.decision_ignored',
+      decisionId,
+      taskId: task.id,
+      conversationId: targetId,
+      messageId,
+    },
     'closed the pending admission named by the ignored decision',
   );
 }

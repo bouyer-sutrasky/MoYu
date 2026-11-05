@@ -980,6 +980,120 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
     expect((await readTask(pending.taskId)).version).toBe(version);
   }, 30_000);
 
+  it('serializes an API message acceptance before an ignored decision', async () => {
+    const fixture = await seed({ state: 'pending_admission' });
+    const old = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body) values ($1, 'inbound', 'user', 'old') returning id`,
+      [fixture.conversationId],
+    );
+    const event: BridgeEvent = {
+      seq: 1,
+      id: `decision-ignored:${fixture.ticketId}:race`,
+      type: 'decision.ignored',
+      at: '2026-11-04T00:00:00.000Z',
+      data: {
+        decisionId: `decision-${fixture.ticketId}`,
+        conversationId: fixture.conversationId,
+        messageId: old.rows[0]!.id,
+        at: '2026-11-04T00:00:00.000Z',
+      },
+    };
+    const api = await testDatabase.pool.connect();
+    const sync = await testDatabase.pool.connect();
+    try {
+      await api.query('begin');
+      await api.query('select id from conversations where id = $1 for update', [
+        fixture.conversationId,
+      ]);
+      const task = await api.query('select state from task_links where id = $1', [fixture.taskId]);
+      expect(task.rows[0]).toMatchObject({ state: 'pending_admission' });
+      const created = await api.query<{ id: string }>(
+        `insert into messages (conversation_id, direction, kind, body) values ($1, 'inbound', 'user', 'accepted while ignore waits') returning id`,
+        [fixture.conversationId],
+      );
+      await api.query(`insert into deliveries (message_id, state) values ($1, 'pending')`, [
+        created.rows[0]!.id,
+      ]);
+      const applying = (async () => {
+        await sync.query('begin');
+        await applyEvent(sync, fixture.repository, event, createConsoleLogger('test'));
+        await sync.query('commit');
+      })();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const blocked = await testDatabase.pool.query('select state from task_links where id = $1', [
+        fixture.taskId,
+      ]);
+      expect(blocked.rows[0]).toMatchObject({ state: 'pending_admission' });
+      await api.query('commit');
+      await applying;
+      expect(await readTask(fixture.taskId)).toMatchObject({ state: 'pending_admission' });
+      const delivery = await testDatabase.pool.query(
+        'select state from deliveries where message_id = $1',
+        [created.rows[0]!.id],
+      );
+      expect(delivery.rows[0]).toMatchObject({ state: 'pending' });
+    } finally {
+      await api.query('rollback').catch(() => undefined);
+      await sync.query('rollback').catch(() => undefined);
+      api.release();
+      sync.release();
+    }
+  }, 30_000);
+
+  it('rejects a later API acceptance after an ignored decision commits first', async () => {
+    const fixture = await seed({ state: 'pending_admission' });
+    const old = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body) values ($1, 'inbound', 'user', 'old') returning id`,
+      [fixture.conversationId],
+    );
+    const event: BridgeEvent = {
+      seq: 1,
+      id: `decision-ignored:${fixture.ticketId}:race-reverse`,
+      type: 'decision.ignored',
+      at: '2026-11-04T00:00:00.000Z',
+      data: {
+        decisionId: `decision-${fixture.ticketId}`,
+        conversationId: fixture.conversationId,
+        messageId: old.rows[0]!.id,
+        at: '2026-11-04T00:00:00.000Z',
+      },
+    };
+    const api = await testDatabase.pool.connect();
+    const sync = await testDatabase.pool.connect();
+    try {
+      await sync.query('begin');
+      await applyEvent(sync, fixture.repository, event, createConsoleLogger('test'));
+      let locked = false;
+      const waiting = (async () => {
+        await api.query('begin');
+        await api.query('select id from conversations where id = $1 for update', [
+          fixture.conversationId,
+        ]);
+        locked = true;
+        const task = await api.query('select state from task_links where id = $1', [
+          fixture.taskId,
+        ]);
+        expect(task.rows[0]).toMatchObject({ state: 'not_accepted' });
+        await api.query('rollback');
+      })();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(locked).toBe(false);
+      await sync.query('commit');
+      await waiting;
+      expect(await readTask(fixture.taskId)).toMatchObject({ state: 'not_accepted' });
+      const messages = await testDatabase.pool.query(
+        'select count(*)::int as count from messages where conversation_id = $1',
+        [fixture.conversationId],
+      );
+      expect(messages.rows[0]?.count).toBe(1);
+    } finally {
+      await api.query('rollback').catch(() => undefined);
+      await sync.query('rollback').catch(() => undefined);
+      api.release();
+      sync.release();
+    }
+  }, 30_000);
+
   it('does not close a newer accepted admission when an older message is ignored', async () => {
     const fixture = await seed({ state: 'pending_admission' });
     const older = await testDatabase.pool.query<{ id: string }>(
