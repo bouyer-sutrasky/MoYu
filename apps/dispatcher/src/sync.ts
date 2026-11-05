@@ -527,6 +527,37 @@ async function applyPausedEvent(
  * keeps one task, so a repeated Bridge event or a second entry point reuses the
  * same work instead of executing it twice.
  */
+async function applyIgnoredDecision(
+  client: pg.PoolClient,
+  repository: RepositoryBinding,
+  event: BridgeEvent,
+  logger: DispatcherLogger,
+): Promise<void> {
+  const data = asRecord(event.data);
+  const conversationId = asString(data.conversationId);
+  const decisionId = asString(data.decisionId);
+  if (!conversationId || !decisionId) return;
+  const task = await taskByConversation(client, conversationId, repository.id);
+  if (!task || task.state !== 'pending_admission') return;
+  const updated = await client.query(
+    `update task_links
+        set state = 'not_accepted', version = version + 1, updated_at = now()
+      where id = $1 and repository_id = $2 and state = 'pending_admission'`,
+    [task.id, repository.id],
+  );
+  if ((updated.rowCount ?? 0) === 0) return;
+  const next = await taskByConversation(client, conversationId, repository.id);
+  if (next) {
+    await emit(client, repository, event, 'task.state_changed', conversationId, next.id, {
+      task: taskSummary(next),
+    });
+  }
+  logger.info(
+    { event: 'bridge.decision_ignored', decisionId, taskId: task.id, conversationId },
+    'closed a pending admission after an ignored runtime decision',
+  );
+}
+
 async function applyImportedEvent(
   client: pg.PoolClient,
   repository: RepositoryBinding,
@@ -850,6 +881,9 @@ export async function applyEvent(
       return;
     case 'ticket.imported':
       return applyImportedEvent(client, repository, event, logger);
+    case 'decision.ignored':
+      await applyIgnoredDecision(client, repository, event, logger);
+      return;
     case 'message.read':
       await applyReadEvent(client, repository, event, logger);
       return;

@@ -1,7 +1,16 @@
 diff --git a/src/app/bridge.ts b/src/app/bridge.ts
-index 55d9b1e..30e9932 100644
+index 55d9b1e..35006d0 100644
 --- a/src/app/bridge.ts
 +++ b/src/app/bridge.ts
+@@ -176,7 +176,7 @@ export class EventLog {
+ /** What the Bridge needs from the Runtime, kept narrow so it does not widen the public `orchestrator` service. */
+ export interface BridgeHost {
+   readonly stateDir: string
+-  readonly store: Pick<Store, 'tickets' | 'triggers'>
++  readonly store: Pick<Store, 'tickets' | 'triggers' | 'decisions'>
+   readonly commands: Pick<Commands, 'api'>
+   /** The Engine commands pause, resume, start, and retry run through; the Bridge decides nothing about a Ticket itself. */
+   readonly engine: Pick<EngineForPeople, 'pauseTicket' | 'resumeTicket' | 'startTicket' | 'retryTicket'>
 @@ -327,10 +327,6 @@ function githubNumber(ticket: Ticket, origin: Trigger | undefined): number | und
      const number = Number(channel.address.number)
      if (Number.isInteger(number) && number > 0) return number
@@ -13,7 +22,28 @@ index 55d9b1e..30e9932 100644
    for (const ref of origin?.threads ?? []) {
      if (ref.source !== 'github') continue
      const match = /^(\d+)$/.exec(ref.id)
-@@ -436,10 +432,16 @@ export class Bridge {
+@@ -431,15 +427,37 @@ export class Bridge {
+   /** Projects every stored Ticket to events; the ticker runs it once a second, and tests call it directly. */
+   project(): void {
+     const repository = this.host.configured() ? this.host.deployment.repository : ''
++    for (const decision of this.host.store.decisions.list()) {
++      if (decision.kind !== 'ignore') continue
++      const triggers = decision.triggerIds.map(id => this.host.store.triggers.get(id))
++      const trigger = triggers.find(item => item?.channel?.source === 'workspace')
++      if (!trigger?.channel || trigger.channel.source !== 'workspace') continue
++      const conversationId = trigger.channel.address.conversationId
++      this.log.append(`decision-ignored:${decision.id}`, 'decision.ignored', decision.at, {
++        decisionId: decision.id,
++        triggerIds: decision.triggerIds,
++        threadKey: decision.threadKey,
++        conversationId,
++        messageId: trigger.channel.address.messageId ?? null,
++        at: decision.at,
++        reason: decision.reason,
++      })
++    }
+     for (const ticket of this.host.store.tickets.list()) {
+       const origin = this.host.store.triggers.get(ticket.origin.triggerId)
        const workspace = origin?.source === 'workspace' || ticket.channels.some(channel => channel.source === 'workspace')
        // A GitHub-origin ticket is imported into the platform's Work list; it is not a workspace ticket and gets no link event.
        const github = !workspace && (origin?.source === 'github' || ticket.channels.some(channel => channel.source === 'github'))
@@ -31,7 +61,7 @@ index 55d9b1e..30e9932 100644
        if (workspace && !this.log.has(`ticket-linked:${ticket.id}`)) {
          const meta = origin?.meta ?? {}
          this.log.append(`ticket-linked:${ticket.id}`, 'ticket.linked', ticket.createdAt, {
-@@ -501,14 +503,21 @@ export class Bridge {
+@@ -501,14 +519,21 @@ export class Bridge {
     * the deterministic id keeps a restart or a repeated projection tick from importing it twice.
     */
    private importTicket(ticket: Ticket, origin: Trigger | undefined): void {
@@ -59,7 +89,7 @@ index 55d9b1e..30e9932 100644
        ticketId: ticket.id,
        source: 'github',
        externalId: `github:${number}`,
-@@ -517,8 +526,8 @@ export class Bridge {
+@@ -517,8 +542,8 @@ export class Bridge {
        url,
        title: ticket.title,
        state: projectTicketState(ticket),
@@ -70,3 +100,37 @@ index 55d9b1e..30e9932 100644
        base: { branch: ticket.base?.branch ?? '', commit: ticket.base?.commit ?? '', model: modelLabel(ticket.model) },
        at: ticket.createdAt,
      })
+diff --git a/src/app/store.ts b/src/app/store.ts
+index 6dcb8b0..d4aa403 100644
+--- a/src/app/store.ts
++++ b/src/app/store.ts
+@@ -244,6 +244,7 @@ export class Store implements Repositories {
+     get: (id: string): Decision | undefined => { const row = this.db.prepare('SELECT value FROM decision WHERE id=?').get(id); return row ? JSON.parse(String(row.value)) as Decision : undefined },
+     save: (decision: Decision): void => { this.db.prepare('INSERT INTO decision VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value, thread=excluded.thread').run(decision.id, decision.threadKey, JSON.stringify(decision)) },
+     byThread: (threadKeyValue: string): Decision[] => this.db.prepare('SELECT value FROM decision WHERE thread=? ORDER BY rowid').all(threadKeyValue).map(row => JSON.parse(String(row.value)) as Decision),
++    list: (): Decision[] => this.values('SELECT value FROM decision ORDER BY rowid'),
+   }
+   /** Read-only queries for management views, orchestrator tools, and source polling (see `storeReads`). */
+   readonly read: ReturnType<typeof storeReads>
+diff --git a/src/core/memory.ts b/src/core/memory.ts
+index 114e8c7..13bfeff 100644
+--- a/src/core/memory.ts
++++ b/src/core/memory.ts
+@@ -46,5 +46,6 @@ export class MemoryRepositories implements Repositories {
+     get: (id: string) => clone(this.decisionRows.get(id)),
+     save: (decision: Decision) => { this.decisionRows.set(decision.id, clone(decision)) },
+     byThread: (key: string) => [...this.decisionRows.values()].filter(decision => decision.threadKey === key).map(clone),
++    list: () => [...this.decisionRows.values()].map(clone),
+   }
+ }
+diff --git a/src/core/ports.ts b/src/core/ports.ts
+index f7baa06..b55ccfd 100644
+--- a/src/core/ports.ts
++++ b/src/core/ports.ts
+@@ -140,5 +140,6 @@ export interface Repositories {
+     get(id: string): Decision | undefined
+     save(decision: Decision): void
+     byThread(key: string): Decision[]
++    list(): Decision[]
+   }
+ }

@@ -942,6 +942,32 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
     expect(tasks.rows[0]).toMatchObject({ ticketId: fixture.ticketId, state: 'running' });
   }, 30_000);
 
+  it('closes only the pending admission tied to an ignored decision', async () => {
+    const pending = await seed({ state: 'pending_admission' });
+    const running = await seed({ state: 'running' });
+    const event = (seq: number, fixture: typeof pending): BridgeEvent => ({
+      seq,
+      id: `decision-ignored:${fixture.ticketId}`,
+      type: 'decision.ignored',
+      at: '2026-11-04T00:00:00.000Z',
+      data: {
+        decisionId: `decision-${fixture.ticketId}`,
+        triggerIds: [`workspace:${fixture.conversationId}`],
+        conversationId: fixture.conversationId,
+        at: '2026-11-04T00:00:00.000Z',
+      },
+    });
+    fakeBridge.events = [event(1, pending), event(2, running)];
+    const logger = createConsoleLogger('test');
+    expect(await syncOnce(testDatabase.pool, pending.repository, client, logger)).toBe(true);
+    expect(await readTask(pending.taskId)).toMatchObject({ state: 'not_accepted' });
+    expect(await readTask(running.taskId)).toMatchObject({ state: 'running' });
+    const version = (await readTask(pending.taskId)).version;
+    fakeBridge.events = [event(1, pending)];
+    await syncOnce(testDatabase.pool, pending.repository, client, logger);
+    expect((await readTask(pending.taskId)).version).toBe(version);
+  }, 30_000);
+
   it('keeps one task when the same requirement arrives with a different GitHub ticket', async () => {
     const fixture = await seed({
       state: 'running',
