@@ -43,6 +43,10 @@ upstream index  8d80bb7f…3c6252
 
 ### 交付补证（2026-11-05，PR26-73daaa1-live-gate）
 
+- **GitHub→Web（真人目标 issue #2，已闭合）**：sutrasky 05:48:39Z 创建 issue #2；runtime accept decision `1de62edf…`，ticket `dca336de…`，assignment `3e905a89…`，worker session `worker-dca336de…`。平台 task `406e433b…` 先 running v2 等确认；Web 消息 `6765844c…`（05:51:37.222Z，readAt 05:51:37.458Z）在同一 assignment 恢复执行；PR #3 单文件 `M4-DUAL-ENTRY.md`、单 commit `87646c9`、内容 `dual entry probe`；task `awaiting_review/version3`。同 clientMessageId 重发返回 200 duplicate，消息/投递/PR 计数不变。证据 `evidence/m5/m4-dual-entry.log`。
+- **反向 Web→GitHub 未闭合**：issue #1 的导入目标已 completed 且合并逻辑正确拒绝，issue #2 已导入；需要一条**尚未导入的真人 @ 目标**才能跑 Web-first 样本，不能伪造顺序。
+
+
 - **pending_admission 根因**：隔离 beta 任务 `fbb374c3` 的 runtime decision 为 `ignore`（无仓库变更的 sleep 探针），平台没有 ignore/not_accepted 事件，task 永远停在 `pending_admission` 并计入 gate active，导致 sleep_refused。不是 runtime 未启动/故障；第二个 alpha 样本同样。证据 `evidence/m5/pending-admission-diagnosis.log`。
 - **M4 live pause→resume**：真实 beta 任务 `26b59a78`：running v3 → stop 202 → stopped v7 → resume 202 → running v8 → completed v10；只产生 PR #4，单文件 `M4-RESUME.md`、单 commit、内容 `resume probe`，无重复 PR/commit。证据 `evidence/m5/m4-pause-resume.log`。
 - **仍未闭合**：GitHub→Web/Web→GitHub 两种入口顺序的 live 全序列仍未同时重跑（已有在线人工 @ 导入与 M4 双入口集成测试，但未把集成测试当 live 证据）；pending_admission 的 ignore 传播仍待后续修复。
@@ -192,7 +196,7 @@ bash scripts/m5/online-import-acceptance.sh
 6. **M4 任务停止的 live 路径未重跑**：没有在 live 栈制造一个运行中任务并等待 GitHub polling 空闲后
    停止；既有 API/dispatcher 集成测试覆盖暂停/继续与 `blocked` 语义，M5 实例停止成功路径已单独验证。
    本轮不把集成测试等同于 live 任务停止。
-7. **pending_admission ignore 传播**：无仓库变更的探针被 runtime 明确 ignore 后，平台没有对应事件，task 永久 pending_admission 并占 gate；本轮只做了根因诊断与绕行（改用仓库变更任务），未改 ignore 传播。
+7. **pending_admission ignore 传播（明确处置）**：范围为跨 M4 runtime/平台事件，非 M5 实例生命周期；本轮只诊断和绕行（改用仓库变更任务）。后续修复需新增/转发 ignore/not_accepted 事件并把 task 收敛到 not_accepted，同时补回归；未纳入本 PR，因为改 runtime 事件契约超出当前 M5-A 范围。
 8. **未知/复用身份**：root 已死且旧 session 中无匹配成员时会保持 `stopping/stop_failed` 占名额，不做 PGID 盲杀；需要人工确认后清理，这是有意的保守行为。
 8. **截图对比**：before 为 `main@160a22d` 的 M4-UX Web 构建，after 为当前构建；同一数据库、同一
    仓库选择、视口和主题。截图由真实 Chromium 生成，但本执行模型不能直接读图，因而额外用 DOM 断言
