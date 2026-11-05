@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { mergeQueuedWake } from '../src/manager';
 import {
@@ -75,8 +76,17 @@ describe('supervisor process evidence', () => {
       members: [{ ...current, startTime: '0', command: 'stale root' }],
     };
     expect(collectOwnership(child.pid, stale).members).toEqual([]);
+    const kill = vi.spyOn(process, 'kill');
     const result = await stopProcessTree(child.pid, 1000, stale);
-    expect(result.stopped).toBe(true);
+    const signals = kill.mock.calls
+      .filter(
+        ([pid, signal]) => pid === child.pid && (signal === 'SIGTERM' || signal === 'SIGKILL'),
+      )
+      .map(([, signal]) => signal);
+    kill.mockRestore();
+    expect(signals).toEqual([]);
+    expect(result.stopped).toBe(false);
+    expect(result.unknown).toBe(true);
     expect(pidAlive(child.pid)).toBe(true);
     await stopProcessTree(child.pid, 3000);
   });
@@ -91,7 +101,8 @@ describe('supervisor process evidence', () => {
     };
     expect(collectOwnership(victim.pid, stale).members).toEqual([]);
     const result = await stopProcessTree(victim.pid, 1000, stale);
-    expect(result.stopped).toBe(true);
+    expect(result.stopped).toBe(false);
+    expect(result.unknown).toBe(true);
     expect(pidAlive(victim.pid)).toBe(true);
     await stopProcessTree(victim.pid, 3000);
   });
@@ -105,6 +116,38 @@ describe('supervisor process evidence', () => {
     const result = await stopProcessTree(child.pid, 3000, stored);
     expect(result.stopped).toBe(true);
     expect(pidAlive(child.pid)).toBe(false);
+  });
+
+  it('finds a child forked after the snapshot even when the root already exited', async () => {
+    const flag = `/tmp/moyu-orphan-${process.pid}-${Date.now()}`;
+    const parent = spawnDetached('sh', [
+      '-c',
+      'while [ ! -f "$1" ]; do sleep 0.02; done; sleep 30 & exit 0',
+      'sh',
+      flag,
+    ]);
+    if (!parent.pid) throw new Error('no parent pid');
+    const rootPid = parent.pid;
+    const rootIdentity = identifyProcess(rootPid);
+    if (!rootIdentity) throw new Error('no root identity');
+    const stored = { rootPid, pgid: rootIdentity.pgid, members: [rootIdentity] };
+    writeFileSync(flag, 'go');
+    try {
+      await waitUntil(() => !pidAlive(rootPid), 5000);
+      const snapshot = collectOwnership(rootPid, stored);
+      const children = snapshot.members.filter((member) => member.pid !== rootPid);
+      expect(children.length).toBeGreaterThan(0);
+      const result = await stopProcessTree(rootPid, 3000, stored);
+      expect(result.stopped).toBe(true);
+      await waitUntil(() => collectOwnership(rootPid, stored).members.length === 0, 3000);
+    } finally {
+      try {
+        const { rmSync } = await import('node:fs');
+        rmSync(flag, { force: true });
+      } catch {
+        // Already removed.
+      }
+    }
   });
 
   it('does not report stopped when the parent exits but its child survives', async () => {

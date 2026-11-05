@@ -1005,13 +1005,22 @@ export class InstanceManager {
     const pid = instance.pid ?? stored.rootPid ?? 0;
     const snapshot = collectOwnership(pid, stored);
     const pgid = snapshot.pgid ?? stored.pgid ?? (pid > 1 ? pid : null);
+    const beforeStop = (await this.store.getInstance(instance.repositoryId)) ?? instance;
     this.handles.delete(instance.repositoryId);
     this.generation += 1;
     await this.store.updateInstance(instance.repositoryId, {
       state: 'stopping',
-      desiredState: 'sleeping',
+      // A wake accepted before this stop (including the tick retry of a stop
+      // with live members) is an owner intent, not a stop request. Keep it
+      // until the process tree is actually gone; markSleeping decides later.
+      desiredState: beforeStop.desiredState,
       pid: instance.pid,
-      ownership: ownershipPayload(pid > 1 ? pid : null, pgid, snapshot.members),
+      ownership: {
+        ...stored,
+        rootPid: instance.pid,
+        pgid,
+        members: [...(stored.members ?? []), ...snapshot.members],
+      },
       reasonCode: 'stopping',
       reasonDetail: null,
       waitingFor,
@@ -1020,9 +1029,10 @@ export class InstanceManager {
     });
     await this.store.syncRepositoryStatus(instance.repositoryId, 'stopping');
     const result = await stopProcessTree(pid, this.config.stopTimeoutMs, {
+      ...stored,
       rootPid: instance.pid,
       pgid,
-      members: snapshot.members,
+      members: [...(stored.members ?? []), ...snapshot.members],
     });
     const portClosed = instance.bridgePort
       ? await waitForPortClosed(instance.bridgePort, 5000)
@@ -1034,14 +1044,21 @@ export class InstanceManager {
     const remaining = result.remaining;
     const detail = result.stopped
       ? `The Bridge port ${instance.bridgePort ?? '(none)'} remained open after the process tree exited`
-      : `Stopping is incomplete: ${remaining.length} process(es) still alive after the timeout`;
+      : result.unknown
+        ? 'The owned process tree exited, but the saved process group still has unverified members'
+        : `Stopping is incomplete: ${remaining.length} process(es) still alive after the timeout`;
     const current = (await this.store.getInstance(instance.repositoryId)) ?? instance;
     const pendingWake = current.desiredState === 'online' && current.wakeRequestedAt !== null;
     await this.store.updateInstance(instance.repositoryId, {
       state: 'stopping',
       desiredState: pendingWake ? 'online' : 'sleeping',
       pid: instance.pid,
-      ownership: ownershipPayload(pid > 1 ? pid : null, result.pgid, remaining),
+      ownership: {
+        ...stored,
+        rootPid: instance.pid,
+        pgid: result.pgid ?? pgid,
+        members: [...(stored.members ?? []), ...remaining],
+      },
       reasonCode: 'stop_failed',
       reasonDetail: detail,
       waitingFor: 'process_exit',

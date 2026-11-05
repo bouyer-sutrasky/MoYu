@@ -41,6 +41,8 @@ export interface ProcessOwnershipSnapshot {
   rootPid: number | null;
   pgid: number | null;
   members: ProcessIdentity[];
+  /** Live group members that cannot be tied to the saved identity. */
+  unknown: ProcessIdentity[];
 }
 
 export interface StoredOwnership {
@@ -54,6 +56,8 @@ export interface StopProcessResult {
   rootPid: number;
   pgid: number | null;
   remaining: ProcessIdentity[];
+  /** The saved group still has live members we cannot prove are ours. */
+  unknown: boolean;
 }
 
 interface ProcStat {
@@ -191,8 +195,9 @@ function verifiedRoot(rootPid: number, stored?: StoredOwnership): ProcessIdentit
 /**
  * Captures the root process, its owned process groups, and every descendant.
  * Start times are compared before a PID or PGID is accepted. When the root has
- * already died, only stored members and groups that still contain a stored
- * member are used; a reused root PID or PGID is ignored.
+ * already died, a saved root identity lets us find children that were created
+ * between snapshots and inherited its session; group members that cannot be
+ * tied to that session are reported as unknown instead of being signalled.
  */
 export function collectOwnership(
   rootPid: number,
@@ -205,20 +210,44 @@ export function collectOwnership(
   };
 
   const root = verifiedRoot(rootPid, stored);
+  const savedRoot = (stored?.members ?? []).find(
+    (member) => member?.pid === rootPid && typeof member.startTime === 'string',
+  );
   add(root);
   const normalized = normalizeStored(stored);
   for (const member of normalized) add(member);
 
-  // A group is owned only if the verified root or a verified stored member is
-  // still in it. This avoids killing an unrelated process that reused an old
-  // PGID after every owned member exited.
+  const unknown: ProcessIdentity[] = [];
   const ownedGroups = new Set<number>();
   if (root) ownedGroups.add(root.pgid);
-  if (!stored && rootPid > 1) ownedGroups.add(rootPid);
   for (const member of normalized) ownedGroups.add(member.pgid);
+  const rootReused = !root && pidAlive(rootPid);
+  if (!root && !rootReused && savedRoot && typeof savedRoot.pgid === 'number') {
+    // The root may have forked a child after the last snapshot and then died.
+    // Scan its old group, but only accept members in the root's session; a
+    // reused PGID from an unrelated service must not be killed.
+    ownedGroups.add(savedRoot.pgid);
+  }
+  if (rootReused && savedRoot && typeof savedRoot.pgid === 'number') {
+    // The root PID has been reused. We cannot prove the old group is ours, so
+    // report its members as unknown and never signal them.
+    for (const member of groupMembers(savedRoot.pgid)) unknown.push(member);
+  }
+  if (!stored && rootPid > 1) {
+    // Discovery-only calls (tests, descendants()) have no persisted identity.
+    ownedGroups.add(rootPid);
+  }
   const pgid = [...ownedGroups][0] ?? null;
   for (const group of ownedGroups) {
-    for (const member of groupMembers(group)) add(member);
+    for (const member of groupMembers(group)) {
+      if (!rootReused && (!stored || root || normalized.some((item) => item.pid === member.pid))) {
+        add(member);
+      } else if (savedRoot && typeof savedRoot.sid === 'number' && member.sid === savedRoot.sid) {
+        add(member);
+      } else {
+        unknown.push(member);
+      }
+    }
   }
 
   const visit = (parent: number) => {
@@ -236,6 +265,7 @@ export function collectOwnership(
     rootPid: root?.pid ?? null,
     pgid,
     members: [...byKey.values()].filter(identityAlive),
+    unknown: unknown.filter(identityAlive),
   };
 }
 
@@ -331,15 +361,6 @@ function signalPid(pid: number, signal: NodeJS.Signals): void {
   }
 }
 
-function signalGroup(pgid: number | null, signal: NodeJS.Signals): void {
-  if (!pgid || pgid <= 1) return;
-  try {
-    process.kill(-pgid, signal);
-  } catch {
-    // The group is empty or not ours; individual PIDs are still signalled.
-  }
-}
-
 /**
  * Stops a detached runtime and all of its descendants.
  *
@@ -359,6 +380,7 @@ export async function stopProcessTree(
     stored = { rootPid, pgid: initial.pgid, members: initial.members };
   }
   const merged = new Map<string, ProcessIdentity>();
+  let unknown = false;
   const merge = (identity: ProcessIdentity | null | undefined) => {
     if (identity && identityAlive(identity)) merged.set(identityKey(identity), identity);
   };
@@ -369,24 +391,31 @@ export async function stopProcessTree(
       members: [...(stored?.members ?? []), ...merged.values()],
     });
     for (const member of snapshot.members) merge(member);
-    if (snapshot.pgid) for (const member of groupMembers(snapshot.pgid)) merge(member);
+    unknown = snapshot.unknown.length > 0;
     return snapshot.pgid;
   };
 
   let pgid = refresh();
   if (!pidAlive(rootPid) && merged.size === 0) {
-    return { stopped: true, rootPid, pgid, remaining: [] };
+    return { stopped: !unknown, rootPid, pgid, remaining: [], unknown };
   }
 
   const startedAt = Date.now();
   const termSent = new Set<string>();
   let killSent = false;
   const send = (signal: NodeJS.Signals) => {
-    for (const member of merged.values()) {
+    for (const member of [...merged.values()]) {
       const key = identityKey(member);
       if (signal === 'SIGTERM' && termSent.has(key)) continue;
+      // Re-verify immediately before every signal: a process may have exited
+      // and its PID/PGID reused since it was recorded. Never signal a group
+      // here; an unrelated member could share a reused PGID.
+      const current = identifyProcess(member.pid);
+      if (!current || current.startTime !== member.startTime) {
+        merged.delete(key);
+        continue;
+      }
       if (signal === 'SIGTERM') termSent.add(key);
-      signalGroup(member.pgid, signal);
       signalPid(member.pid, signal);
     }
   };
@@ -409,7 +438,7 @@ export async function stopProcessTree(
       refresh();
       const finalAlive = [...merged.values()].filter(identityAlive);
       if (finalAlive.length === 0) {
-        return { stopped: true, rootPid, pgid, remaining: [] };
+        return { stopped: !unknown, rootPid, pgid, remaining: [], unknown };
       }
       merged.clear();
       for (const member of finalAlive) merged.set(identityKey(member), member);
@@ -420,6 +449,7 @@ export async function stopProcessTree(
         rootPid,
         pgid,
         remaining: [...merged.values()].filter(identityAlive),
+        unknown,
       };
     }
   }
