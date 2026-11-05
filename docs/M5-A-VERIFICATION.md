@@ -1,7 +1,7 @@
 # M5-A 验证记录
 
 日期：2026-11-05。基线：`main@160a22db322571f3a12fcc76748f86260fd34c04`；返修实现 head：
-`962de3f0de62038daf7e13ba10818e787e79608d`。
+`79816fb39807a939c63f37f1a2e726e1967c23af`。
 被测环境与设计见 [`M5-INSTANCES.md`](M5-INSTANCES.md)；本文只记实际执行过的命令、结果与未验证项。
 所有实例均使用隔离 `DSH_HOME=/root/.dsh-m5`、独立 profile/state/worktree/端口和私有测试仓库；
 3082 bootstrap、4300 线上实例、生产库 `moyu` 与 Nginx 未改动。
@@ -41,6 +41,14 @@ upstream index  8d80bb7f…3c6252
 | P2 queued wake 覆盖优先级/时间 | `mergeQueuedWake` 取最高优先级（数值最小）和最早时间；重复 wake 不重置 | 纯函数测试 + live reply 10 → new_task 20 后仍 `queue_priority=10`、`duplicate:true` |
 | 证据 head/日志未随 PR | `artifacts.txt` 记录实现 head/tree 与构建 hash；log 强制提交；新增 0011 回滚、并发、重启、停止失败、浏览器回归证据 | PR 文件列表包含全部脱敏日志；0011 回滚 11/0→12/1 |
 
+### 第四轮返修（2026-11-05，review-key PR26-e8e6fe0-ownership-r4）
+
+| 发现 | 处理 | 验证 |
+| --- | --- | --- |
+| P1 同 sid 不同 pgid 子进程漏检 | 新增 per-instance cgroup v2 边界；spawn 时由 shell 写入 `cgroup.procs` 后 exec，setpgid/setsid 子进程都继承；停止按 `cgroup.procs` 枚举并逐个复核 startTime | 单测：root 退出后 setsid child 仍被 cgroup 找到并停止，cgroup 清空；live beta cgroup pids 含 root+gh，stop 后 cgroup 目录移除 |
+| P1 unknown 未贯穿 manager | `snapshot.unknown` 布尔贯穿 tick/reconcile/failInstance/stop；未知时保持 `stopping/stop_failed` 占名额，不因 Bridge 关闭 markSleeping；旧实例 adoption 时迁移进 cgroup | live 构造 root 已死、ownership 过期、dummy 存活：manager 保持 `stopping/stop_failed/online`，dummy 未杀；cgroup 停止成功后才释放 |
+| 验收缺口 | 保留真实矩阵与限制：本轮新增真实进程/cgroup 证据，但 M4 live pause→resume、双入口仍以集成测试为准 | 见未验证项 |
+
 ### 第三轮返修（2026-11-05，review-key PR26-366ac47-lifecycle-r3）
 
 | 发现 | 处理 | 验证 |
@@ -67,7 +75,7 @@ upstream index  8d80bb7f…3c6252
 | `corepack pnpm@11.7.0 --config.engine-strict=false lint` | 通过（0 error） |
 | `prettier --check "**/*.{ts,tsx,mjs,cjs,json,yml,yaml,css,html}"` | 通过 |
 | `corepack pnpm@11.7.0 -r --if-present typecheck` | 通过（8 个项目） |
-| `corepack pnpm@11.7.0 -r --if-present test` | 通过：contracts 13、runtime-client 13、api 20、dispatcher 3、supervisor 16 |
+| `corepack pnpm@11.7.0 -r --if-present test` | 通过：contracts 13、runtime-client 13、api 20、dispatcher 3、supervisor 17 |
 | `@moyu/db test:integration` | 通过：9 文件 / 35 测试（含 0010/0011/0012 回滚、旧版本迁移、完整性） |
 | `@moyu/api test:integration` | 通过：11 文件 / 66 测试（含 M4 暂停继续、分页、双入口、仓库生命周期、任务唤醒） |
 | `@moyu/dispatcher test:integration` | 通过：3 文件 / 30 测试（含多仓库隔离、等待/审阅释放名额） |
@@ -118,6 +126,8 @@ upstream index  8d80bb7f…3c6252
 - **端口证明**：真实 3405 listener 在时 gamma 保持 `stopping/stop_failed`；关闭后转 sleeping。
 - **休眠 resume**：sleeping delta 上 resume 返回 202、operation queued，实例转 starting（任务行以隔离 DB 的保留 ticket 构造，只验证唤醒链）。
 - **迁移**：0010/0011/0012 均在隔离库完成 rollback→reapply；0012 回滚后 12 条迁移/0 个唯一索引，重放后 13/3。
+- **cgroup**：alpha adoption cgroup 含 pid 3919012；beta 新 spawn cgroup 含 root+gh，stop 后 cgroup 移除。
+- **unknown**：root 已死但 ownership 过期、dummy 存活时，manager 保持 `stopping/stop_failed/online`，dummy 未杀。
 
 ## 3. 实际命令
 

@@ -88,8 +88,10 @@ supervisor 的实例映射来自固定的 `INSTANCES_CONFIG`：
     和已记录成员查找幸存子进程；
   - 每次 SIGTERM/SIGKILL 发送前都重新读取 `/proc` 并比对保存的 startTime；失效成员从集合删除，绝不
     对 PGID 盲发组信号；PID 复用、过期 PGID 或无保存身份时不杀当前进程；
-  - root 快照后可能 fork 新子：root 已死但保存了 pgid/sid 时，扫描旧 session 中的成员并作为孤儿停止；
-    session 不匹配的组员列为 unknown，保持 `stopping/stop_failed` 占名额，等待人工确认而不是猜杀；
+  - 每个实例在 cgroup v2 下运行（spawn 时由 shell 写入 `cgroup.procs` 后 exec）；setpgid/setsid 子进程
+    都继承 cgroup，停止按 `cgroup.procs` 枚举并逐个复核 startTime，cgroup 空且端口关闭才 sleeping；
+  - 旧实例 adoption 时迁移进新 cgroup；无 cgroup 或旧快照缺 cgroup 时，root 已死即保持 unknown/
+    `stopping/stop_failed` 占名额，不盲杀；session 扫描仅作辅助，不能单独证明退出；
   - SIGTERM 后等待所有已记录身份退出，超时后 SIGKILL 并继续等待；只有全部身份消失且 Bridge 端口关闭
     才进入 `sleeping`；
   - 超时/退出未知时保持 `stopping`（占用在线名额），保存剩余 ownership，返回 `accepted:false`；
