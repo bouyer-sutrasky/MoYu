@@ -1,11 +1,5 @@
 import { createConnection } from 'node:net';
-import {
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  rmdirSync,
-  writeFileSync,
-} from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, rmdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
