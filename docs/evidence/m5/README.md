@@ -33,6 +33,8 @@
 | `cgroup-stop.log` | beta cgroup spawn/停止后目录移除 |
 | `unknown-propagation.log` | root 已死 unknown 时 manager 保持 stop_failed 且 dummy 存活 |
 | `unknown-adoption.log` | 过期身份 adoption 不迁 cgroup、不杀 dummy，sleep 保持 stop_failed |
+| `pending-admission-diagnosis.log` | ignore 决策导致 pending_admission 并占 gate 的根因 |
+| `m4-pause-resume.log` | live running→stopped→running→completed，PR #4 单文件/单 commit 无重复 |
 | `artifacts.txt` | 基线/head、Node/pnpm/PostgreSQL、构建与上游制品 sha256 |
 | `ui-checks.json` | 真实 Chromium DOM 断言：休眠文案、监听暂停、唤醒动作、添加仓库列表、重复冲突、before 无该状态 |
 | `before-*.png` | `main@160a22d` 的 M4-UX Web 构建（同一数据库/仓库/视口/主题） |

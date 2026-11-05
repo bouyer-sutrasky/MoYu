@@ -41,6 +41,12 @@ upstream index  8d80bb7f…3c6252
 | P2 queued wake 覆盖优先级/时间 | `mergeQueuedWake` 取最高优先级（数值最小）和最早时间；重复 wake 不重置 | 纯函数测试 + live reply 10 → new_task 20 后仍 `queue_priority=10`、`duplicate:true` |
 | 证据 head/日志未随 PR | `artifacts.txt` 记录实现 head/tree 与构建 hash；log 强制提交；新增 0011 回滚、并发、重启、停止失败、浏览器回归证据 | PR 文件列表包含全部脱敏日志；0011 回滚 11/0→12/1 |
 
+### 交付补证（2026-11-05，PR26-73daaa1-live-gate）
+
+- **pending_admission 根因**：隔离 beta 任务 `fbb374c3` 的 runtime decision 为 `ignore`（无仓库变更的 sleep 探针），平台没有 ignore/not_accepted 事件，task 永远停在 `pending_admission` 并计入 gate active，导致 sleep_refused。不是 runtime 未启动/故障；第二个 alpha 样本同样。证据 `evidence/m5/pending-admission-diagnosis.log`。
+- **M4 live pause→resume**：真实 beta 任务 `26b59a78`：running v3 → stop 202 → stopped v7 → resume 202 → running v8 → completed v10；只产生 PR #4，单文件 `M4-RESUME.md`、单 commit、内容 `resume probe`，无重复 PR/commit。证据 `evidence/m5/m4-pause-resume.log`。
+- **仍未闭合**：GitHub→Web/Web→GitHub 两种入口顺序的 live 全序列仍未同时重跑（已有在线人工 @ 导入与 M4 双入口集成测试，但未把集成测试当 live 证据）；pending_admission 的 ignore 传播仍待后续修复。
+
 ### 第五轮返修（2026-11-05，review-key PR26-b65779e-cgroup-r5）
 
 | 发现 | 处理 | 验证 |
@@ -186,7 +192,8 @@ bash scripts/m5/online-import-acceptance.sh
 6. **M4 任务停止的 live 路径未重跑**：没有在 live 栈制造一个运行中任务并等待 GitHub polling 空闲后
    停止；既有 API/dispatcher 集成测试覆盖暂停/继续与 `blocked` 语义，M5 实例停止成功路径已单独验证。
    本轮不把集成测试等同于 live 任务停止。
-7. **未知/复用身份**：root 已死且旧 session 中无匹配成员时会保持 `stopping/stop_failed` 占名额，不做 PGID 盲杀；需要人工确认后清理，这是有意的保守行为。
+7. **pending_admission ignore 传播**：无仓库变更的探针被 runtime 明确 ignore 后，平台没有对应事件，task 永久 pending_admission 并占 gate；本轮只做了根因诊断与绕行（改用仓库变更任务），未改 ignore 传播。
+8. **未知/复用身份**：root 已死且旧 session 中无匹配成员时会保持 `stopping/stop_failed` 占名额，不做 PGID 盲杀；需要人工确认后清理，这是有意的保守行为。
 8. **截图对比**：before 为 `main@160a22d` 的 M4-UX Web 构建，after 为当前构建；同一数据库、同一
    仓库选择、视口和主题。截图由真实 Chromium 生成，但本执行模型不能直接读图，因而额外用 DOM 断言
    记录关键文案与动作；仍建议人工目视复核。
