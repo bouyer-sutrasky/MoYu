@@ -42,6 +42,7 @@
 | `admission-identity-stop.log` | message-scoped ignore、cgroup unknown、身份修复与模板 profile 验证 |
 | `admission-serialization.log` | API/ignore 共用会话锁的两种提交顺序双连接回归 |
 | `ignore-delivery-order.log` | 自身 delivery 未确认时仍结清 ignore，后续 pending 仍阻止 |
+| `batched-ignore.log` | 多 trigger 同一 ignore 决策的 messageIds 全集消费与集合外输入保护 |
 | `artifacts.txt` | 基线/head、Node/pnpm/PostgreSQL、构建与上游制品 sha256 |
 | `ui-checks.json` | 真实 Chromium DOM 断言：休眠文案、监听暂停、唤醒动作、添加仓库列表、重复冲突、before 无该状态 |
 | `before-*.png` | `main@160a22d` 的 M4-UX Web 构建（同一数据库/仓库/视口/主题） |
