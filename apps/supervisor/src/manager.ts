@@ -45,6 +45,7 @@ function storedOwnership(row: InstanceRow): StoredOwnership {
     rootPid: typeof value.rootPid === 'number' ? value.rootPid : row.pid,
     pgid: typeof value.pgid === 'number' ? value.pgid : row.pid,
     cgroup: typeof value.cgroup === 'string' ? value.cgroup : null,
+    adoptedUnproven: value.adoptedUnproven === true,
     members: Array.isArray(value.members) ? (value.members as StoredOwnership['members']) : [],
   };
 }
@@ -218,8 +219,20 @@ export class InstanceManager {
   private async attachCgroup(row: InstanceRow, stored: StoredOwnership): Promise<StoredOwnership> {
     if (stored.cgroup || !row.pid || !row.profile || !pidAlive(row.pid)) return stored;
     const snapshot = collectOwnership(row.pid, stored);
+    const verified = snapshot.members.some((member) => member.pid === row.pid);
+    if (!verified) {
+      // The saved identity no longer matches this PID. Never launder an
+      // unrelated process into a fresh cgroup.
+      const next = { ...stored, adoptedUnproven: true };
+      await this.store.updateInstance(row.repositoryId, { ownership: next });
+      return next;
+    }
     const cgroup = ensureCgroup(`${row.profile}-adopt-${Date.now()}`);
-    if (!cgroup) return stored;
+    if (!cgroup) {
+      const next = { ...stored, adoptedUnproven: true };
+      await this.store.updateInstance(row.repositoryId, { ownership: next });
+      return next;
+    }
     let moved = movePidToCgroup(cgroup, row.pid);
     for (const member of snapshot.members) {
       if (member.pid !== row.pid && movePidToCgroup(cgroup, member.pid)) moved = true;
@@ -231,6 +244,9 @@ export class InstanceManager {
     const next = {
       ...stored,
       cgroup,
+      // A live process adopted after the fact may already have double-forked
+      // descendants that no scan can recover; a new cgroup cannot prove them.
+      adoptedUnproven: true,
       members: [...(stored.members ?? []), ...snapshot.members],
     };
     await this.store.updateInstance(row.repositoryId, { ownership: next });
@@ -248,6 +264,15 @@ export class InstanceManager {
       live = snapshot.members;
     }
     if (snapshot.unknown) {
+      if (row.state === 'online' && row.desiredState === 'online') {
+        await this.store.updateInstance(row.repositoryId, {
+          reasonCode: 'ownership_unverified',
+          reasonDetail:
+            'The adopted runtime is serving, but its historical descendants cannot be proven; sleep will remain blocked',
+          waitingFor: 'runtime',
+        });
+        return;
+      }
       await this.store.updateInstance(row.repositoryId, {
         state: 'stopping',
         desiredState: row.desiredState,
@@ -560,6 +585,15 @@ export class InstanceManager {
 
         if (snapshot.unknown) {
           const current = (await this.store.getInstance(row.repositoryId)) ?? row;
+          if (row.state === 'online' && current.desiredState === 'online') {
+            await this.store.updateInstance(row.repositoryId, {
+              reasonCode: 'ownership_unverified',
+              reasonDetail:
+                'The runtime is serving, but its historical descendants cannot be proven; sleep will remain blocked',
+              waitingFor: 'runtime',
+            });
+            continue;
+          }
           await this.store.updateInstance(row.repositoryId, {
             state: 'stopping',
             desiredState: current.desiredState,

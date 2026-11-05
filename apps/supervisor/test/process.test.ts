@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -8,10 +8,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mergeQueuedWake } from '../src/manager';
 import {
   cgroupPids,
+  cgroupTree,
   childPids,
   collectOwnership,
   descendants,
   ensureCgroup,
+  movePidToCgroup,
   removeCgroup,
   identifyProcess,
   isTransientPolling,
@@ -136,6 +138,52 @@ describe('supervisor process evidence', () => {
       const result = await stopProcessTree(rootPid, 3000, stored);
       expect(result.stopped).toBe(true);
       expect(cgroupPids(cgroup)).toEqual([]);
+    } finally {
+      removeCgroup(cgroup);
+    }
+  });
+
+  it('scans the full cgroup subtree and removes it after stopping nested members', async () => {
+    const cgroup = ensureCgroup(`tree-${process.pid}-${Date.now()}`);
+    if (!cgroup) return;
+    try {
+      const nested = join(cgroup, 'nested');
+      mkdirSync(nested);
+      const root = spawnDetached('sleep', ['30']);
+      const child = spawnDetached('sleep', ['30']);
+      if (!root.pid || !child.pid) throw new Error('no pid');
+      if (!movePidToCgroup(cgroup, root.pid) || !movePidToCgroup(nested, child.pid)) {
+        throw new Error('could not move test processes');
+      }
+      const identity = identifyProcess(root.pid);
+      if (!identity) throw new Error('no identity');
+      const stored = { rootPid: root.pid, pgid: root.pid, members: [identity], cgroup };
+      expect(cgroupTree(cgroup).pids).toEqual(expect.arrayContaining([root.pid, child.pid]));
+      const result = await stopProcessTree(root.pid, 3000, stored);
+      expect(result.stopped).toBe(true);
+      expect(cgroupPids(cgroup)).toEqual([]);
+    } finally {
+      removeCgroup(cgroup);
+    }
+  });
+
+  it('keeps adopted historical descendants unknown even inside a new cgroup', async () => {
+    const cgroup = ensureCgroup(`adopt-${process.pid}-${Date.now()}`);
+    if (!cgroup) return;
+    try {
+      const dead = 4000000;
+      const stored = {
+        rootPid: dead,
+        pgid: dead,
+        cgroup,
+        adoptedUnproven: true,
+        members: [{ pid: dead, startTime: '0', pgid: dead, sid: dead, command: 'dead' }],
+      };
+      const snapshot = collectOwnership(dead, stored);
+      expect(snapshot.unknown).toBe(true);
+      const result = await stopProcessTree(dead, 1000, stored);
+      expect(result.stopped).toBe(false);
+      expect(result.unknown).toBe(true);
     } finally {
       removeCgroup(cgroup);
     }

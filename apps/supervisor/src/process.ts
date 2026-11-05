@@ -1,5 +1,5 @@
 import { createConnection } from 'node:net';
-import { mkdirSync, readFileSync, readdirSync, rmdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, rmdirSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -53,6 +53,8 @@ export interface StoredOwnership {
   cgroup?: string | null;
   /** Discovery-only callers without a persisted boundary may accept best-effort. */
   allowUnproven?: boolean;
+  /** Adopted outside a pre-existing cgroup; historical descendants are unproven. */
+  adoptedUnproven?: boolean;
   members?: Array<Partial<ProcessIdentity> & { pid?: number; startTime?: string }>;
 }
 
@@ -221,24 +223,55 @@ export function movePidToCgroup(path: string, pid: number): boolean {
   }
 }
 
-export function cgroupPids(path: string): number[] {
+export function cgroupTree(path: string): { ok: boolean; pids: number[] } {
+  const pids: number[] = [];
+  let entries: string[];
   try {
-    return readFileSync(join(path, 'cgroup.procs'), 'utf8')
-      .split(/\s+/)
-      .filter(Boolean)
-      .map(Number)
-      .filter((pid) => Number.isInteger(pid) && pid > 1);
+    readdirSync(path);
+    entries = readdirSync('/proc');
   } catch {
-    return [];
+    return { ok: false, pids: [] };
   }
+  const relative = path.replace(/^\/sys\/fs\/cgroup/, '');
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    try {
+      const raw = readFileSync(`/proc/${entry}/cgroup`, 'utf8');
+      const line = raw.trim().split('\n').at(-1) ?? '';
+      const membership = line.split(':').slice(2).join(':');
+      if (membership === relative || membership.startsWith(`${relative}/`)) {
+        pids.push(Number(entry));
+      }
+    } catch {
+      // A process may exit or hide its cgroup; this is not an empty subtree.
+    }
+  }
+  return { ok: true, pids: [...new Set(pids)] };
+}
+
+export function cgroupPids(path: string): number[] {
+  return cgroupTree(path).pids;
+}
+
+export function cgroupEmpty(path: string): { ok: boolean; empty: boolean } {
+  const tree = cgroupTree(path);
+  return { ok: tree.ok, empty: tree.ok && tree.pids.length === 0 };
 }
 
 export function removeCgroup(path: string | null | undefined): void {
   if (!path) return;
   try {
+    for (const entry of readdirSync(path)) {
+      const child = join(path, entry);
+      try {
+        if (statSync(child).isDirectory()) removeCgroup(child);
+      } catch {
+        // Pseudo-files are expected here.
+      }
+    }
     if (cgroupPids(path).length === 0) rmdirSync(path);
   } catch {
-    // A non-empty cgroup is kept for a later retry.
+    // A non-empty or partially removed cgroup is kept for a later retry.
   }
 }
 
@@ -287,8 +320,11 @@ export function collectOwnership(
 
   const unknownMembers: ProcessIdentity[] = [];
   const cgroup = stored?.cgroup ?? null;
+  let cgroupReadable = true;
   if (cgroup) {
-    for (const pid of cgroupPids(cgroup)) add(identifyProcess(pid));
+    const tree = cgroupTree(cgroup);
+    cgroupReadable = tree.ok;
+    for (const pid of tree.pids) add(identifyProcess(pid));
   }
   const ownedGroups = new Set<number>();
   if (root) ownedGroups.add(root.pgid);
@@ -356,6 +392,8 @@ export function collectOwnership(
     pgid,
     members: [...byKey.values()].filter(identityAlive),
     unknown:
+      !cgroupReadable ||
+      stored?.adoptedUnproven === true ||
       unknownMembers.filter(identityAlive).length > 0 ||
       (!cgroup &&
         !stored?.allowUnproven &&
@@ -487,13 +525,16 @@ export async function stopProcessTree(
       pgid: stored?.pgid ?? rootPid,
       cgroup: stored?.cgroup ?? null,
       allowUnproven: stored?.allowUnproven,
+      adoptedUnproven: stored?.adoptedUnproven,
       members: [...(stored?.members ?? []), ...merged.values()],
     });
     for (const member of snapshot.members) merge(member);
     if (stored?.cgroup) {
-      for (const pid of cgroupPids(stored.cgroup)) merge(identifyProcess(pid));
+      const tree = cgroupTree(stored.cgroup);
+      for (const pid of tree.pids) merge(identifyProcess(pid));
+      if (!tree.ok) unknown = true;
     }
-    unknown = snapshot.unknown;
+    unknown = unknown || snapshot.unknown;
     return snapshot.pgid;
   };
 
@@ -539,8 +580,8 @@ export async function stopProcessTree(
       // parent exited and was not observed in the previous iteration.
       refresh();
       const finalAlive = [...merged.values()].filter(identityAlive);
-      const cgroupAlive = stored?.cgroup ? cgroupPids(stored.cgroup).length : 0;
-      if (finalAlive.length === 0 && cgroupAlive === 0) {
+      const cgroupState = stored?.cgroup ? cgroupEmpty(stored.cgroup) : { ok: true, empty: true };
+      if (finalAlive.length === 0 && cgroupState.ok && cgroupState.empty) {
         if (!unknown) removeCgroup(stored?.cgroup);
         return { stopped: !unknown, rootPid, pgid, remaining: [], unknown };
       }
