@@ -1,6 +1,6 @@
 # M5-A 验证记录
 
-日期：2026-11-05。基线：`main@160a22db322571f3a12fcc76748f86260fd34c04`；返修实现 head：
+日期：2026-11-06。基线：`main@160a22db322571f3a12fcc76748f86260fd34c04`；返修实现 head：
 `03a17172465240435160a300b2befaac6adc799c`。
 被测环境与设计见 [`M5-INSTANCES.md`](M5-INSTANCES.md)；本文只记实际执行过的命令、结果与未验证项。
 所有实例均使用隔离 `DSH_HOME=/root/.dsh-m5`、独立 profile/state/worktree/端口和私有测试仓库；
@@ -47,7 +47,7 @@ upstream index  8d80bb7f…3c6252
 - **bridge 0022**：既有 workspace Ticket 后续挂上 GitHub input Trigger 时，从该 Trigger 取 number/url/isPr/text 发 `ticket.imported`；确定性键 `ticket-imported:<ticketId>:github:<number>`，纯 GitHub Ticket 保持旧键；不再用 `follows` 的 PR 编号冒充 Issue 身份。
 - **dispatcher 认领**：import 事件命中既有 task 时，仅当该会话消息精确包含同 repo/number URL 才更新 source/external_key；不新建会话/任务。
 - **live 结果**：conversation `ecca4f49…` 从 `web/null` 变为 `github/github:4`；task `775f5577…`、upstream ticket、assignment 与 PR #5（单文件/单 commit）均未变；正确 import 事件键计数 1；dispatcher 回放 24/25 后只认领一次。
-- **制品**：runtime build `/root/src/upstream/m5a-batch-build`，`lib/index.js` sha256 `d7743cec…a07b`；patch 0022 与 dispatcher/supervisor dist 见 `artifacts.txt`；profile 模板指 final-build，`m5x-6` 已加载验证。
+- **制品**：runtime build `/root/src/upstream/m5a-batch-build`，`lib/index.js` sha256 `d7743cec…a07b`；patch 0022 与 dispatcher/supervisor dist 见 `artifacts.txt`；profile 模板指 `m5a-batch-build`，`m5x-6` 已加载验证。
 - **并发序列化**：dispatcher ignore 与 API message acceptance 共用 conversation 行锁；API 先提交则 ignore 看到新消息/投递后跳过，ignore 先提交则 API 重读 not_accepted 并拒绝。双连接真实 PG 回归覆盖两种顺序、alias→target 锁序与批量集合，34/34。证据 `evidence/m5/admission-serialization.log`、`ignore-delivery-order.log`、`batched-ignore.log`、`notice-admission.log`。
 - **ignore 终态**：已验证；合成 `notice` 不作为准入输入，不会阻塞已忽略批次的收敛。
 
@@ -102,13 +102,13 @@ upstream index  8d80bb7f…3c6252
 | `corepack pnpm@11.7.0 --config.engine-strict=false lint` | 通过（0 error） |
 | `prettier --check "**/*.{ts,tsx,mjs,cjs,json,yml,yaml,css,html}"` | 通过 |
 | `corepack pnpm@11.7.0 -r --if-present typecheck` | 通过（8 个项目） |
-| `corepack pnpm@11.7.0 -r --if-present test` | 通过：contracts 13、runtime-client 13、api 20、dispatcher 3、supervisor 19 |
+| `corepack pnpm@11.7.0 -r --if-present test` | 通过：contracts 13、runtime-client 13、api 20、dispatcher 3、supervisor 20 |
 | `@moyu/db test:integration` | 通过：9 文件 / 35 测试（含 0010/0011/0012 回滚、旧版本迁移、完整性） |
 | `@moyu/api test:integration` | 通过：11 文件 / 66 测试（含 M4 暂停继续、分页、双入口、仓库生命周期、任务唤醒） |
-| `@moyu/dispatcher test:integration` | 通过：3 文件 / 30 测试（含多仓库隔离、等待/审阅释放名额） |
+| `@moyu/dispatcher test:integration` | 通过：3 文件 / 40 测试（operations 34；含多仓库隔离、等待/审阅释放名额、准入/ignore 并发与 notice） |
 | `corepack pnpm@11.7.0 -r --if-present build` | 通过（API/dispatcher/supervisor/web） |
 
-完整 CI 还需在 PR head 上跑两次必需检查（`check`、`integration (real PostgreSQL)`）；本文件记录的是本地等价命令结果。
+PR head 上必需检查 `check`、`integration (real PostgreSQL)` 已由 CI 独立执行；本文件记录本地等价命令结果，最终 head/CI 见 PR。
 
 ## 3. 验收矩阵与结果
 
@@ -203,12 +203,11 @@ bash scripts/m5/online-import-acceptance.sh
 4. **生产 supervisor 身份未落地**：测试 supervisor 仍为 root；生产需专用非 root/systemd、目录和凭据
    权限见设计文档，本单没有做正式部署或 Nginx 变更。
 5. **真实设备 Passkey 未重验**：截图使用隔离测试会话，未绕过产品 Passkey；真实设备验收需所有者参与。
-6. **M4 任务停止的 live 路径未重跑**：没有在 live 栈制造一个运行中任务并等待 GitHub polling 空闲后
-   停止；既有 API/dispatcher 集成测试覆盖暂停/继续与 `blocked` 语义，M5 实例停止成功路径已单独验证。
-   本轮不把集成测试等同于 live 任务停止。
+6. **M4 任务停止的 live 路径已补证**：beta 任务 `26b59a78` 真实 running→stop→stopped→resume→completed，
+   仅生成 PR #4；证据 `evidence/m5/m4-pause-resume.log`。
 7. **event contract**：link/import 与 ignore 终态均已修复并在 live 验证；未知/运行任务仍保守阻止休眠。
 8. **未知/复用身份**：root 已死且旧 session 中无匹配成员时会保持 `stopping/stop_failed` 占名额，不做 PGID 盲杀；需要人工确认后清理，这是有意的保守行为。
-8. **截图对比**：before 为 `main@160a22d` 的 M4-UX Web 构建，after 为当前构建；同一数据库、同一
+9. **截图对比**：before 为 `main@160a22d` 的 M4-UX Web 构建，after 为当前构建；同一数据库、同一
    仓库选择、视口和主题。截图由真实 Chromium 生成，但本执行模型不能直接读图，因而额外用 DOM 断言
    记录关键文案与动作；仍建议人工目视复核。
 
