@@ -1013,6 +1013,60 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
     expect(await readTask(fixture.taskId)).toMatchObject({ state: 'not_accepted' });
   }, 30_000);
 
+  it('does not let an import notice block the ignored admission', async () => {
+    const fixture = await seed({ state: 'pending_admission' });
+    const url = `https://github.com/${fixture.repository.fullName}/issues/42`;
+    const user = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body, source)
+       values ($1, 'inbound', 'user', $2, 'web') returning id`,
+      [fixture.conversationId, `target ${url}`],
+    );
+    fakeBridge.events = [
+      {
+        seq: 1,
+        id: `ticket-imported:${fixture.ticketId}:duplicate`,
+        type: 'ticket.imported',
+        at: '2026-11-04T00:00:00.000Z',
+        data: {
+          ticketId: `second-ticket-${fixture.ticketId}`,
+          source: 'github',
+          externalId: 'github:42',
+          number: 42,
+          isPr: false,
+          url,
+          title: 'second ticket',
+          state: 'running',
+          triggerId: 'github-comment:42:1',
+          text: 'second entry',
+          base: { branch: 'main', commit: 'b'.repeat(40) },
+          at: '2026-11-04T00:00:00.000Z',
+        },
+      },
+      {
+        seq: 2,
+        id: `decision-ignored:${fixture.ticketId}:notice`,
+        type: 'decision.ignored',
+        at: '2026-11-04T00:00:00.000Z',
+        data: {
+          decisionId: `decision-${fixture.ticketId}`,
+          conversationId: fixture.conversationId,
+          messageId: user.rows[0]!.id,
+          messageIds: [user.rows[0]!.id],
+          at: '2026-11-04T00:00:00.000Z',
+        },
+      },
+    ];
+    expect(
+      await syncOnce(testDatabase.pool, fixture.repository, client, createConsoleLogger('test')),
+    ).toBe(true);
+    expect(await readTask(fixture.taskId)).toMatchObject({ state: 'not_accepted' });
+    const notices = await testDatabase.pool.query(
+      `select count(*)::int as count from messages where conversation_id = $1 and kind = 'notice'`,
+      [fixture.conversationId],
+    );
+    expect(notices.rows[0]?.count).toBe(1);
+  }, 30_000);
+
   it('closes a batched ignore decision covering every pending message', async () => {
     const fixture = await seed({ state: 'pending_admission' });
     const first = await testDatabase.pool.query<{ id: string }>(

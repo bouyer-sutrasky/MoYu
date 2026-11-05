@@ -590,6 +590,7 @@ async function applyIgnoredDecision(
         and not exists (
           select 1 from messages m
            where m.conversation_id = t.conversation_id
+             and m.kind = 'user'
              and not (m.id = any($3::uuid[]))
              and m.created_at > (
                select max(decided.created_at) from messages decided
@@ -600,6 +601,7 @@ async function applyIgnoredDecision(
           select 1 from deliveries d
             join messages m on m.id = d.message_id
            where m.conversation_id = t.conversation_id
+             and m.kind = 'user'
              and not (m.id = any($3::uuid[]))
              and d.state in ('pending', 'delivering')
         )`,
