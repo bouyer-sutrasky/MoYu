@@ -205,7 +205,7 @@ bash scripts/m5/online-import-acceptance.sh
 6. **M4 任务停止的 live 路径未重跑**：没有在 live 栈制造一个运行中任务并等待 GitHub polling 空闲后
    停止；既有 API/dispatcher 集成测试覆盖暂停/继续与 `blocked` 语义，M5 实例停止成功路径已单独验证。
    本轮不把集成测试等同于 live 任务停止。
-7. **pending_admission ignore + 反向导入事件（明确处置）**：ignore 无终态事件使 task 永久 pending_admission；反向场景在既有 workspace ticket 上挂 GitHub 线程时 bridge 不发 `ticket.imported`，平台无法认领 Web 会话/记录 `external_key=github:4`。两者都是 M4 runtime/平台事件契约缺陷，非 M5 实例生命周期；本轮只诊断、绕行和记录，未改 runtime 契约。需要后续补事件投影/认领与回归，不能以 runtime 线程关联冒充平台导入通过。
+7. **event contract**：link/import 与 ignore 终态均已修复并在 live 验证；未知/运行任务仍保守阻止休眠。
 8. **未知/复用身份**：root 已死且旧 session 中无匹配成员时会保持 `stopping/stop_failed` 占名额，不做 PGID 盲杀；需要人工确认后清理，这是有意的保守行为。
 8. **截图对比**：before 为 `main@160a22d` 的 M4-UX Web 构建，after 为当前构建；同一数据库、同一
    仓库选择、视口和主题。截图由真实 Chromium 生成，但本执行模型不能直接读图，因而额外用 DOM 断言
