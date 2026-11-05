@@ -564,6 +564,25 @@ async function applyImportedEvent(
 
   const existingTask = await taskByTicket(client, ticketId, repository.id);
   if (existingTask) {
+    // A Web-first requirement already has a task before the GitHub thread is
+    // linked. Claim that exact conversation only when one of its messages names
+    // this repository and number; never guess from recent activity.
+    if (number != null) {
+      const bodies = await client.query<{ body: string }>(
+        `select body from messages where conversation_id = $1`,
+        [existingTask.conversationId],
+      );
+      if (
+        bodies.rows.some((row) => githubRequirementUrl(row.body, repository.fullName, isPr, number))
+      ) {
+        await client.query(
+          `update conversations
+              set source = 'github', external_key = $2, external_url = $3, updated_at = now()
+            where id = $1 and source = 'web' and external_key is null`,
+          [existingTask.conversationId, externalId, url ?? null],
+        );
+      }
+    }
     const updated = await client.query(
       `update task_links
           set state = $2,

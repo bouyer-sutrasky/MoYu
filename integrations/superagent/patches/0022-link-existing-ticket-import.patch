@@ -1,0 +1,72 @@
+diff --git a/src/app/bridge.ts b/src/app/bridge.ts
+index 55d9b1e..30e9932 100644
+--- a/src/app/bridge.ts
++++ b/src/app/bridge.ts
+@@ -327,10 +327,6 @@ function githubNumber(ticket: Ticket, origin: Trigger | undefined): number | und
+     const number = Number(channel.address.number)
+     if (Number.isInteger(number) && number > 0) return number
+   }
+-  for (const follow of ticket.follows ?? []) {
+-    const match = /^github:(\d+)$/.exec(follow.thread)
+-    if (match) return Number(match[1])
+-  }
+   for (const ref of origin?.threads ?? []) {
+     if (ref.source !== 'github') continue
+     const match = /^(\d+)$/.exec(ref.id)
+@@ -436,10 +432,16 @@ export class Bridge {
+       const workspace = origin?.source === 'workspace' || ticket.channels.some(channel => channel.source === 'workspace')
+       // A GitHub-origin ticket is imported into the platform's Work list; it is not a workspace ticket and gets no link event.
+       const github = !workspace && (origin?.source === 'github' || ticket.channels.some(channel => channel.source === 'github'))
++      const linkedGithub = ticket.channels.some(channel => channel.source === 'github')
++        || ticket.inputs.some(input => input.kind === 'trigger'
++          && this.host.store.triggers.get(input.triggerId)?.source === 'github')
+       if (!workspace && !github) continue
+       const frozen = ticket as FrozenTicket
+       const state = projectTicketState(ticket)
+-      if (github) this.importTicket(ticket, origin)
++      // A workspace Ticket can later gain a GitHub Thread. Emit the same one-time
++      // import identity so the platform can claim the existing Web conversation;
++      // the deterministic id makes the ticker and restarts idempotent.
++      if (github || linkedGithub) this.importTicket(ticket, origin)
+       if (workspace && !this.log.has(`ticket-linked:${ticket.id}`)) {
+         const meta = origin?.meta ?? {}
+         this.log.append(`ticket-linked:${ticket.id}`, 'ticket.linked', ticket.createdAt, {
+@@ -501,14 +503,21 @@ export class Bridge {
+    * the deterministic id keeps a restart or a repeated projection tick from importing it twice.
+    */
+   private importTicket(ticket: Ticket, origin: Trigger | undefined): void {
+-    if (this.log.has(`ticket-imported:${ticket.id}`)) return
+-    const number = githubNumber(ticket, origin)
++    const githubInput = ticket.inputs
++      .filter(input => input.kind === 'trigger')
++      .map(input => this.host.store.triggers.get(input.triggerId))
++      .find(trigger => trigger?.source === 'github')
++    const identity = githubInput?.source === 'github' ? githubInput : origin
++    const number = githubNumber(ticket, identity)
+     // Without a GitHub number there is no external identity to import under; the Ticket stays a workspace-style record.
+     if (number === undefined) return
+-    const url = typeof origin?.url === 'string' && origin.url
+-      ? origin.url
+-      : `https://github.com/${ticket.base?.repository ?? (this.host.configured() ? this.host.deployment.repository : '')}/${isPr(ticket, origin) ? 'pull' : 'issues'}/${number}`
+-    this.log.append(`ticket-imported:${ticket.id}`, 'ticket.imported', ticket.createdAt, {
++    const linked = identity !== origin && githubInput?.source === 'github'
++    const key = linked ? `ticket-imported:${ticket.id}:github:${number}` : `ticket-imported:${ticket.id}`
++    if (this.log.has(key)) return
++    const url = typeof identity?.url === 'string' && identity.url
++      ? identity.url
++      : `https://github.com/${ticket.base?.repository ?? (this.host.configured() ? this.host.deployment.repository : '')}/${isPr(ticket, identity) ? 'pull' : 'issues'}/${number}`
++    this.log.append(key, 'ticket.imported', ticket.createdAt, {
+       ticketId: ticket.id,
+       source: 'github',
+       externalId: `github:${number}`,
+@@ -517,8 +526,8 @@ export class Bridge {
+       url,
+       title: ticket.title,
+       state: projectTicketState(ticket),
+-      triggerId: ticket.origin.triggerId,
+-      text: origin?.text ?? '',
++      triggerId: identity?.id ?? ticket.origin.triggerId,
++      text: identity?.text ?? '',
+       base: { branch: ticket.base?.branch ?? '', commit: ticket.base?.commit ?? '', model: modelLabel(ticket.model) },
+       at: ticket.createdAt,
+     })

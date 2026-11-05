@@ -889,6 +889,59 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
     expect(state.rows[0]?.state).toBe('awaiting_review');
   }, 30_000);
 
+  it('claims the Web conversation for an import event on an existing workspace task', async () => {
+    const fixture = await seed({ state: 'running', source: 'web' });
+    const url = `https://github.com/${fixture.repository.fullName}/issues/42`;
+    await testDatabase.pool.query(
+      `insert into messages (conversation_id, direction, kind, body) values ($1, 'inbound', 'user', $2)`,
+      [fixture.conversationId, `Web-first target ${url}`],
+    );
+    fakeBridge.events = [
+      {
+        seq: 1,
+        id: `ticket-imported:${fixture.ticketId}:github:42`,
+        type: 'ticket.imported',
+        at: '2026-11-04T00:00:00.000Z',
+        data: {
+          ticketId: fixture.ticketId,
+          source: 'github',
+          externalId: 'github:42',
+          number: 42,
+          isPr: false,
+          url,
+          title: 'Web-first target',
+          state: 'running',
+          triggerId: 'github-comment:42:1',
+          text: 'Web-first target',
+          base: {
+            branch: 'main',
+            commit: 'b'.repeat(40),
+            model: 'commandcode/deepseek/deepseek-v4.1-flash',
+          },
+          at: '2026-11-04T00:00:00.000Z',
+        },
+      },
+    ];
+    const logger = createConsoleLogger('test');
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+    const conversation = await testDatabase.pool.query(
+      `select source, external_key as "externalKey", external_url as "externalUrl"
+         from conversations where id = $1`,
+      [fixture.conversationId],
+    );
+    expect(conversation.rows[0]).toMatchObject({
+      source: 'github',
+      externalKey: 'github:42',
+      externalUrl: url,
+    });
+    const tasks = await testDatabase.pool.query(
+      `select upstream_ticket_id as "ticketId", state from task_links where repository_id = $1`,
+      [fixture.repository.id],
+    );
+    expect(tasks.rows).toHaveLength(1);
+    expect(tasks.rows[0]).toMatchObject({ ticketId: fixture.ticketId, state: 'running' });
+  }, 30_000);
+
   it('keeps one task when the same requirement arrives with a different GitHub ticket', async () => {
     const fixture = await seed({
       state: 'running',
