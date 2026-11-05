@@ -1013,6 +1013,44 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
     expect(await readTask(fixture.taskId)).toMatchObject({ state: 'not_accepted' });
   }, 30_000);
 
+  it('closes its own admission while that message delivery is still delivering', async () => {
+    const fixture = await seed({ state: 'pending_admission' });
+    const message = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body) values ($1, 'inbound', 'user', 'late ack probe') returning id`,
+      [fixture.conversationId],
+    );
+    await testDatabase.pool.query(
+      `insert into deliveries (message_id, state) values ($1, 'delivering')`,
+      [message.rows[0]!.id],
+    );
+    fakeBridge.events = [
+      {
+        seq: 1,
+        id: `decision-ignored:${fixture.ticketId}:late-ack`,
+        type: 'decision.ignored',
+        at: '2026-11-04T00:00:00.000Z',
+        data: {
+          decisionId: `decision-${fixture.ticketId}`,
+          conversationId: fixture.conversationId,
+          messageId: message.rows[0]!.id,
+          at: '2026-11-04T00:00:00.000Z',
+        },
+      },
+    ];
+    expect(
+      await syncOnce(testDatabase.pool, fixture.repository, client, createConsoleLogger('test')),
+    ).toBe(true);
+    expect(await readTask(fixture.taskId)).toMatchObject({ state: 'not_accepted' });
+    await testDatabase.pool.query(`update deliveries set state='delivered' where message_id=$1`, [
+      message.rows[0]!.id,
+    ]);
+    const version = (await readTask(fixture.taskId)).version;
+    expect(
+      await syncOnce(testDatabase.pool, fixture.repository, client, createConsoleLogger('test')),
+    ).toBe(false);
+    expect((await readTask(fixture.taskId)).version).toBe(version);
+  }, 30_000);
+
   it('serializes an API message acceptance before an ignored decision', async () => {
     const fixture = await seed({ state: 'pending_admission' });
     const old = await testDatabase.pool.query<{ id: string }>(

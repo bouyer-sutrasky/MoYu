@@ -591,6 +591,7 @@ async function applyIgnoredDecision(
           select 1 from deliveries d
             join messages m on m.id = d.message_id
            where m.conversation_id = t.conversation_id
+             and m.id <> $3
              and d.state in ('pending', 'delivering')
         )`,
     [task.id, repository.id, messageId],
