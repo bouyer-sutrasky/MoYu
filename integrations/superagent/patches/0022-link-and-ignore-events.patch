@@ -1,5 +1,5 @@
 diff --git a/src/app/bridge.ts b/src/app/bridge.ts
-index 55d9b1e..0d8f9fa 100644
+index 55d9b1e..4a0aece 100644
 --- a/src/app/bridge.ts
 +++ b/src/app/bridge.ts
 @@ -176,7 +176,7 @@ export class EventLog {
@@ -22,25 +22,35 @@ index 55d9b1e..0d8f9fa 100644
    for (const ref of origin?.threads ?? []) {
      if (ref.source !== 'github') continue
      const match = /^(\d+)$/.exec(ref.id)
-@@ -431,15 +427,37 @@ export class Bridge {
+@@ -431,15 +427,47 @@ export class Bridge {
    /** Projects every stored Ticket to events; the ticker runs it once a second, and tests call it directly. */
    project(): void {
      const repository = this.host.configured() ? this.host.deployment.repository : ''
 +    for (const decision of this.host.store.decisions.list()) {
 +      if (decision.kind !== 'ignore') continue
-+      const triggers = decision.triggerIds.map(id => this.host.store.triggers.get(id))
-+      const trigger = triggers.find(item => item?.channel?.source === 'workspace')
-+      if (!trigger?.channel || trigger.channel.source !== 'workspace') continue
-+      const conversationId = trigger.channel.address.conversationId
-+      this.log.append(`decision-ignored:${decision.id}`, 'decision.ignored', decision.at, {
-+        decisionId: decision.id,
-+        triggerIds: decision.triggerIds,
-+        threadKey: decision.threadKey,
-+        conversationId,
-+        messageId: trigger.channel.address.messageId ?? null,
-+        at: decision.at,
-+        reason: decision.reason,
-+      })
++      const byConversation = new Map<string, string[]>()
++      for (const triggerId of decision.triggerIds) {
++        const trigger = this.host.store.triggers.get(triggerId)
++        if (!trigger?.channel || trigger.channel.source !== 'workspace') continue
++        const conversationId = trigger.channel.address.conversationId
++        const messageId = trigger.channel.address.messageId
++        if (!conversationId || !messageId) continue
++        const messages = byConversation.get(conversationId) ?? []
++        if (!messages.includes(messageId)) messages.push(messageId)
++        byConversation.set(conversationId, messages)
++      }
++      for (const [conversationId, messageIds] of byConversation) {
++        this.log.append(`decision-ignored:${decision.id}:${conversationId}`, 'decision.ignored', decision.at, {
++          decisionId: decision.id,
++          triggerIds: decision.triggerIds,
++          threadKey: decision.threadKey,
++          conversationId,
++          messageId: messageIds[0] ?? null,
++          messageIds,
++          at: decision.at,
++          reason: decision.reason,
++        })
++      }
 +    }
      for (const ticket of this.host.store.tickets.list()) {
        const origin = this.host.store.triggers.get(ticket.origin.triggerId)
@@ -61,7 +71,7 @@ index 55d9b1e..0d8f9fa 100644
        if (workspace && !this.log.has(`ticket-linked:${ticket.id}`)) {
          const meta = origin?.meta ?? {}
          this.log.append(`ticket-linked:${ticket.id}`, 'ticket.linked', ticket.createdAt, {
-@@ -501,24 +519,31 @@ export class Bridge {
+@@ -501,24 +529,31 @@ export class Bridge {
     * the deterministic id keeps a restart or a repeated projection tick from importing it twice.
     */
    private importTicket(ticket: Ticket, origin: Trigger | undefined): void {

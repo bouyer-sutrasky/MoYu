@@ -1013,6 +1013,91 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
     expect(await readTask(fixture.taskId)).toMatchObject({ state: 'not_accepted' });
   }, 30_000);
 
+  it('closes a batched ignore decision covering every pending message', async () => {
+    const fixture = await seed({ state: 'pending_admission' });
+    const first = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body, created_at)
+       values ($1, 'inbound', 'user', 'batch one', now() - interval '1 minute') returning id`,
+      [fixture.conversationId],
+    );
+    const second = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body) values ($1, 'inbound', 'user', 'batch two') returning id`,
+      [fixture.conversationId],
+    );
+    fakeBridge.events = [
+      {
+        seq: 1,
+        id: `decision-ignored:${fixture.ticketId}:batch`,
+        type: 'decision.ignored',
+        at: '2026-11-04T00:00:00.000Z',
+        data: {
+          decisionId: `decision-${fixture.ticketId}`,
+          conversationId: fixture.conversationId,
+          messageId: first.rows[0]!.id,
+          messageIds: [first.rows[0]!.id, second.rows[0]!.id],
+          triggerIds: [`workspace:${first.rows[0]!.id}`, `workspace:${second.rows[0]!.id}`],
+          at: '2026-11-04T00:00:00.000Z',
+        },
+      },
+    ];
+    expect(
+      await syncOnce(testDatabase.pool, fixture.repository, client, createConsoleLogger('test')),
+    ).toBe(true);
+    expect(await readTask(fixture.taskId)).toMatchObject({ state: 'not_accepted' });
+  }, 30_000);
+
+  it('keeps a batch pending when an uncovered newer input exists', async () => {
+    const fixture = await seed({ state: 'pending_admission' });
+    const first = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body, created_at)
+       values ($1, 'inbound', 'user', 'batch one', now() - interval '1 minute') returning id`,
+      [fixture.conversationId],
+    );
+    const second = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body, created_at)
+       values ($1, 'inbound', 'user', 'batch two', now() - interval '30 seconds') returning id`,
+      [fixture.conversationId],
+    );
+    const third = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body) values ($1, 'inbound', 'user', 'new input') returning id`,
+      [fixture.conversationId],
+    );
+    const event = (seq: number, messageIds: string[], id: string): BridgeEvent => ({
+      seq,
+      id,
+      type: 'decision.ignored',
+      at: '2026-11-04T00:00:00.000Z',
+      data: {
+        decisionId: `decision-${fixture.ticketId}`,
+        conversationId: fixture.conversationId,
+        messageId: messageIds[0]!,
+        messageIds,
+        triggerIds: messageIds.map((messageId) => `workspace:${messageId}`),
+        at: '2026-11-04T00:00:00.000Z',
+      },
+    });
+    fakeBridge.events = [
+      event(
+        1,
+        [first.rows[0]!.id, second.rows[0]!.id],
+        `decision-ignored:${fixture.ticketId}:batch-1`,
+      ),
+    ];
+    expect(
+      await syncOnce(testDatabase.pool, fixture.repository, client, createConsoleLogger('test')),
+    ).toBe(true);
+    expect(await readTask(fixture.taskId)).toMatchObject({ state: 'pending_admission' });
+    fakeBridge.events = [
+      event(
+        2,
+        [first.rows[0]!.id, second.rows[0]!.id, third.rows[0]!.id],
+        `decision-ignored:${fixture.ticketId}:batch-2`,
+      ),
+    ];
+    await syncOnce(testDatabase.pool, fixture.repository, client, createConsoleLogger('test'));
+    expect(await readTask(fixture.taskId)).toMatchObject({ state: 'not_accepted' });
+  }, 30_000);
+
   it('closes its own admission while that message delivery is still delivering', async () => {
     const fixture = await seed({ state: 'pending_admission' });
     const message = await testDatabase.pool.query<{ id: string }>(

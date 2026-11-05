@@ -559,7 +559,14 @@ async function applyIgnoredDecision(
   const conversationId = asString(data.conversationId);
   const decisionId = asString(data.decisionId);
   const messageId = asString(data.messageId);
-  if (!conversationId || !decisionId || !messageId) return;
+  const messageIds = Array.isArray(data.messageIds)
+    ? data.messageIds.filter(
+        (value): value is string => typeof value === 'string' && value.length > 0,
+      )
+    : messageId
+      ? [messageId]
+      : [];
+  if (!conversationId || !decisionId || messageIds.length === 0) return;
   // Serialize with API message acceptance on the same conversation row. The
   // conditional UPDATE alone is not enough: an API transaction can read the
   // pending task before committing its new message.
@@ -567,12 +574,12 @@ async function applyIgnoredDecision(
   if (!targetId) return;
   const task = await taskByConversation(client, targetId, repository.id);
   if (!task || task.state !== 'pending_admission') return;
-  const message = await client.query<{ createdAt: Date }>(
-    `select created_at as "createdAt" from messages where id = $1 and conversation_id = $2`,
-    [messageId, targetId],
+  const members = await client.query<{ count: number }>(
+    `select count(*)::int as count from messages
+      where conversation_id = $1 and id = any($2::uuid[])`,
+    [targetId, messageIds],
   );
-  const decided = message.rows[0];
-  if (!decided) return;
+  if (members.rows[0]?.count !== messageIds.length) return;
   // Close only the admission generation the decision names. A later message or
   // an accepted-but-not-yet-delivered message must keep the task open, or the
   // ignore would strand that delivery forever.
@@ -582,19 +589,21 @@ async function applyIgnoredDecision(
       where t.id = $1 and t.repository_id = $2 and t.state = 'pending_admission'
         and not exists (
           select 1 from messages m
-            join messages decided on decided.id = $3
            where m.conversation_id = t.conversation_id
-             and (m.created_at > decided.created_at
-               or (m.created_at = decided.created_at and m.id > decided.id))
+             and not (m.id = any($3::uuid[]))
+             and m.created_at > (
+               select max(decided.created_at) from messages decided
+                where decided.id = any($3::uuid[])
+             )
         )
         and not exists (
           select 1 from deliveries d
             join messages m on m.id = d.message_id
            where m.conversation_id = t.conversation_id
-             and m.id <> $3
+             and not (m.id = any($3::uuid[]))
              and d.state in ('pending', 'delivering')
         )`,
-    [task.id, repository.id, messageId],
+    [task.id, repository.id, messageIds],
   );
   if ((updated.rowCount ?? 0) === 0) return;
   const next = await taskByConversation(client, targetId, repository.id);
