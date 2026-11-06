@@ -225,3 +225,14 @@ node 进程，主 3082 服务随之中断。未修改生产数据、Nginx、3082
 - 测试 UI：隔离 API 已停止，`moyu_m5b_ui` 已删除；截图与 JSON 保留在
   `docs/evidence/m5b/`。
 - 测试 cgroup：`/sys/fs/cgroup/moyu-m5b-*` 已无残留；未改动线上/共享 cgroup。
+
+
+### supervisor cgroup 停止证明切片（2026-11-06）
+
+- 新增 `apps/supervisor/src/stop-proof.ts`：持久绑定 runtimeId/generation/cgroup inode/
+  Ticket/Assignment/lease/token，`bindStopProof` 在停止前写 `unproven`；`verifyStopProof`
+  仅在路径 inode 未重用、绑定字段齐全且 `cgroup.events` 为 `populated 0` 时写 `proven`。
+- 路径缺失、generation 不符、inode 重用、events 不可读、仍有后代均拒绝出证。
+- 真实 cgroup 测试：sleep 移入专属 cgroup 时 refused(`populated`)，SIGKILL/空后 proven；
+  覆盖 missing、generation mismatch。supervisor 35 通过。
+- 尚未接入 dispatcher 的 launch/delivery 消费和旧入口封存；这是下一步集成缺口。
