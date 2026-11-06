@@ -603,6 +603,78 @@ describe('dispatcher delivery and Bridge event catch-up on real PostgreSQL', () 
     expect(delivery.rows[0]?.last_error).toContain('runtime_admission_unsupported');
   }, 30_000);
 
+  it.fails(
+    'binds the complete execution identity before a cold GitHub admission starts',
+    async () => {
+      const conversation = await testDatabase.pool.query<{ id: string }>(
+        `insert into conversations (owner_id, repository_id, mode, execution_mode, base_branch, title)
+       values ($1, $2, 'work', 'execute', 'main', 'cold admission red') returning id`,
+        [ownerId, repository.id],
+      );
+      const conversationId = conversation.rows[0]!.id;
+      const message = await testDatabase.pool.query<{ id: string }>(
+        `insert into messages (conversation_id, direction, kind, client_message_id, body)
+       values ($1, 'inbound', 'user', 'cold-red', 'cold start') returning id`,
+        [conversationId],
+      );
+      const messageId = message.rows[0]!.id;
+      await testDatabase.pool.query(
+        `insert into deliveries (message_id, upstream_trigger_id) values ($1, $2)`,
+        [messageId, `github:${messageId}`],
+      );
+      await testDatabase.pool.query(
+        `insert into task_links (conversation_id, repository_id, state, base_branch, upstream_ticket_id)
+       values ($1, $2, 'pending_admission', 'main', 'ticket-cold-red')`,
+        [conversationId, repository.id],
+      );
+      await testDatabase.pool.query(
+        `insert into repository_instances (repository_id, state, desired_state)
+       values ($1, 'sleeping', 'online')
+       on conflict (repository_id) do update set state = 'sleeping', desired_state = 'online'`,
+        [repository.id],
+      );
+      const admitted = await admitImportedOnce(
+        testDatabase.pool,
+        config,
+        repository,
+        client,
+        true,
+        createConsoleLogger('test'),
+      );
+      const ownership = await testDatabase.pool.query<{
+        ownership: Record<string, unknown> | null;
+      }>(`select ownership from repository_instances where repository_id = $1`, [repository.id]);
+      // This is a red fixture: the current path never binds, so release anything it did start
+      // before asserting, keeping later cases isolated.
+      await testDatabase.pool.query(
+        `update task_links set state = 'not_accepted' where conversation_id = $1`,
+        [conversationId],
+      );
+      await testDatabase.pool.query(`delete from runtime_leases where repository_id = $1`, [
+        repository.id,
+      ]);
+      await testDatabase.pool.query(`delete from repository_instances where repository_id = $1`, [
+        repository.id,
+      ]);
+      // eslint-disable-next-line no-console
+      console.info(
+        '[cold-admission-red] ownership=',
+        JSON.stringify(ownership.rows[0]?.ownership ?? null),
+      );
+      expect(admitted).toBe(true);
+      const execution = ownership.rows[0]?.ownership?.execution;
+      expect(execution).toMatchObject({
+        ticketId: expect.any(String),
+        assignmentId: expect.any(String),
+        leaseId: expect.any(String),
+        fencingToken: expect.any(String),
+      });
+      expect(ownership.rows[0]?.ownership?.execution).toMatchObject({
+        ticketId: expect.any(String),
+      });
+    },
+  );
+
   it('does not admit a pending ticket when the supervisor stop proof is unproven', async () => {
     fakeBridge.triggerCalls.length = 0;
     fakeBridge.admitCalls.length = 0;
