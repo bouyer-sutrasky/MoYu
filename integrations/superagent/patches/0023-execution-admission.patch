@@ -21,7 +21,7 @@ index 12b62a4..2600465 100644
  | `tests/bridge-branches.spec.ts` | The read-only branch list: the sorted 200 shape and `branches` capability, one page versus pagination, the ten-page `hasMore` cap, repository-scoped `commands.api` paths, a CLI failure as 503, malformed data as 502, and bearer auth |
  | `tests/process-tree.spec.ts` | The harness process tree used as stop evidence: a live child PID and its command, and its disappearance after exit |
 diff --git a/src/app/bridge.ts b/src/app/bridge.ts
-index 0b600f9..551bfec 100644
+index 0b600f9..09e630d 100644
 --- a/src/app/bridge.ts
 +++ b/src/app/bridge.ts
 @@ -52,7 +52,7 @@ const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost'])
@@ -60,7 +60,7 @@ index 0b600f9..551bfec 100644
 -const RetrySchema = z.object({ operationId: OperationIdSchema }).strict()
 +const StartSchema = z.object({ operationId: OperationIdSchema, planRevision: z.number().int(), admission: AdmissionSchema.optional() }).strict()
 +const RetrySchema = z.object({ operationId: OperationIdSchema, admission: AdmissionSchema.optional() }).strict()
-+const AdmitSchema = z.object({ admission: AdmissionSchema }).strict()
++const AdmitSchema = z.object({ admission: AdmissionSchema, assignmentId: z.string().trim().min(1).max(200).optional() }).strict()
  const TriggerRequestSchema = z.object({
    triggerId: z.string().trim().min(1).max(200),
    conversationId: z.string().trim().min(1).max(200),
@@ -139,7 +139,7 @@ index 0b600f9..551bfec 100644
        return this.accepted(res, this.operations.get(body.operationId)!)
      } catch (error) {
        this.operations.update(body.operationId, { state: 'failed', error: errorText(error) }, new Date().toISOString())
-@@ -804,16 +817,32 @@ export class Bridge {
+@@ -804,16 +817,34 @@ export class Bridge {
      }
    }
  
@@ -150,7 +150,9 @@ index 0b600f9..551bfec 100644
 +    if (!ticket) return json(res, 404, { error: 'Ticket not found' })
 +    if (ticket.ended) return json(res, 409, { error: 'ticket_ended', code: 'ticketEnded' })
 +    try {
-+      this.host.engine.admitTicket(ticketId, body.admission)
++      body.assignmentId
++        ? this.host.engine.admitTicket(ticketId, body.admission, body.assignmentId)
++        : this.host.engine.admitTicket(ticketId, body.admission)
 +      return json(res, 200, { ticketId, admitted: true })
 +    } catch (error) {
 +      return this.refuse(res, error)
@@ -173,7 +175,7 @@ index 0b600f9..551bfec 100644
        return this.accepted(res, this.operations.get(body.operationId)!)
      } catch (error) {
        this.operations.update(body.operationId, { state: 'failed', error: errorText(error) }, new Date().toISOString())
-@@ -936,6 +965,9 @@ export class Bridge {
+@@ -936,6 +967,9 @@ export class Bridge {
  
    private async triggers(req: IncomingMessage, res: ServerResponse): Promise<void> {
      const request = TriggerRequestSchema.parse(await readJson(req))
@@ -183,7 +185,7 @@ index 0b600f9..551bfec 100644
      if (!this.host.configured()) return json(res, 503, { error: 'The runtime is not ready' })
      const deployment = this.host.deployment
      if (request.executionSpec.repository !== deployment.repository) {
-@@ -1029,6 +1061,7 @@ export class Bridge {
+@@ -1029,6 +1063,7 @@ export class Bridge {
        mode: ticket.mode ?? 'execute',
        planRevision: ticket.planRevision ?? null,
        paused: ticket.paused ?? null,
@@ -250,7 +252,7 @@ index 006dceb..ade914e 100644
    'userError.notDiscussing': ['只有讨论态的工单可以开始执行；这个工单已经是执行态。', USER_ERRORS.notDiscussing[1]],
    'userError.ticketPaused': ['工单已暂停，请先继续再开始执行计划。', USER_ERRORS.ticketPaused[1]],
 diff --git a/src/core/engine.ts b/src/core/engine.ts
-index 420bc21..0b3ed3e 100644
+index 420bc21..1ce5873 100644
 --- a/src/core/engine.ts
 +++ b/src/core/engine.ts
 @@ -163,7 +163,9 @@ export class Engine {
@@ -284,8 +286,8 @@ index 420bc21..0b3ed3e 100644
 +   * Starts a Source-created ticket that was held for platform admission, under the execution lease it names.
 +   * Idempotent once the ticket already has an Assignment.
 +   */
-+  admitTicket(ticketId: string, admission: { leaseId: string; fencingToken: string }): Ticket {
-+    return this.repo.atomic(() => this.tickets.admit(ticketId, admission))
++  admitTicket(ticketId: string, admission: { leaseId: string; fencingToken: string }, assignmentId?: string): Ticket {
++    return this.repo.atomic(() => this.tickets.admit(ticketId, admission, assignmentId))
 +  }
  
    // The Executor
@@ -387,7 +389,7 @@ index b55ccfd..ab90a82 100644
      get(id: string): Decision | undefined
      save(decision: Decision): void
 diff --git a/src/core/tickets.ts b/src/core/tickets.ts
-index 35f257e..842c92b 100644
+index 35f257e..9178401 100644
 --- a/src/core/tickets.ts
 +++ b/src/core/tickets.ts
 @@ -56,16 +56,37 @@ export class Tickets extends EnginePart {
@@ -529,7 +531,15 @@ index 35f257e..842c92b 100644
      this.endAssignment(ticket, running, reason)
      this.requeueUntaken(ticket, running)
      const assignment = this.newAssignment(ticket)
-@@ -511,6 +557,70 @@ export class Tickets extends EnginePart {
+@@ -505,12 +551,80 @@ export class Tickets extends EnginePart {
+     return report?.state !== 'ready' || ticket.undelivered.length > 0 || later
+   }
+   /** Add a pending Assignment; a failed delivery to the one before it no longer concerns the ticket. */
+-  private newAssignment(ticket: Ticket): Assignment {
+-    const assignment: Assignment = { id: key('assignment', ticket.id, String(ticket.assignments.length)), state: 'pending', createdAt: this.now() }
++  private newAssignment(ticket: Ticket, reservedId?: string): Assignment {
++    const assignment: Assignment = { id: reservedId ?? key('assignment', ticket.id, String(ticket.assignments.length)), state: 'pending', createdAt: this.now() }
+     ticket.assignments.push(assignment)
      delete ticket.delivery
      return assignment
    }
@@ -578,12 +588,16 @@ index 35f257e..842c92b 100644
 +   * Start a Source-created ticket that was held for platform admission. Idempotent once an assignment exists.
 +   * @throws UserError when the ticket is unknown, ended, or the admission is missing/stale.
 +   */
-+  admit(ticketId: string, admission: TicketAdmission): Ticket {
++  admit(ticketId: string, admission: TicketAdmission, assignmentId?: string): Ticket {
 +    const ticket = this.require(ticketId)
 +    if (!liveTicket(ticket)) throw new UserError('ticketEnded')
 +    if (ticket.paused) throw new UserError('ticketPaused')
 +    if (!ticket.admissionRequired) return ticket
 +    this.acceptAdmission(ticket, admission)
++    if (assignmentId && this.repo.tickets.list().some(other => other.id !== ticket.id
++      && other.assignments.some(item => item.id === assignmentId))) {
++      throw new UserError('unknownAssignment', { assignmentId })
++    }
 +    const latest = latestAssignment(ticket)
 +    if (latest && latest.state !== 'ended') {
 +      this.endAssignment(ticket, latest, 'replaced')
@@ -591,7 +605,7 @@ index 35f257e..842c92b 100644
 +      this.options.executor.stop(ticket, latest, 'replaced')
 +    }
 +    delete ticket.admissionRequired
-+    const assignment = this.newAssignment(ticket)
++    const assignment = this.newAssignment(ticket, assignmentId)
 +    ticket.updatedAt = this.now()
 +    this.repo.tickets.save(ticket)
 +    this.options.executor.start(ticket, assignment)
@@ -916,10 +930,10 @@ index e7ed695..48f1e6f 100644
    /** Sessions: prompt revisions each Session has worked under, ordered oldest first; the last entry (`.at(-1)`) is its active revision. */
 diff --git a/tests/admission.spec.ts b/tests/admission.spec.ts
 new file mode 100644
-index 0000000..f42c481
+index 0000000..4654d36
 --- /dev/null
 +++ b/tests/admission.spec.ts
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,164 @@
 +import { describe, expect, it, vi } from 'vitest'
 +import { projectTicketState } from '../src/app/bridge.ts'
 +import { Engine, MemoryRepositories, latestAssignment, type Assessor, type Candidate, type Executor, type Outbox, type Policy, type Ticket, type Trigger } from '../src/core/index.ts'
@@ -1050,6 +1064,30 @@ index 0000000..f42c481
 +    expect(h.stops).toHaveLength(1)
 +  })
 +
++  it('uses a reserved assignment id for a GitHub admission exactly once', () => {
++    const h = harness()
++    const ticket = h.accept(githubTrigger())
++    h.engine.admitTicket(ticket.id, admission(7), 'reserved-assignment')
++    const admitted = h.repo.tickets.get(ticket.id)!
++    expect(latestAssignment(admitted)?.id).toBe('reserved-assignment')
++    expect(admitted.assignments).toHaveLength(1)
++    expect(h.starts).toHaveLength(1)
++    h.engine.admitTicket(ticket.id, admission(7), 'reserved-assignment')
++    expect(latestAssignment(h.repo.tickets.get(ticket.id)!)?.id).toBe('reserved-assignment')
++    expect(h.starts).toHaveLength(1)
++  })
++
++  it('rejects a reserved assignment id owned by another ticket before starting', () => {
++    const h = harness()
++    const other = h.accept(wsTrigger('workspace:1', 1))
++    h.engine.assignmentStarted(other.id, latestAssignment(other)!.id)
++    const pending = h.accept(githubTrigger())
++    const before = h.starts.length
++    expect(() => h.engine.admitTicket(pending.id, admission(9), latestAssignment(other)!.id)).toThrow(/Unknown assignment/)
++    expect(h.starts).toHaveLength(before)
++    expect(latestAssignment(h.repo.tickets.get(pending.id)!)?.state).not.toBe('pending')
++  })
++
 +  it('never starts a pending admitted ticket after a pause', () => {
 +    const h = harness()
 +    const pending = h.accept(githubTrigger())
@@ -1061,7 +1099,7 @@ index 0000000..f42c481
 +  })
 +})
 diff --git a/tests/bridge.spec.ts b/tests/bridge.spec.ts
-index 36b75b5..b2b7a84 100644
+index 36b75b5..005f450 100644
 --- a/tests/bridge.spec.ts
 +++ b/tests/bridge.spec.ts
 @@ -44,7 +44,7 @@ interface Harness {
@@ -1108,7 +1146,7 @@ index 36b75b5..b2b7a84 100644
      expect(state(ticket('b', { assignments: [{ id: 'x', state: 'running', createdAt: '' }] }))).toBe('running')
      expect(state(ticket('c', { assignments: [{ id: 'x', state: 'pending', createdAt: '' }] }))).toBe('queued')
      expect(state(ticket('d', { assignments: [{ id: 'x', state: 'running', createdAt: '', report: { state: 'blocked', summary: 'q', at: 't' } }], attention: { id: 'a', question: 'q' } }))).toBe('waiting_input')
-@@ -419,3 +420,68 @@ describe('workspaceTrigger', () => {
+@@ -419,3 +420,66 @@ describe('workspaceTrigger', () => {
            model: { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash' }, modelSource: 'spec' } } })
    })
  })
@@ -1152,15 +1190,13 @@ index 36b75b5..b2b7a84 100644
 +    expect(h.engine.retryTicket).toHaveBeenCalledWith('retry', admission)
 +  })
 +
-+  it.fails('carries the reserved assignment id through /admit', async () => {
++  it('carries the reserved assignment id through /admit', async () => {
 +    const h = harness()
 +    const { call } = await serve(h, { MOYU_REQUIRE_ADMISSION: '1' })
 +    h.repo.tickets.save(frozen(ticket('pending-reserved', { admissionRequired: true })))
 +    const admitted = await call('POST', '/bridge/v1/tickets/pending-reserved/admit', {
 +      admission, assignmentId: 'reserved-assignment',
 +    })
-+    // eslint-disable-next-line no-console
-+    console.info('[bridge-admit-reserved] status=', admitted.status, 'body=', JSON.stringify(admitted.body))
 +    expect(admitted.status).toBe(200)
 +    expect(h.engine.admitTicket).toHaveBeenCalledWith('pending-reserved', admission, 'reserved-assignment')
 +  })
