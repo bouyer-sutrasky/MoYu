@@ -938,6 +938,7 @@ export class InstanceManager {
       return;
     }
     let child;
+    let exitedBeforeRelease = false;
     try {
       const dshArgs = ['--profile', prepared.profile, '--no-open'];
       // The launcher blocks on fd 3 before exec. The supervisor moves the
@@ -953,6 +954,9 @@ export class InstanceManager {
           stdio: ['ignore', logFd, logFd, 'pipe'],
         },
       );
+      child.once('exit', () => {
+        exitedBeforeRelease = true;
+      });
       child.once('error', (error) => {
         this.handles.delete(instance.repositoryId);
         this.generation += 1;
@@ -1016,6 +1020,26 @@ export class InstanceManager {
       );
       return;
     }
+    // A dead child closes the pipe before the release; writing then emits
+    // EPIPE asynchronously. Record one start failure and never let it surface
+    // as an unhandled 'error' that terminates the supervisor.
+    release.once('error', (error) => {
+      try {
+        process.kill(-pid, 'SIGKILL');
+      } catch {
+        // already gone
+      }
+      void this.withLock(async () => {
+        const row = await this.store.getInstance(instance.repositoryId).catch(() => null);
+        if (row && ['starting', 'online'].includes(row.state)) {
+          await this.failInstance(
+            row,
+            'start_failed',
+            `cgroup release pipe failed: ${safeError(error)}`,
+          );
+        }
+      });
+    });
     release.end('go\n');
     const generation = ++this.generation;
     this.handles.set(instance.repositoryId, { pid, generation });
@@ -1037,6 +1061,16 @@ export class InstanceManager {
       errorDetail: null,
     });
     await this.store.syncRepositoryStatus(instance.repositoryId, 'starting');
+    if (exitedBeforeRelease) {
+      this.handles.delete(instance.repositoryId);
+      removeCgroup(cgroup);
+      await this.failInstance(
+        instance,
+        'start_failed',
+        'The runtime exited before the cgroup release',
+      );
+      return;
+    }
     child.once('exit', () => {
       const handle = this.handles.get(instance.repositoryId);
       if (!handle || handle.generation !== generation) return;

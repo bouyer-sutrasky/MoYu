@@ -464,3 +464,30 @@ describe('cgroup launcher only accepts a positive release', () => {
     }
   });
 });
+
+describe('cgroup release pipe', () => {
+  it('does not crash the supervisor when the child dies before release', async () => {
+    const { spawn } = await import('node:child_process');
+    const { CGROUP_LAUNCHER } = await import('../src/process');
+    const child = spawn(
+      '/bin/sh',
+      ['-c', CGROUP_LAUNCHER, 'moyu-cgroup', '/bin/sh', '-c', 'sleep 5'],
+      {
+        detached: true,
+        stdio: ['ignore', 'ignore', 'ignore', 'pipe'],
+      },
+    );
+    const pipe = child.stdio[3] as import('node:stream').Writable | null;
+    const errors: Error[] = [];
+    pipe!.on('error', (error) => errors.push(error));
+    process.kill(child.pid!, 'SIGKILL');
+    pipe!.end('go\n');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(errors.length).toBeLessThanOrEqual(1);
+    try {
+      process.kill(-child.pid!, 'SIGKILL');
+    } catch {
+      /* already exited */
+    }
+  });
+});

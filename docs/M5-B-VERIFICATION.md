@@ -33,7 +33,7 @@ corepack pnpm build
 ```text
 61543347b7e4e9932d519210699000526d60dcb11621230e445e82657c4c470c  apps/api/dist/server.js
 cd5b5ccf7aa86eb26d9e54de9f76ea9041c21084c5a7f098d6f42b7b63bcc2e5  apps/dispatcher/dist/main.js
-b7b8de0747f8eed7cb097f96f1e7bf68a5769865a82d9dae1ac874022b86c183  apps/supervisor/dist/main.js
+fe2c47c8add5e8c6391b5cbf91c3ef2dc9e871d27a6d8a5a650b558c757b6a36  apps/supervisor/dist/main.js
 b55236342ec8251d9890787cf6e0b45829a322b51cf99c5daaa36c1f74fe9746  apps/web/dist/assets/index-Cng83waZ.js
 39a2cbfc47d44d272bc18fad5772346b891e06713d07009e4357f7af51cb5424  apps/web/dist/assets/index-DnIo0nRx.css
 b06e32aebd8dfa96845f74dc916613de7f4d775935c7ce27f5875fcef13f8196  packages/db/migrations/0013_loving_quentin_quire.sql
@@ -89,7 +89,7 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres corepack pnpm t
   再次 wake 可重新 online；随后再次 clean stop。
 - 本步修复了非 root cgroup 路径：子进程在 `exec` 前阻塞于 fd 3，supervisor 先把它写入
   实例 cgroup 再释放；启动/停止中断都不会有用户代码在边界外运行。另把可读且空的 cgroup
-  作为边界证明（无 cgroup 的 unknown 仍然阻止释放）。supervisor 单测 32 通过，含 EOF/错误信号/SIGKILL 父进程不执行及
+  作为边界证明（无 cgroup 的 unknown 仍然阻止释放）。supervisor 单测 33 通过，含 EOF/错误信号/SIGKILL 父进程不执行及
   “释放前不执行命令”回归；独立 slice 探针实测第一代与提前 fork 子进程同属
   `m5b-launcher-*.slice/probe`，kill 后为空（`docs/evidence/m5b/launcher-cgroup.txt`）。
 - 证据 `docs/evidence/m5b/nonroot-supervisor-lifecycle.txt`。
@@ -114,7 +114,7 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres corepack pnpm t
   `git apply --check`、typecheck、构建通过。
 - 上游测试：1301/1302 通过；唯一失败是 `tests/sources.spec.ts` 的既有可选 Feishu 用例
   （README 已记录，不是本补丁引入）。
-- 定向 admission 测试：`tests/admission.spec.ts` 5、`tests/bridge.spec.ts` 24、`tests/pause.spec.ts` 16、
+- 定向 admission 测试：`tests/admission.spec.ts` 7、`tests/bridge.spec.ts` 24、`tests/pause.spec.ts` 16、
   `tests/bridge-control.spec.ts` 25 全通过，覆盖：
   - 无 admission 的 workspace trigger 返回 422 且不落 Trigger、不产生执行；
   - start/retry 无 admission 返回 422 且不调用启动；带当前 admission 才入队；
