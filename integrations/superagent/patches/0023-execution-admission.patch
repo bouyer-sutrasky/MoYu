@@ -600,14 +600,14 @@ index 35f257e..842c92b 100644
      assignment.state = 'ended'; assignment.endedAt = this.now(); assignment.endedReason = reason
      this.emit('assignment.ended', { ticketId: ticket.id, assignmentId: assignment.id, reason })
 diff --git a/src/executor/dsh.ts b/src/executor/dsh.ts
-index bae4df7..1845e10 100644
+index bae4df7..cd81b55 100644
 --- a/src/executor/dsh.ts
 +++ b/src/executor/dsh.ts
 @@ -21,6 +21,7 @@ import { WorktreeNameSchema } from '../app/assessment.ts'
  import { resultRelay } from '../app/notices.ts'
  import type { HealthEntry } from '../infra/health.ts'
  import { cancelled, collectJob, killJobs, liveSubagents, runningJobs, stopBackground, stopSubagents, until, untilQuiet } from './background.ts'
-+import { completeStopProof, readStopProof, recordStopProof, replacementBlocked, settleStopProof } from './stop-proof.ts'
++import { completeStopProof, readProcessIdentity, readStopProof, recordStopProof, replacementBlocked, settleStopProof } from './stop-proof.ts'
  
  const now = (): string => new Date().toISOString()
  /** Returns the worker session ID (`worker-<ticketId>`) for a ticket. */
@@ -680,36 +680,54 @@ index bae4df7..1845e10 100644
        // A stop of the worker's background work that started meanwhile ends with a cancel, which would drop the Input.
        if (this.stopping.has(ticket.id)) throw new Later('The worker\'s background work is stopping')
      }
-@@ -451,6 +470,11 @@ export class DshExecutor implements Executor {
+@@ -451,6 +470,14 @@ export class DshExecutor implements Executor {
     */
    stop(ticket: Ticket, assignment: Assignment, reason: string): void {
      this.transient.delete(assignment.id); this.transient.delete(`launch:${assignment.id}`)
 +    // Persist the unproven identity before the stop begins, so a restart cannot
 +    // silently release the slot when the old job is still alive.
 +    const jobs = runningJobs(this.host.context, workerSessionId(ticket.id)).map(job => ({ id: job.id, name: jobName(job) }))
-+    const pids = processTree().map(item => item.pid).filter(pid => pid !== process.pid && pid !== 1)
-+    recordStopProof(this.host.store, ticket, assignment, jobs, pids)
++    const processes = processTree(process.pid, 100000).map(item => item.pid)
++      .filter(pid => pid !== process.pid && pid !== 1)
++      .map(pid => readProcessIdentity(pid))
++      .filter((identity): identity is NonNullable<typeof identity> => identity !== null)
++    recordStopProof(this.host.store, ticket, assignment, jobs, processes)
      const report = assignment.report
      const busy = !!assignment.deliveredAt && !!report && assignment.deliveredAt >= report.at
      const ownTurn = (report?.state === 'ready' || report?.state === 'dropped') && !busy
-@@ -536,15 +560,42 @@ export class DshExecutor implements Executor {
+@@ -459,7 +486,7 @@ export class DshExecutor implements Executor {
+       this.settling.get(ticket.id)?.abort()
+       if (!ownTurn) this.host.context.agents.get(sessionId as SessionId)?.cancel({ kind: 'user' }, { keepInbox: false })
+       // Its shell jobs and subagents stop with it, also those of a worker that ends its own turn.
+-      this.stopWork(ticket.id, reason)
++      this.stopWork(ticket.id, reason, false, assignment.id)
+       this.left.get(ticket.id)?.collect.abort(); this.left.delete(ticket.id); this.personal.delete(ticket.id)
+     })
+   }
+@@ -531,20 +558,44 @@ export class DshExecutor implements Executor {
+     this.host.engine.pauseFailed(ticketId, assignmentId, reason)
+   }
+   /** Stop what a ticket's worker runs in the background (see `stopBackground`). */
+-  private stopWork(ticketId: string, reason: string, keepInbox = false): void {
+-    this.track(ticketId, stopBackground(this.host.context, workerSessionId(ticketId), reason, keepInbox))
++  private stopWork(ticketId: string, reason: string, keepInbox = false, assignmentId?: string): void {
++    this.track(ticketId, stopBackground(this.host.context, workerSessionId(ticketId), reason, keepInbox), assignmentId)
    }
    /** A stop of a ticket's background work, which a launch or a delivery of the ticket waits for while it runs. */
-   private track(ticketId: string, stop: Promise<void>): void {
+-  private track(ticketId: string, stop: Promise<void>): void {
 -    const entry: Promise<void> = Promise.all([this.stopping.get(ticketId), stop.catch(() => {})]).then(() => {})
++  private track(ticketId: string, stop: Promise<void>, assignmentId?: string): void {
 +    this.stopErrors.delete(ticketId)
 +    const entry: Promise<void> = Promise.all([this.stopping.get(ticketId), stop.then(
 +      () => {
 +        this.stopErrors.delete(ticketId)
 +        const ticket = this.host.store.tickets.get(ticketId)
-+        if (ticket) {
++        if (ticket && assignmentId) {
 +          const live = runningJobs(this.host.context, workerSessionId(ticketId)).map(job => ({ id: job.id }))
-+          const pids = processTree().map(item => item.pid)
-+          for (const assignment of ticket.assignments) {
-+            const proof = readStopProof(this.host.store, ticketId, assignment.id)
-+            if (!proof || proof.state !== 'unproven') continue
-+            if (proof.jobs.length + proof.pids.length === 0) completeStopProof(this.host.store, proof)
-+            else settleStopProof(this.host.store, proof, live, pids)
++          const proof = readStopProof(this.host.store, ticketId, assignmentId)
++          if (proof && proof.state === 'unproven') {
++            if (proof.jobs.length + proof.processes.length === 0) completeStopProof(this.host.store, proof)
++            else settleStopProof(this.host.store, proof, live)
 +          }
 +        }
 +      },
@@ -723,8 +741,7 @@ index bae4df7..1845e10 100644
 +  /** A durable stop proof must cover every ended generation whose job/process identity may survive. */
 +  private assertStops(ticket: Ticket): void {
 +    const liveJobs = runningJobs(this.host.context, workerSessionId(ticket.id)).map(job => ({ id: job.id }))
-+    const livePids = processTree().map(item => item.pid)
-+    if (replacementBlocked(this.host.store, ticket, liveJobs, livePids)) {
++    if (replacementBlocked(this.host.store, ticket, liveJobs)) {
 +      throw new Later('The previous worker has no proven stop; replacement stays blocked')
 +    }
 +  }
@@ -766,13 +783,22 @@ index bae4df7..1845e10 100644
        const sessionId = workerSessionId(ticketId)
 diff --git a/src/executor/stop-proof.ts b/src/executor/stop-proof.ts
 new file mode 100644
-index 0000000..c84a487
+index 0000000..c4ed59b
 --- /dev/null
 +++ b/src/executor/stop-proof.ts
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,114 @@
 +/** Durable stop proof shared by the live executor, restart recovery and replacement admission. */
++import { readFileSync } from 'node:fs'
 +import type { Assignment, Ticket } from '../core/index.ts'
 +import { KV } from '../kv.ts'
++
++export interface ProcessIdentity {
++  pid: number
++  /** `/proc/<pid>/stat` field 22: distinguishes a reused PID after a restart. */
++  startTime: string
++  /** The cgroup observed when the identity was recorded, for ownership comparison. */
++  cgroup?: string
++}
 +
 +export interface StopProof {
 +  ticketId: string
@@ -780,25 +806,56 @@ index 0000000..c84a487
 +  leaseId?: string
 +  fencingToken?: string
 +  jobs: { id: string; name: string }[]
-+  pids: number[]
++  processes: ProcessIdentity[]
 +  state: 'unproven' | 'proven'
 +  at: string
 +}
 +
 +type Store = { get<V>(key: string): V | undefined; set<V>(key: string, value: V): void }
 +
++/** Read a PID identity without relying on a short process-tree snapshot: an
++ * orphan reparented to PID 1 still has the same PID and start time. */
++export function readProcessIdentity(pid: number): ProcessIdentity | null {
++  try {
++    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
++    // The command name can contain spaces/parentheses; fields after the last ')'.
++    const tail = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
++    const startTime = tail[19]
++    if (!startTime) return { pid, startTime: 'unknown' }
++    let cgroup: string | undefined
++    try { cgroup = readFileSync(`/proc/${pid}/cgroup`, 'utf8').trim().split('\n')[0]?.split(':').at(-1) } catch { /* optional */ }
++    return { pid, startTime, ...(cgroup ? { cgroup } : {}) }
++  } catch (error) {
++    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
++    return { pid, startTime: 'unknown' }
++  }
++}
++
++/** true = still the same process, false = gone/reused, undefined = cannot tell. */
++export function identityAlive(identity: ProcessIdentity): boolean | undefined {
++  const current = readProcessIdentity(identity.pid)
++  if (!current) return false
++  if (identity.startTime === 'unknown' || current.startTime === 'unknown') return undefined
++  if (current.startTime !== identity.startTime) return false
++  if (identity.cgroup && current.cgroup && current.cgroup !== identity.cgroup) return undefined
++  return true
++}
++
 +export function readStopProof(store: Store, ticketId: string, assignmentId: string): StopProof | undefined {
 +  return store.get<StopProof>(KV.admission.stopProof(ticketId, assignmentId))
 +}
 +
++/** Record the identity before stopping. An existing unproven record is never overwritten. */
 +export function recordStopProof(store: Store, ticket: Ticket, assignment: Assignment,
-+  jobs: { id: string; name: string }[], pids: number[]): StopProof {
++  jobs: { id: string; name: string }[], processes: ProcessIdentity[]): StopProof {
++  const existing = readStopProof(store, ticket.id, assignment.id)
++  if (existing && existing.state === 'unproven') return existing
 +  const proof: StopProof = {
 +    ticketId: ticket.id,
 +    assignmentId: assignment.id,
 +    ...ticket.admission ? { leaseId: ticket.admission.leaseId, fencingToken: ticket.admission.fencingToken } : {},
 +    jobs,
-+    pids,
++    processes,
 +    state: 'unproven',
 +    at: new Date().toISOString(),
 +  }
@@ -806,36 +863,41 @@ index 0000000..c84a487
 +  return proof
 +}
 +
-+/** A stop promise that resolved without any remaining job/pid is proof for an empty identity set. */
++/** A stop that resolved with no remaining identity is complete. */
 +export function completeStopProof(store: Store, proof: StopProof): void {
 +  store.set(KV.admission.stopProof(proof.ticketId, proof.assignmentId), { ...proof, state: 'proven', at: new Date().toISOString() })
 +}
 +
-+/** Mark proven only when every recorded identity is gone; an empty identity set is never proof by itself. */
-+export function settleStopProof(store: Store, proof: StopProof,
-+  liveJobs: { id: string }[], livePids: number[]): boolean {
++/**
++ * Mark proven only when every recorded job is gone and every process identity
++ * is gone or reused. Empty job/process identity is unknown; only the explicit
++ * post-stop completion above may settle it.
++ */
++export function settleStopProof(store: Store, proof: StopProof, liveJobs: { id: string }[]): boolean {
 +  const jobsGone = proof.jobs.every(job => !liveJobs.some(live => live.id === job.id))
-+  const pidsGone = proof.pids.every(pid => !livePids.includes(pid))
-+  const proven = proof.jobs.length + proof.pids.length > 0 && jobsGone && pidsGone
++  let processesGone = true
++  for (const identity of proof.processes) {
++    const alive = identityAlive(identity)
++    if (alive !== false) { processesGone = false; break }
++  }
++  const exposed = proof.jobs.length + proof.processes.length > 0
++  const proven = exposed && jobsGone && processesGone
 +  if (proven) store.set(KV.admission.stopProof(proof.ticketId, proof.assignmentId), { ...proof, state: 'proven', at: new Date().toISOString() })
 +  return proven
 +}
 +
 +/**
 + * A replacement may proceed only when every ended Assignment of the Ticket has a
-+ * durable proof whose identities are gone. A missing/empty identity set is
-+ * unknown and blocks; a still-live identity blocks.
++ * durable proof whose identities are gone. An admitted Ticket without a proof is
++ * unknown and blocks; a live or unreadable identity also blocks.
 + */
-+export function replacementBlocked(store: Store, ticket: Ticket,
-+  liveJobs: { id: string }[], livePids: number[]): boolean {
++export function replacementBlocked(store: Store, ticket: Ticket, liveJobs: { id: string }[]): boolean {
 +  for (const assignment of ticket.assignments) {
 +    if (assignment.state !== 'ended') continue
 +    const proof = readStopProof(store, ticket.id, assignment.id)
-+    // An admitted Ticket with no recorded stop is unverifiable and blocks;
-+    // a pre-admission Ticket keeps the legacy compatibility path.
 +    if (!proof) { if (ticket.admission) return true; continue }
 +    if (proof.state === 'proven') continue
-+    if (!settleStopProof(store, proof, liveJobs, livePids)) return true
++    if (!settleStopProof(store, proof, liveJobs)) return true
 +  }
 +  return false
 +}
@@ -1459,12 +1521,13 @@ index 892cb1b..00f7b2a 100644
    expect(runtime.store.tickets.get(prepared.ticket.id)!.assignments.at(-1)).toMatchObject({ state: 'running' })
 diff --git a/tests/stop-proof.spec.ts b/tests/stop-proof.spec.ts
 new file mode 100644
-index 0000000..91067b4
+index 0000000..de9dc48
 --- /dev/null
 +++ b/tests/stop-proof.spec.ts
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,56 @@
 +import { describe, expect, it } from 'vitest'
-+import { completeStopProof, readStopProof, recordStopProof, replacementBlocked, settleStopProof } from '../src/executor/stop-proof.ts'
++import { spawn } from 'node:child_process'
++import { completeStopProof, identityAlive, readProcessIdentity, readStopProof, recordStopProof, replacementBlocked, settleStopProof } from '../src/executor/stop-proof.ts'
 +import type { Assignment, Ticket } from '../src/core/index.ts'
 +
 +function store() {
@@ -1483,26 +1546,39 @@ index 0000000..91067b4
 +  it('records the old identity before stop and only proves it after the job and pid are gone', () => {
 +    const s = store()
 +    const proof = recordStopProof(s, ticket({ leaseId: 'l1', fencingToken: '1' }), assignment,
-+      [{ id: 'job-1', name: 'build' }], [4242])
++      [{ id: 'job-1', name: 'build' }], [readProcessIdentity(process.pid)!])
 +    expect(proof.state).toBe('unproven')
 +    expect(readStopProof(s, 't1', 'a1')?.fencingToken).toBe('1')
-+    expect(settleStopProof(s, proof, [{ id: 'job-1' }], [4242])).toBe(false)
-+    expect(settleStopProof(s, proof, [], [4242])).toBe(false)
-+    expect(settleStopProof(s, proof, [], [])).toBe(true)
-+    expect(replacementBlocked(s, ticket(), [], [])).toBe(false)
++    expect(settleStopProof(s, proof, [{ id: 'job-1' }])).toBe(false)
++    expect(settleStopProof(s, proof, [])).toBe(false)
++    const gone = recordStopProof(s, ticket({ leaseId: 'l2', fencingToken: '2' }), { ...assignment, id: 'a2' }, [], [{ pid: 999999, startTime: '1' }])
++    expect(settleStopProof(s, gone, [])).toBe(true)
 +  })
 +
 +  it('blocks replacement when the identity is missing or a recorded pid survives a restart', () => {
 +    const s = store()
 +    const admitted = ticket({ leaseId: 'l1', fencingToken: '1' })
-+    expect(replacementBlocked(s, admitted, [], [])).toBe(true)
++    expect(replacementBlocked(s, admitted, [])).toBe(true)
 +    const empty = recordStopProof(s, admitted, assignment, [], [])
-+    expect(replacementBlocked(s, admitted, [], [])).toBe(true)
++    expect(replacementBlocked(s, admitted, [])).toBe(true)
 +    completeStopProof(s, empty)
-+    expect(replacementBlocked(s, admitted, [], [])).toBe(false)
++    expect(replacementBlocked(s, admitted, [])).toBe(false)
 +    const other = store()
 +    recordStopProof(other, ticket(), assignment, [{ id: 'job-2', name: 'x' }], [])
-+    expect(replacementBlocked(other, ticket(), [{ id: 'job-2' }], [])).toBe(true)
++    expect(replacementBlocked(other, ticket(), [{ id: 'job-2' }])).toBe(true)
++  })
++})
++
++
++describe('process identity across an orphan', () => {
++  it('keeps a real orphan alive after its parent exits and detects the same start time', async () => {
++    const child = spawn('sleep', ['10'], { detached: false, stdio: 'ignore' })
++    const identity = readProcessIdentity(child.pid!)!
++    expect(identity.startTime).not.toBe('unknown')
++    expect(identityAlive(identity)).toBe(true)
++    process.kill(child.pid!, 'SIGKILL')
++    await new Promise(resolve => setTimeout(resolve, 150))
++    expect(identityAlive(identity)).toBe(false)
 +  })
 +})
 diff --git a/tests/tools.spec.ts b/tests/tools.spec.ts
