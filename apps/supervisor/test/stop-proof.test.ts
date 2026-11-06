@@ -83,6 +83,28 @@ describe.skipIf(!rootOnly)('supervisor cgroup stop proof', () => {
     expect(results.filter((r) => r.status === 'rejected')).toHaveLength(9);
   });
 
+  it('serializes independent processes with the kernel lock', async () => {
+    const path = join(base, 'b');
+    await mkdir(path);
+    const script = `import { bindStopProof } from ${JSON.stringify(join(process.cwd(), 'src/stop-proof.ts'))};
+await bindStopProof(process.env.BIND_ROOT, { runtimeId: 'proc', generation: 'g1', cgroup: process.env.BIND_CGROUP,
+  ticketId: process.env.BIND_TICKET, assignmentId: 'a1', leaseId: 'l1', fencingToken: '1' });`;
+    const run = (ticket: string) =>
+      new Promise<number>((resolve) => {
+        const child = spawn(
+          process.execPath,
+          ['--experimental-strip-types', '--input-type=module', '-e', script],
+          {
+            env: { ...process.env, BIND_ROOT: state, BIND_CGROUP: path, BIND_TICKET: ticket },
+            stdio: 'ignore',
+          },
+        );
+        child.once('exit', (code) => resolve(code ?? 1));
+      });
+    const codes = await Promise.all([run('t1'), run('t2')]);
+    expect(codes.sort()).toEqual([0, 1]);
+  });
+
   it('rejects malformed records, non-cgroup paths and missing bindings', async () => {
     await mkdir(join(base, 'b'));
     await writeFile(join(state, 'stop-proof', 'bad.json'), '{}');

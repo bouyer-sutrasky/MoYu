@@ -11,6 +11,8 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { join } from 'node:path';
 
 export interface StopProof {
@@ -115,52 +117,48 @@ async function writeAtomic(temporary: string, target: string, text: string): Pro
   await unlink(temporary).catch(() => {});
 }
 
-/** Serializes bind/verify across processes; the lock is stolen only from a dead owner. */
-function processStart(pid: number): Promise<string | undefined> {
-  return readFile(`/proc/${pid}/stat`, 'utf8')
-    .then((text) => text.slice(text.lastIndexOf(')') + 2).split(' ')[19])
-    .catch(() => undefined);
-}
-async function lockOwner(lock: string): Promise<LockOwner | undefined> {
-  try {
-    return JSON.parse(await readFile(join(lock, 'owner.json'), 'utf8')) as LockOwner;
-  } catch {
-    return undefined;
-  }
-}
+/** Kernel-held mutex: util-linux flock owns the lock; if this process dies or
+ * closes the pipe, the holder exits and the kernel releases it. */
 async function withLock<T>(root: string, work: () => Promise<T>): Promise<T> {
   const dir = join(root, 'stop-proof');
   await mkdir(dir, { recursive: true });
-  const lock = join(dir, LOCK);
-  const token = randomUUID();
-  const pid = process.pid;
-  const started = await processStart(pid);
-  for (let attempt = 0; attempt < 500; attempt++) {
-    try {
-      await mkdir(lock);
-      await writeFile(
-        join(lock, 'owner.json'),
-        JSON.stringify({ token, pid, startTime: started ?? 'unknown' }),
-        { mode: 0o600 },
-      );
-      try {
-        return await work();
-      } finally {
-        const owner = await lockOwner(lock);
-        if (owner?.token === token) await rm(lock, { recursive: true, force: true });
+  const holder = spawn('/usr/bin/flock', ['-x', join(dir, LOCK), '-c', 'printf "locked\n"; cat'], {
+    stdio: ['pipe', 'pipe', 'ignore'],
+  });
+  const locked = new Promise<void>((resolve, reject) => {
+    let output = '';
+    const timer = setTimeout(
+      () => reject(new Error('timed out waiting for the stop-proof lock')),
+      10_000,
+    );
+    holder.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    holder.stdout!.on('data', (chunk) => {
+      output += String(chunk);
+      if (output.includes('locked')) {
+        clearTimeout(timer);
+        resolve();
       }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      const owner = await lockOwner(lock);
-      const alive = owner ? (await processStart(owner.pid)) === owner.startTime : false;
-      if (owner && !alive) {
-        const again = await lockOwner(lock);
-        if (again?.token === owner.token) await rm(lock, { recursive: true, force: true });
+    });
+    holder.once('exit', (code) => {
+      if (!output.includes('locked')) {
+        clearTimeout(timer);
+        reject(new Error(`flock exited before acquiring (${code})`));
       }
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    });
+  });
+  try {
+    await locked;
+    return await work();
+  } finally {
+    holder.stdin?.end();
+    await Promise.race([
+      once(holder, 'exit'),
+      new Promise((resolve) => setTimeout(resolve, 2000)),
+    ]).catch(() => {});
   }
-  throw new Error('timed out waiting for the stop-proof lock');
 }
 
 /** Bind before stopping. Every dimension is immutable while unproven. */
