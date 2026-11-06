@@ -35,9 +35,16 @@ import {
 } from './resources';
 import type { InstanceRow, SupervisorStore } from './store';
 
+export interface ExecutionBinding {
+  ticketId: string;
+  assignmentId: string;
+  leaseId: string;
+  fencingToken: string;
+}
 export interface WakeInput {
   priority: number;
   reason: 'new_task' | 'reply' | 'manual' | 'retry';
+  execution?: ExecutionBinding;
 }
 
 export interface SleepResult {
@@ -50,6 +57,7 @@ export interface WakeResult {
   accepted: boolean;
   duplicate: boolean;
   instance: InstanceRow;
+  refused?: string;
 }
 
 function storedOwnership(row: InstanceRow): StoredOwnership {
@@ -59,6 +67,10 @@ function storedOwnership(row: InstanceRow): StoredOwnership {
     pgid: typeof value.pgid === 'number' ? value.pgid : row.pid,
     cgroup: typeof value.cgroup === 'string' ? value.cgroup : null,
     adoptedUnproven: value.adoptedUnproven === true,
+    execution:
+      value.execution && typeof value.execution === 'object'
+        ? (value.execution as ExecutionBinding)
+        : null,
     members: Array.isArray(value.members) ? (value.members as StoredOwnership['members']) : [],
   };
 }
@@ -441,6 +453,23 @@ export class InstanceManager {
         alreadyQueued,
       );
       if (instance.state === 'online' || instance.state === 'starting') {
+        if (input.execution) {
+          const stored = storedOwnership(instance).execution;
+          if (
+            stored &&
+            (stored.ticketId !== input.execution.ticketId ||
+              stored.assignmentId !== input.execution.assignmentId ||
+              stored.leaseId !== input.execution.leaseId ||
+              stored.fencingToken !== input.execution.fencingToken)
+          ) {
+            return {
+              accepted: false,
+              duplicate: false,
+              instance,
+              refused: 'runtime is bound to another execution generation',
+            };
+          }
+        }
         await this.store.updateInstance(repositoryId, {
           desiredState: 'online',
           lastActivityAt: now,

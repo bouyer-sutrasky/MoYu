@@ -58,6 +58,12 @@ export interface ProcessOwnershipSnapshot {
 }
 
 export interface StoredOwnership {
+  execution?: {
+    ticketId: string;
+    assignmentId: string;
+    leaseId: string;
+    fencingToken: string;
+  } | null;
   rootPid?: number | null;
   pgid?: number | null;
   cgroup?: string | null;
