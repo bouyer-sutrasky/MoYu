@@ -26,17 +26,25 @@ export async function reserveExecution(
   const client = await pool.connect();
   try {
     await client.query('begin');
-    const lease = await client.query<{ id: string; fencing_token: string; state: string }>(
-      `select id, fencing_token, state from runtime_leases where id = $1 for update`,
+    const lease = await client.query<{
+      id: string;
+      repository_id: string;
+      fencing_token: string;
+      state: string;
+    }>(
+      `select id, repository_id, fencing_token, state from runtime_leases where id = $1 for update`,
       [input.leaseId],
     );
     const current = lease.rows[0];
     if (
       !current ||
+      current.repository_id !== input.repositoryId ||
       current.state !== 'active' ||
       String(current.fencing_token) !== input.fencingToken
     ) {
-      throw new Error('execution reservation requires the current active lease generation');
+      throw new Error(
+        'execution reservation requires the current active lease generation for this repository',
+      );
     }
     const inserted = await client.query<{
       id: string;
@@ -72,6 +80,16 @@ export async function reserveExecution(
     if (!row || row.ticket_id !== input.ticketId || row.assignment_id !== input.assignmentId) {
       throw new Error('execution reservation conflicts with a different identity');
     }
+    const stored = await client.query<{ lease_id: string; fencing_token: string }>(
+      `select lease_id, fencing_token from execution_reservations where id = $1`,
+      [row.id],
+    );
+    if (
+      String(stored.rows[0]?.lease_id) !== input.leaseId ||
+      String(stored.rows[0]?.fencing_token) !== input.fencingToken
+    ) {
+      throw new Error('execution reservation is bound to a different lease generation');
+    }
     await client.query('commit');
     return {
       id: row.id,
@@ -95,6 +113,24 @@ export async function claimExecution(
   const client = await pool.connect();
   try {
     await client.query('begin');
+    const lease = await client.query<{
+      repository_id: string;
+      fencing_token: string;
+      state: string;
+    }>(`select repository_id, fencing_token, state from runtime_leases where id = $1 for update`, [
+      input.leaseId,
+    ]);
+    const current = lease.rows[0];
+    if (
+      !current ||
+      current.repository_id !== input.repositoryId ||
+      current.state !== 'active' ||
+      String(current.fencing_token) !== input.fencingToken
+    ) {
+      throw new Error(
+        'execution claim requires the current active lease generation for this repository',
+      );
+    }
     const updated = await client.query<{ id: string }>(
       `update execution_reservations set state = 'claimed', updated_at = now()
         where repository_id = $1 and request_key = $2 and ticket_id = $3 and assignment_id = $4
@@ -113,13 +149,30 @@ export async function claimExecution(
       await client.query('commit');
       return { claimed: true, id: updated.rows[0].id };
     }
-    const existing = await client.query<{ id: string; state: string }>(
-      `select id, state from execution_reservations where repository_id = $1 and request_key = $2`,
+    const existing = await client.query<{
+      id: string;
+      state: string;
+      ticket_id: string;
+      assignment_id: string;
+      lease_id: string;
+      fencing_token: string;
+    }>(
+      `select id, state, ticket_id, assignment_id, lease_id, fencing_token
+         from execution_reservations where repository_id = $1 and request_key = $2`,
       [input.repositoryId, input.requestKey],
     );
     await client.query('commit');
     const row = existing.rows[0];
     if (!row) throw new Error('execution reservation is missing');
+    if (
+      row.state !== 'claimed' ||
+      row.ticket_id !== input.ticketId ||
+      row.assignment_id !== input.assignmentId ||
+      row.lease_id !== input.leaseId ||
+      String(row.fencing_token) !== input.fencingToken
+    ) {
+      throw new Error('execution reservation identity or generation does not match');
+    }
     return { claimed: false, id: row.id };
   } catch (error) {
     await client.query('rollback').catch(() => undefined);
