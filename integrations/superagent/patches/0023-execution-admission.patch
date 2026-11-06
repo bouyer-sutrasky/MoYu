@@ -1061,7 +1061,7 @@ index 0000000..f42c481
 +  })
 +})
 diff --git a/tests/bridge.spec.ts b/tests/bridge.spec.ts
-index 36b75b5..54fe227 100644
+index 36b75b5..b2b7a84 100644
 --- a/tests/bridge.spec.ts
 +++ b/tests/bridge.spec.ts
 @@ -44,7 +44,7 @@ interface Harness {
@@ -1108,7 +1108,7 @@ index 36b75b5..54fe227 100644
      expect(state(ticket('b', { assignments: [{ id: 'x', state: 'running', createdAt: '' }] }))).toBe('running')
      expect(state(ticket('c', { assignments: [{ id: 'x', state: 'pending', createdAt: '' }] }))).toBe('queued')
      expect(state(ticket('d', { assignments: [{ id: 'x', state: 'running', createdAt: '', report: { state: 'blocked', summary: 'q', at: 't' } }], attention: { id: 'a', question: 'q' } }))).toBe('waiting_input')
-@@ -419,3 +420,55 @@ describe('workspaceTrigger', () => {
+@@ -419,3 +420,68 @@ describe('workspaceTrigger', () => {
            model: { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash' }, modelSource: 'spec' } } })
    })
  })
@@ -1150,6 +1150,19 @@ index 36b75b5..54fe227 100644
 +    expect(h.engine.retryTicket).not.toHaveBeenCalled()
 +    expect((await call('POST', '/bridge/v1/tickets/retry/retry', { operationId: 'op-retry', admission })).status).toBe(202)
 +    expect(h.engine.retryTicket).toHaveBeenCalledWith('retry', admission)
++  })
++
++  it.fails('carries the reserved assignment id through /admit', async () => {
++    const h = harness()
++    const { call } = await serve(h, { MOYU_REQUIRE_ADMISSION: '1' })
++    h.repo.tickets.save(frozen(ticket('pending-reserved', { admissionRequired: true })))
++    const admitted = await call('POST', '/bridge/v1/tickets/pending-reserved/admit', {
++      admission, assignmentId: 'reserved-assignment',
++    })
++    // eslint-disable-next-line no-console
++    console.info('[bridge-admit-reserved] status=', admitted.status, 'body=', JSON.stringify(admitted.body))
++    expect(admitted.status).toBe(200)
++    expect(h.engine.admitTicket).toHaveBeenCalledWith('pending-reserved', admission, 'reserved-assignment')
 +  })
 +
 +  it('admits a pending Source ticket and advertises the capability', async () => {
