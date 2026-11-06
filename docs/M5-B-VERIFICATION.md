@@ -33,7 +33,7 @@ corepack pnpm build
 ```text
 61543347b7e4e9932d519210699000526d60dcb11621230e445e82657c4c470c  apps/api/dist/server.js
 50ce9c574fe00ed0938032fa2542fb57486a890f4687f525deac46814fc81981  apps/dispatcher/dist/main.js
-4d9a37f79ebed677f578a256a740ae75be459bf567297b1a78743ee6205117dc  apps/supervisor/dist/main.js
+49c2fc8e2e6f81348a47b31d73e32fda0a8f3053fbbf50060866ea5a962d9fcf  apps/supervisor/dist/main.js
 b55236342ec8251d9890787cf6e0b45829a322b51cf99c5daaa36c1f74fe9746  apps/web/dist/assets/index-Cng83waZ.js
 39a2cbfc47d44d272bc18fad5772346b891e06713d07009e4357f7af51cb5424  apps/web/dist/assets/index-DnIo0nRx.css
 b06e32aebd8dfa96845f74dc916613de7f4d775935c7ce27f5875fcef13f8196  packages/db/migrations/0013_loving_quentin_quire.sql
@@ -75,6 +75,22 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres corepack pnpm t
 - systemd `Slice=` 修正到 `[Service]`，`systemd-analyze verify` 不再报告该键被忽略；OOM 探针改为独占 slice/unit，断言
   anchor 归属、8 GiB/256 MiB 限额、`oom_kill=1` 与宿主余量，失败返回非零。
 - 仍未闭合：start/retry/在线 GitHub 的上游 admission 契约（见 §8）。
+
+### 非 root supervisor 生命周期
+
+- 独立 user `moyu-m5b`（uid 995）、独立 DB `moyu_m5b_sup`、独立 profile
+  `probe1`（panel 3702 / Bridge 3701 / control 3790），supervisor 运行在
+  `/m5bsupprobe.slice/m5b-sup.service/supervisor`，实例运行在同一 slice 的
+  `/instances/...` 子组，slice `MemoryMax=4G`、实例 `memory.max=512M`。
+- 启动：wake 后 DSH PID 758912 以 uid 995 运行在实例 cgroup，`memory.current=228519936`，
+  宿主 `MemAvailable=14027196 kB`；Bridge/panel 就绪后状态 `online`。
+- 停止：sleep 返回 accepted，进程消失、3701/3702 关闭、实例 cgroup `cgroup.procs` 为空。
+- 重启：停止 supervisor 后控制/运行端口关闭且无 DSH；重启后实例保持 sleeping、不自动启动，
+  再次 wake 可重新 online；随后再次 clean stop。
+- 本步修复了两个非 root 路径问题：改为 supervisor 显式把已 spawn 的子 PID 写入实例
+  cgroup（自写 cgroup.procs 在委托组上返回 I/O error）；以及 cgroup 可读且为空时接受为
+  边界证明（无 cgroup 的 unknown 仍然阻止释放）。supervisor 单测 28 通过。
+- 证据 `docs/evidence/m5b/nonroot-supervisor-lifecycle.txt`。
 
 ### 上游 admission 补丁（0023）
 

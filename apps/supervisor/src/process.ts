@@ -611,8 +611,13 @@ export async function stopProcessTree(
       const finalAlive = [...merged.values()].filter(identityAlive);
       const cgroupState = stored?.cgroup ? cgroupEmpty(stored.cgroup) : { ok: true, empty: true };
       if (finalAlive.length === 0 && cgroupState.ok && cgroupState.empty) {
-        if (!unknown) removeCgroup(stored?.cgroup);
-        return { stopped: !unknown, rootPid, pgid, remaining: [], unknown };
+        // An empty, readable cgroup is the execution boundary's own proof.
+        // `unknown` can be a PID/PGID reused outside it; do not keep capacity
+        // occupied for members that cannot be inside the metered cgroup. A
+        // caller without a cgroup still needs the unknown boundary to block.
+        const boundaryProven = Boolean(stored?.cgroup) && cgroupState.ok && cgroupState.empty;
+        removeCgroup(stored?.cgroup);
+        return { stopped: boundaryProven || !unknown, rootPid, pgid, remaining: [], unknown };
       }
       merged.clear();
       for (const member of finalAlive) merged.set(identityKey(member), member);

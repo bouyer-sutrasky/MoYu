@@ -936,27 +936,19 @@ export class InstanceManager {
       );
       return;
     }
-    const cgroupProcs = join(cgroup, 'cgroup.procs');
     let child;
     try {
       const dshArgs = ['--profile', prepared.profile, '--no-open'];
-      child = spawn(
-        '/bin/sh',
-        [
-          '-c',
-          'echo $$ > "$1" || exit 1; shift; exec "$@"',
-          'moyu-cgroup',
-          cgroupProcs,
-          this.config.dshBin,
-          ...dshArgs,
-        ],
-        {
-          cwd: this.config.dshHome,
-          env,
-          detached: true,
-          stdio: ['ignore', logFd, logFd],
-        },
-      );
+      // Spawn first and move the child as a different process: a non-root
+      // supervisor cannot reliably write its own shell PID into a delegated
+      // child cgroup on every kernel. Moving the runtime explicitly keeps the
+      // tracked PID, ownership proof and memory limit on the same process.
+      child = spawn(this.config.dshBin, dshArgs, {
+        cwd: this.config.dshHome,
+        env,
+        detached: true,
+        stdio: ['ignore', logFd, logFd],
+      });
       child.once('error', (error) => {
         this.handles.delete(instance.repositoryId);
         this.generation += 1;
@@ -989,6 +981,20 @@ export class InstanceManager {
     if (!pid) {
       removeCgroup(cgroup);
       await this.failInstance(instance, 'start_failed', 'spawn returned no pid');
+      return;
+    }
+    if (!movePidToCgroup(cgroup, pid)) {
+      try {
+        process.kill(-pid, 'SIGKILL');
+      } catch {
+        // already gone
+      }
+      removeCgroup(cgroup);
+      await this.failInstance(
+        instance,
+        'cgroup_unavailable',
+        'The runtime process could not be moved into its metered cgroup; refusing to run it unmetered',
+      );
       return;
     }
     const generation = ++this.generation;
@@ -1241,6 +1247,10 @@ export class InstanceManager {
       if (this.stopped) return;
       const handle = this.handles.get(repositoryId);
       if (!handle || handle.generation !== generation) return;
+      this.logger.error(
+        { event: 'supervisor.start_verify_failed', repositoryId, error: safeError(error) },
+        'runtime startup verification or profile configuration failed',
+      );
       this.handles.delete(repositoryId);
       const row = (await this.store.getInstance(repositoryId)) ?? null;
       if (!row) return;
