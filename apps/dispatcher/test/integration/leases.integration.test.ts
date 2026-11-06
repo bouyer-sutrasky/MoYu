@@ -2,12 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import type { BridgeTicketSnapshot, RuntimeBridgeClient } from '@moyu/runtime-client';
 
-import {
-  acquireExecutionLease,
-  receiptIsCurrent,
-  reconcileLeases,
-  releaseTaskLease,
-} from '../../src/leases';
+import { acquireExecutionLease, reconcileLeases, releaseTaskLease } from '../../src/leases';
 import { createConsoleLogger } from '../../src/logger';
 import type { RepositoryBinding } from '../../src/runtime';
 import { createTestDatabase, type TestDatabase } from './helpers';
@@ -115,7 +110,6 @@ describe('repository execution lease on real PostgreSQL', () => {
       60_000,
     );
     expect(first.lease).not.toBeNull();
-    const firstToken = first.lease!.fencingToken;
 
     await testDatabase.pool.query(
       `update runtime_leases set expires_at = now() - interval '1 second' where id = $1`,
@@ -180,32 +174,17 @@ describe('repository execution lease on real PostgreSQL', () => {
       `select state, recovery_state from runtime_leases where id = $1`,
       [first.lease!.id],
     );
-    expect(recovered.rows[0]).toMatchObject({ state: 'expired', recovery_state: 'recovered' });
+    expect(recovered.rows[0]).toMatchObject({ state: 'active', recovery_state: 'blocked' });
 
+    // Pause evidence alone is not a supervisor cgroup proof: no new generation.
     const next = await acquireExecutionLease(
       testDatabase.pool,
       repository.id,
       { taskId: waiting.taskId },
       60_000,
     );
-    expect(next.lease).not.toBeNull();
-    expect(Number(next.lease!.fencingToken)).toBeGreaterThan(Number(firstToken));
-
-    // The old generation no longer owns the task and its late receipt is refused.
-    const stale = await receiptIsCurrent(testDatabase.pool, {
-      repositoryId: repository.id,
-      leaseId: first.lease!.id,
-      fencingToken: firstToken,
-      taskId: running.taskId,
-      kind: 'resume',
-    });
-    expect(stale.current).toBe(false);
-    const events = await testDatabase.pool.query<{ count: number }>(
-      `select count(*)::int as count from runtime_lease_events
-        where lease_id = $1 and type = 'stale_receipt_rejected'`,
-      [first.lease!.id],
-    );
-    expect(events.rows[0]?.count).toBeGreaterThan(0);
+    expect(next.lease).toBeNull();
+    expect(next.refused).toBe('recovery_blocked');
   }, 30_000);
 
   it('does not release a generation for a blocked task or a newer binding', async () => {

@@ -596,8 +596,9 @@ export async function receiptIsCurrent(
  *
  * - A still-running ticket is adopted under the same fencing generation; no new
  *   execution is started and no second worker can appear.
- * - An idle/stopped ticket proves the old execution stopped; the row is marked
- *   recovered so the next acquisition can issue a new generation.
+ * - An idle/stopped snapshot or pause evidence is not a supervisor stop proof;
+ *   the lease stays active/blocked until a supervisor-owned cgroup proof for
+ *   the exact old generation exists.
  * - A ticket that must still be stopped is paused, its proof recorded, and the
  *   lease stays blocked until that evidence exists.
  * - Bridge unreachable or identity unknown keeps the lease blocked (capacity is
@@ -673,28 +674,16 @@ export async function reconcileLeases(
 
     if (snapshot.paused?.stoppedAt) {
       const evidence = { ...snapshot.paused.evidence, stoppedAt: snapshot.paused.stoppedAt };
-      if (pauseEvidenceProven(evidence)) {
-        const proof = {
-          source: 'runtime_pause_evidence',
-          runtimeState: snapshot.state,
-          stoppedAt: snapshot.paused.stoppedAt,
-          evidence,
-        };
-        await markRecovered(pool, repository.id, lease, proof);
-        await releaseTaskLease(
-          pool,
-          repository.id,
-          linked.id,
-          'lease recovery: runtime proved the paused worker stopped',
-          { expectedLeaseId: lease.id, proof },
-        );
-        continue;
-      }
+      // Pause evidence describes a Session; it does not prove the supervisor's
+      // cgroup and its managed descendants are empty. Keep the old generation
+      // blocked until that authority is bound and verified.
       await markRecoveryBlocked(
         pool,
         repository.id,
         lease,
-        pauseEvidenceProblem(evidence) ?? 'The runtime pause evidence is incomplete',
+        pauseEvidenceProven(evidence)
+          ? 'The paused worker has no supervisor-owned cgroup stop proof bound to this generation'
+          : (pauseEvidenceProblem(evidence) ?? 'The runtime pause evidence is incomplete'),
         'execution_stop_proof',
       );
       continue;
@@ -750,29 +739,6 @@ export async function reconcileLeases(
       'runtime',
     );
   }
-}
-
-async function markRecovered(
-  pool: pg.Pool,
-  repositoryId: string,
-  lease: LeaseRow,
-  proof: Record<string, unknown>,
-): Promise<void> {
-  await pool.query(
-    `update runtime_leases
-        set state = 'expired', released_at = now(), recovery_state = 'recovered',
-            recovery_reason = null, waiting_for = null, stop_proof = $2::jsonb,
-            stop_proven_at = now(), last_error = null
-      where id = $1`,
-    [lease.id, JSON.stringify(proof)],
-  );
-  await appendLeaseEvent(pool, {
-    leaseId: lease.id,
-    repositoryId,
-    fencingToken: String(lease.fencing_token),
-    type: 'recovered',
-    detail: proof,
-  });
 }
 
 async function markRecoveryBlocked(
