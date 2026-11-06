@@ -590,6 +590,107 @@ index 35f257e..842c92b 100644
    private endAssignment(ticket: Ticket, assignment: Assignment, reason: string): void {
      assignment.state = 'ended'; assignment.endedAt = this.now(); assignment.endedReason = reason
      this.emit('assignment.ended', { ticketId: ticket.id, assignmentId: assignment.id, reason })
+diff --git a/src/executor/dsh.ts b/src/executor/dsh.ts
+index bae4df7..99740ad 100644
+--- a/src/executor/dsh.ts
++++ b/src/executor/dsh.ts
+@@ -144,7 +144,7 @@ export interface ExecutorHost {
+   /** Where the Executor reports what happened to Assignments and Inputs. */
+   readonly engine: Pick<EngineForExecutor, 'assignmentStarted' | 'inputsDelivered' | 'inputsRead' | 'turnEnded' | 'deliveryFailed' | 'report'
+     | 'assignmentInterrupted' | 'pauseSettled' | 'pauseFailed'>
+-  readonly store: Pick<Store, 'tickets' | 'triggers' | 'set' | 'settings' | 'atomic' | 'afterCommit'>
++  readonly store: Pick<Store, 'tickets' | 'triggers' | 'set' | 'settings' | 'atomic' | 'afterCommit' | 'admission'>
+   /** Durable effect queue through which launches and input deliveries run. */
+   readonly effects: Pick<Effects, 'enqueue' | 'handle'>
+   /** The `worker` health entry, which reports whether background worker event handling failed. */
+@@ -309,6 +309,8 @@ export class DshExecutor implements Executor {
+   private readonly settling = new Map<string, AbortController>()
+   /** The stops of tickets' background work that run, by ticket, which a launch or a delivery of the ticket waits for. */
+   private readonly stopping = new Map<string, Promise<void>>()
++  /** The last stop failure per ticket; a launch or delivery must not proceed. */
++  private readonly stopErrors = new Map<string, unknown>()
+   /** The jobs workers left to a person when they handed off, by ticket, and the collecting of their ends. */
+   private readonly left = new Map<string, { jobs: Set<string>; collect: AbortController }>()
+   /** When a person's message typed into a worker's Session last started a turn, by ticket. */
+@@ -359,12 +361,23 @@ export class DshExecutor implements Executor {
+   }
+   /** Enqueues a `delivery` effect to steer pending inputs into `ticket`'s running worker session. */
+   deliver(ticket: Ticket, _assignment: Assignment): void { this.host.effects.enqueue('delivery', ticket.id, { ticketId: ticket.id }) }
+-  /** Launches a queued assignment unless its ticket ended or a newer assignment replaced it meanwhile. */
++  /** The repository fence still names this Ticket and lease, so an old launch/delivery effect may act. */
++  private admissionCurrent(ticket: Ticket): boolean {
++    // Tickets accepted before admission existed keep working under the legacy
++    // policy; once a generation is recorded it must match the repository fence.
++    if (!ticket.admission) return true
++    const fence = this.host.store.admission.fence()
++    if (!fence) return true
++    return fence.fencingToken === ticket.admission.fencingToken
++      && fence.leaseId === ticket.admission.leaseId && fence.ticketId === ticket.id
++  }
++  /** Launches a queued assignment unless its ticket ended, was replaced, or its generation is no longer admitted. */
+   private async launchQueued({ ticketId, assignmentId }: { ticketId: string; assignmentId: string }): Promise<void> {
+     const ticket = this.host.store.tickets.get(ticketId)
+     const assignment = ticket && latestAssignment(ticket)
+     // A paused ticket launches nothing; its Inputs stay queued until an admitted resume starts a new Assignment.
+     if (!ticket || ticket.paused || !liveTicket(ticket) || assignment?.id !== assignmentId || assignment.state !== 'pending') return
++    if (!this.admissionCurrent(ticket)) return
+     this.slots.reserve(ticketId, 'launch')
+     try { await this.launch(ticket, assignment); this.transient.delete(`launch:${assignmentId}`) }
+     catch (error) {
+@@ -388,6 +401,7 @@ export class DshExecutor implements Executor {
+     const target = first && liveTicket(first) ? runningAssignment(first) : undefined
+     // While paused, messages stay stored/undelivered: nothing is delivered and nothing is marked read.
+     if (!first || first.paused || !target || !first.undelivered.length) return
++    if (!this.admissionCurrent(first)) return
+     let woken = false
+     try {
+       for (;;) {
+@@ -395,6 +409,7 @@ export class DshExecutor implements Executor {
+         const assignment = ticket && liveTicket(ticket) ? runningAssignment(ticket) : undefined
+         const inputId = ticket?.undelivered[0]
+         if (!ticket || ticket.paused || !assignment || inputId === undefined) return
++        if (!this.admissionCurrent(ticket)) return
+         // Waking an idle worker reserves a slot (including the extra slot reserved for human follow-ups).
+         const sessionId = workerSessionId(ticketId)
+         if (!woken && !this.running(ticket)) {
+@@ -426,6 +441,7 @@ export class DshExecutor implements Executor {
+     const live = () => {
+       const current = this.host.store.tickets.get(ticket.id)
+       if (!current || !liveTicket(current) || runningAssignment(current)?.id !== assignment.id) throw new Error('The ticket ended or another Assignment took it over')
++      if (!this.admissionCurrent(current)) throw new Error('The execution admission no longer covers this generation')
+       // A stop of the worker's background work that started meanwhile ends with a cancel, which would drop the Input.
+       if (this.stopping.has(ticket.id)) throw new Later('The worker\'s background work is stopping')
+     }
+@@ -536,7 +552,11 @@ export class DshExecutor implements Executor {
+   }
+   /** A stop of a ticket's background work, which a launch or a delivery of the ticket waits for while it runs. */
+   private track(ticketId: string, stop: Promise<void>): void {
+-    const entry: Promise<void> = Promise.all([this.stopping.get(ticketId), stop.catch(() => {})]).then(() => {})
++    this.stopErrors.delete(ticketId)
++    const entry: Promise<void> = Promise.all([this.stopping.get(ticketId), stop.then(
++      () => { this.stopErrors.delete(ticketId) },
++      error => { this.stopErrors.set(ticketId, error) },
++    )]).then(() => {})
+       .finally(() => { if (this.stopping.get(ticketId) === entry) this.stopping.delete(ticketId) })
+     this.stopping.set(ticketId, entry)
+     void this.background(stop)
+@@ -545,6 +565,8 @@ export class DshExecutor implements Executor {
+   private async stopped(ticketId: string): Promise<void> {
+     const stopping = this.stopping.get(ticketId)
+     if (stopping) await until(stopping, this.host.lifetime)
++    const failure = this.stopErrors.get(ticketId)
++    if (failure !== undefined) throw new Error(`The previous worker did not stop cleanly: ${String(failure)}`)
+   }
+   /**
+    * On a host stop, for a bounded time: stop each loaded worker's background work, keeping its inbox; then end the collecting
+@@ -892,6 +914,7 @@ export class DshExecutor implements Executor {
+       if (this.host.closing()) return
+       const ticket = this.host.store.tickets.get(ticketId)
+       if (!ticket || !liveTicket(ticket) || runningAssignment(ticket)?.id !== assignmentId) { this.resuming.delete(assignmentId); return }
++      if (!this.admissionCurrent(ticket)) { this.resuming.delete(assignmentId); return }
+       // Wait while processing is paused or no wake slot is free.
+       if (this.host.paused()) { this.after(SLOT_WAIT_MS, go); return }
+       const sessionId = workerSessionId(ticketId)
 diff --git a/src/kv.ts b/src/kv.ts
 index e7ed695..c0c0ced 100644
 --- a/src/kv.ts
