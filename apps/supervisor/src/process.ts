@@ -227,6 +227,10 @@ export function ensureCgroup(profile: string): string | null {
   }
 }
 
+/** The launcher accepts only the parent's exact positive release; EOF and errors exit before exec. */
+export const CGROUP_LAUNCHER =
+  'IFS= read -r go <&3 || exit 126; [ "$go" = go ] || exit 127; exec "$@"';
+
 /** True when the cgroup's measured `memory.events` report an OOM kill. */
 export function cgroupOomKilled(path: string | null | undefined): boolean {
   return (readMemorySample(path).events.oom_kill ?? 0) > 0;

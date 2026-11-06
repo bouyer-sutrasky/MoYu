@@ -494,7 +494,7 @@ async function sendOperation(
   operation: ClaimedOperation,
   task: TaskRow,
   logger: DispatcherLogger,
-  admissionSupported = false,
+  admissionSupported = true,
 ): Promise<void> {
   if (!task.upstreamTicketId) {
     await failOperation(pool, repository, operation, 'The runtime has not accepted this task');
@@ -518,6 +518,16 @@ async function sendOperation(
   };
   try {
     let accepted;
+    if (!admissionSupported && operation.kind !== 'pause') {
+      await failOperation(
+        pool,
+        repository,
+        operation,
+        'The runtime does not support execution admission; refusing to start',
+        'runtime_admission_unsupported',
+      );
+      return;
+    }
     if (operation.kind === 'pause') {
       // A pause does not acquire a new generation; it records the generation
       // it observed so a late/unproven result can be fenced and reconciled.
@@ -739,7 +749,7 @@ export async function operationsOnce(
   repository: RepositoryBinding,
   bridge: RuntimeBridgeClient,
   logger: DispatcherLogger,
-  admissionSupported = false,
+  admissionSupported = true,
 ): Promise<boolean> {
   if (await pollOperations(pool, repository, bridge, logger)) {
     return true;

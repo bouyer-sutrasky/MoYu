@@ -32,8 +32,8 @@ corepack pnpm build
 
 ```text
 61543347b7e4e9932d519210699000526d60dcb11621230e445e82657c4c470c  apps/api/dist/server.js
-50ce9c574fe00ed0938032fa2542fb57486a890f4687f525deac46814fc81981  apps/dispatcher/dist/main.js
-9aeb4c0685131e544ff97d053d953eac7250f0358778b6fb86e0972492eea2d0  apps/supervisor/dist/main.js
+cd5b5ccf7aa86eb26d9e54de9f76ea9041c21084c5a7f098d6f42b7b63bcc2e5  apps/dispatcher/dist/main.js
+b7b8de0747f8eed7cb097f96f1e7bf68a5769865a82d9dae1ac874022b86c183  apps/supervisor/dist/main.js
 b55236342ec8251d9890787cf6e0b45829a322b51cf99c5daaa36c1f74fe9746  apps/web/dist/assets/index-Cng83waZ.js
 39a2cbfc47d44d272bc18fad5772346b891e06713d07009e4357f7af51cb5424  apps/web/dist/assets/index-DnIo0nRx.css
 b06e32aebd8dfa96845f74dc916613de7f4d775935c7ce27f5875fcef13f8196  packages/db/migrations/0013_loving_quentin_quire.sql
@@ -49,7 +49,7 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres corepack pnpm t
 | --- | --- |
 | `@moyu/db`（含 0013 rollback → reapply） | 10 文件 / 36 测试通过 |
 | `@moyu/api`（M4 暂停继续、双入口、分页、仓库生命周期） | 11 文件 / 66 测试通过 |
-| `@moyu/dispatcher`（多仓库、operations、租约、复审回归、admission） | 4 文件 / 48 测试通过 |
+| `@moyu/dispatcher`（多仓库、operations、租约、复审回归、admission） | 4 文件 / 49 测试通过 |
 
 租约测试覆盖：
 
@@ -89,8 +89,9 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres corepack pnpm t
   再次 wake 可重新 online；随后再次 clean stop。
 - 本步修复了非 root cgroup 路径：子进程在 `exec` 前阻塞于 fd 3，supervisor 先把它写入
   实例 cgroup 再释放；启动/停止中断都不会有用户代码在边界外运行。另把可读且空的 cgroup
-  作为边界证明（无 cgroup 的 unknown 仍然阻止释放）。supervisor 单测 29 通过，含
-  “释放前不执行命令”的 handshake 回归。
+  作为边界证明（无 cgroup 的 unknown 仍然阻止释放）。supervisor 单测 32 通过，含 EOF/错误信号/SIGKILL 父进程不执行及
+  “释放前不执行命令”回归；独立 slice 探针实测第一代与提前 fork 子进程同属
+  `m5b-launcher-*.slice/probe`，kill 后为空（`docs/evidence/m5b/launcher-cgroup.txt`）。
 - 证据 `docs/evidence/m5b/nonroot-supervisor-lifecycle.txt`。
 
 ### 本地测试 provider 尝试（未通过）
@@ -111,15 +112,15 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres corepack pnpm t
 - 在固定 upstream `6337fc823ce20251c8de8085948165c81aaa701e` + 0001–0022 上生成
   `integrations/superagent/patches/0023-execution-admission.patch`；`build-patched.sh` 全量
   `git apply --check`、typecheck、构建通过。
-- 上游测试：1299/1300 通过；唯一失败是 `tests/sources.spec.ts` 的既有可选 Feishu 用例
+- 上游测试：1301/1302 通过；唯一失败是 `tests/sources.spec.ts` 的既有可选 Feishu 用例
   （README 已记录，不是本补丁引入）。
-- 定向 admission 测试：`tests/admission.spec.ts` 3、`tests/bridge.spec.ts` 24、`tests/pause.spec.ts` 16、
+- 定向 admission 测试：`tests/admission.spec.ts` 5、`tests/bridge.spec.ts` 24、`tests/pause.spec.ts` 16、
   `tests/bridge-control.spec.ts` 25 全通过，覆盖：
   - 无 admission 的 workspace trigger 返回 422 且不落 Trigger、不产生执行；
   - start/retry 无 admission 返回 422 且不调用启动；带当前 admission 才入队；
   - GitHub Ticket 创建后停在 `pending_admission`、无 Assignment；`/admit` 后才启动；
   - 旧代次 token 被 `admissionStale` 拒绝；跨 Ticket 的仓库 fence 拒绝延迟 Trigger；
-  - pause 先于 admit 时不创建 Assignment。
+  - 同一 token 的第二个 Ticket 被 fence 挡住；pause 先于 admit 时不创建 Assignment；wake 无 admission 时不创建 Assignment。
 - 构建制品：`/root/src/upstream/m5b-admission-build2`；hash 见
   `docs/evidence/m5b/upstream-admission-build.txt`。
 - 平台侧按 `capabilities.admission` 发送 admission；`pending_admission` 任务由

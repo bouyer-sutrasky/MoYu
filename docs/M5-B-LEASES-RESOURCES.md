@@ -118,7 +118,9 @@ supervisor 同时读取该 slice 的 `memory.max`：若 slice 上限高于
    fence；延迟 Trigger 低于 fence 时只记录为 `pending_admission`，不创建 Assignment；pause
    先于 admit 时核心拒绝启动。main Session 的 retry 工具因此返回 admission 拒绝而不是绕过。
    supervisor 先让子进程在 fd 3 上阻塞，写入实例 cgroup 后才释放 exec，消除执行前逃逸。
-   仍未把构建切换进 supervisor 管理的 live profile，也没有三仓库/重启/pause 交错的 live 证据。
+   受管 profile 的 env 现在固定写入 `MOYU_REQUIRE_ADMISSION=1`；capability 缺失时 dispatcher 拒绝
+   不安全执行（`runtime_admission_unsupported`）而不是无 token 发送。仍未把构建切换进
+   supervisor 管理的 live profile，也没有三仓库/重启/pause 交错的 live 证据。
 2. **非 root supervisor 生命周期已验证，但全栈 8 GB 计量未完成**。独立 user/DB/profile/
    4 GiB slice 下已跑通 start→online→stop→no descendants→supervisor restart→no auto-start→
    wake；尚未把平台、隔离 DB、runtime 与构建测试放进同一 8 GiB slice 压到边界。

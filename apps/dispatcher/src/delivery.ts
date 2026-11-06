@@ -1,6 +1,6 @@
 import type pg from 'pg';
 
-import type { RuntimeBridgeClient } from '@moyu/runtime-client';
+import { RuntimeBridgeError, type RuntimeBridgeClient } from '@moyu/runtime-client';
 
 import type { DispatcherConfig } from './config';
 import type { DispatcherLogger } from './logger';
@@ -177,7 +177,7 @@ export async function deliverOnce(
   repository: RepositoryBinding,
   bridge: RuntimeBridgeClient,
   logger: DispatcherLogger,
-  admissionSupported = false,
+  admissionSupported = true,
 ): Promise<boolean> {
   const claimed = await claimDelivery(pool, config, repository.id);
   if (!claimed) {
@@ -299,6 +299,12 @@ export async function deliverOnce(
         where id=$1`,
       [claimed.id, account.lease.id, account.lease.fencingToken],
     );
+    if (!admissionSupported) {
+      throw new RuntimeBridgeError(
+        'runtime_admission_unsupported: refusing to execute on a runtime without admission support',
+        { code: 'runtime_admission_unsupported', retryable: false },
+      );
+    }
 
     const result = await bridge.trigger({
       triggerId: claimed.triggerId,

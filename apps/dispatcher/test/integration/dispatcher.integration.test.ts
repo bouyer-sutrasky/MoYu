@@ -562,6 +562,47 @@ describe('dispatcher delivery and Bridge event catch-up on real PostgreSQL', () 
     expect(task.rows[0]?.upstream_ticket_id).toBeNull();
   });
 
+  it('refuses to deliver an execution trigger when the runtime lacks admission capability', async () => {
+    fakeBridge.triggerCalls.length = 0;
+    const conversation = await testDatabase.pool.query<{ id: string }>(
+      `insert into conversations (owner_id, repository_id, mode, execution_mode, base_branch, title)
+       values ($1, $2, 'work', 'execute', 'main', 'no admission capability') returning id`,
+      [ownerId, repository.id],
+    );
+    const conversationId = conversation.rows[0]!.id;
+    const message = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, client_message_id, body)
+       values ($1, 'inbound', 'user', 'client-no-admission', 'do not run this') returning id`,
+      [conversationId],
+    );
+    const messageId = message.rows[0]!.id;
+    await testDatabase.pool.query(
+      `insert into task_links (conversation_id, repository_id, state, base_branch) values ($1, $2, 'queued', 'main')`,
+      [conversationId, repository.id],
+    );
+    await testDatabase.pool.query(
+      `insert into deliveries (message_id, upstream_trigger_id) values ($1, $2)`,
+      [messageId, `workspace:${messageId}`],
+    );
+    expect(
+      await deliverOnce(
+        testDatabase.pool,
+        config,
+        repository,
+        client,
+        createConsoleLogger('test'),
+        false,
+      ),
+    ).toBe(true);
+    expect(fakeBridge.triggerCalls).toHaveLength(0);
+    const delivery = await testDatabase.pool.query<{ state: string; last_error: string }>(
+      `select state, last_error from deliveries where message_id = $1`,
+      [messageId],
+    );
+    expect(delivery.rows[0]?.state).toBe('failed');
+    expect(delivery.rows[0]?.last_error).toContain('runtime_admission_unsupported');
+  }, 30_000);
+
   it('sends the lease admission with an admitted runtime and starts a pending GitHub ticket once', async () => {
     fakeBridge.triggerCalls.length = 0;
     fakeBridge.admitCalls.length = 0;

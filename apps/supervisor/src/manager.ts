@@ -7,6 +7,7 @@ import type { SupervisorConfig } from './config';
 import type { SupervisorLogger } from './logger';
 import { configureProfile, waitForPanel } from './panel';
 import {
+  CGROUP_LAUNCHER,
   collectOwnership,
   ensureCgroup,
   movePidToCgroup,
@@ -944,7 +945,7 @@ export class InstanceManager {
       // it; no user code can fork before the process is inside the boundary.
       child = spawn(
         '/bin/sh',
-        ['-c', 'read go <&3; exec "$@"', 'moyu-cgroup', this.config.dshBin, ...dshArgs],
+        ['-c', CGROUP_LAUNCHER, 'moyu-cgroup', this.config.dshBin, ...dshArgs],
         {
           cwd: this.config.dshHome,
           env,

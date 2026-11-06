@@ -195,16 +195,20 @@ index cb7d68a..13ca981 100644
            const notice = this.quiet ? undefined : eventNotice(event, id => store.tickets.get(id))
            if (notice) sessions.notify(...notice)
 diff --git a/src/app/store.ts b/src/app/store.ts
-index d4aa403..807703a 100644
+index d4aa403..cd34d32 100644
 --- a/src/app/store.ts
 +++ b/src/app/store.ts
-@@ -240,6 +240,10 @@ export class Store implements Repositories {
+@@ -240,6 +240,14 @@ export class Store implements Repositories {
      /** Newest first. */
      active: (): Ticket[] => this.values('SELECT value FROM ticket WHERE active = 1 ORDER BY rowid DESC'),
    }
 +  readonly admission: Repositories['admission'] = {
-+    fence: () => this.get(KV.admission.fence),
-+    saveFence: token => this.set(KV.admission.fence, token),
++    fence: () => {
++      const value = this.get(KV.admission.fence)
++      // Schema-compatible fallback for a fence written before it named a lease and Ticket.
++      return typeof value === 'string' ? { fencingToken: value, leaseId: '' } : value
++    },
++    saveFence: value => this.set(KV.admission.fence, value),
 +  }
    readonly decisions = {
      get: (id: string): Decision | undefined => { const row = this.db.prepare('SELECT value FROM decision WHERE id=?').get(id); return row ? JSON.parse(String(row.value)) as Decision : undefined },
@@ -299,14 +303,14 @@ index 70a0208..5013dd9 100644
    notDiscussing: ['refused', 'Only a discuss ticket can be started; this one is already an execute ticket'],
    ticketPaused: ['refused', 'This ticket is paused; resume it before starting the plan'],
 diff --git a/src/core/memory.ts b/src/core/memory.ts
-index 13bfeff..a786fe5 100644
+index 13bfeff..a04f6ed 100644
 --- a/src/core/memory.ts
 +++ b/src/core/memory.ts
 @@ -13,12 +13,15 @@ export class MemoryRepositories implements Repositories {
    private readonly threadRows = new Map<string, Thread>()
    private readonly ticketRows = new Map<string, Ticket>()
    private readonly decisionRows = new Map<string, Decision>()
-+  private fence: string | undefined
++  private fence: { fencingToken: string; leaseId: string; ticketId?: string } | undefined
    atomic<T>(work: () => T): T {
      const maps: Map<string, unknown>[] = [this.triggerRows, this.dispositions, this.threadRows, this.ticketRows, this.decisionRows]
      const snapshot = maps.map(map => new Map(map))
@@ -324,7 +328,7 @@ index 13bfeff..a786fe5 100644
    }
 +  readonly admission = {
 +    fence: () => this.fence,
-+    saveFence: (token: string) => { this.fence = token },
++    saveFence: (value: { fencingToken: string; leaseId: string; ticketId?: string }) => { this.fence = value },
 +  }
    readonly decisions = {
      get: (id: string) => clone(this.decisionRows.get(id)),
@@ -356,7 +360,7 @@ index 14d5c6d..3f4552d 100644
    emit?: (event: DomainEvent) => void
  }
 diff --git a/src/core/ports.ts b/src/core/ports.ts
-index b55ccfd..05899cf 100644
+index b55ccfd..ab90a82 100644
 --- a/src/core/ports.ts
 +++ b/src/core/ports.ts
 @@ -136,6 +136,11 @@ export interface Repositories {
@@ -365,14 +369,14 @@ index b55ccfd..05899cf 100644
    }
 +  /** Repository-wide highest admission generation; a delayed Trigger below it must not start. */
 +  admission: {
-+    fence(): string | undefined
-+    saveFence(token: string): void
++    fence(): { fencingToken: string; leaseId: string; ticketId?: string } | undefined
++    saveFence(value: { fencingToken: string; leaseId: string; ticketId?: string }): void
 +  }
    decisions: {
      get(id: string): Decision | undefined
      save(decision: Decision): void
 diff --git a/src/core/tickets.ts b/src/core/tickets.ts
-index 35f257e..8eb37ab 100644
+index 35f257e..34a4b45 100644
 --- a/src/core/tickets.ts
 +++ b/src/core/tickets.ts
 @@ -56,16 +56,37 @@ export class Tickets extends EnginePart {
@@ -464,7 +468,47 @@ index 35f257e..8eb37ab 100644
      this.endAssignment(ticket, latest, 'retried')
      this.requeueUntaken(ticket, latest)
      const assignment = this.newAssignment(ticket)
-@@ -511,6 +532,52 @@ export class Tickets extends EnginePart {
+@@ -368,7 +389,8 @@ export class Tickets extends EnginePart {
+     if (!liveTicket(ticket) || held) return
+     const running = runningAssignment(ticket), latest = latestAssignment(ticket)
+     if (running) this.options.executor.deliver(ticket, running)
+-    else if (latest?.state === 'pending' && !waitsForPerson(ticket)) this.options.executor.start(ticket, latest)
++    else if (latest?.state === 'pending' && !waitsForPerson(ticket)
++      && (this.options.requireAdmission !== true || this.admissionCurrent(ticket))) this.options.executor.start(ticket, latest)
+   }
+   /**
+    * Resume an ended ticket under its unchanged Mandate when a person's message on one of its Threads waits for it: no Eval
+@@ -387,6 +409,16 @@ export class Tickets extends EnginePart {
+     if (first?.kind !== 'trigger') return
+     const at = this.now()
+     delete ticket.ended; ticket.updatedAt = at
++    // A wake starts no worker without a current platform admission; the
++    // platform acquires the lease and admits the resumed Ticket.
++    if (this.options.requireAdmission === true) {
++      ticket.admissionRequired = true
++      const resumed: TicketInput = { id: key('input', ticket.id, 'resumed', first.triggerId), kind: 'resumed', triggerId: first.triggerId, at }
++      ticket.inputs.push(resumed); ticket.undelivered.unshift(resumed.id)
++      this.repo.tickets.save(ticket)
++      this.emit('ticket.resumed', { ticketId, triggerId: first.triggerId })
++      return
++    }
+     const assignment = this.newAssignment(ticket)
+     // Prepend the resumed marker so it is delivered ahead of the waiting messages.
+     const resumed: TicketInput = { id: key('input', ticket.id, 'resumed', first.triggerId), kind: 'resumed', triggerId: first.triggerId, at }
+@@ -443,6 +475,12 @@ export class Tickets extends EnginePart {
+   }
+   /** Replace a ticket's running Assignment with a new one that receives `note` first, and queue it for launch. */
+   restart(ticket: Ticket, running: Assignment, reason: string, note: string): void {
++    if (this.options.requireAdmission === true && !this.admissionCurrent(ticket)) {
++      ticket.admissionRequired = true
++      ticket.updatedAt = this.now()
++      this.repo.tickets.save(ticket)
++      return
++    }
+     this.endAssignment(ticket, running, reason)
+     this.requeueUntaken(ticket, running)
+     const assignment = this.newAssignment(ticket)
+@@ -511,6 +549,64 @@ export class Tickets extends EnginePart {
      delete ticket.delivery
      return assignment
    }
@@ -472,6 +516,11 @@ index 35f257e..8eb37ab 100644
 +   * Record an execution lease admission. A ticket-level token must strictly increase, so a late or replayed request under an
 +   * older generation cannot start another worker; the platform enforces the repository-wide generation.
 +   */
++  private admissionCurrent(ticket: Ticket): boolean {
++    const fence = this.repo.admission.fence()
++    return !!ticket.admission && !!fence && fence.fencingToken === ticket.admission.fencingToken
++      && fence.leaseId === ticket.admission.leaseId && fence.ticketId === ticket.id
++  }
 +  private acceptAdmission(ticket: Ticket, admission: TicketAdmission | undefined): void {
 +    if (!admission || typeof admission.leaseId !== 'string' || !admission.leaseId
 +      || typeof admission.fencingToken !== 'string' || !admission.fencingToken) {
@@ -481,12 +530,17 @@ index 35f257e..8eb37ab 100644
 +    const next = BigInt(admission.fencingToken)
 +    const fence = this.repo.admission.fence()
 +    const previous = ticket.admission
-+    // The repository fence closes the cross-Ticket hole: a delayed Trigger or
-+    // a direct retry carrying an older generation cannot start work merely
-+    // because this Ticket has no admission yet.
-+    if (fence && next < BigInt(fence)) throw new UserError('admissionStale')
-+    if (fence && next === BigInt(fence) && previous && previous.leaseId !== admission.leaseId) {
-+      throw new UserError('admissionStale')
++    // The repository fence closes the cross-Ticket hole: a delayed Trigger, a
++    // second Ticket under the same generation, or a direct retry carrying an
++    // older generation cannot start work merely because this Ticket has no
++    // admission yet. A generation belongs to exactly one Ticket+lease.
++    if (fence) {
++      const current = BigInt(fence.fencingToken)
++      if (next < current) throw new UserError('admissionStale')
++      if (next === current) {
++        if (fence.ticketId && fence.ticketId !== ticket.id) throw new UserError('admissionStale')
++        if (fence.leaseId && fence.leaseId !== admission.leaseId) throw new UserError('admissionStale')
++      }
 +    }
 +    if (previous && /^[0-9]+$/.test(previous.fencingToken)) {
 +      const old = BigInt(previous.fencingToken)
@@ -495,7 +549,9 @@ index 35f257e..8eb37ab 100644
 +      }
 +    }
 +    ticket.admission = { leaseId: admission.leaseId, fencingToken: admission.fencingToken }
-+    if (!fence || next > BigInt(fence)) this.repo.admission.saveFence(admission.fencingToken)
++    if (!fence || next > BigInt(fence.fencingToken)) {
++      this.repo.admission.saveFence({ fencingToken: admission.fencingToken, leaseId: admission.leaseId, ticketId: ticket.id })
++    }
 +  }
 +  /**
 +   * Start a Source-created ticket that was held for platform admission. Idempotent once an assignment exists.
@@ -518,7 +574,7 @@ index 35f257e..8eb37ab 100644
      assignment.state = 'ended'; assignment.endedAt = this.now(); assignment.endedReason = reason
      this.emit('assignment.ended', { ticketId: ticket.id, assignmentId: assignment.id, reason })
 diff --git a/src/kv.ts b/src/kv.ts
-index e7ed695..473c486 100644
+index e7ed695..c0c0ced 100644
 --- a/src/kv.ts
 +++ b/src/kv.ts
 @@ -29,6 +29,8 @@ export const KV = {
@@ -526,16 +582,16 @@ index e7ed695..473c486 100644
      /** The built-in text of a prompt part an override was edited from, by its `base`, which shows what an upgrade changed. */
      builtIn: family<string, [base: string]>('prompt-built-in:') },
 +  /** M5-B execution admission: the highest fencing generation this runtime accepted for the repository. */
-+  admission: { fence: record<string>('admission-fence') },
++  admission: { fence: record<{ fencingToken: string; leaseId: string; ticketId?: string }>('admission-fence') },
    /** Runtime: the main Session's ID. */
    runtime: { masterId: record<string>('master-id') },
    /** Sessions: prompt revisions each Session has worked under, ordered oldest first; the last entry (`.at(-1)`) is its active revision. */
 diff --git a/tests/admission.spec.ts b/tests/admission.spec.ts
 new file mode 100644
-index 0000000..35aaebb
+index 0000000..19b6e7e
 --- /dev/null
 +++ b/tests/admission.spec.ts
-@@ -0,0 +1,78 @@
+@@ -0,0 +1,101 @@
 +import { describe, expect, it, vi } from 'vitest'
 +import { Engine, MemoryRepositories, latestAssignment, type Assessor, type Candidate, type Executor, type Outbox, type Policy, type Ticket, type Trigger } from '../src/core/index.ts'
 +
@@ -602,6 +658,29 @@ index 0000000..35aaebb
 +    h.accept(wsTrigger('workspace:1', 7))
 +    h.accept(wsTrigger('workspace:2', 1))
 +    expect(h.starts).toHaveLength(1)
++  })
++
++  it('binds one generation to one ticket even when two triggers carry the same token', () => {
++    const h = harness()
++    h.accept(wsTrigger('workspace:1', 7))
++    h.accept(wsTrigger('workspace:2', 7))
++    expect(h.starts).toHaveLength(1)
++    expect(h.repo.tickets.list().filter(ticket => ticket.admissionRequired)).toHaveLength(1)
++  })
++
++  it('does not restart an ended ticket through wake without a current admission', () => {
++    const h = harness()
++    const a = h.accept(wsTrigger('workspace:1', 7))
++    h.accept(wsTrigger('workspace:2', 8))
++    h.engine.assignmentStarted(a.id, latestAssignment(a)!.id)
++    h.engine.report(a.id, { state: 'ready', summary: 'done' })
++    const followup: Trigger = { ...wsTrigger('workspace:3'), threads: [{ source: 'workspace', id: 'workspace:c-workspace:1' }],
++      channel: { source: 'workspace', thread: 'workspace:c-workspace:1', address: { conversationId: 'c-workspace:1' } } }
++    h.engine.receive(followup)
++    ;(h.engine as unknown as { tickets: { wake(id: string): void } }).tickets.wake(a.id)
++    expect(h.starts).toHaveLength(2)
++    expect(h.repo.tickets.get(a.id)?.assignments).toHaveLength(1)
++    expect(h.repo.tickets.get(a.id)?.admissionRequired).toBe(true)
 +  })
 +
 +  it('never starts a pending admitted ticket after a pause', () => {
