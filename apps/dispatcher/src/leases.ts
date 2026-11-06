@@ -700,18 +700,15 @@ export async function reconcileLeases(
       continue;
     }
     if (IDLE_RUNTIME_STATES.has(snapshot.state)) {
-      const proof = {
-        source: 'runtime_snapshot_idle',
-        runtimeState: snapshot.state,
-        at: new Date().toISOString(),
-      };
-      await markRecovered(pool, repository.id, lease, proof);
-      await releaseTaskLease(
+      // An idle Runtime snapshot is not a stop proof: it cannot see a surviving
+      // managed descendant or an unreported job. Only a supervisor-owned cgroup
+      // verification may release this generation.
+      await markRecoveryBlocked(
         pool,
         repository.id,
-        linked.id,
-        'lease recovery: runtime reported no active worker',
-        { expectedLeaseId: lease.id, proof },
+        lease,
+        'The runtime reported idle, but no supervisor-owned cgroup stop proof is bound to this generation',
+        'execution_stop_proof',
       );
       continue;
     }

@@ -258,7 +258,7 @@ describe('repository execution lease on real PostgreSQL', () => {
     expect(stillBound.rows[0]?.runtime_lease_id).toBe(lease.lease!.id);
   }, 30_000);
 
-  it('releases the slot when the runtime reports no active worker', async () => {
+  it('keeps the slot when the runtime only reports no active worker', async () => {
     const task = await seedTask('awaiting_review');
     const account = await acquireExecutionLease(
       testDatabase.pool,
@@ -281,11 +281,11 @@ describe('repository execution lease on real PostgreSQL', () => {
       `select state, recovery_state from runtime_leases where id = $1`,
       [account.lease!.id],
     );
-    expect(lease.rows[0]).toMatchObject({ state: 'expired', recovery_state: 'recovered' });
+    expect(lease.rows[0]).toMatchObject({ state: 'active', recovery_state: 'blocked' });
     const taskRow = await testDatabase.pool.query<{ runtime_lease_id: string | null }>(
       `select runtime_lease_id from task_links where id = $1`,
       [task.taskId],
     );
-    expect(taskRow.rows[0]?.runtime_lease_id).toBeNull();
+    expect(taskRow.rows[0]?.runtime_lease_id).toBe(account.lease!.id);
   }, 30_000);
 });
