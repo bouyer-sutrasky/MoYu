@@ -591,7 +591,7 @@ index 35f257e..842c92b 100644
      assignment.state = 'ended'; assignment.endedAt = this.now(); assignment.endedReason = reason
      this.emit('assignment.ended', { ticketId: ticket.id, assignmentId: assignment.id, reason })
 diff --git a/src/executor/dsh.ts b/src/executor/dsh.ts
-index bae4df7..99740ad 100644
+index bae4df7..c7d2423 100644
 --- a/src/executor/dsh.ts
 +++ b/src/executor/dsh.ts
 @@ -144,7 +144,7 @@ export interface ExecutorHost {
@@ -683,7 +683,19 @@ index bae4df7..99740ad 100644
    }
    /**
     * On a host stop, for a bounded time: stop each loaded worker's background work, keeping its inbox; then end the collecting
-@@ -892,6 +914,7 @@ export class DshExecutor implements Executor {
+@@ -590,8 +612,10 @@ export class DshExecutor implements Executor {
+       if (this.host.closing()) throw new Error('dsh-superagent is stopping')
+       if (this.host.paused()) throw new Later('Processing is paused')
+       const stored = this.host.store.tickets.get(ticket.id)
+-      // A paused ticket is not launched again until an admitted resume creates a new Assignment.
++      // A paused ticket is not launched again until an admitted resume creates a new Assignment;
++      // a generation superseded while prepare/ensure/stop awaited must not prompt or mark started.
+       return !!stored && !stored.paused && liveTicket(stored) && latestAssignment(stored)?.id === assignment.id
++        && this.admissionCurrent(stored)
+     }
+     const source = sourceTrigger(this.host, ticket)
+     const workspace = ticket.execution?.directory ?? ''
+@@ -892,6 +916,7 @@ export class DshExecutor implements Executor {
        if (this.host.closing()) return
        const ticket = this.host.store.tickets.get(ticketId)
        if (!ticket || !liveTicket(ticket) || runningAssignment(ticket)?.id !== assignmentId) { this.resuming.delete(assignmentId); return }
