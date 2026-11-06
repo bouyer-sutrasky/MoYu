@@ -1282,7 +1282,7 @@ index 0000000..1243579
 +/** A generation tests use when they are not exercising fencing itself. */
 +export const TEST_ADMISSION = { leaseId: 'test-lease', fencingToken: '999999' }
 diff --git a/tests/pause.spec.ts b/tests/pause.spec.ts
-index fbc9dc8..82485fa 100644
+index fbc9dc8..5ef7643 100644
 --- a/tests/pause.spec.ts
 +++ b/tests/pause.spec.ts
 @@ -5,6 +5,7 @@ import { Engine, MemoryRepositories, canRetry, latestAssignment, ticketStage, ty
@@ -1375,7 +1375,39 @@ index fbc9dc8..82485fa 100644
    })
  })
  
-@@ -291,3 +295,46 @@ describe('DshExecutor.pause', () => {
+@@ -255,16 +259,29 @@ function executorHarness(options: { killThrows?: boolean } = {}) {
+   ctx.reflect.provide('agents', { get: (id: string) => id === 'worker-t1' ? agent : undefined })
+   const ticket = { id: 't1', assignments: [{ id: 'as1', state: 'ended' as const, createdAt: '2026-11-03T12:00:00.000Z' }] } as unknown as Ticket
+   const engine = { pauseSettled: vi.fn(), pauseFailed: vi.fn() }
++  const values = new Map<string, unknown>()
+   const host = {
+     context: ctx, engine,
+-    store: { afterCommit: (action: () => void) => action(), settings: () => SettingsSchema.parse({}), tickets: { get: () => ticket } },
++    store: { afterCommit: (action: () => void) => action(), settings: () => SettingsSchema.parse({}), tickets: { get: () => ticket },
++      get: (key: string) => values.get(key), set: (key: string, value: unknown) => { values.set(key, value) }, values },
+     effects: { handle: () => {} }, health: { get: () => undefined, set: () => {} },
+     lifetime: new AbortController().signal, machine: { stateDir: '/tmp/pause-test' },
+   }
+   const executor = new DshExecutor(host as never)
+-  return { executor, agent, jobs, engine, ticket }
++  return { executor, agent, jobs, engine, ticket, host }
+ }
+ 
++describe('DshExecutor.stop proof', () => {
++  it('keeps a rejected Jobs stop unproven and blocks a rebuilt executor from replacing it', async () => {
++    const h = executorHarness({ killThrows: true })
++    h.executor.stop(h.ticket, h.ticket.assignments[0]!, 'replaced')
++    await vi.waitFor(() => expect((h.executor as unknown as { stopErrors: Map<string, unknown> }).stopErrors.get('t1')).toBeDefined())
++    const rebuilt = new DshExecutor(h.host as never)
++    expect(() => (rebuilt as unknown as { assertStops: (ticket: Ticket) => void }).assertStops(h.ticket)).toThrow(/proven stop/)
++    expect(h.jobs.size).toBe(1)
++  })
++})
++
+ describe('DshExecutor.pause', () => {
+   it('cancels the turn keeping the inbox, kills the shell jobs, and records the stop evidence', async () => {
+     const h = executorHarness()
+@@ -291,3 +308,46 @@ describe('DshExecutor.pause', () => {
      expect(h.jobs.size).toBe(1)
    })
  })

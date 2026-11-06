@@ -25,7 +25,8 @@
   processTree 记入 A，避免 A 的证明污染 B。只有本次 stop 回调成功且本 Session 无运行 job 时才
   `completeStopProof`；unproven 记录不会被自动 settle，重启后空 job registry 也不能证明旧 job
   已退出。`track` 只结算发起该次 stop 的 Assignment，重复 record 保留既有证据。真实
-  Jobs stop EPERM、旧父退出后后代存活和重建 executor/replay 的现场回归仍未补。
+  Jobs stop EPERM 已加入 DshExecutor 级回归：kill 拒绝后 job 保留、proof 保持 unproven，重建
+  executor 后 `assertStops` 拒绝替代；真实受管 runtime 的同一路径仍需现场复验。
 - 启动器：release 前登记 fd3 error/early exit，保存新 PID/cgroup ownership；同代事件已收敛
   一次失败。generation 比对与 DB 写失败交错仍缺独立探针。
 - 第二候选：fresh-2 在 provider 前停住；现有证据只到 trigger 被存储、无新 assessment effect /
