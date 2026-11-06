@@ -1,4 +1,15 @@
-import { mkdir, open, readFile, rename, stat, unlink } from 'node:fs/promises';
+import {
+  mkdir,
+  open,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat,
+  statfs,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
@@ -32,6 +43,12 @@ export type VerifyResult = { proven: true } | { proven: false; reason: string };
 const file = (root: string, runtimeId: string) =>
   join(root, 'stop-proof', `${encodeURIComponent(runtimeId)}.json`);
 const LOCK = '.lock';
+const CGROUP2_SUPER_MAGIC = 0x63677270n;
+interface LockOwner {
+  token: string;
+  pid: number;
+  startTime: string;
+}
 const sameIdentity = (a: StopProofIdentity, b: StopProofIdentity) =>
   a.runtimeId === b.runtimeId &&
   a.generation === b.generation &&
@@ -39,7 +56,22 @@ const sameIdentity = (a: StopProofIdentity, b: StopProofIdentity) =>
   a.assignmentId === b.assignmentId &&
   a.leaseId === b.leaseId &&
   a.fencingToken === b.fencingToken;
-const isCgroup = (path: string) => path.startsWith('/sys/fs/cgroup/') && path !== '/sys/fs/cgroup';
+async function cgroupPath(path: string): Promise<string | undefined> {
+  let resolved: string;
+  try {
+    resolved = await realpath(path);
+  } catch {
+    return undefined;
+  }
+  if (!resolved.startsWith('/sys/fs/cgroup/') || resolved === '/sys/fs/cgroup') return undefined;
+  try {
+    const fs = await statfs(resolved, { bigint: true });
+    if (fs.type !== CGROUP2_SUPER_MAGIC) return undefined;
+  } catch {
+    return undefined;
+  }
+  return resolved;
+}
 
 function valid(value: unknown): value is StopProof {
   if (!value || typeof value !== 'object') return false;
@@ -83,26 +115,48 @@ async function writeAtomic(temporary: string, target: string, text: string): Pro
   await unlink(temporary).catch(() => {});
 }
 
-/** Serializes bind/verify across processes; a lock older than 30s is stale. */
+/** Serializes bind/verify across processes; the lock is stolen only from a dead owner. */
+function processStart(pid: number): Promise<string | undefined> {
+  return readFile(`/proc/${pid}/stat`, 'utf8')
+    .then((text) => text.slice(text.lastIndexOf(')') + 2).split(' ')[19])
+    .catch(() => undefined);
+}
+async function lockOwner(lock: string): Promise<LockOwner | undefined> {
+  try {
+    return JSON.parse(await readFile(join(lock, 'owner.json'), 'utf8')) as LockOwner;
+  } catch {
+    return undefined;
+  }
+}
 async function withLock<T>(root: string, work: () => Promise<T>): Promise<T> {
   const dir = join(root, 'stop-proof');
   await mkdir(dir, { recursive: true });
   const lock = join(dir, LOCK);
-  for (let attempt = 0; attempt < 300; attempt++) {
+  const token = randomUUID();
+  const pid = process.pid;
+  const started = await processStart(pid);
+  for (let attempt = 0; attempt < 500; attempt++) {
     try {
-      const handle = await open(lock, 'wx', 0o600);
+      await mkdir(lock);
+      await writeFile(
+        join(lock, 'owner.json'),
+        JSON.stringify({ token, pid, startTime: started ?? 'unknown' }),
+        { mode: 0o600 },
+      );
       try {
         return await work();
       } finally {
-        await handle.close();
-        await unlink(lock).catch(() => {});
+        const owner = await lockOwner(lock);
+        if (owner?.token === token) await rm(lock, { recursive: true, force: true });
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      const age = await stat(lock)
-        .then((s) => Date.now() - s.mtimeMs)
-        .catch(() => 0);
-      if (age > 30_000) await unlink(lock).catch(() => {});
+      const owner = await lockOwner(lock);
+      const alive = owner ? (await processStart(owner.pid)) === owner.startTime : false;
+      if (owner && !alive) {
+        const again = await lockOwner(lock);
+        if (again?.token === owner.token) await rm(lock, { recursive: true, force: true });
+      }
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
   }
@@ -111,7 +165,8 @@ async function withLock<T>(root: string, work: () => Promise<T>): Promise<T> {
 
 /** Bind before stopping. Every dimension is immutable while unproven. */
 export async function bindStopProof(root: string, input: StopProofInput): Promise<StopProof> {
-  if (!isCgroup(input.cgroup)) throw new Error('cgroup must be an authorized cgroup v2 path');
+  const cgroup = await cgroupPath(input.cgroup);
+  if (!cgroup) throw new Error('cgroup must be a live cgroup v2 object');
   return withLock(root, async () => {
     const existing = await readProof(root, input.runtimeId);
     if (existing === 'unreadable')
@@ -155,18 +210,19 @@ export async function verifyStopProof(
     if (!proof) return { proven: false, reason: 'stop proof is missing' };
     if (!sameIdentity(proof, identity))
       return { proven: false, reason: 'stop proof binding does not match' };
-    if (!isCgroup(proof.cgroup))
-      return { proven: false, reason: 'cgroup path is not an authorized cgroup v2 object' };
-    let inode: number;
-    try {
-      inode = (await stat(proof.cgroup)).ino;
-    } catch {
-      return { proven: false, reason: 'cgroup path is missing' };
-    }
-    if (inode !== proof.cgroupInode) return { proven: false, reason: 'cgroup object was replaced' };
+    const cgroup = await cgroupPath(proof.cgroup);
+    if (!cgroup || cgroup !== proof.cgroup)
+      return { proven: false, reason: 'cgroup path is not the original cgroup v2 object' };
     let events: string;
     try {
-      events = await readFile(join(proof.cgroup, 'cgroup.events'), 'utf8');
+      const handle = await open(cgroup, 'r');
+      try {
+        if ((await handle.stat()).ino !== proof.cgroupInode)
+          return { proven: false, reason: 'cgroup object was replaced' };
+        events = await readFile(`/proc/self/fd/${handle.fd}/cgroup.events`, 'utf8');
+      } finally {
+        await handle.close();
+      }
     } catch {
       return { proven: false, reason: 'cgroup.events is unreadable or permission unknown' };
     }

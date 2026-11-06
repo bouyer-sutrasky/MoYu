@@ -90,7 +90,7 @@ describe.skipIf(!rootOnly)('supervisor cgroup stop proof', () => {
       bindStopProof(state, { ...identity('bad'), runtimeId: 'bad', cgroup: join(base, 'b') }),
     ).rejects.toThrow(/unreadable/);
     await expect(bindStopProof(state, { ...identity('tmp'), cgroup: state })).rejects.toThrow(
-      /authorized cgroup/,
+      /live cgroup v2/,
     );
     expect(await verifyStopProof(state, identity('missing'))).toMatchObject({
       proven: false,
