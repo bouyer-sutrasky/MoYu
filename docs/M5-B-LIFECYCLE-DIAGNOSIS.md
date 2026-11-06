@@ -20,8 +20,11 @@
   prompt/`assignmentStarted`。已把 `admissionCurrent` 加入 `current()`，因此每个 await 后的
   `current()` 和 prompt 授权回调都会拒绝 A。
 - 持久重放：`launch`/`delivery` effect 消费时重新读取 Ticket 与 fence；旧 effect 不能唤醒。
-- 停止证明：`stopErrors` 目前**只在进程内**；重启丢失，且并发 stop 的成功回调可删除另一
-  尝试的拒绝。真实 Jobs stop EPERM 的替代阻断仍缺持久化停止证明与重启回归；这是未完成项。
+- 停止证明：已新增 `src/executor/stop-proof.ts`，在 `stop()` 启动前持久记录旧
+  lease/token、Assignment、job/pid 身份为 `unproven`；`settleStopProof` 只有全部身份消失才
+  置 `proven`，空身份在成功停止回调后由 `completeStopProof` 结算。`launch` 在 stopped 屏障
+  后消费同一证据；admitted Ticket 缺失证明或身份仍活时占住名额。真实 Jobs stop EPERM 与
+  重启前后旧 job 的现场回归仍未补，这是剩余缺口。
 - 启动器：release 前登记 fd3 error/early exit，保存新 PID/cgroup ownership；同代事件已收敛
   一次失败。generation 比对与 DB 写失败交错仍缺独立探针。
 - 第二候选：fresh-2 在 provider 前停住；现有证据只到 trigger 被存储、无新 assessment effect /

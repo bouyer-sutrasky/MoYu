@@ -1,12 +1,21 @@
 diff --git a/docs/007-architecture.md b/docs/007-architecture.md
-index 12b62a4..5239bbf 100644
+index 12b62a4..40dd377 100644
 --- a/docs/007-architecture.md
 +++ b/docs/007-architecture.md
-@@ -416,6 +416,7 @@ Some generic modules still refer directly to GitHub or Feishu:
+@@ -354,6 +354,7 @@ Some generic modules still refer directly to GitHub or Feishu:
+ | `src/app/views/settings.ts` | The settings page's view: each block with its revision, each Source's settings with its kind's form, and the execution environment |
+ | `src/app/views/overview.ts` | The overview: Tickets that need a person, problems, the last day's flow and the Executor's load |
+ | `src/executor/dsh.ts` | The DshExecutor, `WorkerSlots`, `ticketExecution`, `inputMessage` and `mandateInstructions` |
++| `src/executor/stop-proof.ts` | Durable stop proof for ended Assignments: the recorded lease/token, job and pid identity, `recordStopProof`, `settleStopProof`, `completeStopProof` and the replacement gate that keeps a slot occupied until every identity is gone |
+ | `src/executor/background.ts` | A worker's background work in DeepSeek Harness, the shell jobs its Session owns (`ctx.jobs`) and its subagents (`ctx.subagents`): `runningJobs`, `untilQuiet`, `killJobs`, `collectJobs`, `stopSubagents`, `stopBackground`, `until`, and `cancelled`, the workers whose turn a stop of their subagents cancelled |
+ | `src/infra/commands.ts` | `Commands`, the CLI transport: `run`; `api` and `pages`, limited to the configured repository and validated; `lark` as the bot; `git`. `CliError` carries the code a command's output reports, such as a GitHub HTTP status, and a command that prints nothing fails with how it ended, never with its arguments; `validItems` skips and counts the malformed items of a list |
+ | `src/infra/environment.ts` | The agent's process environment: command shims, the git configuration and credential helper, `runAsWorker`, and the checks of the environment and of a Ticket's directory |
+@@ -416,6 +417,8 @@ Some generic modules still refer directly to GitHub or Feishu:
  | `tests/ticket-freeze.spec.ts` | The frozen execution spec: parsing it from a workspace Trigger, copying model/base/mode onto the accepted Ticket, leaving other Sources without one, and the launch-time model validation that never falls back |
  | `tests/discussion.spec.ts` | Discussion mode: the read-only tool allow-list and permission preset, the read-only worktree boundary and refusal of local tools such as subagent, the work tools and `danger-full-access` for execute, replacing the restriction when the mode changes, the discussion assignment text, and `discussing` state projection |
  | `tests/pause.spec.ts` | A human pause and resume: Inputs and attention kept, the Executor pause, `stoppedAt` evidence and failures, resume admission and ticket identity, starting a discuss plan, non-retryability, and `DshExecutor.pause` stopping jobs with its evidence |
 +| `tests/admission.spec.ts` | Execution admission in the core: retry/start/admit without a usable token, an invalid or stale generation, the repository-wide fence for delayed Triggers, and pause-before-admit creating no Assignment |
++| `tests/stop-proof.spec.ts` | Durable stop proof: an unproven record blocks replacement while a recorded job/pid lives, missing admitted proof blocks, and only gone identities settle the proof |
  | `tests/bridge-control.spec.ts` | M4 execution control: the operation log across a reopen, pause/resume/start/retry endpoints and their 202/404/409/422 answers, idempotency, settlement from Ticket state, operation persistence across a Bridge restart, the M4 ticket snapshot, `targetTicketId` attach/conflict/ended cases, `ticket.paused` events, and one-time GitHub `ticket.imported` events |
  | `tests/bridge-branches.spec.ts` | The read-only branch list: the sorted 200 shape and `branches` capability, one page versus pagination, the ten-page `hasMore` cap, repository-scoped `commands.api` paths, a CLI failure as 503, malformed data as 502, and bearer auth |
  | `tests/process-tree.spec.ts` | The harness process tree used as stop evidence: a live child PID and its command, and its disappearance after exit |
@@ -591,19 +600,27 @@ index 35f257e..842c92b 100644
      assignment.state = 'ended'; assignment.endedAt = this.now(); assignment.endedReason = reason
      this.emit('assignment.ended', { ticketId: ticket.id, assignmentId: assignment.id, reason })
 diff --git a/src/executor/dsh.ts b/src/executor/dsh.ts
-index bae4df7..c7d2423 100644
+index bae4df7..1845e10 100644
 --- a/src/executor/dsh.ts
 +++ b/src/executor/dsh.ts
-@@ -144,7 +144,7 @@ export interface ExecutorHost {
+@@ -21,6 +21,7 @@ import { WorktreeNameSchema } from '../app/assessment.ts'
+ import { resultRelay } from '../app/notices.ts'
+ import type { HealthEntry } from '../infra/health.ts'
+ import { cancelled, collectJob, killJobs, liveSubagents, runningJobs, stopBackground, stopSubagents, until, untilQuiet } from './background.ts'
++import { completeStopProof, readStopProof, recordStopProof, replacementBlocked, settleStopProof } from './stop-proof.ts'
+ 
+ const now = (): string => new Date().toISOString()
+ /** Returns the worker session ID (`worker-<ticketId>`) for a ticket. */
+@@ -144,7 +145,7 @@ export interface ExecutorHost {
    /** Where the Executor reports what happened to Assignments and Inputs. */
    readonly engine: Pick<EngineForExecutor, 'assignmentStarted' | 'inputsDelivered' | 'inputsRead' | 'turnEnded' | 'deliveryFailed' | 'report'
      | 'assignmentInterrupted' | 'pauseSettled' | 'pauseFailed'>
 -  readonly store: Pick<Store, 'tickets' | 'triggers' | 'set' | 'settings' | 'atomic' | 'afterCommit'>
-+  readonly store: Pick<Store, 'tickets' | 'triggers' | 'set' | 'settings' | 'atomic' | 'afterCommit' | 'admission'>
++  readonly store: Pick<Store, 'tickets' | 'triggers' | 'get' | 'set' | 'settings' | 'atomic' | 'afterCommit' | 'admission'>
    /** Durable effect queue through which launches and input deliveries run. */
    readonly effects: Pick<Effects, 'enqueue' | 'handle'>
    /** The `worker` health entry, which reports whether background worker event handling failed. */
-@@ -309,6 +309,8 @@ export class DshExecutor implements Executor {
+@@ -309,6 +310,8 @@ export class DshExecutor implements Executor {
    private readonly settling = new Map<string, AbortController>()
    /** The stops of tickets' background work that run, by ticket, which a launch or a delivery of the ticket waits for. */
    private readonly stopping = new Map<string, Promise<void>>()
@@ -612,7 +629,7 @@ index bae4df7..c7d2423 100644
    /** The jobs workers left to a person when they handed off, by ticket, and the collecting of their ends. */
    private readonly left = new Map<string, { jobs: Set<string>; collect: AbortController }>()
    /** When a person's message typed into a worker's Session last started a turn, by ticket. */
-@@ -359,12 +361,23 @@ export class DshExecutor implements Executor {
+@@ -359,12 +362,24 @@ export class DshExecutor implements Executor {
    }
    /** Enqueues a `delivery` effect to steer pending inputs into `ticket`'s running worker session. */
    deliver(ticket: Ticket, _assignment: Assignment): void { this.host.effects.enqueue('delivery', ticket.id, { ticketId: ticket.id }) }
@@ -622,8 +639,9 @@ index bae4df7..c7d2423 100644
 +    // Tickets accepted before admission existed keep working under the legacy
 +    // policy; once a generation is recorded it must match the repository fence.
 +    if (!ticket.admission) return true
++    // An admitted Ticket without a readable fence is unverifiable: refuse and keep inputs.
 +    const fence = this.host.store.admission.fence()
-+    if (!fence) return true
++    if (!fence) return false
 +    return fence.fencingToken === ticket.admission.fencingToken
 +      && fence.leaseId === ticket.admission.leaseId && fence.ticketId === ticket.id
 +  }
@@ -637,15 +655,16 @@ index bae4df7..c7d2423 100644
      this.slots.reserve(ticketId, 'launch')
      try { await this.launch(ticket, assignment); this.transient.delete(`launch:${assignmentId}`) }
      catch (error) {
-@@ -388,6 +401,7 @@ export class DshExecutor implements Executor {
+@@ -388,6 +403,8 @@ export class DshExecutor implements Executor {
      const target = first && liveTicket(first) ? runningAssignment(first) : undefined
      // While paused, messages stay stored/undelivered: nothing is delivered and nothing is marked read.
      if (!first || first.paused || !target || !first.undelivered.length) return
 +    if (!this.admissionCurrent(first)) return
++    this.assertStops(first)
      let woken = false
      try {
        for (;;) {
-@@ -395,6 +409,7 @@ export class DshExecutor implements Executor {
+@@ -395,6 +412,7 @@ export class DshExecutor implements Executor {
          const assignment = ticket && liveTicket(ticket) ? runningAssignment(ticket) : undefined
          const inputId = ticket?.undelivered[0]
          if (!ticket || ticket.paused || !assignment || inputId === undefined) return
@@ -653,7 +672,7 @@ index bae4df7..c7d2423 100644
          // Waking an idle worker reserves a slot (including the extra slot reserved for human follow-ups).
          const sessionId = workerSessionId(ticketId)
          if (!woken && !this.running(ticket)) {
-@@ -426,6 +441,7 @@ export class DshExecutor implements Executor {
+@@ -426,6 +444,7 @@ export class DshExecutor implements Executor {
      const live = () => {
        const current = this.host.store.tickets.get(ticket.id)
        if (!current || !liveTicket(current) || runningAssignment(current)?.id !== assignment.id) throw new Error('The ticket ended or another Assignment took it over')
@@ -661,20 +680,54 @@ index bae4df7..c7d2423 100644
        // A stop of the worker's background work that started meanwhile ends with a cancel, which would drop the Input.
        if (this.stopping.has(ticket.id)) throw new Later('The worker\'s background work is stopping')
      }
-@@ -536,7 +552,11 @@ export class DshExecutor implements Executor {
+@@ -451,6 +470,11 @@ export class DshExecutor implements Executor {
+    */
+   stop(ticket: Ticket, assignment: Assignment, reason: string): void {
+     this.transient.delete(assignment.id); this.transient.delete(`launch:${assignment.id}`)
++    // Persist the unproven identity before the stop begins, so a restart cannot
++    // silently release the slot when the old job is still alive.
++    const jobs = runningJobs(this.host.context, workerSessionId(ticket.id)).map(job => ({ id: job.id, name: jobName(job) }))
++    const pids = processTree().map(item => item.pid).filter(pid => pid !== process.pid && pid !== 1)
++    recordStopProof(this.host.store, ticket, assignment, jobs, pids)
+     const report = assignment.report
+     const busy = !!assignment.deliveredAt && !!report && assignment.deliveredAt >= report.at
+     const ownTurn = (report?.state === 'ready' || report?.state === 'dropped') && !busy
+@@ -536,15 +560,42 @@ export class DshExecutor implements Executor {
    }
    /** A stop of a ticket's background work, which a launch or a delivery of the ticket waits for while it runs. */
    private track(ticketId: string, stop: Promise<void>): void {
 -    const entry: Promise<void> = Promise.all([this.stopping.get(ticketId), stop.catch(() => {})]).then(() => {})
 +    this.stopErrors.delete(ticketId)
 +    const entry: Promise<void> = Promise.all([this.stopping.get(ticketId), stop.then(
-+      () => { this.stopErrors.delete(ticketId) },
++      () => {
++        this.stopErrors.delete(ticketId)
++        const ticket = this.host.store.tickets.get(ticketId)
++        if (ticket) {
++          const live = runningJobs(this.host.context, workerSessionId(ticketId)).map(job => ({ id: job.id }))
++          const pids = processTree().map(item => item.pid)
++          for (const assignment of ticket.assignments) {
++            const proof = readStopProof(this.host.store, ticketId, assignment.id)
++            if (!proof || proof.state !== 'unproven') continue
++            if (proof.jobs.length + proof.pids.length === 0) completeStopProof(this.host.store, proof)
++            else settleStopProof(this.host.store, proof, live, pids)
++          }
++        }
++      },
 +      error => { this.stopErrors.set(ticketId, error) },
 +    )]).then(() => {})
        .finally(() => { if (this.stopping.get(ticketId) === entry) this.stopping.delete(ticketId) })
      this.stopping.set(ticketId, entry)
      void this.background(stop)
-@@ -545,6 +565,8 @@ export class DshExecutor implements Executor {
+   }
+   /** Wait for a stop of the ticket's background work that runs, unless the host stops first. */
++  /** A durable stop proof must cover every ended generation whose job/process identity may survive. */
++  private assertStops(ticket: Ticket): void {
++    const liveJobs = runningJobs(this.host.context, workerSessionId(ticket.id)).map(job => ({ id: job.id }))
++    const livePids = processTree().map(item => item.pid)
++    if (replacementBlocked(this.host.store, ticket, liveJobs, livePids)) {
++      throw new Later('The previous worker has no proven stop; replacement stays blocked')
++    }
++  }
    private async stopped(ticketId: string): Promise<void> {
      const stopping = this.stopping.get(ticketId)
      if (stopping) await until(stopping, this.host.lifetime)
@@ -683,7 +736,7 @@ index bae4df7..c7d2423 100644
    }
    /**
     * On a host stop, for a bounded time: stop each loaded worker's background work, keeping its inbox; then end the collecting
-@@ -590,8 +612,10 @@ export class DshExecutor implements Executor {
+@@ -590,8 +641,10 @@ export class DshExecutor implements Executor {
        if (this.host.closing()) throw new Error('dsh-superagent is stopping')
        if (this.host.paused()) throw new Later('Processing is paused')
        const stored = this.host.store.tickets.get(ticket.id)
@@ -695,7 +748,15 @@ index bae4df7..c7d2423 100644
      }
      const source = sourceTrigger(this.host, ticket)
      const workspace = ticket.execution?.directory ?? ''
-@@ -892,6 +916,7 @@ export class DshExecutor implements Executor {
+@@ -617,6 +670,7 @@ export class DshExecutor implements Executor {
+     if (!current()) return
+     // The background work of the Assignment this one replaces stops first, so its end does not clear this one's message.
+     await this.stopped(ticket.id)
++    this.assertStops(ticket)
+     if (!current()) return
+     // A message put back for this Assignment may still wait in the Session, kept by a restart's cancel or persisted across a
+     // crash, where this launch's message would take it into a step beside the copy delivered next: that copy is the only one.
+@@ -892,6 +946,7 @@ export class DshExecutor implements Executor {
        if (this.host.closing()) return
        const ticket = this.host.store.tickets.get(ticketId)
        if (!ticket || !liveTicket(ticket) || runningAssignment(ticket)?.id !== assignmentId) { this.resuming.delete(assignmentId); return }
@@ -703,16 +764,93 @@ index bae4df7..c7d2423 100644
        // Wait while processing is paused or no wake slot is free.
        if (this.host.paused()) { this.after(SLOT_WAIT_MS, go); return }
        const sessionId = workerSessionId(ticketId)
+diff --git a/src/executor/stop-proof.ts b/src/executor/stop-proof.ts
+new file mode 100644
+index 0000000..c84a487
+--- /dev/null
++++ b/src/executor/stop-proof.ts
+@@ -0,0 +1,69 @@
++/** Durable stop proof shared by the live executor, restart recovery and replacement admission. */
++import type { Assignment, Ticket } from '../core/index.ts'
++import { KV } from '../kv.ts'
++
++export interface StopProof {
++  ticketId: string
++  assignmentId: string
++  leaseId?: string
++  fencingToken?: string
++  jobs: { id: string; name: string }[]
++  pids: number[]
++  state: 'unproven' | 'proven'
++  at: string
++}
++
++type Store = { get<V>(key: string): V | undefined; set<V>(key: string, value: V): void }
++
++export function readStopProof(store: Store, ticketId: string, assignmentId: string): StopProof | undefined {
++  return store.get<StopProof>(KV.admission.stopProof(ticketId, assignmentId))
++}
++
++export function recordStopProof(store: Store, ticket: Ticket, assignment: Assignment,
++  jobs: { id: string; name: string }[], pids: number[]): StopProof {
++  const proof: StopProof = {
++    ticketId: ticket.id,
++    assignmentId: assignment.id,
++    ...ticket.admission ? { leaseId: ticket.admission.leaseId, fencingToken: ticket.admission.fencingToken } : {},
++    jobs,
++    pids,
++    state: 'unproven',
++    at: new Date().toISOString(),
++  }
++  store.set(KV.admission.stopProof(ticket.id, assignment.id), proof)
++  return proof
++}
++
++/** A stop promise that resolved without any remaining job/pid is proof for an empty identity set. */
++export function completeStopProof(store: Store, proof: StopProof): void {
++  store.set(KV.admission.stopProof(proof.ticketId, proof.assignmentId), { ...proof, state: 'proven', at: new Date().toISOString() })
++}
++
++/** Mark proven only when every recorded identity is gone; an empty identity set is never proof by itself. */
++export function settleStopProof(store: Store, proof: StopProof,
++  liveJobs: { id: string }[], livePids: number[]): boolean {
++  const jobsGone = proof.jobs.every(job => !liveJobs.some(live => live.id === job.id))
++  const pidsGone = proof.pids.every(pid => !livePids.includes(pid))
++  const proven = proof.jobs.length + proof.pids.length > 0 && jobsGone && pidsGone
++  if (proven) store.set(KV.admission.stopProof(proof.ticketId, proof.assignmentId), { ...proof, state: 'proven', at: new Date().toISOString() })
++  return proven
++}
++
++/**
++ * A replacement may proceed only when every ended Assignment of the Ticket has a
++ * durable proof whose identities are gone. A missing/empty identity set is
++ * unknown and blocks; a still-live identity blocks.
++ */
++export function replacementBlocked(store: Store, ticket: Ticket,
++  liveJobs: { id: string }[], livePids: number[]): boolean {
++  for (const assignment of ticket.assignments) {
++    if (assignment.state !== 'ended') continue
++    const proof = readStopProof(store, ticket.id, assignment.id)
++    // An admitted Ticket with no recorded stop is unverifiable and blocks;
++    // a pre-admission Ticket keeps the legacy compatibility path.
++    if (!proof) { if (ticket.admission) return true; continue }
++    if (proof.state === 'proven') continue
++    if (!settleStopProof(store, proof, liveJobs, livePids)) return true
++  }
++  return false
++}
 diff --git a/src/kv.ts b/src/kv.ts
-index e7ed695..c0c0ced 100644
+index e7ed695..48f1e6f 100644
 --- a/src/kv.ts
 +++ b/src/kv.ts
-@@ -29,6 +29,8 @@ export const KV = {
+@@ -29,6 +29,10 @@ export const KV = {
    prompts: { revision: record<number>('prompt-revision'), version: family<PromptVersion, [revision: number]>('prompt-version:'),
      /** The built-in text of a prompt part an override was edited from, by its `base`, which shows what an upgrade changed. */
      builtIn: family<string, [base: string]>('prompt-built-in:') },
 +  /** M5-B execution admission: the highest fencing generation this runtime accepted for the repository. */
-+  admission: { fence: record<{ fencingToken: string; leaseId: string; ticketId?: string }>('admission-fence') },
++  admission: { fence: record<{ fencingToken: string; leaseId: string; ticketId?: string }>('admission-fence'),
++    stopProof: family<{ ticketId: string; assignmentId: string; leaseId?: string; fencingToken?: string;
++      jobs: { id: string; name: string }[]; pids: number[]; state: 'unproven' | 'proven'; at: string }, [ticketId: string, assignmentId: string]>('stop-proof:') },
    /** Runtime: the main Session's ID. */
    runtime: { masterId: record<string>('master-id') },
    /** Sessions: prompt revisions each Session has worked under, ordered oldest first; the last entry (`.at(-1)`) is its active revision. */
@@ -1319,6 +1457,54 @@ index 892cb1b..00f7b2a 100644
    await runtime.idle()
    expect(runs()).toBe(before + 2)
    expect(runtime.store.tickets.get(prepared.ticket.id)!.assignments.at(-1)).toMatchObject({ state: 'running' })
+diff --git a/tests/stop-proof.spec.ts b/tests/stop-proof.spec.ts
+new file mode 100644
+index 0000000..91067b4
+--- /dev/null
++++ b/tests/stop-proof.spec.ts
+@@ -0,0 +1,42 @@
++import { describe, expect, it } from 'vitest'
++import { completeStopProof, readStopProof, recordStopProof, replacementBlocked, settleStopProof } from '../src/executor/stop-proof.ts'
++import type { Assignment, Ticket } from '../src/core/index.ts'
++
++function store() {
++  const values = new Map<string, unknown>()
++  return { values, get<V>(key: string): V | undefined { return values.get(key) as V | undefined },
++    set<V>(key: string, value: V): void { values.set(key, value) } }
++}
++const ticket = (admission?: { leaseId: string; fencingToken: string }): Ticket => ({
++  id: 't1', title: 'x', decisionId: 'd', mandate: {} as never, channels: [], inputs: [], undelivered: [],
++  createdAt: '', updatedAt: '', origin: { triggerId: 'g', triggerIds: ['g'] },
++  assignments: [{ id: 'a1', state: 'ended', createdAt: '' }], ...(admission ? { admission } : {}),
++})
++const assignment: Assignment = { id: 'a1', state: 'ended', createdAt: '' }
++
++describe('durable stop proof', () => {
++  it('records the old identity before stop and only proves it after the job and pid are gone', () => {
++    const s = store()
++    const proof = recordStopProof(s, ticket({ leaseId: 'l1', fencingToken: '1' }), assignment,
++      [{ id: 'job-1', name: 'build' }], [4242])
++    expect(proof.state).toBe('unproven')
++    expect(readStopProof(s, 't1', 'a1')?.fencingToken).toBe('1')
++    expect(settleStopProof(s, proof, [{ id: 'job-1' }], [4242])).toBe(false)
++    expect(settleStopProof(s, proof, [], [4242])).toBe(false)
++    expect(settleStopProof(s, proof, [], [])).toBe(true)
++    expect(replacementBlocked(s, ticket(), [], [])).toBe(false)
++  })
++
++  it('blocks replacement when the identity is missing or a recorded pid survives a restart', () => {
++    const s = store()
++    const admitted = ticket({ leaseId: 'l1', fencingToken: '1' })
++    expect(replacementBlocked(s, admitted, [], [])).toBe(true)
++    const empty = recordStopProof(s, admitted, assignment, [], [])
++    expect(replacementBlocked(s, admitted, [], [])).toBe(true)
++    completeStopProof(s, empty)
++    expect(replacementBlocked(s, admitted, [], [])).toBe(false)
++    const other = store()
++    recordStopProof(other, ticket(), assignment, [{ id: 'job-2', name: 'x' }], [])
++    expect(replacementBlocked(other, ticket(), [{ id: 'job-2' }], [])).toBe(true)
++  })
++})
 diff --git a/tests/tools.spec.ts b/tests/tools.spec.ts
 index f3dde91..a56d492 100644
 --- a/tests/tools.spec.ts
