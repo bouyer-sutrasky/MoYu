@@ -1,15 +1,4 @@
-import {
-  mkdir,
-  open,
-  readFile,
-  realpath,
-  rename,
-  rm,
-  stat,
-  statfs,
-  unlink,
-  writeFile,
-} from 'node:fs/promises';
+import { mkdir, open, readFile, realpath, rename, stat, statfs, unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -46,11 +35,6 @@ const file = (root: string, runtimeId: string) =>
   join(root, 'stop-proof', `${encodeURIComponent(runtimeId)}.json`);
 const LOCK = '.lock';
 const CGROUP2_SUPER_MAGIC = 0x63677270n;
-interface LockOwner {
-  token: string;
-  pid: number;
-  startTime: string;
-}
 const sameIdentity = (a: StopProofIdentity, b: StopProofIdentity) =>
   a.runtimeId === b.runtimeId &&
   a.generation === b.generation &&
