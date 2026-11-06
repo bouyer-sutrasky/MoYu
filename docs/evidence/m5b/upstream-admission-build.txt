@@ -10,6 +10,6 @@ lib_index_sha256=573d156847b29325b11707d3499549031ca6af910886396ea6b576cba52d894
 lib_workspace_watch_sha256=8d3ec8c2956977cc8158ea974f4ce7201667bd057994e6f217c276609c4aa90d
 typecheck=pass
 upstream_tests=1303 passed / 1 failed (known optional Feishu test failure, see integrations/superagent/README.md)
-admission_tests=tests/admission.spec.ts 7, tests/stop-proof.spec.ts 4, pause.spec.ts 17 (incl. Jobs EPERM stop replay) passed (missing/invalid/stale retry, repository fence for delayed Trigger, same-token second Ticket held, wake-without-admission held, stale-generation delivery held and replaced once, pause-before-admit)
+admission_tests=tests/admission.spec.ts 7, tests/stop-proof.spec.ts 4, pause.spec.ts 17 (one stop-rejection branch with a generic Error, not a real EPERM/replay) passed (missing/invalid/stale retry, repository fence for delayed Trigger, same-token second Ticket held, wake-without-admission held, stale-generation delivery held and replaced once, pause-before-admit)
 platform_dispatcher_tests=see docs/M5-B-VERIFICATION.md
 core_fix=retry/start/admit require a decimal admission; repository-wide fence is persisted in KV and bound to one lease+Ticket; delayed/same-token second Ticket and wake without admission are held; pause before admit creates no Assignment

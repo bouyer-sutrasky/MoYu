@@ -25,8 +25,9 @@
   processTree 记入 A，避免 A 的证明污染 B。只有本次 stop 回调成功且本 Session 无运行 job 时才
   `completeStopProof`；unproven 记录不会被自动 settle，重启后空 job registry 也不能证明旧 job
   已退出。`track` 只结算发起该次 stop 的 Assignment，重复 record 保留既有证据。真实
-  Jobs stop EPERM 已加入 DshExecutor 级回归：kill 拒绝后 job 保留、proof 保持 unproven，重建
-  executor 后 `assertStops` 拒绝替代；真实受管 runtime 的同一路径仍需现场复验。
+  stop 拒绝分支已加入 DshExecutor 级测试（通用 `Error('kill refused')`，同一 host/内存 Map/
+  Jobs 服务，直接调用私有 `assertStops`）。它只证明拒绝分支，不是真实 EPERM、真实受管
+  runtime、持久存储重开或注册入口的 recovery replay；这些仍缺。
 - 启动器：release 前登记 fd3 error/early exit，保存新 PID/cgroup ownership；同代事件已收敛
   一次失败。generation 比对与 DB 写失败交错仍缺独立探针。
 - 第二候选：fresh-2 在 provider 前停住；现有证据只到 trigger 被存储、无新 assessment effect /
@@ -47,3 +48,12 @@
 - 有 admission 但读不到 fence：`admissionCurrent` 返回 true（兼容旧库/未启用 fence 的实例）；
   M5-B 受管实例写入 fence 后以 fence 为准。
 - 无 admission 的旧 Ticket：保持 legacy 行为；受管新 Ticket 在 `requireAdmission` 下必须有 token。
+
+## 恢复红证据（2026-11-06）
+
+- 记录一个真实 `sleep` 的 PID/starttime/cgroup 到持久 proof，终止并回收该进程后
+  `identityAlive=false`，但 `replacementBlocked` 仍为 true、proof 仍为 `unproven`，因为没有
+  原 stop 成功回调。这是当前恢复闭环的失败断言，不是通过项。
+- 缺口根因：DSH Jobs 只暴露 job id，不暴露进程归属；共享 harness 进程树不能作为 A 的边界。
+  需要每 Ticket/Assignment 的受管进程边界（cgroup/pid namespace）或可持久对账的 job 终止
+  事件，才能把“已清空”写成权威证明。否则只能保守占用名额。
