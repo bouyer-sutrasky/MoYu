@@ -94,8 +94,13 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres corepack pnpm t
 - 平台侧按 `capabilities.admission` 发送 admission；`pending_admission` 任务由
   `admitImportedOnce` 取得租约后调用 `/admit`，失败/无租约不创建 worker。新增真实
   PostgreSQL 回归见 dispatcher 集成测试。
-- **未部署到 live profile**：该构建没有切换到运行中的 M5-B 实例，也没有真实 runtime 的
-  Bridge 拒绝/重启/pause 交错证据；`MOYU_REQUIRE_ADMISSION=1` 才启用。
+- **隔离 runtime live 拒绝证据**：用 `0023` 构建启动独立 profile（panel 3602 / Bridge 3601），
+  在 `m5bprobeadm.slice/m5b-adm-runtime.service` 的 512 MiB cgroup 内设置
+  `MOYU_REQUIRE_ADMISSION=1`。capabilities 返回 `admission:true`；无 admission 的 trigger、
+  start、retry 均返回 422，Bridge 事件 0 行，没有 Trigger/Ticket/Assignment 或副作用；
+  带 admission 但未配置的实例返回 503。证据 `docs/evidence/m5b/live-admission-runtime.txt`。
+- **未部署到运行中的 M5-B 实例**：该 profile 是独立验证实例，没有切换到 supervisor 管理的
+  live profile，也没有真实三仓库/重启/pause 交错证据；`MOYU_REQUIRE_ADMISSION=1` 才启用。
 
 ## 4. 迁移回滚
 
