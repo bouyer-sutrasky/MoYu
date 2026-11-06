@@ -603,6 +603,51 @@ describe('dispatcher delivery and Bridge event catch-up on real PostgreSQL', () 
     expect(delivery.rows[0]?.last_error).toContain('runtime_admission_unsupported');
   }, 30_000);
 
+  it('does not admit a pending ticket when the supervisor stop proof is unproven', async () => {
+    fakeBridge.triggerCalls.length = 0;
+    fakeBridge.admitCalls.length = 0;
+    const conversation = await testDatabase.pool.query<{ id: string }>(
+      `insert into conversations (owner_id, repository_id, mode, execution_mode, base_branch, title)
+       values ($1, $2, 'work', 'execute', 'main', 'unproven stop') returning id`,
+      [ownerId, repository.id],
+    );
+    const conversationId = conversation.rows[0]!.id;
+    const message = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, client_message_id, body)
+       values ($1, 'inbound', 'user', 'client-unproven', 'must not run') returning id`,
+      [conversationId],
+    );
+    const messageId = message.rows[0]!.id;
+    await testDatabase.pool.query(
+      `insert into deliveries (message_id, upstream_trigger_id) values ($1, $2)`,
+      [messageId, `workspace:${messageId}`],
+    );
+    const task = await testDatabase.pool.query<{ id: string }>(
+      `insert into task_links (conversation_id, repository_id, state, base_branch, upstream_ticket_id)
+       values ($1, $2, 'pending_admission', 'main', 'ticket-unproven') returning id`,
+      [conversationId, repository.id],
+    );
+    await admitImportedOnce(
+      testDatabase.pool,
+      config,
+      repository,
+      client,
+      true,
+      createConsoleLogger('test'),
+      async () => ({ allowed: false, reason: 'cgroup still populated' }),
+    );
+    expect(fakeBridge.admitCalls).toHaveLength(0);
+    const after = await testDatabase.pool.query<{ state: string; stop_evidence: unknown }>(
+      `select state, stop_evidence from task_links where id = $1`,
+      [task.rows[0]!.id],
+    );
+    expect(after.rows[0]?.state).toBe('pending_admission');
+    expect(JSON.stringify(after.rows[0]?.stop_evidence)).toContain('cgroup still populated');
+    await testDatabase.pool.query(`update task_links set state = 'not_accepted' where id = $1`, [
+      task.rows[0]!.id,
+    ]);
+  });
+
   it('sends the lease admission with an admitted runtime and starts a pending GitHub ticket once', async () => {
     fakeBridge.triggerCalls.length = 0;
     fakeBridge.admitCalls.length = 0;

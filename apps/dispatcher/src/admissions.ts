@@ -48,6 +48,7 @@ export async function admitImportedOnce(
   bridge: RuntimeBridgeClient,
   supported: boolean,
   logger: DispatcherLogger,
+  stopProof?: (task: TaskRow) => Promise<{ allowed: boolean; reason?: string }>,
 ): Promise<boolean> {
   if (!supported) return false;
   const rows = await pool.query<TaskRow>(
@@ -66,6 +67,18 @@ export async function admitImportedOnce(
   let worked = false;
   for (const task of rows.rows) {
     worked = true;
+    if (stopProof) {
+      const proof = await stopProof(task);
+      if (!proof.allowed) {
+        await pool.query(
+          `update task_links
+              set stop_evidence = $2::jsonb, updated_at = now()
+            where id = $1 and state = 'pending_admission'`,
+          [task.id, JSON.stringify({ stopProof: proof.reason ?? 'unproven' })],
+        );
+        continue;
+      }
+    }
     const account = await acquireExecutionLease(
       pool,
       repository.id,
