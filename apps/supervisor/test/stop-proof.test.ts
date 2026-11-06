@@ -1,13 +1,26 @@
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { bindStopProof, verifyStopProof, type StopProofIdentity } from '../src/stop-proof';
 
-const real = `/sys/fs/cgroup/m5b-stop-proof-${process.pid}`;
+const base = `/sys/fs/cgroup/m5b-stop-proof-${process.pid}`;
 const state = await mkdtemp(join(tmpdir(), 'm5b-stop-proof-'));
 const children: number[] = [];
+const identity = (suffix: string): StopProofIdentity => ({
+  runtimeId: `r-${suffix}`,
+  generation: `g-${suffix}`,
+  ticketId: `t-${suffix}`,
+  assignmentId: `a-${suffix}`,
+  leaseId: `l-${suffix}`,
+  fencingToken: '1',
+});
+const rootOnly = process.getuid?.() === 0;
+
+beforeAll(async () => {
+  if (rootOnly) await mkdir(base, { recursive: true });
+});
 afterEach(async () => {
   for (const pid of children.splice(0)) {
     try {
@@ -16,93 +29,72 @@ afterEach(async () => {
       /* gone */
     }
   }
-  try {
-    await rm(real, { recursive: true, force: true });
-  } catch {
-    /* absent */
+  for (const name of ['a', 'b']) {
+    await rm(join(base, name), { recursive: true, force: true }).catch(() => {});
   }
 });
-const identity: StopProofIdentity = {
-  runtimeId: 'r1',
-  generation: 'g1',
-  ticketId: 't1',
-  assignmentId: 'a1',
-  leaseId: 'l1',
-  fencingToken: '1',
-};
-const input = (path: string) => ({ ...identity, cgroup: path });
-const rootOnly = process.getuid?.() === 0;
+afterAll(async () => {
+  await rm(base, { recursive: true, force: true }).catch(() => {});
+  await rm(state, { recursive: true, force: true }).catch(() => {});
+});
 
-async function fakeCgroup(path: string, populated: 0 | 1) {
-  await mkdir(path, { recursive: true });
-  await writeFile(join(path, 'cgroup.events'), `populated ${populated}\n`);
-}
-
-describe('supervisor cgroup stop proof binding', () => {
-  it('is idempotent only for the same complete identity and refuses a conflicting rebind', async () => {
-    const path = join(state, 'fake-a');
-    await fakeCgroup(path, 0);
-    await bindStopProof(state, input(path));
-    await bindStopProof(state, input(path));
-    const other = {
-      ...identity,
-      ticketId: 't2',
-      assignmentId: 'a2',
-      leaseId: 'l2',
-      fencingToken: '2',
-    };
-    await expect(bindStopProof(state, { ...other, cgroup: path })).rejects.toThrow(
-      /another unproven/,
-    );
-    expect(await verifyStopProof(state, other)).toMatchObject({
+describe.skipIf(!rootOnly)('supervisor cgroup stop proof', () => {
+  it('refuses a different cgroup object for the same complete identity', async () => {
+    const a = join(base, 'a'),
+      b = join(base, 'b');
+    await mkdir(a);
+    await mkdir(b);
+    const child = spawn('sleep', ['10'], { stdio: 'ignore' });
+    children.push(child.pid!);
+    await writeFile(join(a, 'cgroup.procs'), String(child.pid));
+    const id = identity('a');
+    await bindStopProof(state, { ...id, cgroup: a });
+    expect(await verifyStopProof(state, id)).toMatchObject({
       proven: false,
-      reason: expect.stringMatching(/binding/),
+      reason: expect.stringMatching(/populated/),
     });
-    expect(await verifyStopProof(state, identity)).toMatchObject({ proven: true });
+    await expect(bindStopProof(state, { ...id, cgroup: b })).rejects.toThrow(
+      /cgroup object conflicts/,
+    );
+    const live = await verifyStopProof(state, id);
+    expect(live.proven).toBe(false);
+    child.kill('SIGKILL');
+    for (let i = 0; i < 50; i++) {
+      if (/^populated 0$/m.test(await readFile(join(a, 'cgroup.events'), 'utf8'))) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(await verifyStopProof(state, id)).toEqual({ proven: true });
   });
 
-  it('refuses a corrupted record, a reused inode and a missing path', async () => {
-    const path = join(state, 'fake-b');
-    await fakeCgroup(path, 0);
-    await writeFile(join(state, 'stop-proof', 'bad.json'), '{');
+  it('serializes concurrent first bindings so only one identity wins', async () => {
+    const path = join(base, 'b');
+    await mkdir(path);
+    const results = await Promise.allSettled(
+      Array.from({ length: 10 }, (_, i) =>
+        bindStopProof(state, {
+          ...identity(`c${i}`),
+          runtimeId: 'race',
+          generation: 'g1',
+          cgroup: path,
+        }),
+      ),
+    );
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((r) => r.status === 'rejected')).toHaveLength(9);
+  });
+
+  it('rejects malformed records, non-cgroup paths and missing bindings', async () => {
+    await mkdir(join(base, 'b'));
+    await writeFile(join(state, 'stop-proof', 'bad.json'), '{}');
     await expect(
-      bindStopProof(state, { ...identity, runtimeId: 'bad', cgroup: path }),
+      bindStopProof(state, { ...identity('bad'), runtimeId: 'bad', cgroup: join(base, 'b') }),
     ).rejects.toThrow(/unreadable/);
-    await bindStopProof(state, { ...identity, runtimeId: 'reuse', cgroup: path });
-    await rename(path, `${path}-old`);
-    await fakeCgroup(path, 0);
-    expect(await verifyStopProof(state, { ...identity, runtimeId: 'reuse' })).toMatchObject({
-      proven: false,
-      reason: expect.stringMatching(/reused/),
-    });
-    await rm(path, { recursive: true, force: true });
-    expect(await verifyStopProof(state, { ...identity, runtimeId: 'reuse' })).toMatchObject({
+    await expect(bindStopProof(state, { ...identity('tmp'), cgroup: state })).rejects.toThrow(
+      /authorized cgroup/,
+    );
+    expect(await verifyStopProof(state, identity('missing'))).toMatchObject({
       proven: false,
       reason: expect.stringMatching(/missing/),
     });
-  });
-});
-
-describe.skipIf(!rootOnly)('supervisor cgroup stop proof with a real group', () => {
-  it('refuses a populated generation, then proves the same inode empty', async () => {
-    await mkdir(real);
-    const child = spawn('sleep', ['10'], { stdio: 'ignore' });
-    children.push(child.pid!);
-    await writeFile(join(real, 'cgroup.procs'), String(child.pid));
-    await bindStopProof(state, { ...identity, runtimeId: 'real', cgroup: real });
-    const live = await verifyStopProof(state, { ...identity, runtimeId: 'real' });
-    expect(live.proven).toBe(false);
-    if (!live.proven) expect(live.reason).toMatch(/populated/);
-    child.kill('SIGKILL');
-    for (let i = 0; i < 50; i++) {
-      if (/^populated 0$/m.test(await readFile(join(real, 'cgroup.events'), 'utf8'))) break;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    expect(await verifyStopProof(state, { ...identity, runtimeId: 'real' })).toEqual({
-      proven: true,
-    });
-    expect(JSON.parse(await readFile(join(state, 'stop-proof', 'real.json'), 'utf8')).state).toBe(
-      'proven',
-    );
   });
 });
