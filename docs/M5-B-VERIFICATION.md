@@ -74,7 +74,30 @@ DATABASE_URL=postgres://moyu@127.0.0.1:55432/<isolated> \
 结果：0013 是最后一条迁移时回滚成功（删除两个新表、9 个新增列/约束），错误/缺失 hash 与
 非最后一条时拒绝；reapply 后表、列、索引恢复。`rollback-0013` 测试通过。
 
-## 5. 浏览器 before/after
+## 5. 非 root 隔离 cgroup 与 8 GiB slice
+
+```bash
+bash scripts/m5b/nonroot-oom-check.sh
+```
+
+实测（`docs/evidence/m5b/nonroot-oom.log`）：
+
+| 检查 | 结果 |
+| --- | --- |
+| 宿主启动前 MemAvailable | 14 376 560 kB（高于 8 GiB 安全下限） |
+| slice 控制组 | `/moyu.slice/moyu-m5b.slice` |
+| slice `memory.max` / `memory.high` | 8 589 934 592 / 6 442 450 944 字节（8 / 6 GiB） |
+| 压测进程身份 | `nobody`（uid 65534），运行在 slice 内 256 MiB scope |
+| scope `memory.max` | 268 435 456 字节 |
+| 结果 | `oom-kill`，主进程 `killed/status=KILL`，`Memory peak: 256.0M`，swap peak 0 |
+| 宿主结束后 MemAvailable | 14 374 360 kB（无宿主级 OOM） |
+
+该 fixture 先读取自身 `memory.max`，只有 ≤256 MiB 才分配；使用 `MemorySwapMax=0` 强制在
+cgroup 内 OOM，而不是让宿主回收/换出。单元与 cgroup 在退出时清理。此证据证明非 root
+子组、单一 slice 上限与受控 OOM 可用；**不**证明完整非 root supervisor 生命周期或
+平台/DB/runtime/三仓库同 slice 压力。
+
+## 6. 浏览器 before/after
 
 两个真实 API 实例读取同一个隔离数据库：before 为 `main@af35caf` 的 Web/API 构建，
 after 为本分支构建；同一仓库、视口与主题。运行行是固定的运行时投影 fixture（用于视觉状态），
@@ -96,7 +119,7 @@ DOM 断言结果：
 | 在线仓库显示执行代次 | 否 | 是 |
 | 故障仓库显示“自动重试已用尽 / 已发生 OOM / 等待运行时” | 否 | 是 |
 
-## 6. 故障事件（必须记录）
+## 7. 故障事件（必须记录）
 
 2026-11-06 约 01:53 CST，在一次非 root cgroup 探针中，内存压测进程未能写入预期的委托
 cgroup（`cgroup.procs` 写入失败），实际运行在
@@ -108,18 +131,21 @@ node 进程，主 3082 服务随之中断。未修改生产数据、Nginx、3082
 `scripts/m5b/memory-hog.mjs` 因此先读取自身 `memory.max`，超过 256 MiB 或缺失即拒绝分配，
 并且只应通过 `systemd-run` 放入独立 slice 后使用。
 
-## 7. 未验证项
+## 8. 未验证项
 
-1. **非 root supervisor 的真实运行**：未在独立非 root unit + 委托 cgroup 下跑完整生命周期。
-2. **单一 8 GB slice 的 live 强制**：只有 unit/配置、准入逻辑单测与只读检查脚本，未在真实
-   平台+DB+runtime+构建测试同 slice 下压到边界；没有声称 8 GB 已实测。
-3. **三仓库资源压力、真实 OOM 事件、恢复后清错**：未完成 live 复现。
+1. **非 root supervisor 的真实生命周期**：已用 `nobody` 在 256 MiB scope 中验证 cgroup
+   OOM 与 8 GiB slice 上限，但未以非 root 运行 supervisor 本身，也未跑启动/停止/失联/重试
+   的完整非 root 生命周期。
+2. **平台+DB+runtime+构建测试同 slice 的完整压力**：slice 上限与子组 OOM 已验证；未在真实
+   平台、隔离 DB、runtime 与三仓库同时运行时压到边界，不把 256 MiB 子组证据外推为完整
+   8 GiB 聚合验收。
+3. **三仓库资源压力、恢复后清错**：未完成 live 复现；OOM 子组证据不等于三仓库调度证据。
 4. **上游 runtime admission**：start/retry/GitHub Trigger 尚未带上 admission；当前 fencing
    在平台控制面执行，在线 GitHub 入口存在 runtime 先执行的窗口。
 5. 因此六类矩阵未完整通过，PR 不能按“全阶段完成”交付；需要继续补齐上述 live 证据与
    上游契约改动。
 
-## 8. 回滚与清理
+## 9. 回滚与清理
 
 - 代码回滚：revert 本 PR；迁移回滚见 §4（只在 0013 为最后一条时执行）。
 - 测试 UI：隔离 API 已停止，`moyu_m5b_ui` 已删除；截图与 JSON 保留在
