@@ -92,6 +92,18 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres corepack pnpm t
   边界证明（无 cgroup 的 unknown 仍然阻止释放）。supervisor 单测 28 通过。
 - 证据 `docs/evidence/m5b/nonroot-supervisor-lifecycle.txt`。
 
+### 本地测试 provider 尝试（未通过）
+
+- 在隔离 0023 profile 中把 `llm-pi-ai` 的 `baseURL` 指向 loopback
+  `http://127.0.0.1:3801/v1`，模型 `local-test`，使用 dummy key；provider 只返回合成响应。
+- DSH 接受了该 provider 和两条 workspace candidate（`workspace:dual-20/30`，explicit），
+  主 Session 工具列表含 `orchestrator_route`。第一次合成路由参数形状错误，工具返回
+  `expected array at decisions`；修正为 `{decisions:[{kind,trigger_id,...}]}` 后仍未提交
+  ticket/decision，Bridge events 为空，没有 Assignment 或子进程。
+- 因此只证明了 provider 接口可加载和 candidate 可送达，未取得真实执行/双入口/竞态计数；
+  证据 `docs/evidence/m5b/local-provider-attempt.txt`，测试脚本
+  `scripts/m5b/local-provider.mjs`。共享 3082 和真实凭据未介入。
+
 ### 上游 admission 补丁（0023）
 
 - 在固定 upstream `6337fc823ce20251c8de8085948165c81aaa701e` + 0001–0022 上生成
