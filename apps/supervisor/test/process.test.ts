@@ -345,3 +345,41 @@ describe('queued wake merge', () => {
     ).toEqual({ queuePriority: 20, wakeRequestedAt: at });
   });
 });
+
+describe('pre-exec cgroup handshake', () => {
+  it('does not run the command before the supervisor releases it', async () => {
+    const { spawn } = await import('node:child_process');
+    const { mkdtempSync, existsSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'm5b-handshake-'));
+    const marker = join(dir, 'started');
+    const child = spawn(
+      '/bin/sh',
+      ['-c', 'read go <&3; exec /bin/sh -c "touch $1"', 'moyu-cgroup', marker],
+      {
+        detached: true,
+        stdio: ['ignore', 'ignore', 'ignore', 'pipe'],
+      },
+    );
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(existsSync(marker)).toBe(false);
+      const release = child.stdio[3] as import('node:stream').Writable | null;
+      expect(release && 'end' in release).toBe(true);
+      release!.end('go\n');
+      await new Promise<void>((resolve, reject) => {
+        child.once('exit', (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
+        child.once('error', reject);
+      });
+      expect(existsSync(marker)).toBe(true);
+    } finally {
+      try {
+        process.kill(-child.pid!, 'SIGKILL');
+      } catch {
+        /* already exited */
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

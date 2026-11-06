@@ -33,7 +33,7 @@ corepack pnpm build
 ```text
 61543347b7e4e9932d519210699000526d60dcb11621230e445e82657c4c470c  apps/api/dist/server.js
 50ce9c574fe00ed0938032fa2542fb57486a890f4687f525deac46814fc81981  apps/dispatcher/dist/main.js
-49c2fc8e2e6f81348a47b31d73e32fda0a8f3053fbbf50060866ea5a962d9fcf  apps/supervisor/dist/main.js
+9aeb4c0685131e544ff97d053d953eac7250f0358778b6fb86e0972492eea2d0  apps/supervisor/dist/main.js
 b55236342ec8251d9890787cf6e0b45829a322b51cf99c5daaa36c1f74fe9746  apps/web/dist/assets/index-Cng83waZ.js
 39a2cbfc47d44d272bc18fad5772346b891e06713d07009e4357f7af51cb5424  apps/web/dist/assets/index-DnIo0nRx.css
 b06e32aebd8dfa96845f74dc916613de7f4d775935c7ce27f5875fcef13f8196  packages/db/migrations/0013_loving_quentin_quire.sql
@@ -49,7 +49,7 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres corepack pnpm t
 | --- | --- |
 | `@moyu/db`（含 0013 rollback → reapply） | 10 文件 / 36 测试通过 |
 | `@moyu/api`（M4 暂停继续、双入口、分页、仓库生命周期） | 11 文件 / 66 测试通过 |
-| `@moyu/dispatcher`（多仓库、operations、租约、复审回归、admission） | 4 文件 / 47 测试通过 |
+| `@moyu/dispatcher`（多仓库、operations、租约、复审回归、admission） | 4 文件 / 48 测试通过 |
 
 租约测试覆盖：
 
@@ -87,16 +87,18 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres corepack pnpm t
 - 停止：sleep 返回 accepted，进程消失、3701/3702 关闭、实例 cgroup `cgroup.procs` 为空。
 - 重启：停止 supervisor 后控制/运行端口关闭且无 DSH；重启后实例保持 sleeping、不自动启动，
   再次 wake 可重新 online；随后再次 clean stop。
-- 本步修复了两个非 root 路径问题：改为 supervisor 显式把已 spawn 的子 PID 写入实例
-  cgroup（自写 cgroup.procs 在委托组上返回 I/O error）；以及 cgroup 可读且为空时接受为
-  边界证明（无 cgroup 的 unknown 仍然阻止释放）。supervisor 单测 28 通过。
+- 本步修复了非 root cgroup 路径：子进程在 `exec` 前阻塞于 fd 3，supervisor 先把它写入
+  实例 cgroup 再释放；启动/停止中断都不会有用户代码在边界外运行。另把可读且空的 cgroup
+  作为边界证明（无 cgroup 的 unknown 仍然阻止释放）。supervisor 单测 29 通过，含
+  “释放前不执行命令”的 handshake 回归。
 - 证据 `docs/evidence/m5b/nonroot-supervisor-lifecycle.txt`。
 
 ### 本地测试 provider 尝试（未通过）
 
 - 在隔离 0023 profile 中把 `llm-pi-ai` 的 `baseURL` 指向 loopback
   `http://127.0.0.1:3801/v1`，模型 `local-test`，使用 dummy key；provider 只返回合成响应。
-- DSH 接受了该 provider 和两条 workspace candidate（`workspace:dual-20/30`，explicit），
+- DSH 接受了该 provider 和两条 workspace candidate（`workspace:dual-20/30`，explicit；
+  实际 provider 触发 ID 为 `workspace:dual-30`），
   主 Session 工具列表含 `orchestrator_route`。第一次合成路由参数形状错误，工具返回
   `expected array at decisions`；修正为 `{decisions:[{kind,trigger_id,...}]}` 后仍未提交
   ticket/decision，Bridge events 为空，没有 Assignment 或子进程。
@@ -109,14 +111,15 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres corepack pnpm t
 - 在固定 upstream `6337fc823ce20251c8de8085948165c81aaa701e` + 0001–0022 上生成
   `integrations/superagent/patches/0023-execution-admission.patch`；`build-patched.sh` 全量
   `git apply --check`、typecheck、构建通过。
-- 上游测试：1296/1297 通过；唯一失败是 `tests/sources.spec.ts` 的既有可选 Feishu 用例
+- 上游测试：1299/1300 通过；唯一失败是 `tests/sources.spec.ts` 的既有可选 Feishu 用例
   （README 已记录，不是本补丁引入）。
-- 定向 admission 测试：`tests/bridge.spec.ts` 24、`tests/pause.spec.ts` 16、
+- 定向 admission 测试：`tests/admission.spec.ts` 3、`tests/bridge.spec.ts` 24、`tests/pause.spec.ts` 16、
   `tests/bridge-control.spec.ts` 25 全通过，覆盖：
   - 无 admission 的 workspace trigger 返回 422 且不落 Trigger、不产生执行；
   - start/retry 无 admission 返回 422 且不调用启动；带当前 admission 才入队；
   - GitHub Ticket 创建后停在 `pending_admission`、无 Assignment；`/admit` 后才启动；
-  - 旧代次 token 被 `admissionStale` 拒绝。
+  - 旧代次 token 被 `admissionStale` 拒绝；跨 Ticket 的仓库 fence 拒绝延迟 Trigger；
+  - pause 先于 admit 时不创建 Assignment。
 - 构建制品：`/root/src/upstream/m5b-admission-build2`；hash 见
   `docs/evidence/m5b/upstream-admission-build.txt`。
 - 平台侧按 `capabilities.admission` 发送 admission；`pending_admission` 任务由

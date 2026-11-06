@@ -1,3 +1,15 @@
+diff --git a/docs/007-architecture.md b/docs/007-architecture.md
+index 12b62a4..5239bbf 100644
+--- a/docs/007-architecture.md
++++ b/docs/007-architecture.md
+@@ -416,6 +416,7 @@ Some generic modules still refer directly to GitHub or Feishu:
+ | `tests/ticket-freeze.spec.ts` | The frozen execution spec: parsing it from a workspace Trigger, copying model/base/mode onto the accepted Ticket, leaving other Sources without one, and the launch-time model validation that never falls back |
+ | `tests/discussion.spec.ts` | Discussion mode: the read-only tool allow-list and permission preset, the read-only worktree boundary and refusal of local tools such as subagent, the work tools and `danger-full-access` for execute, replacing the restriction when the mode changes, the discussion assignment text, and `discussing` state projection |
+ | `tests/pause.spec.ts` | A human pause and resume: Inputs and attention kept, the Executor pause, `stoppedAt` evidence and failures, resume admission and ticket identity, starting a discuss plan, non-retryability, and `DshExecutor.pause` stopping jobs with its evidence |
++| `tests/admission.spec.ts` | Execution admission in the core: retry/start/admit without a usable token, an invalid or stale generation, the repository-wide fence for delayed Triggers, and pause-before-admit creating no Assignment |
+ | `tests/bridge-control.spec.ts` | M4 execution control: the operation log across a reopen, pause/resume/start/retry endpoints and their 202/404/409/422 answers, idempotency, settlement from Ticket state, operation persistence across a Bridge restart, the M4 ticket snapshot, `targetTicketId` attach/conflict/ended cases, `ticket.paused` events, and one-time GitHub `ticket.imported` events |
+ | `tests/bridge-branches.spec.ts` | The read-only branch list: the sorted 200 shape and `branches` capability, one page versus pagination, the ten-page `hasMore` cap, repository-scoped `commands.api` paths, a CLI failure as 503, malformed data as 502, and bearer auth |
+ | `tests/process-tree.spec.ts` | The harness process tree used as stop evidence: a live child PID and its command, and its disappearance after exit |
 diff --git a/src/app/bridge.ts b/src/app/bridge.ts
 index 0b600f9..d98dd8d 100644
 --- a/src/app/bridge.ts
@@ -182,6 +194,34 @@ index cb7d68a..13ca981 100644
            // Notify the main Session only about domain events it did not initiate itself.
            const notice = this.quiet ? undefined : eventNotice(event, id => store.tickets.get(id))
            if (notice) sessions.notify(...notice)
+diff --git a/src/app/store.ts b/src/app/store.ts
+index d4aa403..807703a 100644
+--- a/src/app/store.ts
++++ b/src/app/store.ts
+@@ -240,6 +240,10 @@ export class Store implements Repositories {
+     /** Newest first. */
+     active: (): Ticket[] => this.values('SELECT value FROM ticket WHERE active = 1 ORDER BY rowid DESC'),
+   }
++  readonly admission: Repositories['admission'] = {
++    fence: () => this.get(KV.admission.fence),
++    saveFence: token => this.set(KV.admission.fence, token),
++  }
+   readonly decisions = {
+     get: (id: string): Decision | undefined => { const row = this.db.prepare('SELECT value FROM decision WHERE id=?').get(id); return row ? JSON.parse(String(row.value)) as Decision : undefined },
+     save: (decision: Decision): void => { this.db.prepare('INSERT INTO decision VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value, thread=excluded.thread').run(decision.id, decision.threadKey, JSON.stringify(decision)) },
+diff --git a/src/app/tools/main.ts b/src/app/tools/main.ts
+index d499004..147e9c3 100644
+--- a/src/app/tools/main.ts
++++ b/src/app/tools/main.ts
+@@ -160,7 +160,7 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
+     routeTool(host),
+     tool({
+       name: 'orchestrator_ticket_retry',
+-      description: 'Start a new assignment on an explicit human request to retry a ticket whose worker reported failed or blocked, or whose input was not delivered; the stalled one ends.',
++      description: 'Retry is started by the platform under the repository execution lease; the main Session has no admission and cannot start an Assignment itself.',
+       schema: z.object({ ticket_id: z.string() }).strict(),
+       execute: async args => routed(host, { reason: 'Started a new assignment', ticketId: host.engine.retryTicket(args.ticket_id).id }),
+     }),
 diff --git a/src/client/locales.ts b/src/client/locales.ts
 index 006dceb..ade914e 100644
 --- a/src/client/locales.ts
@@ -258,6 +298,37 @@ index 70a0208..5013dd9 100644
    resumeStateLost: ['refused', 'The frozen model, repository, or base of this ticket is no longer present; its execution state cannot be resumed'],
    notDiscussing: ['refused', 'Only a discuss ticket can be started; this one is already an execute ticket'],
    ticketPaused: ['refused', 'This ticket is paused; resume it before starting the plan'],
+diff --git a/src/core/memory.ts b/src/core/memory.ts
+index 13bfeff..a786fe5 100644
+--- a/src/core/memory.ts
++++ b/src/core/memory.ts
+@@ -13,12 +13,15 @@ export class MemoryRepositories implements Repositories {
+   private readonly threadRows = new Map<string, Thread>()
+   private readonly ticketRows = new Map<string, Ticket>()
+   private readonly decisionRows = new Map<string, Decision>()
++  private fence: string | undefined
+   atomic<T>(work: () => T): T {
+     const maps: Map<string, unknown>[] = [this.triggerRows, this.dispositions, this.threadRows, this.ticketRows, this.decisionRows]
+     const snapshot = maps.map(map => new Map(map))
++    const fence = this.fence
+     try { return work() }
+     catch (error) {
+       maps.forEach((map, index) => { map.clear(); for (const [id, value] of snapshot[index]!) map.set(id, value) })
++      this.fence = fence
+       throw error
+     }
+   }
+@@ -42,6 +45,10 @@ export class MemoryRepositories implements Repositories {
+     open: () => this.tickets.list().filter(ticket => !ticket.ended),
+     active: () => this.tickets.list().filter(ticket => ticket.undelivered.length > 0 || ['pending', 'running'].includes(latestAssignment(ticket)?.state ?? '')),
+   }
++  readonly admission = {
++    fence: () => this.fence,
++    saveFence: (token: string) => { this.fence = token },
++  }
+   readonly decisions = {
+     get: (id: string) => clone(this.decisionRows.get(id)),
+     save: (decision: Decision) => { this.decisionRows.set(decision.id, clone(decision)) },
 diff --git a/src/core/model.ts b/src/core/model.ts
 index 1800052..a1aa102 100644
 --- a/src/core/model.ts
@@ -284,11 +355,27 @@ index 14d5c6d..3f4552d 100644
    now?: () => string
    emit?: (event: DomainEvent) => void
  }
+diff --git a/src/core/ports.ts b/src/core/ports.ts
+index b55ccfd..05899cf 100644
+--- a/src/core/ports.ts
++++ b/src/core/ports.ts
+@@ -136,6 +136,11 @@ export interface Repositories {
+     /** Tickets with undelivered Inputs or a pending or running Assignment, which is always the latest. */
+     active(): Ticket[]
+   }
++  /** Repository-wide highest admission generation; a delayed Trigger below it must not start. */
++  admission: {
++    fence(): string | undefined
++    saveFence(token: string): void
++  }
+   decisions: {
+     get(id: string): Decision | undefined
+     save(decision: Decision): void
 diff --git a/src/core/tickets.ts b/src/core/tickets.ts
-index 35f257e..2d85787 100644
+index 35f257e..8eb37ab 100644
 --- a/src/core/tickets.ts
 +++ b/src/core/tickets.ts
-@@ -56,16 +56,25 @@ export class Tickets extends EnginePart {
+@@ -56,16 +56,37 @@ export class Tickets extends EnginePart {
      let ticket: Ticket = { id, title: outcome.title, decisionId, mandate, channels: [], assignments: [], inputs: [], undelivered: [],
        createdAt: at, updatedAt: at, origin,
        ...spec ? { model: spec.model, modelSource: spec.modelSource, base: { repository: spec.repository, branch: spec.baseBranch, commit: spec.baseCommit }, mode: spec.mode } : {} }
@@ -299,8 +386,20 @@ index 35f257e..2d85787 100644
 +    if (this.options.requireAdmission === true) {
 +      if (primary?.source === 'github') ticket.admissionRequired = true
 +      else if (!workspaceAdmission?.leaseId || !workspaceAdmission.fencingToken) ticket.admissionRequired = true
-+    }
-+    if (workspaceAdmission?.leaseId && workspaceAdmission.fencingToken) ticket.admission = { ...workspaceAdmission }
++      else {
++        try {
++          this.acceptAdmission(ticket, workspaceAdmission)
++          delete ticket.admissionRequired
++        } catch (error) {
++          // A delayed Trigger below the repository fence (or with no usable
++          // token) may still be recorded, but it must not start work.
++          if (error instanceof UserError && ['admissionRequired', 'admissionStale'].includes(error.code ?? '')) {}
++          else throw error
++          ticket.admissionRequired = true
++          delete ticket.admission
++        }
++      }
++    } else if (workspaceAdmission?.leaseId && workspaceAdmission.fencingToken) ticket.admission = { ...workspaceAdmission }
      for (const triggerId of triggerIds) {
        const channel = this.repo.triggers.get(triggerId)?.channel
        if (channel && !ticket.channels.some(item => sameChannel(item, channel))) ticket.channels.push(channel)
@@ -316,7 +415,7 @@ index 35f257e..2d85787 100644
      this.emit('ticket.created', { ticketId: id, decisionId, strength: mandate.strength })
    }
    /**
-@@ -208,17 +217,13 @@ export class Tickets extends EnginePart {
+@@ -208,17 +229,13 @@ export class Tickets extends EnginePart {
      const ticket = this.require(ticketId)
      if (!ticket.paused) throw new UserError('notPaused')
      if (!ticket.paused.stoppedAt) throw new UserError('pauseStopping')
@@ -335,7 +434,7 @@ index 35f257e..2d85787 100644
      if (latest && latest.state !== 'ended') this.endAssignment(ticket, latest, 'resumed')
      if (latest) this.requeueUntaken(ticket, latest)
      const assignment = this.newAssignment(ticket)
-@@ -238,12 +243,13 @@ export class Tickets extends EnginePart {
+@@ -238,12 +255,14 @@ export class Tickets extends EnginePart {
     * pull request; only its tools and permission preset switch to execute on launch.
     * @throws UserError when the ticket is unknown or ended, not in discuss mode, paused, or `planRevision` is below 1.
     */
@@ -346,11 +445,12 @@ index 35f257e..2d85787 100644
      if (ticket.mode !== 'discuss') throw new UserError('notDiscussing')
      if (ticket.paused) throw new UserError('ticketPaused')
      if (!Number.isInteger(planRevision) || planRevision < 1) throw new UserError('invalidPlanRevision')
-+    if (admission) this.acceptAdmission(ticket, admission)
++    if (!admission) throw new UserError('admissionRequired')
++    this.acceptAdmission(ticket, admission)
      const at = this.now()
      ticket.mode = 'execute'
      ticket.planRevision = planRevision
-@@ -292,10 +298,11 @@ export class Tickets extends EnginePart {
+@@ -292,10 +311,12 @@ export class Tickets extends EnginePart {
     * Ends the stalled assignment of a retryable open ticket (`failed`, `blocked`, or failed input delivery) and starts a new one.
     * @throws UserError when the ticket is unknown or not retryable.
     */
@@ -359,11 +459,12 @@ index 35f257e..2d85787 100644
      const ticket = this.require(ticketId)
      const latest = latestAssignment(ticket)
      if (!canRetry(ticket) || !latest) throw new UserError('notRetryable')
-+    if (admission) this.acceptAdmission(ticket, admission)
++    if (!admission) throw new UserError('admissionRequired')
++    this.acceptAdmission(ticket, admission)
      this.endAssignment(ticket, latest, 'retried')
      this.requeueUntaken(ticket, latest)
      const assignment = this.newAssignment(ticket)
-@@ -511,6 +518,49 @@ export class Tickets extends EnginePart {
+@@ -511,6 +532,52 @@ export class Tickets extends EnginePart {
      delete ticket.delivery
      return assignment
    }
@@ -376,23 +477,25 @@ index 35f257e..2d85787 100644
 +      || typeof admission.fencingToken !== 'string' || !admission.fencingToken) {
 +      throw new UserError('admissionRequired')
 +    }
-+    // The platform sends a decimal generation; keep accepting older non-numeric
-+    // test/historical admissions without a monotonic comparison.
-+    if (!/^[0-9]+$/.test(admission.fencingToken)) {
-+      ticket.admission = { leaseId: admission.leaseId, fencingToken: admission.fencingToken }
-+      return
-+    }
++    if (!/^[0-9]+$/.test(admission.fencingToken)) throw new UserError('admissionRequired')
++    const next = BigInt(admission.fencingToken)
++    const fence = this.repo.admission.fence()
 +    const previous = ticket.admission
++    // The repository fence closes the cross-Ticket hole: a delayed Trigger or
++    // a direct retry carrying an older generation cannot start work merely
++    // because this Ticket has no admission yet.
++    if (fence && next < BigInt(fence)) throw new UserError('admissionStale')
++    if (fence && next === BigInt(fence) && previous && previous.leaseId !== admission.leaseId) {
++      throw new UserError('admissionStale')
++    }
 +    if (previous && /^[0-9]+$/.test(previous.fencingToken)) {
-+      const next = BigInt(admission.fencingToken)
 +      const old = BigInt(previous.fencingToken)
-+      // A lower generation is stale; the same generation is the same lease
-+      // (a reply, start or retry under it), not a replacement.
 +      if (next < old || (next === old && previous.leaseId !== admission.leaseId)) {
 +        throw new UserError('admissionStale')
 +      }
 +    }
 +    ticket.admission = { leaseId: admission.leaseId, fencingToken: admission.fencingToken }
++    if (!fence || next > BigInt(fence)) this.repo.admission.saveFence(admission.fencingToken)
 +  }
 +  /**
 +   * Start a Source-created ticket that was held for platform admission. Idempotent once an assignment exists.
@@ -401,6 +504,7 @@ index 35f257e..2d85787 100644
 +  admit(ticketId: string, admission: TicketAdmission): Ticket {
 +    const ticket = this.require(ticketId)
 +    if (!liveTicket(ticket)) throw new UserError('ticketEnded')
++    if (ticket.paused) throw new UserError('ticketPaused')
 +    if (!ticket.admissionRequired) return ticket
 +    this.acceptAdmission(ticket, admission)
 +    delete ticket.admissionRequired
@@ -413,6 +517,103 @@ index 35f257e..2d85787 100644
    private endAssignment(ticket: Ticket, assignment: Assignment, reason: string): void {
      assignment.state = 'ended'; assignment.endedAt = this.now(); assignment.endedReason = reason
      this.emit('assignment.ended', { ticketId: ticket.id, assignmentId: assignment.id, reason })
+diff --git a/src/kv.ts b/src/kv.ts
+index e7ed695..473c486 100644
+--- a/src/kv.ts
++++ b/src/kv.ts
+@@ -29,6 +29,8 @@ export const KV = {
+   prompts: { revision: record<number>('prompt-revision'), version: family<PromptVersion, [revision: number]>('prompt-version:'),
+     /** The built-in text of a prompt part an override was edited from, by its `base`, which shows what an upgrade changed. */
+     builtIn: family<string, [base: string]>('prompt-built-in:') },
++  /** M5-B execution admission: the highest fencing generation this runtime accepted for the repository. */
++  admission: { fence: record<string>('admission-fence') },
+   /** Runtime: the main Session's ID. */
+   runtime: { masterId: record<string>('master-id') },
+   /** Sessions: prompt revisions each Session has worked under, ordered oldest first; the last entry (`.at(-1)`) is its active revision. */
+diff --git a/tests/admission.spec.ts b/tests/admission.spec.ts
+new file mode 100644
+index 0000000..35aaebb
+--- /dev/null
++++ b/tests/admission.spec.ts
+@@ -0,0 +1,78 @@
++import { describe, expect, it, vi } from 'vitest'
++import { Engine, MemoryRepositories, latestAssignment, type Assessor, type Candidate, type Executor, type Outbox, type Policy, type Ticket, type Trigger } from '../src/core/index.ts'
++
++const MODEL = { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash', reasoningEffort: 'high' }
++const SPEC = { repository: 'acme/widgets', baseBranch: 'main', baseCommit: 'abc123', model: MODEL, modelSource: 'spec' as const }
++const admission = (n: number | string) => ({ leaseId: `lease-${n}`, fencingToken: String(n) })
++const wsTrigger = (id: string, token?: number | string): Trigger => ({
++  id, source: 'workspace', threads: [{ source: 'workspace', id: `workspace:c-${id}` }], actor: { source: 'workspace', id: 'owner' },
++  human: true, addressed: 'direct', at: '2026-11-03T12:00:00.000Z', text: 'Fix the margin',
++  channel: { source: 'workspace', thread: `workspace:c-${id}`, address: { conversationId: `c-${id}` } },
++  meta: { conversationId: `c-${id}`, messageId: id, triggerId: id, spec: { ...SPEC, mode: 'execute' },
++    ...(token === undefined ? {} : { admission: admission(token) }) },
++})
++const githubTrigger = (): Trigger => ({
++  id: 'github:1', source: 'github', threads: [{ source: 'github', id: 'github:acme/widgets:1' }],
++  actor: { source: 'github', id: 'owner' }, human: true, addressed: 'mention', at: '2026-11-03T12:00:00.000Z',
++  text: 'Fix it', meta: { number: 1, repository: 'acme/widgets' },
++})
++
++function harness() {
++  const repo = new MemoryRepositories()
++  const requests: Candidate[] = []
++  const starts: string[] = []
++  const assessor: Assessor = { request: candidate => { requests.push(candidate) } }
++  const executor: Executor = {
++    start: (_ticket, assignment) => { starts.push(assignment.id) },
++    deliver: () => {},
++    stop: () => {},
++    pause: () => {},
++  }
++  const outbox: Outbox = { send: () => {}, status: () => undefined, withdraw: () => {} }
++  const policy: Policy = { version: 'v1', paused: false, evalTimeoutMs: 60_000,
++    gate: () => ({ admissible: true, strength: 'explicit', basis: { via: 'listed' } }), revalidate: () => true, admitsInferred: () => true }
++  const engine = new Engine({ repo, scope: { scope: () => ({ listened: true, observed: false, row: 'web' }) }, policy: () => policy,
++    assessor, executor, outbox, requireAdmission: true })
++  const accept = (trigger: Trigger): Ticket => {
++    engine.receive(trigger)
++    engine.evaluateDue()
++    const candidate = requests.at(-1)!
++    engine.decide(candidate.triggers[0]!.id, { evalId: candidate.evalId, kind: 'accept', title: 'Fix', scope: 'small', reason: 'asked', name: 'fix-margin' })
++    return repo.tickets.list()[0]!
++  }
++  return { repo, engine, accept, starts }
++}
++
++describe('execution admission is enforced in the core', () => {
++  it('refuses retry without a token or with an invalid or stale generation', () => {
++    const h = harness()
++    const ticket = h.accept(wsTrigger('workspace:1', 7))
++    expect(latestAssignment(ticket)?.state).toBe('pending')
++    expect(h.starts).toHaveLength(1)
++    h.engine.assignmentStarted(ticket.id, latestAssignment(ticket)!.id)
++    h.engine.report(ticket.id, { state: 'failed', summary: 'probe' })
++    expect(() => h.engine.retryTicket(ticket.id)).toThrow(/admission/i)
++    expect(h.starts).toHaveLength(1)
++    expect(() => h.engine.retryTicket(ticket.id, admission('abc'))).toThrow(/admission/i)
++    expect(h.starts).toHaveLength(1)
++    expect(() => h.engine.retryTicket(ticket.id, admission(1))).toThrow(/admission/i)
++    expect(h.starts).toHaveLength(1)
++  })
++
++  it('holds a delayed workspace trigger whose generation is older than the repository fence', () => {
++    const h = harness()
++    h.accept(wsTrigger('workspace:1', 7))
++    h.accept(wsTrigger('workspace:2', 1))
++    expect(h.starts).toHaveLength(1)
++  })
++
++  it('never starts a pending admitted ticket after a pause', () => {
++    const h = harness()
++    const pending = h.accept(githubTrigger())
++    expect(pending.assignments).toHaveLength(0)
++    h.engine.pauseTicket(pending.id, 'op-pause')
++    expect(() => h.engine.admitTicket(pending.id, admission(7))).toThrow(/paused/i)
++    expect(h.repo.tickets.get(pending.id)?.paused).toBeTruthy()
++    expect(h.starts).toHaveLength(0)
++  })
++})
 diff --git a/tests/bridge.spec.ts b/tests/bridge.spec.ts
 index 36b75b5..54fe227 100644
 --- a/tests/bridge.spec.ts
@@ -517,11 +718,137 @@ index 36b75b5..54fe227 100644
 +    expect(h.engine.admitTicket).toHaveBeenCalledWith('pending', admission)
 +  })
 +})
+diff --git a/tests/core-engine.spec.ts b/tests/core-engine.spec.ts
+index 02e2a04..2d3cd96 100644
+--- a/tests/core-engine.spec.ts
++++ b/tests/core-engine.spec.ts
+@@ -3,6 +3,7 @@ import { acknowledgementId, attentionReplyId } from '../src/core/replies.ts'
+ import { Engine, MemoryRepositories, UserError, followupOwners, key, runningAssignment, ticketOutcome, ticketStage,
+   waitsForPerson } from '../src/core/index.ts'
+ import type { Assessor, Assignment, Candidate, EngineOptions, Executor, OutboundMessage, Outcome, Policy, Ticket, Trigger } from '../src/core/index.ts'
++import { TEST_ADMISSION } from './fixtures/admission.ts'
+ 
+ const member = { source: 'chat', id: 'alice' }
+ const guest = { source: 'chat', id: 'guest' }
+@@ -994,7 +995,7 @@ describe('automatic input', () => {
+     h.tick(1); h.engine.report(ticketId, { state: 'progress', summary: 'found a way' })
+     expect(waitsForPerson(ticket())).toBe(false)
+     h.tick(1); h.engine.report(ticketId, { state: 'blocked', summary: 'needs access' })
+-    h.engine.retryTicket(ticketId)
++    h.engine.retryTicket(ticketId, TEST_ADMISSION)
+     expect(waitsForPerson(ticket())).toBe(false)
+   })
+   it('launches a failed launch again for a person\'s message, but not for a Policy change', () => {
+@@ -1110,7 +1111,7 @@ describe('ticket commands', () => {
+     const other = accepted(h, '2', 't2').ticketId!
+     h.engine.bindThread(other, { source: 'gh', id: 'pr-12' }, true)
+     h.engine.report(other, { state: 'failed', summary: 'tests fail' })
+-    h.tick(10); h.engine.retryTicket(other)
++    h.tick(10); h.engine.retryTicket(other, TEST_ADMISSION)
+     expect(close('pr-12', 'closed', '2026-09-23T00:00:05Z')).toEqual([])
+     expect(h.repo.tickets.get(other)!.ended).toBeUndefined()
+     h.engine.report(other, { state: 'ready', summary: 'done' })
+@@ -1120,14 +1121,14 @@ describe('ticket commands', () => {
+   it('retries a ticket that reported failed with a new Assignment, and asks only a waiting worker for its status', () => {
+     const h = harness()
+     const ticketId = accepted(h).ticketId!
+-    expect(() => h.engine.retryTicket(ticketId)).toThrow(new UserError('notRetryable'))
++    expect(() => h.engine.retryTicket(ticketId, TEST_ADMISSION)).toThrow(new UserError('notRetryable'))
+     expect(h.engine.requestStatus(ticketId)).toBe(false)
+     expect(h.repo.tickets.get(ticketId)!.inputs).toEqual([])
+     h.engine.report(ticketId, { state: 'waiting', summary: 'idle' })
+     expect(h.engine.requestStatus(ticketId)).toBe(true)
+     expect(h.repo.tickets.get(ticketId)!.inputs).toEqual([expect.objectContaining({ kind: 'text', text: expect.stringContaining('status-only') })])
+     h.engine.report(ticketId, { state: 'failed', summary: 'broke' })
+-    const retried = h.engine.retryTicket(ticketId)
++    const retried = h.engine.retryTicket(ticketId, TEST_ADMISSION)
+     expect(retried.assignments).toEqual([expect.objectContaining({ state: 'ended', endedReason: 'retried' }), expect.objectContaining({ state: 'pending' })])
+     expect(h.executor.stop).toHaveBeenCalledOnce()
+     expect(h.executor.start).toHaveBeenLastCalledWith(expect.objectContaining({ id: ticketId }), retried.assignments[1])
+@@ -1143,7 +1144,7 @@ describe('failed deliveries', () => {
+     }
+     failed()
+     h.engine.report(ticketId, { state: 'blocked', summary: 'needs access' })
+-    h.engine.retryTicket(ticketId); h.settle()
++    h.engine.retryTicket(ticketId, TEST_ADMISSION); h.settle()
+     expect(h.repo.tickets.get(ticketId)).not.toHaveProperty('delivery')
+     failed()
+     h.engine.stopTicket(ticketId)
+@@ -1172,7 +1173,7 @@ describe('retry after a failed delivery', () => {
+     expect(answered.undelivered).toHaveLength(1)
+     h.engine.deliveryFailed(ticketId, runningAssignment(answered)!.id, 'Session gone')
+     expect(ticketStage(h.repo.tickets.get(ticketId)!)).toEqual({ stage: 'person', action: 'delivery' })
+-    const retried = h.engine.retryTicket(ticketId)
++    const retried = h.engine.retryTicket(ticketId, TEST_ADMISSION)
+     expect(retried.assignments.map(item => item.state)).toEqual(['ended', 'pending'])
+     expect(retried).not.toHaveProperty('delivery')
+     expect(retried.undelivered).toHaveLength(1)
+@@ -1245,7 +1246,7 @@ describe('gaps', () => {
+     const ticketId = accepted(h).ticketId!
+     const first = h.repo.tickets.get(ticketId)!.assignments[0]!.id
+     h.engine.report(ticketId, { state: 'failed', summary: 'broke' })
+-    h.engine.retryTicket(ticketId)
++    h.engine.retryTicket(ticketId, TEST_ADMISSION)
+     const before = h.repo.tickets.get(ticketId)!
+     const delivered = h.delivered.length
+     h.engine.assignmentStarted(ticketId, first); h.settle({ launch: false })
+@@ -1275,7 +1276,7 @@ describe('gaps', () => {
+     const ticketId = accepted(h).ticketId!
+     h.engine.report(ticketId, { state: 'failed', summary: 'broke' })
+     h.engine.stopTicket(ticketId)
+-    expect(() => h.engine.retryTicket(ticketId)).toThrow(new UserError('notRetryable'))
++    expect(() => h.engine.retryTicket(ticketId, TEST_ADMISSION)).toThrow(new UserError('notRetryable'))
+   })
+   it('answers a question once, sends a result only for finished work, and the same result once', () => {
+     const h = harness()
+@@ -1562,7 +1563,7 @@ describe('read claims review', () => {
+     const inputId = ticket().inputs.find(input => input.kind === 'trigger' && input.triggerId === '2')!.id
+     expect(ticket().undelivered).toEqual([])
+     h.tick(1); h.engine.report(ticketId, { state: 'failed', summary: 'The turn broke.' })
+-    h.tick(1); h.engine.retryTicket(ticketId)
++    h.tick(1); h.engine.retryTicket(ticketId, TEST_ADMISSION)
+     expect(ticket().undelivered).toEqual([inputId])
+   })
+ })
+@@ -1579,7 +1580,7 @@ describe('read claims review: retries', () => {
+     // A person's message resumes the ticket; its worker reports blocked before a step took the message, and a person retries.
+     h.tick(1); h.engine.receive(trigger('3')); h.settle()
+     h.tick(1); h.engine.report(ticketId, { state: 'blocked', summary: 'Which page?' })
+-    h.tick(1); h.engine.retryTicket(ticketId)
++    h.tick(1); h.engine.retryTicket(ticketId, TEST_ADMISSION)
+     expect(ticket().undelivered).toEqual([inputOf('3')])
+   })
+ })
+@@ -1596,7 +1597,7 @@ describe('read claims review: restarts', () => {
+     h.settle()
+     // That Assignment blocks before a step took it, and a person retries: the retry's Assignment gets it too.
+     h.tick(1); h.engine.report(ticketId, { state: 'blocked', summary: 'Which page?' })
+-    h.tick(1); h.engine.retryTicket(ticketId)
++    h.tick(1); h.engine.retryTicket(ticketId, TEST_ADMISSION)
+     expect(ticket().undelivered).toEqual([inputOf('2')])
+   })
+ })
+diff --git a/tests/fixtures/admission.ts b/tests/fixtures/admission.ts
+new file mode 100644
+index 0000000..1243579
+--- /dev/null
++++ b/tests/fixtures/admission.ts
+@@ -0,0 +1,2 @@
++/** A generation tests use when they are not exercising fencing itself. */
++export const TEST_ADMISSION = { leaseId: 'test-lease', fencingToken: '999999' }
 diff --git a/tests/pause.spec.ts b/tests/pause.spec.ts
-index fbc9dc8..fc75ada 100644
+index fbc9dc8..82485fa 100644
 --- a/tests/pause.spec.ts
 +++ b/tests/pause.spec.ts
-@@ -16,7 +16,7 @@ const trigger = (mode: 'execute' | 'discuss' = 'execute', id = 'workspace:m1'):
+@@ -5,6 +5,7 @@ import { Engine, MemoryRepositories, canRetry, latestAssignment, ticketStage, ty
+ import { DshExecutor, ticketExecution } from '../src/executor/dsh.ts'
+ import { projectTicketState } from '../src/app/bridge.ts'
+ import { SettingsSchema } from '../src/policy.ts'
++import { TEST_ADMISSION } from './fixtures/admission.ts'
+ 
+ const MODEL = { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash', reasoningEffort: 'high' }
+ const SPEC = { repository: 'acme/widgets', baseBranch: 'main', baseCommit: 'abc123', model: MODEL, modelSource: 'spec' as const }
+@@ -16,7 +17,7 @@ const trigger = (mode: 'execute' | 'discuss' = 'execute', id = 'workspace:m1'):
  })
  
  /** Minimal Engine whose Policy admits every human message explicitly; the Executor records start, pause, and stop calls. */
@@ -530,7 +857,7 @@ index fbc9dc8..fc75ada 100644
    const repo = new MemoryRepositories()
    const requests: Candidate[] = []
    const assessor: Assessor = { request: candidate => { requests.push(candidate) } }
-@@ -35,7 +35,10 @@ function harness() {
+@@ -35,7 +36,10 @@ function harness() {
    const engine = new Engine({ repo, scope: { scope: () => ({ listened: true, observed: false, row: 'web' }) }, policy: () => policy,
      assessor, executor, outbox,
      // As the Runtime's DshExecutor.prepare does: every accepted ticket gets its execution metadata at accept time.
@@ -542,7 +869,7 @@ index fbc9dc8..fc75ada 100644
    /** Accept a workspace ticket in `mode` and mark its first Assignment running, as the Executor would. */
    const accept = (mode: 'execute' | 'discuss' = 'execute'): Ticket => {
      engine.receive(trigger(mode))
-@@ -47,7 +50,7 @@ function harness() {
+@@ -47,7 +51,7 @@ function harness() {
      engine.assignmentStarted(ticket.id, latestAssignment(ticket)!.id)
      return repo.tickets.get(ticket.id)!
    }
@@ -551,7 +878,59 @@ index fbc9dc8..fc75ada 100644
  }
  
  describe('a discussion plan', () => {
-@@ -291,3 +294,46 @@ describe('DshExecutor.pause', () => {
+@@ -60,7 +64,7 @@ describe('a discussion plan', () => {
+     expect(discussed.mode).toBe('discuss')
+     expect(projectTicketState(discussed)).toBe('awaiting_review')
+     // The owner's explicit start works on the same ticket, worktree, and identity.
+-    const started = h.engine.startTicket(accepted.id, 1)
++    const started = h.engine.startTicket(accepted.id, 1, TEST_ADMISSION)
+     expect(started.id).toBe(accepted.id)
+     expect(started.mode).toBe('execute')
+     expect(started.planRevision).toBe(1)
+@@ -144,7 +148,7 @@ describe('a human pause', () => {
+     h.engine.pauseSettled(accepted.id, latestAssignment(h.repo.tickets.get(accepted.id)!)!.id, {})
+     const startsBefore = h.starts.length
+     expect(canRetry(h.repo.tickets.get(accepted.id)!)).toBe(false)
+-    expect(() => h.engine.retryTicket(accepted.id)).toThrow(/retried/)
++    expect(() => h.engine.retryTicket(accepted.id, TEST_ADMISSION)).toThrow(/retried/)
+     // A person's message arriving while paused is stored as an Input but launches and delivers nothing.
+     h.engine.receive(trigger('execute', 'workspace:m2'))
+     h.engine.evaluateDue()
+@@ -154,7 +158,7 @@ describe('a human pause', () => {
+ })
+ 
+ describe('resuming a paused ticket', () => {
+-  const admission = { leaseId: 'lease-1', fencingToken: 'fence-1' }
++  const admission = { leaseId: 'lease-1', fencingToken: '1' }
+ 
+   it('requires stoppedAt and an execution lease admission', () => {
+     const h = harness()
+@@ -204,7 +208,7 @@ describe('starting a discussion', () => {
+     const h = harness()
+     const accepted = h.accept('discuss')
+     const discussion = latestAssignment(h.repo.tickets.get(accepted.id)!)!
+-    const started = h.engine.startTicket(accepted.id, 2)
++    const started = h.engine.startTicket(accepted.id, 2, TEST_ADMISSION)
+     expect(started.id).toBe(accepted.id)
+     expect(started.mode).toBe('execute')
+     expect(started.planRevision).toBe(2)
+@@ -219,12 +223,12 @@ describe('starting a discussion', () => {
+   it('requires discuss mode, an open unpaused ticket, and planRevision >= 1', () => {
+     const h = harness()
+     const executing = h.accept()
+-    expect(() => h.engine.startTicket(executing.id, 1)).toThrow(/discuss ticket/)
++    expect(() => h.engine.startTicket(executing.id, 1, TEST_ADMISSION)).toThrow(/discuss ticket/)
+     const h2 = harness()
+     const discussing = h2.accept('discuss')
+-    expect(() => h2.engine.startTicket(discussing.id, 0)).toThrow(/plan revision/)
++    expect(() => h2.engine.startTicket(discussing.id, 0, TEST_ADMISSION)).toThrow(/plan revision/)
+     h2.engine.pauseTicket(discussing.id, 'op-1')
+-    expect(() => h2.engine.startTicket(discussing.id, 1)).toThrow(/paused/)
++    expect(() => h2.engine.startTicket(discussing.id, 1, TEST_ADMISSION)).toThrow(/paused/)
+   })
+ })
+ 
+@@ -291,3 +295,46 @@ describe('DshExecutor.pause', () => {
      expect(h.jobs.size).toBe(1)
    })
  })
@@ -598,3 +977,110 @@ index fbc9dc8..fc75ada 100644
 +    expect(h.engine.startTicket(ticket.id, 1, admission).mode).toBe('execute')
 +  })
 +})
+diff --git a/tests/runtime-concurrency.spec.ts b/tests/runtime-concurrency.spec.ts
+index 1a7eac3..e086ae1 100644
+--- a/tests/runtime-concurrency.spec.ts
++++ b/tests/runtime-concurrency.spec.ts
+@@ -8,6 +8,7 @@ import { SettingsSchema } from '../src/policy.ts'
+ import { Commands } from '../src/infra/commands.ts'
+ import { deferred, waitUntil } from './fixtures/async.ts'
+ import { CHAT, MEMBER, feishu, startRuntime, type Host } from './fixtures/host.ts'
++import { TEST_ADMISSION } from './fixtures/admission.ts'
+ 
+ let h: Host
+ beforeEach(async () => { h = await startRuntime() })
+@@ -312,7 +313,7 @@ describe('a worker whose work runs in the background', () => {
+     idle(one.sessionId); await h.runtime.idle()
+     // Delivering a person's message fails, and a person retries: the subagent is released, and a second Assignment starts.
+     h.runtime.engine.deliveryFailed(one.ticket.id, latestAssignment(ticket())!.id, 'Session busy')
+-    h.runtime.engine.retryTicket(one.ticket.id); await h.runtime.idle()
++    h.runtime.engine.retryTicket(one.ticket.id, TEST_ADMISSION); await h.runtime.idle()
+     await vi.waitFor(() => expect(latestAssignment(ticket())).toMatchObject({ state: 'running' }))
+     expect(h.subagents.live(child)).toBe(false)
+     // The second Assignment's turn ends: it is reported waiting.
+diff --git a/tests/runtime.spec.ts b/tests/runtime.spec.ts
+index 892cb1b..00f7b2a 100644
+--- a/tests/runtime.spec.ts
++++ b/tests/runtime.spec.ts
+@@ -35,6 +35,7 @@ import { overview } from '../src/app/views/overview.ts'
+ import { preview, readable } from '../src/app/views/text.ts'
+ import { decisionList, search, threadDetail, threadList } from '../src/app/views/threads.ts'
+ import { executorLoad, ticketDetail, ticketList } from '../src/app/views/tickets.ts'
++import { TEST_ADMISSION } from './fixtures/admission.ts'
+ 
+ let runtime: Runtime
+ const viewsOf = (value: Runtime) => ({ store: value.store, sources: value.sources, links: value.links() })
+@@ -670,13 +671,13 @@ it('records an admission table change in the Policy history as one line for its
+ 
+ it('retries only a failed, blocked or undelivered ticket with a new assignment, and finds tickets by title in search, and reports unavailable Evals as a problem', async () => {
+   const { ticket } = await acceptedTicket()
+-  expect(() => runtime.engine.retryTicket(ticket.id)).toThrow(new UserError('notRetryable'))
++  expect(() => runtime.engine.retryTicket(ticket.id, TEST_ADMISSION)).toThrow(new UserError('notRetryable'))
+   const current = runtime.store.tickets.get(ticket.id)!
+   await runTool(`worker-${ticket.id}`, 'orchestrator_report', { state: 'failed', summary: 'LlmError: offline' })
+   expect(waitsForPerson(runtime.store.tickets.get(ticket.id)!)).toBe(true)
+   // A person may continue a failed worker in its Session; only an ended Ticket locks its tools.
+   expect(guards.get(`worker-${ticket.id}`)!()).toBeUndefined()
+-  const retried = await runtime.engine.retryTicket(ticket.id)
++  const retried = await runtime.engine.retryTicket(ticket.id, TEST_ADMISSION)
+   await runtime.idle()
+   expect(waitsForPerson(runtime.store.tickets.get(ticket.id)!)).toBe(false)
+   expect(runtime.store.tickets.get(ticket.id)!.assignments.map(item => item.state)).toEqual(['ended', 'running'])
+@@ -687,7 +688,7 @@ it('retries only a failed, blocked or undelivered ticket with a new assignment,
+   // A Session someone deleted gets the whole first message again with the next Assignment.
+   runtime.store.atomic(() => { runtime.engine.report(ticket.id, { state: 'failed', summary: 'LlmError: offline' }) })
+   agents.delete(`worker-${ticket.id}`)
+-  runtime.engine.retryTicket(ticket.id)
++  runtime.engine.retryTicket(ticket.id, TEST_ADMISSION)
+   await runtime.idle()
+   expect(relays(`worker-${ticket.id}`).at(-1)).toMatchObject({ ticket_id: ticket.id, title: '修复回归', trigger: expect.objectContaining({ text: '@bot 修一下回归' }) })
+   expect(search(viewsOf(runtime), '修复', new TextCache(0)).tickets).toEqual([expect.objectContaining({ id: ticket.id })])
+@@ -826,7 +827,7 @@ it('waits for setup without the agent\'s GitHub CLI: the panel works, and nothin
+   expect(overviewOf(next).problems[0]).toEqual({ kind: 'setup', ...next.setupProblem })
+   await receive(feishu('30', '@bot 修一下'), next)
+   // A retry waits for setup instead of launching a worker that cannot run, and no report reaches the orchestrator.
+-  await next.engine.retryTicket(ticket.id)
++  await next.engine.retryTicket(ticket.id, TEST_ADMISSION)
+   expect(next.store.tickets.get(ticket.id)!.assignments.map(item => item.state)).toEqual(['ended', 'pending'])
+   expect(controller.create).not.toHaveBeenCalled()
+   expect(deliveries).not.toHaveBeenCalled()
+@@ -1086,7 +1087,7 @@ it('runs the prepare command once for a new ticket, under the execution root wit
+     env: expect.objectContaining({ DSH_SUPERAGENT_DIR: ticket.execution!.directory, DSH_SUPERAGENT_NAME: ticket.execution!.name, DSH_SUPERAGENT_GITHUB_REPOSITORY: 'acme/widgets', DSH_SUPERAGENT_FEISHU_CHAT: CHAT }) })])
+   // A retry reuses the prepared directory.
+   await runTool(`worker-${ticket.id}`, 'orchestrator_report', { state: 'failed', summary: 'offline' })
+-  await runtime.engine.retryTicket(ticket.id)
++  await runtime.engine.retryTicket(ticket.id, TEST_ADMISSION)
+   await runtime.idle()
+   expect(runs()).toHaveLength(1)
+   answers['sh -c exit 3'] = new Error('fatal: no such clone')
+@@ -1105,7 +1106,7 @@ it('counts a ticket whose directory the host prepared before prepare commands ex
+   runtime.store.tickets.save({ ...stored, execution: { ...stored.execution!, directory } })
+   runtime.store.saveSettings({ ...runtime.store.settings(), executor: { ...runtime.store.settings().executor, prepare: 'exit 1' } })
+   subprocess.spawn.mockClear()
+-  await runtime.engine.retryTicket(ticket.id)
++  await runtime.engine.retryTicket(ticket.id, TEST_ADMISSION)
+   await runtime.idle()
+   expect(subprocess.spawn.mock.calls.some(([spec]) => spec.argv[0] === 'sh')).toBe(false)
+   expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.state).toBe('running')
+@@ -1611,7 +1612,7 @@ it('runs a launch that fails for a passing reason again on the launch backoff th
+   runtime.executor.resume()
+   await runtime.idle()
+   expect(runs()).toBe(before + 1)
+-  runtime.engine.retryTicket(prepared.ticket.id)
++  runtime.engine.retryTicket(prepared.ticket.id, TEST_ADMISSION)
+   await runtime.idle()
+   expect(runs()).toBe(before + 2)
+   expect(runtime.store.tickets.get(prepared.ticket.id)!.assignments.at(-1)).toMatchObject({ state: 'running' })
+diff --git a/tests/tools.spec.ts b/tests/tools.spec.ts
+index f3dde91..a56d492 100644
+--- a/tests/tools.spec.ts
++++ b/tests/tools.spec.ts
+@@ -116,7 +116,7 @@ it('answers every routing tool in one shape: the decision it recorded, why, and
+   const status = await run('orchestrator_ticket_request_status', { ticket_id: ticket.id })
+   expect(status).toEqual({ reason: 'The worker is not waiting; nothing was sent', ticket: card })
+   await h.runTool(sessionId, 'orchestrator_report', { state: 'failed', summary: 'The build broke.' })
+-  expect(await run('orchestrator_ticket_retry', { ticket_id: ticket.id })).toEqual({ reason: 'Started a new assignment', ticket: card })
++  await expect(run('orchestrator_ticket_retry', { ticket_id: ticket.id })).rejects.toThrow(/admission/i)
+   const chatter = feishu('4', '@bot 谢谢')
+   h.runtime.receive(chatter); await h.runtime.idle()
+   expect(await route({ kind: 'ignore', trigger_id: chatter.id, reason: 'thanks' })).toEqual({ trigger_id: chatter.id, kind: 'ignore', decision: 'ignore',

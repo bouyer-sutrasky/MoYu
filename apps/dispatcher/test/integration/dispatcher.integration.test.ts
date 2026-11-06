@@ -632,6 +632,43 @@ describe('dispatcher delivery and Bridge event catch-up on real PostgreSQL', () 
     expect(admitted.rows[0]?.state).toBe('queued');
   }, 30_000);
 
+  it('does not admit a pending GitHub ticket while a pause operation is queued', async () => {
+    fakeBridge.admitCalls.length = 0;
+    const conversation = await testDatabase.pool.query<{ id: string }>(
+      `insert into conversations (owner_id, repository_id, mode, execution_mode, base_branch, title)
+       values ($1, $2, 'work', 'execute', 'main', 'pause before admission') returning id`,
+      [ownerId, repository.id],
+    );
+    const conversationId = conversation.rows[0]!.id;
+    const task = await testDatabase.pool.query<{ id: string }>(
+      `insert into task_links (conversation_id, repository_id, state, base_branch, upstream_ticket_id)
+       values ($1, $2, 'pending_admission', 'main', 'ticket-paused') returning id`,
+      [conversationId, repository.id],
+    );
+    const taskId = task.rows[0]!.id;
+    await testDatabase.pool.query(
+      `insert into task_operations (task_id, repository_id, kind, client_command_id, request_fingerprint, evidence)
+       values ($1, $2, 'pause', 'pause-before-admit', 'pause-before-admit', '{}'::jsonb)`,
+      [taskId, repository.id],
+    );
+    expect(
+      await admitImportedOnce(
+        testDatabase.pool,
+        config,
+        repository,
+        client,
+        true,
+        createConsoleLogger('test'),
+      ),
+    ).toBe(false);
+    expect(fakeBridge.admitCalls).toHaveLength(0);
+    const row = await testDatabase.pool.query<{ state: string }>(
+      `select state from task_links where id = $1`,
+      [taskId],
+    );
+    expect(row.rows[0]?.state).toBe('pending_admission');
+  }, 30_000);
+
   it('keeps a launch pending while another execution owns the repository lease', async () => {
     const holderConversation = await testDatabase.pool.query<{ id: string }>(
       `insert into conversations (owner_id, repository_id, mode, execution_mode, base_branch, title)

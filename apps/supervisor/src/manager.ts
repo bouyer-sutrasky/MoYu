@@ -939,16 +939,19 @@ export class InstanceManager {
     let child;
     try {
       const dshArgs = ['--profile', prepared.profile, '--no-open'];
-      // Spawn first and move the child as a different process: a non-root
-      // supervisor cannot reliably write its own shell PID into a delegated
-      // child cgroup on every kernel. Moving the runtime explicitly keeps the
-      // tracked PID, ownership proof and memory limit on the same process.
-      child = spawn(this.config.dshBin, dshArgs, {
-        cwd: this.config.dshHome,
-        env,
-        detached: true,
-        stdio: ['ignore', logFd, logFd],
-      });
+      // The launcher blocks on fd 3 before exec. The supervisor moves the
+      // shell (same PID after exec) into the instance cgroup, then releases
+      // it; no user code can fork before the process is inside the boundary.
+      child = spawn(
+        '/bin/sh',
+        ['-c', 'read go <&3; exec "$@"', 'moyu-cgroup', this.config.dshBin, ...dshArgs],
+        {
+          cwd: this.config.dshHome,
+          env,
+          detached: true,
+          stdio: ['ignore', logFd, logFd, 'pipe'],
+        },
+      );
       child.once('error', (error) => {
         this.handles.delete(instance.repositoryId);
         this.generation += 1;
@@ -997,6 +1000,22 @@ export class InstanceManager {
       );
       return;
     }
+    const release = child.stdio[3];
+    if (!release || !('write' in release)) {
+      try {
+        process.kill(-pid, 'SIGKILL');
+      } catch {
+        // already gone
+      }
+      removeCgroup(cgroup);
+      await this.failInstance(
+        instance,
+        'cgroup_unavailable',
+        'The runtime cgroup release pipe is unavailable',
+      );
+      return;
+    }
+    release.end('go\n');
     const generation = ++this.generation;
     this.handles.set(instance.repositoryId, { pid, generation });
     await this.store.updateInstance(instance.repositoryId, {

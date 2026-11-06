@@ -113,10 +113,12 @@ supervisor 同时读取该 slice 的 `memory.max`：若 slice 上限高于
 ## 5. 已知限制（未完成即如实标记）
 
 1. **上游 admission 已实现但未部署到 live 实例**。`0023-execution-admission.patch` 在固定
-   upstream commit 上通过 typecheck、构建与 1296/1297 上游测试（唯一失败是既有可选项 Feishu
-   测试），平台 dispatcher 也按 capability 发送 admission 并在 `pending_admission` 上调用
-   `/admit`。但本单没有把该构建切换进 live profile，也没有三仓库/重启/pause 交错的 live 证据；
-   `MOYU_REQUIRE_ADMISSION=1` 才启用，旧 runtime 仍回退平台控制面 fencing。
+   upstream commit 上通过 typecheck、构建与 1299/1300 上游测试（唯一失败是既有可选项 Feishu
+   测试）。核心 retry/start/admit 现在必须携带十进制 admission，并在 KV 持久化仓库级最高
+   fence；延迟 Trigger 低于 fence 时只记录为 `pending_admission`，不创建 Assignment；pause
+   先于 admit 时核心拒绝启动。main Session 的 retry 工具因此返回 admission 拒绝而不是绕过。
+   supervisor 先让子进程在 fd 3 上阻塞，写入实例 cgroup 后才释放 exec，消除执行前逃逸。
+   仍未把构建切换进 supervisor 管理的 live profile，也没有三仓库/重启/pause 交错的 live 证据。
 2. **非 root supervisor 生命周期已验证，但全栈 8 GB 计量未完成**。独立 user/DB/profile/
    4 GiB slice 下已跑通 start→online→stop→no descendants→supervisor restart→no auto-start→
    wake；尚未把平台、隔离 DB、runtime 与构建测试放进同一 8 GiB slice 压到边界。
