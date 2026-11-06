@@ -117,7 +117,10 @@ supervisor 同时读取该 slice 的 `memory.max`：若 slice 上限高于
    测试），平台 dispatcher 也按 capability 发送 admission 并在 `pending_admission` 上调用
    `/admit`。但本单没有把该构建切换进 live profile，也没有三仓库/重启/pause 交错的 live 证据；
    `MOYU_REQUIRE_ADMISSION=1` 才启用，旧 runtime 仍回退平台控制面 fencing。
-2. **单一 8 GB slice 与非 root supervisor 尚未完整 live 验证**。已有 slice/unit 示例、配置校验、
-   非 root 256 MiB 子组真实 OOM 与准入单测；未在真实平台+DB+runtime+构建测试同 slice 下压到边界。
-3. **三仓库资源压力、恢复清错与完整六类矩阵尚未完成**。
+2. **非 root supervisor 生命周期已验证，但全栈 8 GB 计量未完成**。独立 user/DB/profile/
+   4 GiB slice 下已跑通 start→online→stop→no descendants→supervisor restart→no auto-start→
+   wake；尚未把平台、隔离 DB、runtime 与构建测试放进同一 8 GiB slice 压到边界。
+3. **双入口/竞态的 live 执行次数尚未取得**：隔离 runtime 的评估模型没有可用 provider
+   凭据，trigger 停在评估前；上游 Bridge 单测覆盖缺失/旧代次拒绝，但没有真实执行计数。
+   三仓库排队、恢复清错与完整六类矩阵仍未完成。
 4. 因此本单不能宣称完整六类矩阵通过；PR 必须保持未完成状态，由所有者决定是否继续补齐。
