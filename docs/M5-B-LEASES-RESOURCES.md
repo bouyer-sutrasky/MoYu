@@ -124,7 +124,9 @@ supervisor 同时读取该 slice 的 `memory.max`：若 slice 上限高于
 2. **非 root supervisor 生命周期已验证，但全栈 8 GB 计量未完成**。独立 user/DB/profile/
    4 GiB slice 下已跑通 start→online→stop→no descendants→supervisor restart→no auto-start→
    wake；尚未把平台、隔离 DB、runtime 与构建测试放进同一 8 GiB slice 压到边界。
-3. **双入口/竞态的 live 执行次数尚未取得**：隔离 runtime 的评估模型没有可用 provider
-   凭据，trigger 停在评估前；上游 Bridge 单测覆盖缺失/旧代次拒绝，但没有真实执行计数。
+3. **双入口/竞态的 live 执行次数尚未取得**：隔离 runtime 已用 loopback 合成 provider
+   实证 route→Ticket/Assignment，但 prepare 失败（非 root known_hosts/deploy key）后未启动
+   worker；修复 clone 后同一 state 不再交付新 candidate。上游 Bridge 单测覆盖缺失/旧代次
+   拒绝，但没有真实子进程/双入口执行计数。
    三仓库排队、恢复清错与完整六类矩阵仍未完成。
 4. 因此本单不能宣称完整六类矩阵通过；PR 必须保持未完成状态，由所有者决定是否继续补齐。

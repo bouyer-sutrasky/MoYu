@@ -83,27 +83,49 @@ const server = http.createServer(async (request, response) => {
       },
     ],
   };
-  const choice = tools.includes('orchestrator_route')
-    ? {
-        index: 0,
-        message: {
-          role: 'assistant',
-          content: null,
-          tool_calls: [
-            {
-              id: `call_${id}`,
-              type: 'function',
-              function: { name: 'orchestrator_route', arguments: JSON.stringify(decision) },
-            },
-          ],
+  const sawRouteResult = (body.messages ?? []).some(
+    (message) =>
+      message.role === 'tool' &&
+      /accepted|ticket|decision|refused/i.test(String(message.content ?? '')),
+  );
+  const choice =
+    tools.includes('orchestrator_route') && !sawRouteResult
+      ? {
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              {
+                id: `call_${id}`,
+                type: 'function',
+                function: { name: 'orchestrator_route', arguments: JSON.stringify(decision) },
+              },
+            ],
+          },
+          finish_reason: 'tool_calls',
+        }
+      : {
+          index: 0,
+          message: { role: 'assistant', content: 'Deterministic local provider response.' },
+          finish_reason: 'stop',
+        };
+  fs.appendFileSync(
+    log,
+    JSON.stringify({
+      at: new Date().toISOString(),
+      response: {
+        id,
+        tools,
+        sawRouteResult,
+        choice: {
+          finish: choice.finish_reason,
+          tool: choice.message.tool_calls?.[0]?.function?.name ?? null,
+          arguments: choice.message.tool_calls?.[0]?.function?.arguments ?? null,
         },
-        finish_reason: 'tool_calls',
-      }
-    : {
-        index: 0,
-        message: { role: 'assistant', content: 'Deterministic local provider response.' },
-        finish_reason: 'stop',
-      };
+      },
+    }) + '\n',
+  );
   if (!body.stream) {
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify(completion(body.model ?? 'local-test', choice)));
