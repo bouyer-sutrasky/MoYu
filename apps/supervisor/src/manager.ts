@@ -841,11 +841,12 @@ export class InstanceManager {
           await this.store.syncRepositoryStatus(current.repositoryId, 'sleeping');
           await this.store.recordResourceSample({
             scope: 'aggregate',
-            memoryCurrentBytes: decision.currentBytes,
+            memoryCurrentBytes: decision.aggregateOk ? decision.currentBytes : null,
             hostMemAvailableBytes: decision.hostAvailableBytes,
             detail: {
               refusedFor: current.repositoryId,
               projectedBytes: decision.projectedBytes,
+              estimated: !decision.aggregateOk,
               reason: decision.reason,
             },
           });
@@ -915,47 +916,47 @@ export class InstanceManager {
       return;
     }
     const cgroup = ensureCgroup(`${prepared.profile}-${Date.now()}`);
-    if (cgroup) {
-      const applied = applyInstanceMemoryLimit(cgroup, limitsFromConfig(this.config));
-      if (!applied.ok) {
-        this.logger.warn(
-          {
-            event: 'supervisor.memory_limit_failed',
-            repositoryId: instance.repositoryId,
-            error: applied.error,
-          },
-          'per-instance memory limit was not applied; aggregate admission still applies',
-        );
-      }
+    if (!cgroup) {
+      closeSync(logFd);
+      await this.failInstance(
+        instance,
+        'cgroup_unavailable',
+        'The per-instance cgroup could not be created; refusing to start outside the enforced boundary',
+      );
+      return;
     }
-    const cgroupProcs = cgroup ? join(cgroup, 'cgroup.procs') : null;
+    const applied = applyInstanceMemoryLimit(cgroup, limitsFromConfig(this.config));
+    if (!applied.ok) {
+      removeCgroup(cgroup);
+      closeSync(logFd);
+      await this.failInstance(
+        instance,
+        'memory_limit_unavailable',
+        'The per-instance memory limit could not be applied; refusing to start an unmetered runtime',
+      );
+      return;
+    }
+    const cgroupProcs = join(cgroup, 'cgroup.procs');
     let child;
     try {
       const dshArgs = ['--profile', prepared.profile, '--no-open'];
-      child = cgroupProcs
-        ? spawn(
-            '/bin/sh',
-            [
-              '-c',
-              'echo $$ > "$1" || exit 1; shift; exec "$@"',
-              'moyu-cgroup',
-              cgroupProcs,
-              this.config.dshBin,
-              ...dshArgs,
-            ],
-            {
-              cwd: this.config.dshHome,
-              env,
-              detached: true,
-              stdio: ['ignore', logFd, logFd],
-            },
-          )
-        : spawn(this.config.dshBin, dshArgs, {
-            cwd: this.config.dshHome,
-            env,
-            detached: true,
-            stdio: ['ignore', logFd, logFd],
-          });
+      child = spawn(
+        '/bin/sh',
+        [
+          '-c',
+          'echo $$ > "$1" || exit 1; shift; exec "$@"',
+          'moyu-cgroup',
+          cgroupProcs,
+          this.config.dshBin,
+          ...dshArgs,
+        ],
+        {
+          cwd: this.config.dshHome,
+          env,
+          detached: true,
+          stdio: ['ignore', logFd, logFd],
+        },
+      );
       child.once('error', (error) => {
         this.handles.delete(instance.repositoryId);
         this.generation += 1;
@@ -1116,15 +1117,17 @@ export class InstanceManager {
     });
     await this.store.recordResourceSample({
       scope: 'aggregate',
-      memoryCurrentBytes: aggregate.currentBytes,
+      memoryCurrentBytes: aggregate.ok ? aggregate.currentBytes : null,
       hostMemAvailableBytes: host.availableBytes,
       pressure: {},
       detail: {
+        estimatedInstanceBytes: aggregate.ok ? 0 : aggregate.instanceBytes,
         instanceBytes: aggregate.instanceBytes,
         platformBytes: aggregate.platformBytes,
         databaseBytes: aggregate.databaseBytes,
         supervisorBytes: aggregate.supervisorBytes,
         unknownCgroups: aggregate.unknownCgroups.length,
+        measured: aggregate.ok,
         aggregateCurrentBytes: aggregate.aggregateCurrentBytes,
         aggregateLimitBytes: aggregate.aggregateLimitBytes,
         targetBytes: limits.targetBytes,
@@ -1259,8 +1262,13 @@ export class InstanceManager {
       return;
     }
     const exhausted =
-      ['start_failed', 'oom_killed', 'instance_lost'].includes(code) &&
-      instance.attemptCount >= this.config.maxStartAttempts;
+      [
+        'start_failed',
+        'oom_killed',
+        'instance_lost',
+        'cgroup_unavailable',
+        'memory_limit_unavailable',
+      ].includes(code) && instance.attemptCount >= this.config.maxStartAttempts;
     await this.store.updateInstance(instance.repositoryId, {
       state: 'fault',
       desiredState: 'sleeping',

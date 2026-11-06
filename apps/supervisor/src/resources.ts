@@ -54,6 +54,7 @@ export interface AdmissionDecision {
   currentBytes: number;
   hostAvailableBytes: number;
   pressureAvg10: number;
+  aggregateOk: boolean;
 }
 
 export function limitsFromConfig(config: {
@@ -314,6 +315,19 @@ export function assessAdmission(input: {
     ? input.limits.budgetBytes - input.limits.hysteresisBytes
     : input.limits.budgetBytes;
   const mb = (bytes: number) => `${Math.round(bytes / MIB)} MiB`;
+  if (!input.aggregate.ok) {
+    return {
+      admitted: false,
+      state: 'resource_wait',
+      reason:
+        'The enforced memory boundary or a managed cgroup cannot be measured; refusing admission until it is readable',
+      projectedBytes: projected,
+      currentBytes: input.aggregate.currentBytes,
+      hostAvailableBytes: input.host.availableBytes,
+      pressureAvg10: input.pressureAvg10,
+      aggregateOk: false,
+    };
+  }
   if (
     input.aggregate.aggregateLimitBytes != null &&
     input.aggregate.aggregateLimitBytes > input.limits.hardLimitBytes
@@ -326,6 +340,7 @@ export function assessAdmission(input: {
       currentBytes: input.aggregate.currentBytes,
       hostAvailableBytes: input.host.availableBytes,
       pressureAvg10: input.pressureAvg10,
+      aggregateOk: input.aggregate.ok,
     };
   }
   const effectiveHardLimit =
@@ -341,6 +356,7 @@ export function assessAdmission(input: {
       currentBytes: input.aggregate.currentBytes,
       hostAvailableBytes: input.host.availableBytes,
       pressureAvg10: input.pressureAvg10,
+      aggregateOk: input.aggregate.ok,
     };
   }
   if (projected > boundary) {
@@ -368,6 +384,7 @@ export function assessAdmission(input: {
         currentBytes: input.aggregate.currentBytes,
         hostAvailableBytes: input.host.availableBytes,
         pressureAvg10: input.pressureAvg10,
+        aggregateOk: input.aggregate.ok,
       };
     }
   }
@@ -380,6 +397,7 @@ export function assessAdmission(input: {
       currentBytes: input.aggregate.currentBytes,
       hostAvailableBytes: input.host.availableBytes,
       pressureAvg10: input.pressureAvg10,
+      aggregateOk: input.aggregate.ok,
     };
   }
   return {
@@ -390,5 +408,6 @@ export function assessAdmission(input: {
     currentBytes: input.aggregate.currentBytes,
     hostAvailableBytes: input.host.availableBytes,
     pressureAvg10: input.pressureAvg10,
+    aggregateOk: input.aggregate.ok,
   };
 }

@@ -32,8 +32,8 @@ corepack pnpm build
 
 ```text
 478a23f401be6ac8f59d4f17f2a2e83a39d41f7c6b63f418b0ffbc8d7adf20be  apps/api/dist/server.js
-d612d86a9c6442dfcd18b647f6fed9c836bd9b3dc22b978adb351f0c8503a717  apps/dispatcher/dist/main.js
-0c7cd368a9607d5a7e9ba77dc790a35fd04b27df92cf57a8ac79d9185da3d176  apps/supervisor/dist/main.js
+44915a46c3a8ee3c7d5e575cd471c4c4988e3af96005c38029b0c5f6b6f497d7  apps/dispatcher/dist/main.js
+8c2fd8262ddf2cedea615321216df7cd2be87c0d52c6aed4b3cf9e32289e6021  apps/supervisor/dist/main.js
 131a0fd5afafd574797f9ab249519f37ec4636976585ed00c36627aeca1285a4  apps/web/dist/assets/index-CPacwuA8.js
 39a2cbfc47d44d272bc18fad5772346b891e06713d07009e4357f7af51cb5424  apps/web/dist/assets/index-DnIo0nRx.css
 b06e32aebd8dfa96845f74dc916613de7f4d775935c7ce27f5875fcef13f8196  packages/db/migrations/0013_loving_quentin_quire.sql
@@ -49,7 +49,7 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres corepack pnpm t
 | --- | --- |
 | `@moyu/db`（含 0013 rollback → reapply） | 10 文件 / 36 测试通过 |
 | `@moyu/api`（M4 暂停继续、双入口、分页、仓库生命周期） | 11 文件 / 66 测试通过 |
-| `@moyu/dispatcher`（多仓库、operations、租约） | 4 文件 / 44 测试通过 |
+| `@moyu/dispatcher`（多仓库、operations、租约、复审回归） | 4 文件 / 46 测试通过 |
 
 租约测试覆盖：
 
@@ -61,6 +61,20 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres corepack pnpm t
 
 资源策略单元测试覆盖预算内准入、硬上限拒绝、宿主余量/压力弹性、迟滞、未知 cgroup 按估算
 计入、slice 上限低于/高于策略等 7 个用例。
+
+### 复审回归（M5B-PR28-REVIEW-590524F）
+
+- `releaseTaskLease` 现在锁定 task+lease 并接受 `expectedLeaseId`；`blocked`/`stopping` 没有停止证明时不释放，
+  `waiting_input`/`awaiting_review`/`completed`/`closed_unmerged` 与已记录 `stopped_at` 才是确认安全状态。
+- `maintainLeases` 只释放确认安全状态，且跳过 queued/running 的 owner 命令，避免释放 resume/retry 新租约。
+- `applyOperationResult` 在同一个事务中锁定 lease+task、校验 fencing 并写入任务/操作，旧 token 不再可能先检查后写入。
+- `delivery` 的 delivered/failed/filtered/retry 写入全部带 `runtime_lease_id`+`fencing_token` 条件；旧回执不改状态。
+- 未证停止的 pause 会记录任务当前代次并要求 `execution_stop_proof`；新增真实 PostgreSQL 回归证明第二执行者无法取得租约。
+- `assessAdmission` 在 slice/受管 cgroup 无法测量时直接拒绝；cgroup 创建失败或 `memory.max/high` 写入失败时不再 spawn。
+- 估算值不再写入实测字段；`runtime_resource_samples` 的 aggregate `memoryCurrentBytes` 在边界未知时为 null，估算单独记录。
+- systemd `Slice=` 修正到 `[Service]`，`systemd-analyze verify` 不再报告该键被忽略；OOM 探针改为独占 slice/unit，断言
+  anchor 归属、8 GiB/256 MiB 限额、`oom_kill=1` 与宿主余量，失败返回非零。
+- 仍未闭合：start/retry/在线 GitHub 的上游 admission 契约（见 §8）。
 
 ## 4. 迁移回滚
 
@@ -84,18 +98,20 @@ bash scripts/m5b/nonroot-oom-check.sh
 
 | 检查 | 结果 |
 | --- | --- |
-| 宿主启动前 MemAvailable | 14 376 560 kB（高于 8 GiB 安全下限） |
-| slice 控制组 | `/moyu.slice/moyu-m5b.slice` |
+| 宿主启动前 MemAvailable | 14 327 384 kB（高于 8 GiB 安全下限） |
+| slice | 独占 `m5bprobe700863.slice`（运行前不存在，结束后删除） |
+| slice 控制组 | `/m5bprobe700863.slice` |
 | slice `memory.max` / `memory.high` | 8 589 934 592 / 6 442 450 944 字节（8 / 6 GiB） |
+| anchor 归属 | `/m5bprobe700863.slice/m5bprobe700863-anchor.service`，已核对在 slice 内 |
 | 压测进程身份 | `nobody`（uid 65534），运行在 slice 内 256 MiB scope |
-| scope `memory.max` | 268 435 456 字节 |
-| 结果 | `oom-kill`，主进程 `killed/status=KILL`，`Memory peak: 256.0M`，swap peak 0 |
-| 宿主结束后 MemAvailable | 14 374 360 kB（无宿主级 OOM） |
+| scope `memory.max` / peak | 268 435 456 / 268 435 456 字节 |
+| `memory.events` | `oom 1 oom_kill 1`；systemd `Result=oom-kill`，swap 0 |
+| 宿主结束后 MemAvailable | 14 080 328 kB（无宿主级 OOM） |
 
 该 fixture 先读取自身 `memory.max`，只有 ≤256 MiB 才分配；使用 `MemorySwapMax=0` 强制在
-cgroup 内 OOM，而不是让宿主回收/换出。单元与 cgroup 在退出时清理。此证据证明非 root
-子组、单一 slice 上限与受控 OOM 可用；**不**证明完整非 root supervisor 生命周期或
-平台/DB/runtime/三仓库同 slice 压力。
+cgroup 内 OOM，而不是让宿主回收/换出。脚本使用独占 slice/unit 名称，只清理本次创建的对象，
+拒绝或未发生 OOM 时返回非零。此证据证明非 root 子组、单一 slice 上限与受控 OOM 可用；
+**不**证明完整非 root supervisor 生命周期或平台/DB/runtime/三仓库同 slice 压力。
 
 ## 6. 浏览器 before/after
 

@@ -2,7 +2,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import type { BridgeTicketSnapshot, RuntimeBridgeClient } from '@moyu/runtime-client';
 
-import { acquireExecutionLease, receiptIsCurrent, reconcileLeases } from '../../src/leases';
+import {
+  acquireExecutionLease,
+  receiptIsCurrent,
+  reconcileLeases,
+  releaseTaskLease,
+} from '../../src/leases';
 import { createConsoleLogger } from '../../src/logger';
 import type { RepositoryBinding } from '../../src/runtime';
 import { createTestDatabase, type TestDatabase } from './helpers';
@@ -201,6 +206,56 @@ describe('repository execution lease on real PostgreSQL', () => {
       [first.lease!.id],
     );
     expect(events.rows[0]?.count).toBeGreaterThan(0);
+  }, 30_000);
+
+  it('does not release a generation for a blocked task or a newer binding', async () => {
+    const blocked = await seedTask('blocked');
+    const running = await seedTask('running');
+    const lease = await acquireExecutionLease(
+      testDatabase.pool,
+      repository.id,
+      { taskId: blocked.taskId },
+      60_000,
+    );
+    expect(lease.lease).not.toBeNull();
+
+    // A blocked task has no confirmed stop: the slot stays occupied.
+    expect(
+      await releaseTaskLease(testDatabase.pool, repository.id, blocked.taskId, 'unsafe release'),
+    ).toBe(false);
+    const held = await testDatabase.pool.query<{ state: string }>(
+      `select state from runtime_leases where id = $1`,
+      [lease.lease!.id],
+    );
+    expect(held.rows[0]?.state).toBe('active');
+
+    // Maintenance holding the old id must not release a newer binding.
+    const newer = await acquireExecutionLease(
+      testDatabase.pool,
+      repository.id,
+      { taskId: running.taskId },
+      60_000,
+    );
+    expect(newer.lease).toBeNull();
+    await testDatabase.pool.query(`update task_links set runtime_lease_id = null where id = $1`, [
+      running.taskId,
+    ]);
+    // Move the binding to the running task under the same generation, then ask
+    // maintenance to release while naming a different generation.
+    await testDatabase.pool.query(`update task_links set runtime_lease_id = $2 where id = $1`, [
+      running.taskId,
+      lease.lease!.id,
+    ]);
+    expect(
+      await releaseTaskLease(testDatabase.pool, repository.id, running.taskId, 'old maintenance', {
+        expectedLeaseId: '00000000-0000-4000-8000-000000000000',
+      }),
+    ).toBe(false);
+    const stillBound = await testDatabase.pool.query<{ runtime_lease_id: string | null }>(
+      `select runtime_lease_id from task_links where id = $1`,
+      [running.taskId],
+    );
+    expect(stillBound.rows[0]?.runtime_lease_id).toBe(lease.lease!.id);
   }, 30_000);
 
   it('releases the slot when the runtime reports no active worker', async () => {

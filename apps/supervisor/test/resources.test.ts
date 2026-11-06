@@ -170,6 +170,25 @@ describe('aggregate memory policy', () => {
     expect(abovePolicy.reason).toContain('above the');
   });
 
+  it('refuses admission when the enforced boundary or a managed cgroup is unknown', () => {
+    const decision = assessAdmission({
+      limits,
+      aggregate: aggregate(1024 * MIB, false),
+      host: {
+        totalBytes: 16_000 * MIB,
+        availableBytes: 15_000 * MIB,
+        swapTotalBytes: 0,
+        swapFreeBytes: 0,
+      },
+      estimateBytes: 1024 * MIB,
+      pressureAvg10: 0,
+      blockedBefore: false,
+    });
+    expect(decision.admitted).toBe(false);
+    expect(decision.state).toBe('resource_wait');
+    expect(decision.reason).toContain('cannot be measured');
+  });
+
   it('counts an unreadable instance cgroup as its estimate and reports unknown', () => {
     const aggregateValue = aggregateMemory({
       instanceCgroups: ['/sys/fs/cgroup/does-not-exist-moyu'],

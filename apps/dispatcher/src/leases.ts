@@ -332,6 +332,20 @@ export async function releaseExecutionLease(
       await client.query('commit');
       return;
     }
+    // Never release a lease that still backs a task that has not reached a
+    // confirmed-safe state or supplied a stop proof.
+    const bound = await client.query(
+      `select 1 from task_links
+        where runtime_lease_id = $1
+          and not (state::text in ('waiting_input','awaiting_review','completed','closed_unmerged')
+                   or (state::text = 'stopped' and stopped_at is not null))
+        limit 1`,
+      [leaseId],
+    );
+    if ((bound.rowCount ?? 0) > 0) {
+      await client.query('commit');
+      return;
+    }
     await client.query(
       `update runtime_leases
           set state = 'released', released_at = now(), heartbeat_at = now(),
@@ -357,32 +371,135 @@ export async function releaseExecutionLease(
   }
 }
 
-/** Releases the lease currently bound to a task, if any. */
+/**
+ * Releases the lease currently bound to a task. The task row and lease row are
+ * locked together, and an expected lease id prevents a maintenance pass from
+ * releasing a newer generation acquired while it was deciding.
+ *
+ * Waiting/review/ended states are confirmed safe; `stopped` needs a timestamp.
+ * `blocked`/`stopping` need an explicit stop proof, otherwise the slot stays
+ * occupied.
+ */
 export async function releaseTaskLease(
   pool: pg.Pool,
   repositoryId: string,
   taskId: string,
   reason: string,
+  options: {
+    expectedLeaseId?: string;
+    proof?: Record<string, unknown>;
+    allowUnproven?: boolean;
+  } = {},
+): Promise<boolean> {
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const task = await client.query<{
+      runtime_lease_id: string | null;
+      state: string;
+      stopped_at: Date | null;
+    }>(`select runtime_lease_id, state, stopped_at from task_links where id = $1 for update`, [
+      taskId,
+    ]);
+    const row = task.rows[0];
+    if (!row?.runtime_lease_id) {
+      await client.query('commit');
+      return false;
+    }
+    if (options.expectedLeaseId && row.runtime_lease_id !== options.expectedLeaseId) {
+      // A newer generation is already bound; never release it on behalf of the
+      // operation/maintenance pass that was looking at the old one.
+      await client.query('commit');
+      return false;
+    }
+    const safe =
+      options.proof !== undefined ||
+      options.allowUnproven === true ||
+      ['waiting_input', 'awaiting_review', 'completed', 'closed_unmerged'].includes(row.state) ||
+      (row.state === 'stopped' && row.stopped_at !== null);
+    if (!safe) {
+      await client.query('commit');
+      return false;
+    }
+    const leaseResult = await client.query<LeaseRow>(
+      `select ${LEASE_COLUMNS} from runtime_leases where id = $1 for update`,
+      [row.runtime_lease_id],
+    );
+    const lease = leaseResult.rows[0];
+    if (!lease || lease.state !== 'active') {
+      await client.query(
+        `update task_links set runtime_lease_id = null
+          where id = $1 and runtime_lease_id = $2`,
+        [taskId, row.runtime_lease_id],
+      );
+      await client.query('commit');
+      return false;
+    }
+    await client.query(
+      `update runtime_leases
+          set state = 'released', released_at = now(), heartbeat_at = now(),
+              stop_proof = case when $2::jsonb = '{}'::jsonb then stop_proof else $2::jsonb end,
+              stop_proven_at = case when $2::jsonb = '{}'::jsonb then stop_proven_at else now() end,
+              recovery_state = 'none', waiting_for = null, last_error = null
+        where id = $1`,
+      [lease.id, JSON.stringify(options.proof ?? {})],
+    );
+    await client.query(
+      `update task_links set runtime_lease_id = null
+        where id = $1 and runtime_lease_id = $2`,
+      [taskId, lease.id],
+    );
+    await appendLeaseEvent(client, {
+      leaseId: lease.id,
+      repositoryId,
+      fencingToken: String(lease.fencing_token),
+      type: 'released',
+      detail: { reason, ...(options.proof ? { proof: options.proof } : {}) },
+    });
+    await client.query('commit');
+    return true;
+  } catch (error) {
+    await client.query('rollback').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** Marks a live lease as needing a stop proof before any replacement. */
+export async function requireLeaseStopProof(
+  pool: pg.Pool,
+  repositoryId: string,
+  leaseId: string,
+  reason: string,
 ): Promise<void> {
-  const result = await pool.query<{ runtime_lease_id: string | null }>(
-    `select runtime_lease_id from task_links where id = $1`,
-    [taskId],
+  const result = await pool.query<{ fencing_token: string }>(
+    `update runtime_leases
+        set recovery_state = case when recovery_state = 'recovered' then recovery_state
+                                  else 'required' end,
+            recovery_reason = $2, waiting_for = 'execution_stop_proof',
+            expires_at = now(), last_error = $2
+      where id = $1 and state = 'active'
+      returning fencing_token`,
+    [leaseId, reason.slice(0, 1000)],
   );
-  const leaseId = result.rows[0]?.runtime_lease_id;
-  if (!leaseId) return;
-  await releaseExecutionLease(pool, repositoryId, leaseId, reason);
-  await pool.query(
-    `update task_links set runtime_lease_id = null where id = $1 and runtime_lease_id = $2`,
-    [taskId, leaseId],
-  );
+  const row = result.rows[0];
+  if (!row) return;
+  await appendLeaseEvent(pool, {
+    leaseId,
+    repositoryId,
+    fencingToken: String(row.fencing_token),
+    type: 'stop_proof_required',
+    detail: { reason: reason.slice(0, 1000) },
+  });
 }
 
 /**
  * Verifies that a runtime receipt still belongs to the task's current lease
  * generation. A stale receipt is audited and counted, never applied.
  */
-export async function receiptIsCurrent(
-  pool: pg.Pool,
+export async function receiptIsCurrentOn(
+  client: pg.PoolClient,
   input: {
     repositoryId: string;
     leaseId: string | null;
@@ -395,7 +512,7 @@ export async function receiptIsCurrent(
   if (!input.leaseId) {
     return { current: false, reason: 'The command was sent without a recorded execution lease' };
   }
-  const result = await pool.query<{
+  const result = await client.query<{
     id: string;
     fencing_token: string;
     state: string;
@@ -407,7 +524,8 @@ export async function receiptIsCurrent(
             t.runtime_lease_id as task_lease, t.state as task_state
        from runtime_leases l
        join task_links t on t.id = $2
-      where l.id = $1`,
+      where l.id = $1
+      for update of l, t`,
     [input.leaseId, input.taskId],
   );
   const row = result.rows[0];
@@ -425,13 +543,13 @@ export async function receiptIsCurrent(
       : String(row.fencing_token) !== String(input.fencingToken ?? '')
         ? 'The receipt carries an older fencing generation'
         : 'The task is bound to a newer execution lease';
-  await pool.query(
+  await client.query(
     `update runtime_leases
         set stale_receipt_count = stale_receipt_count + 1, last_error = $2
       where id = $1`,
     [input.leaseId, reason],
   );
-  await appendLeaseEvent(pool, {
+  await appendLeaseEvent(client, {
     leaseId: input.leaseId,
     repositoryId: input.repositoryId,
     fencingToken: input.fencingToken,
@@ -444,7 +562,7 @@ export async function receiptIsCurrent(
     },
   });
   if (input.operationId) {
-    await pool.query(
+    await client.query(
       `update task_operations
           set stale_at = now(), stale_reason = $2, updated_at = now()
         where id = $1`,
@@ -452,6 +570,25 @@ export async function receiptIsCurrent(
     );
   }
   return { current: false, reason };
+}
+
+/** Transactional wrapper for callers that do not already own a transaction. */
+export async function receiptIsCurrent(
+  pool: pg.Pool,
+  input: Parameters<typeof receiptIsCurrentOn>[1],
+): Promise<{ current: boolean; reason?: string }> {
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const result = await receiptIsCurrentOn(client, input);
+    await client.query('commit');
+    return result;
+  } catch (error) {
+    await client.query('rollback').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /**
@@ -474,7 +611,8 @@ export async function reconcileLeases(
 ): Promise<void> {
   const rows = await pool.query<LeaseRow>(
     `select ${LEASE_COLUMNS} from runtime_leases
-      where repository_id = $1 and state = 'active' and expires_at <= now()
+      where repository_id = $1 and state = 'active'
+        and (expires_at <= now() or recovery_state in ('required', 'verifying'))
       order by expires_at
       limit 20`,
     [repository.id],
@@ -536,17 +674,19 @@ export async function reconcileLeases(
     if (snapshot.paused?.stoppedAt) {
       const evidence = { ...snapshot.paused.evidence, stoppedAt: snapshot.paused.stoppedAt };
       if (pauseEvidenceProven(evidence)) {
-        await markRecovered(pool, repository.id, lease, {
+        const proof = {
           source: 'runtime_pause_evidence',
           runtimeState: snapshot.state,
           stoppedAt: snapshot.paused.stoppedAt,
           evidence,
-        });
+        };
+        await markRecovered(pool, repository.id, lease, proof);
         await releaseTaskLease(
           pool,
           repository.id,
           linked.id,
           'lease recovery: runtime proved the paused worker stopped',
+          { expectedLeaseId: lease.id, proof },
         );
         continue;
       }
@@ -560,16 +700,18 @@ export async function reconcileLeases(
       continue;
     }
     if (IDLE_RUNTIME_STATES.has(snapshot.state)) {
-      await markRecovered(pool, repository.id, lease, {
+      const proof = {
         source: 'runtime_snapshot_idle',
         runtimeState: snapshot.state,
         at: new Date().toISOString(),
-      });
+      };
+      await markRecovered(pool, repository.id, lease, proof);
       await releaseTaskLease(
         pool,
         repository.id,
         linked.id,
         'lease recovery: runtime reported no active worker',
+        { expectedLeaseId: lease.id, proof },
       );
       continue;
     }

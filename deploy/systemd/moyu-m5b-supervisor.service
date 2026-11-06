@@ -5,7 +5,6 @@
 Description=MoYu M5-B repository supervisor
 After=network-online.target postgresql.service
 Wants=network-online.target
-Slice=moyu-m5b.slice
 
 [Service]
 Type=simple
@@ -13,6 +12,7 @@ User=moyu-m5b
 Group=moyu-m5b
 WorkingDirectory=/opt/moyu/m5b
 EnvironmentFile=/etc/moyu/m5b/supervisor.env
+Slice=moyu-m5b.slice
 # Let the supervisor create instance cgroups inside the delegated subtree.
 Delegate=yes
 NoNewPrivileges=yes
