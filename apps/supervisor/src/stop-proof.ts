@@ -1,4 +1,5 @@
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, stat, unlink } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
 /** A supervisor-owned binding to the exact runtime cgroup generation being stopped. */
@@ -13,69 +14,101 @@ export interface StopProof {
   leaseId: string;
   fencingToken: string;
   state: 'unproven' | 'proven';
-  reason?: string;
   at: string;
 }
 
-export interface StopProofInput {
+export interface StopProofIdentity {
   runtimeId: string;
   generation: string;
-  cgroup: string;
   ticketId: string;
   assignmentId: string;
   leaseId: string;
   fencingToken: string;
 }
 
+export interface StopProofInput extends StopProofIdentity {
+  cgroup: string;
+}
 export type VerifyResult = { proven: true } | { proven: false; reason: string };
 
 const file = (root: string, runtimeId: string) =>
   join(root, 'stop-proof', `${encodeURIComponent(runtimeId)}.json`);
+const sameIdentity = (a: StopProofIdentity, b: StopProofIdentity) =>
+  a.runtimeId === b.runtimeId &&
+  a.generation === b.generation &&
+  a.ticketId === b.ticketId &&
+  a.assignmentId === b.assignmentId &&
+  a.leaseId === b.leaseId &&
+  a.fencingToken === b.fencingToken;
 
-async function cgroupInode(path: string): Promise<number> {
-  return (await stat(path)).ino;
+async function readProof(
+  root: string,
+  runtimeId: string,
+): Promise<StopProof | undefined | 'unreadable'> {
+  try {
+    return JSON.parse(await readFile(file(root, runtimeId), 'utf8')) as StopProof;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    return 'unreadable';
+  }
+}
+async function writeProof(root: string, proof: StopProof): Promise<void> {
+  const target = file(root, proof.runtimeId);
+  const temporary = `${target}.${randomUUID()}.tmp`;
+  await writeFileAtomic(temporary, target, JSON.stringify(proof));
+}
+async function writeFileAtomic(temporary: string, target: string, text: string): Promise<void> {
+  const handle = await open(temporary, 'wx', 0o600);
+  try {
+    await handle.writeFile(text);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await rename(temporary, target);
+  await unlink(temporary).catch(() => {});
 }
 
-/** Bind before stopping; an existing unproven binding for another generation is never overwritten. */
+/** Bind before stopping. Only an identical binding is idempotent; a different
+ * unproven binding or an unreadable existing record is a conflict. */
 export async function bindStopProof(root: string, input: StopProofInput): Promise<StopProof> {
   await mkdir(join(root, 'stop-proof'), { recursive: true });
-  const target = file(root, input.runtimeId);
-  const existing = await readFile(target, 'utf8')
-    .then((text) => JSON.parse(text) as StopProof)
-    .catch(() => undefined);
-  if (existing?.state === 'unproven' && existing.generation !== input.generation) return existing;
+  const existing = await readProof(root, input.runtimeId);
+  if (existing === 'unreadable')
+    throw new Error('existing stop proof is unreadable; refusing to overwrite');
+  if (existing) {
+    if (existing.state === 'unproven' && !sameIdentity(existing, input)) {
+      throw new Error('another unproven stop proof is bound to this runtime generation');
+    }
+    if (sameIdentity(existing, input) && existing.cgroup === input.cgroup) return existing;
+  }
   const proof: StopProof = {
     version: 1,
     ...input,
-    cgroupInode: await cgroupInode(input.cgroup),
+    cgroupInode: (await stat(input.cgroup)).ino,
     state: 'unproven',
     at: new Date().toISOString(),
   };
-  await writeFile(`${target}.tmp`, JSON.stringify(proof), { mode: 0o600 });
-  await rename(`${target}.tmp`, target);
+  await writeProof(root, proof);
   return proof;
 }
 
-/** Prove the exact old generation is empty. Missing paths, reused inodes, unreadable
- * events and populated groups all refuse to issue a proof. */
+/** Prove the exact old generation and full Ticket/Assignment/lease/token identity is
+ * empty. Missing/unreadable proof, reused inode, changed binding, unreadable events
+ * and populated groups refuse. */
 export async function verifyStopProof(
   root: string,
-  runtimeId: string,
-  generation: string,
+  identity: StopProofIdentity,
 ): Promise<VerifyResult> {
-  let proof: StopProof;
-  try {
-    proof = JSON.parse(await readFile(file(root, runtimeId), 'utf8')) as StopProof;
-  } catch {
-    return { proven: false, reason: 'stop proof is missing or unreadable' };
-  }
-  if (proof.runtimeId !== runtimeId) return { proven: false, reason: 'runtime id mismatch' };
-  if (proof.generation !== generation)
-    return { proven: false, reason: 'runtime generation changed' };
+  const proof = await readProof(root, identity.runtimeId);
+  if (!proof) return { proven: false, reason: 'stop proof is missing' };
+  if (proof === 'unreadable') return { proven: false, reason: 'stop proof is unreadable' };
+  if (!sameIdentity(proof, identity))
+    return { proven: false, reason: 'stop proof binding does not match' };
   if (!proof.cgroup) return { proven: false, reason: 'cgroup path is missing' };
   let inode: number;
   try {
-    inode = await cgroupInode(proof.cgroup);
+    inode = (await stat(proof.cgroup)).ino;
   } catch {
     return { proven: false, reason: 'cgroup path is missing' };
   }
@@ -89,15 +122,6 @@ export async function verifyStopProof(
   }
   if (!/^populated 0$/m.test(events))
     return { proven: false, reason: 'cgroup still has populated descendants' };
-  if (!proof.ticketId || !proof.assignmentId || !proof.leaseId || !proof.fencingToken)
-    return { proven: false, reason: 'binding fields are missing' };
-  const proven = {
-    ...proof,
-    state: 'proven' as const,
-    reason: undefined,
-    at: new Date().toISOString(),
-  };
-  await writeFile(`${file(root, runtimeId)}.tmp`, JSON.stringify(proven), { mode: 0o600 });
-  await rename(`${file(root, runtimeId)}.tmp`, file(root, runtimeId));
+  await writeProof(root, { ...proof, state: 'proven', at: new Date().toISOString() });
   return { proven: true };
 }
