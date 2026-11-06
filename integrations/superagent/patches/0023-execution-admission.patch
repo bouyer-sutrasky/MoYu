@@ -600,14 +600,14 @@ index 35f257e..842c92b 100644
      assignment.state = 'ended'; assignment.endedAt = this.now(); assignment.endedReason = reason
      this.emit('assignment.ended', { ticketId: ticket.id, assignmentId: assignment.id, reason })
 diff --git a/src/executor/dsh.ts b/src/executor/dsh.ts
-index bae4df7..cd81b55 100644
+index bae4df7..df2fc4e 100644
 --- a/src/executor/dsh.ts
 +++ b/src/executor/dsh.ts
 @@ -21,6 +21,7 @@ import { WorktreeNameSchema } from '../app/assessment.ts'
  import { resultRelay } from '../app/notices.ts'
  import type { HealthEntry } from '../infra/health.ts'
  import { cancelled, collectJob, killJobs, liveSubagents, runningJobs, stopBackground, stopSubagents, until, untilQuiet } from './background.ts'
-+import { completeStopProof, readProcessIdentity, readStopProof, recordStopProof, replacementBlocked, settleStopProof } from './stop-proof.ts'
++import { completeStopProof, readStopProof, recordStopProof, replacementBlocked } from './stop-proof.ts'
  
  const now = (): string => new Date().toISOString()
  /** Returns the worker session ID (`worker-<ticketId>`) for a ticket. */
@@ -680,22 +680,20 @@ index bae4df7..cd81b55 100644
        // A stop of the worker's background work that started meanwhile ends with a cancel, which would drop the Input.
        if (this.stopping.has(ticket.id)) throw new Later('The worker\'s background work is stopping')
      }
-@@ -451,6 +470,14 @@ export class DshExecutor implements Executor {
+@@ -451,6 +470,12 @@ export class DshExecutor implements Executor {
     */
    stop(ticket: Ticket, assignment: Assignment, reason: string): void {
      this.transient.delete(assignment.id); this.transient.delete(`launch:${assignment.id}`)
 +    // Persist the unproven identity before the stop begins, so a restart cannot
 +    // silently release the slot when the old job is still alive.
 +    const jobs = runningJobs(this.host.context, workerSessionId(ticket.id)).map(job => ({ id: job.id, name: jobName(job) }))
-+    const processes = processTree(process.pid, 100000).map(item => item.pid)
-+      .filter(pid => pid !== process.pid && pid !== 1)
-+      .map(pid => readProcessIdentity(pid))
-+      .filter((identity): identity is NonNullable<typeof identity> => identity !== null)
-+    recordStopProof(this.host.store, ticket, assignment, jobs, processes)
++    // Only the Ticket's own job IDs are durable ownership. The harness process
++    // tree is shared with other tickets and must never be recorded as this one's.
++    recordStopProof(this.host.store, ticket, assignment, jobs, [])
      const report = assignment.report
      const busy = !!assignment.deliveredAt && !!report && assignment.deliveredAt >= report.at
      const ownTurn = (report?.state === 'ready' || report?.state === 'dropped') && !busy
-@@ -459,7 +486,7 @@ export class DshExecutor implements Executor {
+@@ -459,7 +484,7 @@ export class DshExecutor implements Executor {
        this.settling.get(ticket.id)?.abort()
        if (!ownTurn) this.host.context.agents.get(sessionId as SessionId)?.cancel({ kind: 'user' }, { keepInbox: false })
        // Its shell jobs and subagents stop with it, also those of a worker that ends its own turn.
@@ -704,7 +702,7 @@ index bae4df7..cd81b55 100644
        this.left.get(ticket.id)?.collect.abort(); this.left.delete(ticket.id); this.personal.delete(ticket.id)
      })
    }
-@@ -531,20 +558,44 @@ export class DshExecutor implements Executor {
+@@ -531,20 +556,42 @@ export class DshExecutor implements Executor {
      this.host.engine.pauseFailed(ticketId, assignmentId, reason)
    }
    /** Stop what a ticket's worker runs in the background (see `stopBackground`). */
@@ -725,10 +723,9 @@ index bae4df7..cd81b55 100644
 +        if (ticket && assignmentId) {
 +          const live = runningJobs(this.host.context, workerSessionId(ticketId)).map(job => ({ id: job.id }))
 +          const proof = readStopProof(this.host.store, ticketId, assignmentId)
-+          if (proof && proof.state === 'unproven') {
-+            if (proof.jobs.length + proof.processes.length === 0) completeStopProof(this.host.store, proof)
-+            else settleStopProof(this.host.store, proof, live)
-+          }
++          // The stop promise resolved and no job the Session owns still runs: that
++          // is the durable evidence. A job still visible keeps the proof unproven.
++          if (proof && proof.state === 'unproven' && live.length === 0) completeStopProof(this.host.store, proof)
 +        }
 +      },
 +      error => { this.stopErrors.set(ticketId, error) },
@@ -740,8 +737,7 @@ index bae4df7..cd81b55 100644
    /** Wait for a stop of the ticket's background work that runs, unless the host stops first. */
 +  /** A durable stop proof must cover every ended generation whose job/process identity may survive. */
 +  private assertStops(ticket: Ticket): void {
-+    const liveJobs = runningJobs(this.host.context, workerSessionId(ticket.id)).map(job => ({ id: job.id }))
-+    if (replacementBlocked(this.host.store, ticket, liveJobs)) {
++    if (replacementBlocked(this.host.store, ticket)) {
 +      throw new Later('The previous worker has no proven stop; replacement stays blocked')
 +    }
 +  }
@@ -753,7 +749,7 @@ index bae4df7..cd81b55 100644
    }
    /**
     * On a host stop, for a bounded time: stop each loaded worker's background work, keeping its inbox; then end the collecting
-@@ -590,8 +641,10 @@ export class DshExecutor implements Executor {
+@@ -590,8 +637,10 @@ export class DshExecutor implements Executor {
        if (this.host.closing()) throw new Error('dsh-superagent is stopping')
        if (this.host.paused()) throw new Later('Processing is paused')
        const stored = this.host.store.tickets.get(ticket.id)
@@ -765,7 +761,7 @@ index bae4df7..cd81b55 100644
      }
      const source = sourceTrigger(this.host, ticket)
      const workspace = ticket.execution?.directory ?? ''
-@@ -617,6 +670,7 @@ export class DshExecutor implements Executor {
+@@ -617,6 +666,7 @@ export class DshExecutor implements Executor {
      if (!current()) return
      // The background work of the Assignment this one replaces stops first, so its end does not clear this one's message.
      await this.stopped(ticket.id)
@@ -773,7 +769,7 @@ index bae4df7..cd81b55 100644
      if (!current()) return
      // A message put back for this Assignment may still wait in the Session, kept by a restart's cancel or persisted across a
      // crash, where this launch's message would take it into a step beside the copy delivered next: that copy is the only one.
-@@ -892,6 +946,7 @@ export class DshExecutor implements Executor {
+@@ -892,6 +942,7 @@ export class DshExecutor implements Executor {
        if (this.host.closing()) return
        const ticket = this.host.store.tickets.get(ticketId)
        if (!ticket || !liveTicket(ticket) || runningAssignment(ticket)?.id !== assignmentId) { this.resuming.delete(assignmentId); return }
@@ -783,10 +779,10 @@ index bae4df7..cd81b55 100644
        const sessionId = workerSessionId(ticketId)
 diff --git a/src/executor/stop-proof.ts b/src/executor/stop-proof.ts
 new file mode 100644
-index 0000000..c4ed59b
+index 0000000..6af837e
 --- /dev/null
 +++ b/src/executor/stop-proof.ts
-@@ -0,0 +1,114 @@
+@@ -0,0 +1,115 @@
 +/** Durable stop proof shared by the live executor, restart recovery and replacement admission. */
 +import { readFileSync } from 'node:fs'
 +import type { Assignment, Ticket } from '../core/index.ts'
@@ -891,13 +887,14 @@ index 0000000..c4ed59b
 + * durable proof whose identities are gone. An admitted Ticket without a proof is
 + * unknown and blocks; a live or unreadable identity also blocks.
 + */
-+export function replacementBlocked(store: Store, ticket: Ticket, liveJobs: { id: string }[]): boolean {
++export function replacementBlocked(store: Store, ticket: Ticket): boolean {
 +  for (const assignment of ticket.assignments) {
 +    if (assignment.state !== 'ended') continue
 +    const proof = readStopProof(store, ticket.id, assignment.id)
 +    if (!proof) { if (ticket.admission) return true; continue }
-+    if (proof.state === 'proven') continue
-+    if (!settleStopProof(store, proof, liveJobs)) return true
++    // Only a completed stop callback may settle an unproven proof. A restart
++    // with an empty job registry cannot prove that the old job exited.
++    if (proof.state !== 'proven') return true
 +  }
 +  return false
 +}
@@ -1521,10 +1518,10 @@ index 892cb1b..00f7b2a 100644
    expect(runtime.store.tickets.get(prepared.ticket.id)!.assignments.at(-1)).toMatchObject({ state: 'running' })
 diff --git a/tests/stop-proof.spec.ts b/tests/stop-proof.spec.ts
 new file mode 100644
-index 0000000..de9dc48
+index 0000000..20fe54d
 --- /dev/null
 +++ b/tests/stop-proof.spec.ts
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,66 @@
 +import { describe, expect, it } from 'vitest'
 +import { spawn } from 'node:child_process'
 +import { completeStopProof, identityAlive, readProcessIdentity, readStopProof, recordStopProof, replacementBlocked, settleStopProof } from '../src/executor/stop-proof.ts'
@@ -1555,17 +1552,27 @@ index 0000000..de9dc48
 +    expect(settleStopProof(s, gone, [])).toBe(true)
 +  })
 +
++  it('settles A without touching an unrelated B that is still running', () => {
++    const s = store()
++    const a = recordStopProof(s, ticket({ leaseId: 'a', fencingToken: '1' }), assignment, [], [])
++    const b = recordStopProof(s, ticket({ leaseId: 'b', fencingToken: '2' }), { ...assignment, id: 'b1' }, [{ id: 'job-b', name: 'b' }], [])
++    completeStopProof(s, a)
++    expect(replacementBlocked(s, ticket({ leaseId: 'a', fencingToken: '1' }))).toBe(false)
++    expect(replacementBlocked(s, { ...ticket({ leaseId: 'b', fencingToken: '2' }), assignments: [{ id: 'b1', state: 'ended', createdAt: '' }] })).toBe(true)
++    expect(b.state).toBe('unproven')
++  })
++
 +  it('blocks replacement when the identity is missing or a recorded pid survives a restart', () => {
 +    const s = store()
 +    const admitted = ticket({ leaseId: 'l1', fencingToken: '1' })
-+    expect(replacementBlocked(s, admitted, [])).toBe(true)
++    expect(replacementBlocked(s, admitted)).toBe(true)
 +    const empty = recordStopProof(s, admitted, assignment, [], [])
-+    expect(replacementBlocked(s, admitted, [])).toBe(true)
++    expect(replacementBlocked(s, admitted)).toBe(true)
 +    completeStopProof(s, empty)
-+    expect(replacementBlocked(s, admitted, [])).toBe(false)
++    expect(replacementBlocked(s, admitted)).toBe(false)
 +    const other = store()
 +    recordStopProof(other, ticket(), assignment, [{ id: 'job-2', name: 'x' }], [])
-+    expect(replacementBlocked(other, ticket(), [{ id: 'job-2' }])).toBe(true)
++    expect(replacementBlocked(other, ticket())).toBe(true)
 +  })
 +})
 +

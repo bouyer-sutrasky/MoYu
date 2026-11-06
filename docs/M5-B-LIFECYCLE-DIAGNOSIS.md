@@ -21,12 +21,11 @@
   `current()` 和 prompt 授权回调都会拒绝 A。
 - 持久重放：`launch`/`delivery` effect 消费时重新读取 Ticket 与 fence；旧 effect 不能唤醒。
 - 停止证明：已新增 `src/executor/stop-proof.ts`，在 `stop()` 启动前持久记录旧
-  lease/token、Assignment、job 和 **进程身份**（PID + `/proc/<pid>/stat` starttime +
-  cgroup）为 `unproven`；`settle` 直接读 `/proc/<pid>`，不依赖当前 processTree，父进程退出后
-  PPID=1 的孤儿仍命中。只有全部身份消失/被复用才置 `proven`，空身份由成功停止回调
-  `completeStopProof` 结算。`track` 只结算发起该次 stop 的 Assignment，重复 record 不覆盖已有
-  unproven 证据。`launch` 在 stopped 屏障后消费同一证据；admitted Ticket 缺失证明、身份仍活或
-  读取失败时占住名额。真实 Jobs stop EPERM 与重启前后旧 job 的现场回归仍未补。
+  lease/token、Assignment 和 **本 Ticket 的 job ID** 为 `unproven`；不再把整个 harness 的
+  processTree 记入 A，避免 A 的证明污染 B。只有本次 stop 回调成功且本 Session 无运行 job 时才
+  `completeStopProof`；unproven 记录不会被自动 settle，重启后空 job registry 也不能证明旧 job
+  已退出。`track` 只结算发起该次 stop 的 Assignment，重复 record 保留既有证据。真实
+  Jobs stop EPERM、旧父退出后后代存活和重建 executor/replay 的现场回归仍未补。
 - 启动器：release 前登记 fd3 error/early exit，保存新 PID/cgroup ownership；同代事件已收敛
   一次失败。generation 比对与 DB 写失败交错仍缺独立探针。
 - 第二候选：fresh-2 在 provider 前停住；现有证据只到 trigger 被存储、无新 assessment effect /
