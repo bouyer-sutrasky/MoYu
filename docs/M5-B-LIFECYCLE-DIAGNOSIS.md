@@ -45,8 +45,7 @@
 
 ## 安全行为
 
-- 有 admission 但读不到 fence：`admissionCurrent` 返回 true（兼容旧库/未启用 fence 的实例）；
-  M5-B 受管实例写入 fence 后以 fence 为准。
+- 有 admission 但读不到 fence：受管实现拒绝执行并保留输入；只有无 admission 的旧 Ticket 走兼容路径。
 - 无 admission 的旧 Ticket：保持 legacy 行为；受管新 Ticket 在 `requireAdmission` 下必须有 token。
 
 ## 恢复红证据（2026-11-06）

@@ -1,5 +1,5 @@
 diff --git a/docs/007-architecture.md b/docs/007-architecture.md
-index 12b62a4..40dd377 100644
+index 12b62a4..2600465 100644
 --- a/docs/007-architecture.md
 +++ b/docs/007-architecture.md
 @@ -354,6 +354,7 @@ Some generic modules still refer directly to GitHub or Feishu:
@@ -10,11 +10,12 @@ index 12b62a4..40dd377 100644
  | `src/executor/background.ts` | A worker's background work in DeepSeek Harness, the shell jobs its Session owns (`ctx.jobs`) and its subagents (`ctx.subagents`): `runningJobs`, `untilQuiet`, `killJobs`, `collectJobs`, `stopSubagents`, `stopBackground`, `until`, and `cancelled`, the workers whose turn a stop of their subagents cancelled |
  | `src/infra/commands.ts` | `Commands`, the CLI transport: `run`; `api` and `pages`, limited to the configured repository and validated; `lark` as the bot; `git`. `CliError` carries the code a command's output reports, such as a GitHub HTTP status, and a command that prints nothing fails with how it ended, never with its arguments; `validItems` skips and counts the malformed items of a list |
  | `src/infra/environment.ts` | The agent's process environment: command shims, the git configuration and credential helper, `runAsWorker`, and the checks of the environment and of a Ticket's directory |
-@@ -416,6 +417,8 @@ Some generic modules still refer directly to GitHub or Feishu:
+@@ -416,6 +417,9 @@ Some generic modules still refer directly to GitHub or Feishu:
  | `tests/ticket-freeze.spec.ts` | The frozen execution spec: parsing it from a workspace Trigger, copying model/base/mode onto the accepted Ticket, leaving other Sources without one, and the launch-time model validation that never falls back |
  | `tests/discussion.spec.ts` | Discussion mode: the read-only tool allow-list and permission preset, the read-only worktree boundary and refusal of local tools such as subagent, the work tools and `danger-full-access` for execute, replacing the restriction when the mode changes, the discussion assignment text, and `discussing` state projection |
  | `tests/pause.spec.ts` | A human pause and resume: Inputs and attention kept, the Executor pause, `stoppedAt` evidence and failures, resume admission and ticket identity, starting a discuss plan, non-retryability, and `DshExecutor.pause` stopping jobs with its evidence |
 +| `tests/admission.spec.ts` | Execution admission in the core: retry/start/admit without a usable token, an invalid or stale generation, the repository-wide fence for delayed Triggers, and pause-before-admit creating no Assignment |
++| `tests/stop-proof-red.spec.ts` | Recovery red evidence: a real recorded process has exited, but without an authoritative stop completion the proof stays unproven and replacement stays blocked |
 +| `tests/stop-proof.spec.ts` | Durable stop proof: an unproven record blocks replacement while a recorded job/pid lives, missing admitted proof blocks, and only gone identities settle the proof |
  | `tests/bridge-control.spec.ts` | M4 execution control: the operation log across a reopen, pause/resume/start/retry endpoints and their 202/404/409/422 answers, idempotency, settlement from Ticket state, operation persistence across a Bridge restart, the M4 ticket snapshot, `targetTicketId` attach/conflict/ended cases, `ticket.paused` events, and one-time GitHub `ticket.imported` events |
  | `tests/bridge-branches.spec.ts` | The read-only branch list: the sorted 200 shape and `branches` capability, one page versus pagination, the ten-page `hasMore` cap, repository-scoped `commands.api` paths, a CLI failure as 503, malformed data as 502, and bearer auth |
@@ -1548,6 +1549,42 @@ index 892cb1b..00f7b2a 100644
    await runtime.idle()
    expect(runs()).toBe(before + 2)
    expect(runtime.store.tickets.get(prepared.ticket.id)!.assignments.at(-1)).toMatchObject({ state: 'running' })
+diff --git a/tests/stop-proof-red.spec.ts b/tests/stop-proof-red.spec.ts
+new file mode 100644
+index 0000000..210240c
+--- /dev/null
++++ b/tests/stop-proof-red.spec.ts
+@@ -0,0 +1,30 @@
++import { spawn } from 'node:child_process'
++import { describe, expect, it } from 'vitest'
++import { readProcessIdentity, identityAlive, recordStopProof, replacementBlocked } from '../src/executor/stop-proof.ts'
++import type { Assignment, Ticket } from '../src/core/index.ts'
++
++function store() {
++  const values = new Map<string, unknown>()
++  return { get<V>(key: string): V | undefined { return values.get(key) as V | undefined },
++    set<V>(key: string, value: V): void { values.set(key, value) } }
++}
++const ticket: Ticket = { id: 't1', title: 'x', decisionId: 'd', mandate: {} as never, channels: [], inputs: [], undelivered: [],
++  createdAt: '', updatedAt: '', origin: { triggerId: 'g', triggerIds: ['g'] },
++  assignments: [{ id: 'a1', state: 'ended', createdAt: '' }], admission: { leaseId: 'l', fencingToken: '1' } }
++const assignment: Assignment = { id: 'a1', state: 'ended', createdAt: '' }
++
++describe('recovery red evidence', () => {
++  it('still blocks after the recorded real process exited, because no authoritative stop completion exists', async () => {
++    const s = store()
++    const child = spawn('sleep', ['10'], { stdio: 'ignore' })
++    const identity = readProcessIdentity(child.pid!)!
++    recordStopProof(s, ticket, assignment, [{ id: 'job-1', name: 'sleep' }], [identity])
++    expect(identityAlive(identity)).toBe(true)
++    expect(replacementBlocked(s, ticket)).toBe(true)
++    child.kill('SIGKILL')
++    await new Promise(resolve => setTimeout(resolve, 150))
++    expect(identityAlive(identity)).toBe(false)
++    // The current implementation cannot settle without the original stop callback.
++    expect(replacementBlocked(s, ticket)).toBe(true)
++  })
++})
 diff --git a/tests/stop-proof.spec.ts b/tests/stop-proof.spec.ts
 new file mode 100644
 index 0000000..20fe54d
