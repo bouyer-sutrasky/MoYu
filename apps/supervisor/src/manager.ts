@@ -10,6 +10,7 @@ import {
   collectOwnership,
   ensureCgroup,
   movePidToCgroup,
+  cgroupOomKilled,
   removeCgroup,
   pidAlive,
   portFree,
@@ -20,6 +21,17 @@ import {
   type StoredOwnership,
 } from './process';
 import { instanceLogPath, parseEnvFile, prepareInstance, type PreparedInstance } from './provision';
+import {
+  aggregateMemory,
+  applyInstanceMemoryLimit,
+  assessAdmission,
+  limitsFromConfig,
+  pressureAvg10,
+  readHostMemory,
+  readMemorySample,
+  selfCgroupPath,
+  type AdmissionDecision,
+} from './resources';
 import type { InstanceRow, SupervisorStore } from './store';
 
 export interface WakeInput {
@@ -155,6 +167,8 @@ export class InstanceManager {
   private lock: Promise<void> = Promise.resolve();
   private stopped = false;
   private timer: NodeJS.Timeout | null = null;
+  private lastResourceSampleAt = 0;
+  private readonly resourceBlocked = new Set<string>();
 
   constructor(
     private readonly config: SupervisorConfig,
@@ -573,6 +587,12 @@ export class InstanceManager {
     if (this.stopped) return;
     await this.withLock(async () => {
       const rows = await this.store.listInstances();
+      await this.sampleResources(rows).catch((error) => {
+        this.logger.warn(
+          { event: 'supervisor.resource_sample_failed', error: safeError(error) },
+          'could not sample measured memory; admission stays conservative',
+        );
+      });
       for (const row of rows) {
         try {
           await this.store.recordProgress(row.repositoryId);
@@ -803,6 +823,45 @@ export class InstanceManager {
           await this.store.syncRepositoryStatus(current.repositoryId, 'sleeping');
           continue;
         }
+        const decision = await this.resourceDecisionFor(
+          this.resourceBlocked.has(current.repositoryId),
+        );
+        if (!decision.admitted) {
+          this.resourceBlocked.add(current.repositoryId);
+          await this.store.updateInstance(current.repositoryId, {
+            state: 'sleeping',
+            desiredState: 'online',
+            reasonCode: decision.state === 'over_budget' ? 'resource_over_budget' : 'resource_wait',
+            reasonDetail: decision.reason,
+            waitingFor: 'memory',
+            resourceState: decision.state,
+            resourceDetail: decision.reason,
+            resourceCheckedAt: new Date(),
+          });
+          await this.store.syncRepositoryStatus(current.repositoryId, 'sleeping');
+          await this.store.recordResourceSample({
+            scope: 'aggregate',
+            memoryCurrentBytes: decision.currentBytes,
+            hostMemAvailableBytes: decision.hostAvailableBytes,
+            detail: {
+              refusedFor: current.repositoryId,
+              projectedBytes: decision.projectedBytes,
+              reason: decision.reason,
+            },
+          });
+          this.logger.info(
+            {
+              event: 'supervisor.resource_wait',
+              repositoryId: current.repositoryId,
+              projectedBytes: decision.projectedBytes,
+              currentBytes: decision.currentBytes,
+              hostAvailableBytes: decision.hostAvailableBytes,
+            },
+            'new instance is waiting for aggregate memory headroom',
+          );
+          continue;
+        }
+        this.resourceBlocked.delete(current.repositoryId);
         await this.spawnInstance(current);
         active = await this.store.onlineInstances();
       }
@@ -856,6 +915,19 @@ export class InstanceManager {
       return;
     }
     const cgroup = ensureCgroup(`${prepared.profile}-${Date.now()}`);
+    if (cgroup) {
+      const applied = applyInstanceMemoryLimit(cgroup, limitsFromConfig(this.config));
+      if (!applied.ok) {
+        this.logger.warn(
+          {
+            event: 'supervisor.memory_limit_failed',
+            repositoryId: instance.repositoryId,
+            error: applied.error,
+          },
+          'per-instance memory limit was not applied; aggregate admission still applies',
+        );
+      }
+    }
     const cgroupProcs = cgroup ? join(cgroup, 'cgroup.procs') : null;
     let child;
     try {
@@ -945,7 +1017,14 @@ export class InstanceManager {
       void this.withLock(async () => {
         const row = await this.store.getInstance(instance.repositoryId);
         if (!row || !['starting', 'online'].includes(row.state)) return;
-        await this.failInstance(row, 'instance_lost', 'The runtime process exited unexpectedly');
+        const oom = cgroupOomKilled(storedOwnership(row).cgroup);
+        await this.failInstance(
+          row,
+          oom ? 'oom_killed' : 'instance_lost',
+          oom
+            ? 'The instance cgroup recorded an OOM kill; the runtime process exited'
+            : 'The runtime process exited unexpectedly',
+        );
       });
     });
     this.logger.info(
@@ -969,6 +1048,118 @@ export class InstanceManager {
         'startup verification failed after the supervisor stopped or lost its pool',
       );
     });
+  }
+
+  /** Reads the measured aggregate and decides whether one more instance fits. */
+  private async resourceDecisionFor(blockedBefore: boolean): Promise<AdmissionDecision> {
+    const limits = limitsFromConfig(this.config);
+    const rows = await this.store.listInstances();
+    const instanceCgroups = rows
+      .filter((row) => ['starting', 'online', 'stopping'].includes(row.state))
+      .map((row) => storedOwnership(row).cgroup);
+    const estimateBytes = Math.min(
+      limits.instanceMaxBytes,
+      Math.ceil(limits.targetBytes / Math.max(1, this.config.maxOnline)),
+    );
+    const host = readHostMemory();
+    const aggregate = aggregateMemory({
+      instanceCgroups,
+      instanceEstimateBytes: estimateBytes,
+      ...(this.config.platformCgroup ? { platformCgroup: this.config.platformCgroup } : {}),
+      ...(this.config.postgresCgroup ? { postgresCgroup: this.config.postgresCgroup } : {}),
+      ...(this.config.aggregateCgroup ? { aggregateCgroup: this.config.aggregateCgroup } : {}),
+    });
+    const pressure = pressureAvg10(
+      readMemorySample(this.config.platformCgroup ?? selfCgroupPath()),
+    );
+    return assessAdmission({
+      limits,
+      aggregate,
+      host,
+      estimateBytes,
+      pressureAvg10: pressure,
+      blockedBefore,
+    });
+  }
+
+  /** Persists real cgroup/host memory samples; never an estimate as a measurement. */
+  private async sampleResources(rows: InstanceRow[]): Promise<void> {
+    const now = Date.now();
+    if (now - this.lastResourceSampleAt < this.config.resourceSampleIntervalMs) return;
+    this.lastResourceSampleAt = now;
+    const limits = limitsFromConfig(this.config);
+    const host = readHostMemory();
+    const activeRows = rows.filter((row) => ['starting', 'online', 'stopping'].includes(row.state));
+    const instanceCgroups = activeRows.map((row) => storedOwnership(row).cgroup);
+    const estimateBytes = Math.min(
+      limits.instanceMaxBytes,
+      Math.ceil(limits.targetBytes / Math.max(1, this.config.maxOnline)),
+    );
+    const aggregate = aggregateMemory({
+      instanceCgroups,
+      instanceEstimateBytes: estimateBytes,
+      ...(this.config.platformCgroup ? { platformCgroup: this.config.platformCgroup } : {}),
+      ...(this.config.postgresCgroup ? { postgresCgroup: this.config.postgresCgroup } : {}),
+      ...(this.config.aggregateCgroup ? { aggregateCgroup: this.config.aggregateCgroup } : {}),
+    });
+    const pressureSample = readMemorySample(this.config.platformCgroup ?? selfCgroupPath());
+    const pressure = pressureAvg10(pressureSample);
+    await this.store.recordResourceSample({
+      scope: 'host',
+      memoryCurrentBytes: Math.max(0, host.totalBytes - host.availableBytes),
+      hostMemAvailableBytes: host.availableBytes,
+      detail: {
+        memTotalBytes: host.totalBytes,
+        swapTotalBytes: host.swapTotalBytes,
+        swapFreeBytes: host.swapFreeBytes,
+      },
+    });
+    await this.store.recordResourceSample({
+      scope: 'aggregate',
+      memoryCurrentBytes: aggregate.currentBytes,
+      hostMemAvailableBytes: host.availableBytes,
+      pressure: {},
+      detail: {
+        instanceBytes: aggregate.instanceBytes,
+        platformBytes: aggregate.platformBytes,
+        databaseBytes: aggregate.databaseBytes,
+        supervisorBytes: aggregate.supervisorBytes,
+        unknownCgroups: aggregate.unknownCgroups.length,
+        aggregateCurrentBytes: aggregate.aggregateCurrentBytes,
+        aggregateLimitBytes: aggregate.aggregateLimitBytes,
+        targetBytes: limits.targetBytes,
+        budgetBytes: limits.budgetBytes,
+        hardLimitBytes: limits.hardLimitBytes,
+        pressureAvg10: pressure,
+        ok: aggregate.ok,
+      },
+    });
+    for (const row of activeRows) {
+      const cgroup = storedOwnership(row).cgroup;
+      const sample = readMemorySample(cgroup);
+      const state = sample.ok ? (aggregate.ok ? 'ok' : 'unknown') : 'unknown';
+      await this.store.updateInstance(row.repositoryId, {
+        memoryCurrentBytes: sample.currentBytes,
+        memoryPeakBytes: sample.peakBytes,
+        memoryLimitBytes: sample.limitBytes,
+        memoryEvents: sample.events,
+        resourceState: row.resourceState === 'oom' ? 'oom' : state,
+        resourceDetail: sample.error,
+        resourceCheckedAt: new Date(),
+      });
+      await this.store.recordResourceSample({
+        scope: 'instance',
+        repositoryId: row.repositoryId,
+        memoryCurrentBytes: sample.currentBytes,
+        memoryPeakBytes: sample.peakBytes,
+        memoryLimitBytes: sample.limitBytes,
+        memoryEvents: sample.events,
+        oomKillCount: sample.oomKillCount,
+        hostMemAvailableBytes: host.availableBytes,
+        pressure: sample.pressure,
+        detail: { cgroup: Boolean(cgroup), state: row.state },
+      });
+    }
   }
 
   private async settleStart(
@@ -1067,17 +1258,29 @@ export class InstanceManager {
       await this.stopInstance(instance, 'failure_cleanup', 'process_exit');
       return;
     }
+    const exhausted =
+      ['start_failed', 'oom_killed', 'instance_lost'].includes(code) &&
+      instance.attemptCount >= this.config.maxStartAttempts;
     await this.store.updateInstance(instance.repositoryId, {
       state: 'fault',
       desiredState: 'sleeping',
       pid: null,
       ownership: {},
-      reasonCode: code,
-      reasonDetail: detail,
-      waitingFor: null,
-      errorCode: code,
+      reasonCode: exhausted ? 'retry_exhausted' : code,
+      reasonDetail: exhausted
+        ? `Stopped after ${instance.attemptCount} failed start attempts; an explicit retry is required. ${detail}`.slice(
+            0,
+            500,
+          )
+        : detail,
+      waitingFor: exhausted ? 'owner' : null,
+      errorCode: exhausted ? 'retry_exhausted' : code,
       errorDetail: detail,
+      resourceState: code === 'oom_killed' ? 'oom' : 'ok',
+      resourceDetail: code === 'oom_killed' ? detail : null,
+      resourceCheckedAt: new Date(),
       lastStoppedAt: null,
+      ...(exhausted ? { wakeRequestedAt: null, attemptCount: 0 } : {}),
     });
     await this.store.syncRepositoryStatus(instance.repositoryId, 'fault');
     this.logger.error(

@@ -103,7 +103,7 @@ async function runRepositoryWorker(
       operationsOnce(pool, config, repository, bridge, logger),
     ),
     runLoop('leases', 5000, signal, logger, async () => {
-      await maintainLeases(pool, repository, config.operationLeaseTtlMs);
+      await maintainLeases(pool, config, repository, bridge, logger);
       return false;
     }),
     runLoop('reports', config.reportCaptureIntervalMs, signal, logger, () =>

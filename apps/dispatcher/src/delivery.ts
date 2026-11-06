@@ -7,6 +7,7 @@ import type { DispatcherLogger } from './logger';
 import type { RepositoryBinding } from './runtime';
 import { bridgeErrorMessage, isRetryableBridgeError } from './runtime';
 import { appendEventSql } from './events-sql';
+import { acquireExecutionLease, releaseExecutionLease } from './leases';
 import { TASK_COLUMNS, taskModel, type TaskRow } from './tasks';
 
 export const RUN_INSTANCE = `dispatcher-${process.pid}`;
@@ -250,7 +251,54 @@ export async function deliverOnce(
         })
       : null;
 
+  let cleanupLease: { id: string } | null = null;
   try {
+    // Every launch and reply goes through the same repository execution lease.
+    // A refused lease leaves the message stored and waits; it does not deliver
+    // execution work beside an unproven or still-running admission.
+    const account = await acquireExecutionLease(
+      pool,
+      repository.id,
+      {
+        taskId: detail.taskId,
+        deliveryId: claimed.id,
+        reason: detail.taskId ? 'message reply' : 'task launch',
+      },
+      config.operationLeaseTtlMs,
+    );
+    if (!account.lease) {
+      await pool.query(
+        `update deliveries
+            set state='pending', next_attempt_at = now() + interval '5 seconds',
+                last_error=$2, evidence=$3, lease_owner=null, lease_expires_at=null, updated_at=now()
+          where id=$1`,
+        [
+          claimed.id,
+          account.detail,
+          JSON.stringify({
+            waitingFor: account.waitingFor,
+            leaseRefused: account.refused,
+          }),
+        ],
+      );
+      logger.warn(
+        {
+          event: 'delivery.lease_wait',
+          messageId: detail.messageId,
+          refused: account.refused,
+          waitingFor: account.waitingFor,
+        },
+        'delivery waits for the repository execution lease',
+      );
+      return true;
+    }
+    cleanupLease = account.lease;
+    await pool.query(
+      `update deliveries set runtime_lease_id=$2, fencing_token=$3, updated_at=now()
+        where id=$1`,
+      [claimed.id, account.lease.id, account.lease.fencingToken],
+    );
+
     const result = await bridge.trigger({
       triggerId: claimed.triggerId,
       conversationId: detail.conversationId,
@@ -274,6 +322,13 @@ export async function deliverOnce(
     });
 
     if (result.result === 'filtered') {
+      await releaseExecutionLease(
+        pool,
+        repository.id,
+        account.lease.id,
+        'the runtime filtered the trigger; no execution started',
+        { source: 'trigger_filtered', at: new Date().toISOString() },
+      );
       await pool.query(
         `update deliveries
             set state='failed', last_error=$2, evidence=$3, lease_owner=null, lease_expires_at=null, updated_at=now()
@@ -382,6 +437,16 @@ export async function deliverOnce(
         where id=$1`,
       [claimed.id, bridgeErrorMessage(error)],
     );
+    // A permanently refused trigger cannot have produced a worker execution.
+    if (cleanupLease) {
+      await releaseExecutionLease(
+        pool,
+        repository.id,
+        cleanupLease.id,
+        'the runtime refused the trigger permanently',
+        { source: 'trigger_refused', at: new Date().toISOString() },
+      ).catch(() => undefined);
+    }
     await recordDeliveryEvent(pool, {
       repositoryId: repository.id,
       conversationId: detail.conversationId,

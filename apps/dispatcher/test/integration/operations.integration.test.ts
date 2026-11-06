@@ -726,7 +726,7 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
     expect(task.stoppedAt).toBeNull();
     expect(task.runtimeLeaseId).toEqual(expect.any(String));
 
-    await maintainLeases(testDatabase.pool, fixture.repository, 60_000);
+    await maintainLeases(testDatabase.pool, config, fixture.repository, client, logger);
     const lease = await testDatabase.pool.query(
       `select state, expires_at from runtime_leases where id = $1`,
       [task.runtimeLeaseId],
@@ -752,8 +752,9 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
     };
     const waitingLease = await leaseFor(waiting, waiting.taskId);
     const runningLease = await leaseFor(running, running.taskId);
+    const logger = createConsoleLogger('test');
 
-    await maintainLeases(testDatabase.pool, waiting.repository, 60_000);
+    await maintainLeases(testDatabase.pool, config, waiting.repository, client, logger);
 
     const states = await testDatabase.pool.query<{ id: string; state: string }>(
       'select id, state from runtime_leases where id = any($1::uuid[])',

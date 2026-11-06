@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { once } from 'node:events';
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import type { BridgeEvent, BridgeTriggerInput } from '@moyu/runtime-client';
 import { RuntimeBridgeClient } from '@moyu/runtime-client';
@@ -259,6 +259,20 @@ describe('dispatcher delivery and Bridge event catch-up on real PostgreSQL', () 
     });
   }, 60_000);
 
+  beforeEach(async () => {
+    // Every test starts from a free repository slot; a lease from a previous
+    // scenario is not part of the next scenario's fixture.
+    await testDatabase.pool.query(
+      `update runtime_leases set state = 'released', released_at = now()
+        where repository_id = $1 and state = 'active'`,
+      [repository.id],
+    );
+    await testDatabase.pool.query(
+      `update task_links set runtime_lease_id = null where repository_id = $1`,
+      [repository.id],
+    );
+  });
+
   afterAll(async () => {
     if (fakeBridge) {
       await fakeBridge.close();
@@ -511,5 +525,61 @@ describe('dispatcher delivery and Bridge event catch-up on real PostgreSQL', () 
       [filteredConversationId],
     );
     expect(task.rows[0]?.upstream_ticket_id).toBeNull();
+  });
+
+  it('keeps a launch pending while another execution owns the repository lease', async () => {
+    const holderConversation = await testDatabase.pool.query<{ id: string }>(
+      `insert into conversations (owner_id, repository_id, mode, execution_mode, base_branch, title)
+       values ($1, $2, 'work', 'execute', 'main', 'lease holder') returning id`,
+      [ownerId, repository.id],
+    );
+    const holderTask = await testDatabase.pool.query<{ id: string }>(
+      `insert into task_links
+         (conversation_id, repository_id, upstream_ticket_id, state, base_branch)
+       values ($1, $2, 'holder-ticket', 'running', 'main') returning id`,
+      [holderConversation.rows[0]!.id, repository.id],
+    );
+    const holderLease = await testDatabase.pool.query<{ id: string }>(
+      `insert into runtime_leases (repository_id, holder_id, expires_at)
+       values ($1, 'dispatcher:holder', now() + interval '10 minutes') returning id`,
+      [repository.id],
+    );
+    await testDatabase.pool.query(`update task_links set runtime_lease_id = $2 where id = $1`, [
+      holderTask.rows[0]!.id,
+      holderLease.rows[0]!.id,
+    ]);
+
+    const conversation = await testDatabase.pool.query<{ id: string }>(
+      `insert into conversations (owner_id, repository_id, mode, execution_mode, base_branch, title)
+       values ($1, $2, 'work', 'execute', 'main', 'lease waiter') returning id`,
+      [ownerId, repository.id],
+    );
+    const message = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, client_message_id, body)
+       values ($1, 'inbound', 'user', 'client-lease-wait', 'wait for the slot') returning id`,
+      [conversation.rows[0]!.id],
+    );
+    const waitingMessageId = message.rows[0]!.id;
+    await testDatabase.pool.query(
+      `insert into deliveries (message_id, upstream_trigger_id) values ($1, $2)`,
+      [waitingMessageId, `workspace:${waitingMessageId}`],
+    );
+    await testDatabase.pool.query(
+      `insert into task_links (conversation_id, repository_id, state, base_branch)
+       values ($1, $2, 'pending_admission', 'main')`,
+      [conversation.rows[0]!.id, repository.id],
+    );
+
+    const triggerCalls = fakeBridge.triggerCalls.length;
+    expect(
+      await deliverOnce(testDatabase.pool, config, repository, client, createConsoleLogger('test')),
+    ).toBe(true);
+    expect(fakeBridge.triggerCalls).toHaveLength(triggerCalls);
+    const delivery = await testDatabase.pool.query<{
+      state: string;
+      evidence: Record<string, unknown>;
+    }>(`select state, evidence from deliveries where message_id = $1`, [waitingMessageId]);
+    expect(delivery.rows[0]?.state).toBe('pending');
+    expect(delivery.rows[0]?.evidence.leaseRefused).toBe('held');
   });
 });

@@ -5,6 +5,14 @@ import type { BridgeOperation, RuntimeBridgeClient } from '@moyu/runtime-client'
 
 import type { DispatcherConfig } from './config';
 import { appendEventSql } from './events-sql';
+import {
+  acquireExecutionLease,
+  ACTIVE_EXECUTION_STATES,
+  receiptIsCurrent,
+  reconcileLeases,
+  releaseTaskLease,
+  type ExecutionLease,
+} from './leases';
 import { pauseEvidenceProblem, pauseEvidenceProven } from './pause-evidence';
 import type { DispatcherLogger } from './logger';
 import type { RepositoryBinding } from './runtime';
@@ -21,6 +29,8 @@ interface OperationRow {
   bridgeOperationId: string | null;
   attemptCount: number;
   evidence: Record<string, unknown>;
+  runtimeLeaseId: string | null;
+  fencingToken: string | null;
 }
 
 interface ClaimedOperation extends OperationRow {
@@ -29,13 +39,14 @@ interface ClaimedOperation extends OperationRow {
 
 const OPERATION_COLUMNS = `
   op.id, op.task_id as "taskId", op.repository_id as "repositoryId", op.kind, op.state,
-  op.bridge_operation_id as "bridgeOperationId", op.attempt_count as "attemptCount", op.evidence
+  op.bridge_operation_id as "bridgeOperationId", op.attempt_count as "attemptCount", op.evidence,
+  op.runtime_lease_id as "runtimeLeaseId", op.fencing_token as "fencingToken"
 `;
 
 // The repository's single execution slot is held only while a worker can still
 // execute. Waiting for a person or review releases the slot; the runtime may
 // stay online, but another task on this repository may start.
-const ACTIVE_TASK_STATES = ['queued', 'running', 'discussing', 'stopping'];
+const ACTIVE_TASK_STATES = ACTIVE_EXECUTION_STATES;
 
 async function appendTaskEvent(
   client: pg.PoolClient,
@@ -163,6 +174,36 @@ async function applyOperationResult(
       await client.query('commit');
       return;
     }
+    // A result that belongs to a superseded lease generation must not rewrite
+    // the task. It is audited on the operation and lease, then dropped.
+    if (operation.runtimeLeaseId) {
+      const receipt = await receiptIsCurrent(pool, {
+        repositoryId: repository.id,
+        leaseId: operation.runtimeLeaseId,
+        fencingToken: operation.fencingToken,
+        taskId: task.id,
+        operationId: operation.id,
+        kind: operation.kind,
+      });
+      if (!receipt.current) {
+        await storeOperationEvidence(client, operation.id, 'failed', {
+          error: receipt.reason ?? 'stale execution generation',
+          evidence: { stale: true, runtimeState: bridgeOperation.state },
+        });
+        await client.query('commit');
+        logger.warn(
+          {
+            event: 'operation.stale_receipt',
+            operationId: operation.id,
+            taskId: task.id,
+            leaseId: operation.runtimeLeaseId,
+            reason: receipt.reason,
+          },
+          'refused a runtime result from a superseded execution generation',
+        );
+        return;
+      }
+    }
     let evidence = bridgeOperation.evidence ?? {};
     // The runtime settles a pause operation and the ticket's stop evidence
     // together, but a poll can observe the operation a moment before the evidence
@@ -281,6 +322,15 @@ async function applyOperationResult(
             : 'The runtime operation failed')),
     });
     await client.query('commit');
+    if (!ACTIVE_TASK_STATES.includes(updated.state as never)) {
+      // Waiting/terminal states do not hold the repository execution slot.
+      await releaseTaskLease(
+        pool,
+        repository.id,
+        updated.id,
+        `operation ${operation.kind} settled as ${updated.state}`,
+      ).catch(() => undefined);
+    }
     logger.info(
       {
         event: 'operation.settled',
@@ -292,69 +342,6 @@ async function applyOperationResult(
       },
       'task operation settled',
     );
-  } catch (error) {
-    await client.query('rollback').catch(() => undefined);
-    throw error;
-  } finally {
-    client.release();
-  }
-}
-
-async function acquireRuntimeLease(
-  pool: pg.Pool,
-  repositoryId: string,
-  taskId: string,
-  ttlMs: number,
-): Promise<{ id: string; fencingToken: string } | null> {
-  const client = await pool.connect();
-  try {
-    await client.query('begin');
-    await client.query(
-      `update runtime_leases
-          set state = 'expired', released_at = now()
-        where repository_id = $1 and state = 'active' and expires_at <= now()`,
-      [repositoryId],
-    );
-    const active = await client.query<{ id: string; fencing_token: string; holder_id: string }>(
-      `select id, fencing_token, holder_id from runtime_leases
-        where repository_id = $1 and state = 'active' for update`,
-      [repositoryId],
-    );
-    const current = active.rows[0];
-    const owner = await client.query<{ runtime_lease_id: string | null }>(
-      `select runtime_lease_id from task_links where id = $1`,
-      [taskId],
-    );
-    if (current) {
-      if (owner.rows[0]?.runtime_lease_id !== current.id) {
-        await client.query('commit');
-        return null;
-      }
-      await client.query(
-        `update runtime_leases set heartbeat_at = now(),
-                expires_at = now() + make_interval(secs => $2) where id = $1`,
-        [current.id, ttlMs / 1000],
-      );
-      await client.query('commit');
-      return { id: current.id, fencingToken: String(current.fencing_token) };
-    }
-    const inserted = await client.query<{ id: string; fencing_token: string }>(
-      `insert into runtime_leases (repository_id, holder_id, expires_at)
-       values ($1, $2, now() + make_interval(secs => $3))
-       returning id, fencing_token`,
-      [repositoryId, OPERATION_RUN_INSTANCE, ttlMs / 1000],
-    );
-    const lease = inserted.rows[0];
-    if (!lease) {
-      await client.query('rollback');
-      return null;
-    }
-    await client.query(`update task_links set runtime_lease_id = $2 where id = $1`, [
-      taskId,
-      lease.id,
-    ]);
-    await client.query('commit');
-    return { id: lease.id, fencingToken: String(lease.fencing_token) };
   } catch (error) {
     await client.query('rollback').catch(() => undefined);
     throw error;
@@ -494,63 +481,97 @@ async function sendOperation(
     return;
   }
   const ticketId = task.upstreamTicketId;
+  const planRevision = task.planRevision ?? 0;
+  let lease: ExecutionLease | null = null;
+  const failWithLease = async (message: string, code?: string) => {
+    await failOperation(pool, repository, operation, message, code);
+    if (lease) {
+      await releaseTaskLease(
+        pool,
+        repository.id,
+        task.id,
+        `operation ${operation.id} failed: ${message.slice(0, 120)}`,
+      ).catch(() => undefined);
+    }
+  };
   try {
     let accepted;
     if (operation.kind === 'pause') {
       accepted = await bridge.pause(ticketId, { operationId: operation.id, reason: 'owner stop' });
-    } else if (operation.kind === 'start') {
-      const planRevision = task.planRevision;
-      if (!planRevision) {
-        await failOperation(pool, repository, operation, 'No approved plan revision is recorded');
+    } else {
+      if (operation.kind === 'start' && !planRevision) {
+        await failWithLease('No approved plan revision is recorded');
         return;
       }
-      accepted = await bridge.start(ticketId, { operationId: operation.id, planRevision });
-    } else if (operation.kind === 'resume') {
-      const lease = await acquireRuntimeLease(
+      // start, resume and retry all need the repository's single execution
+      // lease. A refused admission stays queued; the task is not run beside an
+      // unproven or still-running generation.
+      const account = await acquireExecutionLease(
         pool,
         repository.id,
-        task.id,
+        { taskId: task.id, reason: `operation ${operation.kind}` },
         config.operationLeaseTtlMs,
       );
-      if (!lease) {
+      if (!account.lease) {
         await storeOperationEvidence(pool, operation.id, 'queued', {
           retryInSeconds: 5,
-          evidence: { waitingFor: 'runtime lease' },
+          evidence: {
+            waitingFor: account.waitingFor,
+            leaseRefused: account.refused,
+            detail: account.detail,
+          },
         });
         logger.info(
-          { event: 'operation.lease_busy', operationId: operation.id, taskId: task.id },
-          'resume waits for the repository execution lease',
+          {
+            event: 'operation.lease_wait',
+            operationId: operation.id,
+            taskId: task.id,
+            kind: operation.kind,
+            refused: account.refused,
+            waitingFor: account.waitingFor,
+          },
+          'operation waits for the repository execution lease',
         );
         return;
       }
-      const snapshot = await bridge.ticket(ticketId);
-      if (!snapshot.paused) {
-        await applySnapshot(pool, repository, task.id, bridge, logger);
-        await failOperation(pool, repository, operation, 'The runtime ticket is not paused');
-        return;
-      }
-      if (!snapshot.paused.stoppedAt) {
-        await storeOperationEvidence(pool, operation.id, 'queued', {
-          retryInSeconds: 3,
-          evidence: { waitingFor: 'stop evidence' },
+      lease = account.lease;
+      await pool.query(
+        `update task_operations
+            set runtime_lease_id = $2, fencing_token = $3, updated_at = now()
+          where id = $1`,
+        [operation.id, lease.id, lease.fencingToken],
+      );
+
+      if (operation.kind === 'start') {
+        accepted = await bridge.start(ticketId, {
+          operationId: operation.id,
+          planRevision,
         });
-        return;
+      } else if (operation.kind === 'resume') {
+        const snapshot = await bridge.ticket(ticketId);
+        if (!snapshot.paused) {
+          await applySnapshot(pool, repository, task.id, bridge, logger);
+          await failWithLease('The runtime ticket is not paused');
+          return;
+        }
+        if (!snapshot.paused.stoppedAt) {
+          await storeOperationEvidence(pool, operation.id, 'queued', {
+            retryInSeconds: 3,
+            evidence: { waitingFor: 'stop evidence' },
+          });
+          return;
+        }
+        if (!snapshot.execution?.directory) {
+          await failWithLease('The runtime cannot confirm the preserved worktree');
+          return;
+        }
+        accepted = await bridge.resume(ticketId, {
+          operationId: operation.id,
+          admission: { leaseId: lease.id, fencingToken: lease.fencingToken },
+        });
+      } else {
+        accepted = await bridge.retry(ticketId, { operationId: operation.id });
       }
-      if (!snapshot.execution?.directory) {
-        await failOperation(
-          pool,
-          repository,
-          operation,
-          'The runtime cannot confirm the preserved worktree',
-        );
-        return;
-      }
-      accepted = await bridge.resume(ticketId, {
-        operationId: operation.id,
-        admission: { leaseId: lease.id, fencingToken: lease.fencingToken },
-      });
-    } else {
-      accepted = await bridge.retry(ticketId, { operationId: operation.id });
     }
 
     await storeOperationEvidence(pool, operation.id, 'running', {
@@ -565,6 +586,8 @@ async function sendOperation(
         taskId: task.id,
         kind: operation.kind,
         runtimeState: accepted.state,
+        leaseId: lease?.id ?? null,
+        fencingToken: lease?.fencingToken ?? null,
       },
       'runtime accepted the task operation',
     );
@@ -574,6 +597,8 @@ async function sendOperation(
         config.operationRetryCapMs,
         1000 * 2 ** Math.max(0, operation.attemptCount - 1),
       );
+      // Keep the lease: a lost response may still have started execution, so the
+      // same operation id is retried under the same generation.
       await storeOperationEvidence(pool, operation.id, 'queued', {
         retryInSeconds: delayMs / 1000,
         error: bridgeErrorMessage(error),
@@ -594,7 +619,7 @@ async function sendOperation(
       typeof (error as { code?: unknown }).code === 'string'
         ? (error as { code: string }).code
         : undefined;
-    await failOperation(pool, repository, operation, bridgeErrorMessage(error), code);
+    await failWithLease(bridgeErrorMessage(error), code);
     logger.error(
       { event: 'operation.failed', operationId: operation.id, error: bridgeErrorMessage(error) },
       'task operation was refused permanently',
@@ -685,32 +710,49 @@ export async function operationsOnce(
 /** Extends leases held by active tasks and releases those whose task stopped or ended. */
 export async function maintainLeases(
   pool: pg.Pool,
+  config: DispatcherConfig,
   repository: RepositoryBinding,
-  ttlMs: number,
+  bridge: RuntimeBridgeClient,
+  logger: DispatcherLogger,
 ): Promise<void> {
+  // Waiting/terminal tasks no longer hold the repository's execution slot.
   await pool.query(
     `update runtime_leases l
-        set state = 'released', released_at = now()
+        set state = 'released', released_at = now(), heartbeat_at = now(),
+            waiting_for = null, recovery_reason = null
       from task_links t
      where t.runtime_lease_id = l.id and l.state = 'active'
        and l.repository_id = $1
-       and t.state::text not in (${ACTIVE_TASK_STATES.map((_, index) => `$${index + 2}`).join(', ')})`,
-    [repository.id, ...ACTIVE_TASK_STATES],
+       and t.state::text not in (${ACTIVE_EXECUTION_STATES.map((_, index) => `$${index + 2}`).join(', ')})`,
+    [repository.id, ...ACTIVE_EXECUTION_STATES],
   );
+  await pool.query(
+    `update task_links t
+        set runtime_lease_id = null, updated_at = now()
+       from runtime_leases l
+      where t.runtime_lease_id = l.id and l.state <> 'active'`,
+  );
+  // Live admissions are renewed; expiry alone never frees the slot.
   await pool.query(
     `update runtime_leases l
         set heartbeat_at = now(), expires_at = now() + make_interval(secs => $2)
       from task_links t
      where t.runtime_lease_id = l.id and l.state = 'active'
        and l.repository_id = $1
-       and t.state::text in (${ACTIVE_TASK_STATES.map((_, index) => `$${index + 3}`).join(', ')})`,
-    [repository.id, ttlMs / 1000, ...ACTIVE_TASK_STATES],
+       and t.state::text in (${ACTIVE_EXECUTION_STATES.map((_, index) => `$${index + 3}`).join(', ')})`,
+    [repository.id, config.operationLeaseTtlMs / 1000, ...ACTIVE_EXECUTION_STATES],
   );
+  // Launch leases carry no task yet. Keep them alive while their delivery is
+  // still in flight, and leave the rest to expiry + recovery.
   await pool.query(
-    `update runtime_leases set state = 'expired', released_at = now()
-      where repository_id = $1 and state = 'active' and expires_at <= now()`,
-    [repository.id],
+    `update runtime_leases l
+        set heartbeat_at = now(), expires_at = now() + make_interval(secs => $2)
+       from deliveries d
+      where d.runtime_lease_id = l.id and l.state = 'active'
+        and l.repository_id = $1 and d.state in ('pending', 'delivering')`,
+    [repository.id, config.operationLeaseTtlMs / 1000],
   );
+  await reconcileLeases(pool, repository, bridge, logger);
 }
 
 /**

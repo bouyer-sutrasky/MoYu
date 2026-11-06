@@ -11,6 +11,8 @@ import {
 import { basename, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
+import { enableSubtreeControllers, readMemorySample } from './resources';
+
 export async function portFree(port: number, host = '127.0.0.1'): Promise<boolean> {
   return new Promise((resolve) => {
     const socket = createConnection({ host, port });
@@ -213,6 +215,9 @@ export const CGROUP_ROOT = process.env.MOYU_CGROUP_ROOT ?? '/sys/fs/cgroup/moyu-
 export function ensureCgroup(profile: string): string | null {
   const path = join(CGROUP_ROOT, profile.replaceAll(/[^a-zA-Z0-9_.-]/g, '-'));
   try {
+    // The memory controller must be delegated before the child cgroup exists,
+    // otherwise memory.current is absent and the instance cannot be metered.
+    enableSubtreeControllers(CGROUP_ROOT);
     mkdirSync(path, { recursive: true, mode: 0o755 });
     // The kernel creates cgroup.procs; reading proves the hierarchy is usable.
     readFileSync(join(path, 'cgroup.procs'), 'utf8');
@@ -220,6 +225,11 @@ export function ensureCgroup(profile: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** True when the cgroup's measured `memory.events` report an OOM kill. */
+export function cgroupOomKilled(path: string | null | undefined): boolean {
+  return (readMemorySample(path).events.oom_kill ?? 0) > 0;
 }
 
 export function movePidToCgroup(path: string, pid: number): boolean {

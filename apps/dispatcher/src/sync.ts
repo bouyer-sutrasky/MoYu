@@ -9,6 +9,7 @@ import type { RepositoryBinding } from './runtime';
 import { appendEventSql } from './events-sql';
 import { endedState, stateFromSnapshot, TASK_COLUMNS, taskSummary, type TaskRow } from './tasks';
 import { pauseEvidenceProblem, pauseEvidenceProven } from './pause-evidence';
+import { acquireExecutionLeaseOn } from './leases';
 
 interface ProjectedTask {
   task: TaskRow;
@@ -878,9 +879,56 @@ async function applyImportedEvent(
     return undefined;
   }
 
+  // A GitHub @ starts execution in the runtime. Bind the imported task to the
+  // repository execution lease and, when another task already owns it, record
+  // the refusal and queue a durable pause instead of allowing the two
+  // executions to look like one admission.
+  const admission = await acquireExecutionLeaseOn(
+    client,
+    repository.id,
+    { taskId: task.id, reason: 'github import' },
+    3_600_000,
+  );
+  let admittedTask = task;
+  if (!admission.lease) {
+    if (!['blocked', 'stopped', 'completed', 'closed_unmerged'].includes(task.state)) {
+      const blocked = await client.query<TaskRow>(
+        `update task_links
+            set state = 'blocked', stop_evidence = $2::jsonb,
+                version = version + 1, updated_at = now()
+          where id = $1
+          returning ${TASK_COLUMNS.replaceAll('t.', 'task_links.')}`,
+        [
+          task.id,
+          JSON.stringify({
+            admissionRefused: admission.refused,
+            waitingFor: admission.waitingFor,
+            reason: admission.detail,
+          }),
+        ],
+      );
+      admittedTask = blocked.rows[0] ?? task;
+    }
+    await client.query(
+      `insert into task_operations
+         (task_id, repository_id, kind, client_command_id, request_fingerprint, evidence)
+       values ($1, $2, 'pause', $3, 'import-admission', $4::jsonb)
+       on conflict do nothing`,
+      [
+        task.id,
+        repository.id,
+        `import-admission:${task.id}`,
+        JSON.stringify({
+          reason: 'github import was refused an execution lease',
+          leaseRefused: admission.refused,
+        }),
+      ],
+    );
+  }
+
   if (insertedTask) {
     await emit(client, repository, event, 'task.linked', conversation.id, task.id, {
-      task: taskSummary(task),
+      task: taskSummary(admittedTask),
     });
   }
 
