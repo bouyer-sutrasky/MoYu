@@ -494,6 +494,7 @@ async function sendOperation(
   operation: ClaimedOperation,
   task: TaskRow,
   logger: DispatcherLogger,
+  admissionSupported = false,
 ): Promise<void> {
   if (!task.upstreamTicketId) {
     await failOperation(pool, repository, operation, 'The runtime has not accepted this task');
@@ -586,6 +587,9 @@ async function sendOperation(
         accepted = await bridge.start(ticketId, {
           operationId: operation.id,
           planRevision,
+          ...(admissionSupported
+            ? { admission: { leaseId: lease.id, fencingToken: lease.fencingToken } }
+            : {}),
         });
       } else if (operation.kind === 'resume') {
         const snapshot = await bridge.ticket(ticketId);
@@ -610,7 +614,12 @@ async function sendOperation(
           admission: { leaseId: lease.id, fencingToken: lease.fencingToken },
         });
       } else {
-        accepted = await bridge.retry(ticketId, { operationId: operation.id });
+        accepted = await bridge.retry(ticketId, {
+          operationId: operation.id,
+          ...(admissionSupported
+            ? { admission: { leaseId: lease.id, fencingToken: lease.fencingToken } }
+            : {}),
+        });
       }
     }
 
@@ -730,6 +739,7 @@ export async function operationsOnce(
   repository: RepositoryBinding,
   bridge: RuntimeBridgeClient,
   logger: DispatcherLogger,
+  admissionSupported = false,
 ): Promise<boolean> {
   if (await pollOperations(pool, repository, bridge, logger)) {
     return true;
@@ -743,7 +753,16 @@ export async function operationsOnce(
     await failOperation(pool, repository, operation, 'The platform task no longer exists');
     return true;
   }
-  await sendOperation(pool, config, repository, bridge, operation, task, logger);
+  await sendOperation(
+    pool,
+    config,
+    repository,
+    bridge,
+    operation,
+    task,
+    logger,
+    admissionSupported,
+  );
   return true;
 }
 

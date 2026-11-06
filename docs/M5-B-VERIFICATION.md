@@ -31,10 +31,10 @@ corepack pnpm build
 构建制品 sha256（实现构建，非发布制品）：
 
 ```text
-478a23f401be6ac8f59d4f17f2a2e83a39d41f7c6b63f418b0ffbc8d7adf20be  apps/api/dist/server.js
-44915a46c3a8ee3c7d5e575cd471c4c4988e3af96005c38029b0c5f6b6f497d7  apps/dispatcher/dist/main.js
-8c2fd8262ddf2cedea615321216df7cd2be87c0d52c6aed4b3cf9e32289e6021  apps/supervisor/dist/main.js
-131a0fd5afafd574797f9ab249519f37ec4636976585ed00c36627aeca1285a4  apps/web/dist/assets/index-CPacwuA8.js
+61543347b7e4e9932d519210699000526d60dcb11621230e445e82657c4c470c  apps/api/dist/server.js
+50ce9c574fe00ed0938032fa2542fb57486a890f4687f525deac46814fc81981  apps/dispatcher/dist/main.js
+4d9a37f79ebed677f578a256a740ae75be459bf567297b1a78743ee6205117dc  apps/supervisor/dist/main.js
+b55236342ec8251d9890787cf6e0b45829a322b51cf99c5daaa36c1f74fe9746  apps/web/dist/assets/index-Cng83waZ.js
 39a2cbfc47d44d272bc18fad5772346b891e06713d07009e4357f7af51cb5424  apps/web/dist/assets/index-DnIo0nRx.css
 b06e32aebd8dfa96845f74dc916613de7f4d775935c7ce27f5875fcef13f8196  packages/db/migrations/0013_loving_quentin_quire.sql
 ```
@@ -49,7 +49,7 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres corepack pnpm t
 | --- | --- |
 | `@moyu/db`（含 0013 rollback → reapply） | 10 文件 / 36 测试通过 |
 | `@moyu/api`（M4 暂停继续、双入口、分页、仓库生命周期） | 11 文件 / 66 测试通过 |
-| `@moyu/dispatcher`（多仓库、operations、租约、复审回归） | 4 文件 / 46 测试通过 |
+| `@moyu/dispatcher`（多仓库、operations、租约、复审回归、admission） | 4 文件 / 47 测试通过 |
 
 租约测试覆盖：
 
@@ -75,6 +75,27 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres corepack pnpm t
 - systemd `Slice=` 修正到 `[Service]`，`systemd-analyze verify` 不再报告该键被忽略；OOM 探针改为独占 slice/unit，断言
   anchor 归属、8 GiB/256 MiB 限额、`oom_kill=1` 与宿主余量，失败返回非零。
 - 仍未闭合：start/retry/在线 GitHub 的上游 admission 契约（见 §8）。
+
+### 上游 admission 补丁（0023）
+
+- 在固定 upstream `6337fc823ce20251c8de8085948165c81aaa701e` + 0001–0022 上生成
+  `integrations/superagent/patches/0023-execution-admission.patch`；`build-patched.sh` 全量
+  `git apply --check`、typecheck、构建通过。
+- 上游测试：1296/1297 通过；唯一失败是 `tests/sources.spec.ts` 的既有可选 Feishu 用例
+  （README 已记录，不是本补丁引入）。
+- 定向 admission 测试：`tests/bridge.spec.ts` 24、`tests/pause.spec.ts` 16、
+  `tests/bridge-control.spec.ts` 25 全通过，覆盖：
+  - 无 admission 的 workspace trigger 返回 422 且不落 Trigger、不产生执行；
+  - start/retry 无 admission 返回 422 且不调用启动；带当前 admission 才入队；
+  - GitHub Ticket 创建后停在 `pending_admission`、无 Assignment；`/admit` 后才启动；
+  - 旧代次 token 被 `admissionStale` 拒绝。
+- 构建制品：`/root/src/upstream/m5b-admission-build2`；hash 见
+  `docs/evidence/m5b/upstream-admission-build.txt`。
+- 平台侧按 `capabilities.admission` 发送 admission；`pending_admission` 任务由
+  `admitImportedOnce` 取得租约后调用 `/admit`，失败/无租约不创建 worker。新增真实
+  PostgreSQL 回归见 dispatcher 集成测试。
+- **未部署到 live profile**：该构建没有切换到运行中的 M5-B 实例，也没有真实 runtime 的
+  Bridge 拒绝/重启/pause 交错证据；`MOYU_REQUIRE_ADMISSION=1` 才启用。
 
 ## 4. 迁移回滚
 

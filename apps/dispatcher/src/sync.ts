@@ -879,10 +879,12 @@ async function applyImportedEvent(
     return undefined;
   }
 
-  // A GitHub @ starts execution in the runtime. Bind the imported task to the
-  // repository execution lease and, when another task already owns it, record
-  // the refusal and queue a durable pause instead of allowing the two
-  // executions to look like one admission.
+  // A GitHub @ in an M5-B runtime is held as pending_admission until the
+  // platform admits it; an older runtime has already started a worker, so a
+  // refused lease there still needs the durable pause path. Bind the task to
+  // the repository execution lease and never create execution beside another
+  // admitted generation.
+  const admissionRequired = data.admissionRequired === true;
   const admission = await acquireExecutionLeaseOn(
     client,
     repository.id,
@@ -891,7 +893,24 @@ async function applyImportedEvent(
   );
   let admittedTask = task;
   if (!admission.lease) {
-    if (!['blocked', 'stopped', 'completed', 'closed_unmerged'].includes(task.state)) {
+    if (admissionRequired) {
+      const pending = await client.query<TaskRow>(
+        `update task_links
+            set state = case when state = 'pending_admission' then state else 'pending_admission' end,
+                stop_evidence = $2::jsonb, version = version + 1, updated_at = now()
+          where id = $1
+          returning ${TASK_COLUMNS.replaceAll('t.', 'task_links.')}`,
+        [
+          task.id,
+          JSON.stringify({
+            admissionRefused: admission.refused,
+            waitingFor: admission.waitingFor,
+            reason: admission.detail,
+          }),
+        ],
+      );
+      admittedTask = pending.rows[0] ?? task;
+    } else if (!['blocked', 'stopped', 'completed', 'closed_unmerged'].includes(task.state)) {
       const blocked = await client.query<TaskRow>(
         `update task_links
             set state = 'blocked', stop_evidence = $2::jsonb,
@@ -908,22 +927,22 @@ async function applyImportedEvent(
         ],
       );
       admittedTask = blocked.rows[0] ?? task;
+      await client.query(
+        `insert into task_operations
+           (task_id, repository_id, kind, client_command_id, request_fingerprint, evidence)
+         values ($1, $2, 'pause', $3, 'import-admission', $4::jsonb)
+         on conflict do nothing`,
+        [
+          task.id,
+          repository.id,
+          `import-admission:${task.id}`,
+          JSON.stringify({
+            reason: 'github import was refused an execution lease',
+            leaseRefused: admission.refused,
+          }),
+        ],
+      );
     }
-    await client.query(
-      `insert into task_operations
-         (task_id, repository_id, kind, client_command_id, request_fingerprint, evidence)
-       values ($1, $2, 'pause', $3, 'import-admission', $4::jsonb)
-       on conflict do nothing`,
-      [
-        task.id,
-        repository.id,
-        `import-admission:${task.id}`,
-        JSON.stringify({
-          reason: 'github import was refused an execution lease',
-          leaseRefused: admission.refused,
-        }),
-      ],
-    );
   }
 
   if (insertedTask) {

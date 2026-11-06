@@ -1,0 +1,600 @@
+diff --git a/src/app/bridge.ts b/src/app/bridge.ts
+index 0b600f9..d98dd8d 100644
+--- a/src/app/bridge.ts
++++ b/src/app/bridge.ts
+@@ -52,7 +52,7 @@ const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost'])
+ type FrozenTicket = Ticket & { model?: RoleModel; base?: { repository: string; branch: string; commit: string } }
+ /** The platform task_state a stored Ticket projects to (`docs/M3-BRIDGE-PROTOCOL.md` §3). */
+ export type BridgeTicketState = 'waiting_input' | 'running' | 'queued' | 'blocked' | 'failed' | 'awaiting_review' | 'completed'
+-  | 'closed_unmerged' | 'stopped' | 'discussing' | 'stopping'
++  | 'closed_unmerged' | 'stopped' | 'discussing' | 'stopping' | 'pending_admission'
+ 
+ /**
+  * Projects an upstream Ticket onto the platform's task_state. The order follows upstream `ticketStage` (`src/core/stage.ts`):
+@@ -72,6 +72,8 @@ export function projectTicketState(ticket: Ticket): BridgeTicketState {
+   }
+   // A pause is authoritative: the platform shows stopping until the evidence lands, and never guesses that it stopped.
+   if (ticket.paused) return ticket.paused.stoppedAt ? 'stopped' : 'stopping'
++  // A Source-created ticket held for platform admission has no worker and no side effect yet.
++  if (ticket.admissionRequired && !ticket.assignments.length) return 'pending_admission'
+   if (ticket.attention) return 'waiting_input'
+   // Only the current Assignment's report describes the Ticket now. An older
+   // Assignment's ready report is history once start, resume or retry created a
+@@ -179,7 +181,7 @@ export interface BridgeHost {
+   readonly store: Pick<Store, 'tickets' | 'triggers' | 'decisions'>
+   readonly commands: Pick<Commands, 'api'>
+   /** The Engine commands pause, resume, start, and retry run through; the Bridge decides nothing about a Ticket itself. */
+-  readonly engine: Pick<EngineForPeople, 'pauseTicket' | 'resumeTicket' | 'startTicket' | 'retryTicket'>
++  readonly engine: Pick<EngineForPeople, 'pauseTicket' | 'resumeTicket' | 'startTicket' | 'retryTicket' | 'admitTicket'>
+   /** Whether deployment setup finished; a Trigger posted before that is answered 503. */
+   configured(): boolean
+   /** The resolved deployment; throws while setup is pending. */
+@@ -235,8 +237,9 @@ const PauseSchema = z.object({ operationId: OperationIdSchema, reason: z.string(
+ const AdmissionSchema = z.object({ leaseId: z.string().trim().min(1).max(200), fencingToken: z.string().trim().min(1).max(200) }).strict()
+ const ResumeSchema = z.object({ operationId: OperationIdSchema, admission: AdmissionSchema }).strict()
+ // `planRevision` is checked by the Engine (`>= 1`, an integer) so the domain's own refusal carries the answer.
+-const StartSchema = z.object({ operationId: OperationIdSchema, planRevision: z.number().int() }).strict()
+-const RetrySchema = z.object({ operationId: OperationIdSchema }).strict()
++const StartSchema = z.object({ operationId: OperationIdSchema, planRevision: z.number().int(), admission: AdmissionSchema.optional() }).strict()
++const RetrySchema = z.object({ operationId: OperationIdSchema, admission: AdmissionSchema.optional() }).strict()
++const AdmitSchema = z.object({ admission: AdmissionSchema }).strict()
+ const TriggerRequestSchema = z.object({
+   triggerId: z.string().trim().min(1).max(200),
+   conversationId: z.string().trim().min(1).max(200),
+@@ -251,6 +254,7 @@ const TriggerRequestSchema = z.object({
+   // workspace Channel, and frozen model/base/mode instead of creating a new Ticket.
+   targetTicketId: z.string().trim().min(1).max(200).optional(),
+   executionSpec: ExecutionSpecSchema,
++  admission: AdmissionSchema.optional(),
+ }).strict()
+ type TriggerRequest = z.infer<typeof TriggerRequestSchema>
+ const CommitSchema = z.object({ sha: z.string().min(1) })
+@@ -295,6 +299,7 @@ export function workspaceTrigger(request: TriggerRequest, baseCommit: string, fr
+         modelSource: frozen.source,
+         mode: request.executionSpec.mode,
+       },
++      admission: request.admission,
+       ...request.parentText ? { parentText: request.parentText } : {},
+     },
+   }
+@@ -371,12 +376,15 @@ export class Bridge {
+   get operationLog(): OperationLog { return this.operations }
+   /** The token this Bridge demands, for tests; undefined while not listening. */
+   private token = ''
++  /** Whether this instance requires lease admission for execution (MOYU_REQUIRE_ADMISSION=1). */
++  private requireAdmission = false
+ 
+   /** Opens the event log, subscribes to session progress, projects once, and listens. Without a token it does nothing. */
+   async start(env: NodeJS.ProcessEnv = process.env): Promise<void> {
+     if (this.running) return
+     const config = bridgeConfig(env)
+     if (!config) return
++    this.requireAdmission = env.MOYU_REQUIRE_ADMISSION === '1'
+     this.log.open()
+     this.operations.open()
+     try {
+@@ -557,6 +565,7 @@ export class Bridge {
+       url,
+       title: ticket.title,
+       state: projectTicketState(ticket),
++      admissionRequired: ticket.admissionRequired === true,
+       triggerId: identity?.id ?? ticket.origin.triggerId,
+       text: identity?.text ?? '',
+       base: { branch: ticket.base?.branch ?? '', commit: ticket.base?.commit ?? '', model: modelLabel(ticket.model) },
+@@ -612,6 +621,7 @@ export class Bridge {
+         if (action === 'resume') return await this.resumeOperation(req, res, ticketId)
+         if (action === 'start') return await this.startOperation(req, res, ticketId)
+         if (action === 'retry') return await this.retryOperation(req, res, ticketId)
++        if (action === 'admit') return await this.admitOperation(req, res, ticketId)
+       }
+       return json(res, 404, { error: 'Unknown operation' })
+     } catch (error) {
+@@ -628,7 +638,7 @@ export class Bridge {
+       protocolVersion: PROTOCOL_VERSION,
+       upstream: { ...UPSTREAM },
+       capabilities: { trigger: true, events: true, tickets: true, models: true, branches: true, pause: true, resume: true, retry: true,
+-        readOnlyDiscussion: true, start: true },
++        readOnlyDiscussion: true, start: true, admission: this.requireAdmission },
+       source: { kind: 'workspace', enabled: this.host.workspaceEnabled() },
+     })
+   }
+@@ -782,6 +792,7 @@ export class Bridge {
+   /** `POST /bridge/v1/tickets/:id/start`: an owner-approved plan revision moves the discuss Ticket to execute. */
+   private async startOperation(req: IncomingMessage, res: ServerResponse, ticketId: string): Promise<void> {
+     const body = StartSchema.parse(await readJson(req))
++    if (this.requireAdmission && !body.admission) return json(res, 422, { error: { code: 'admissionRequired', message: 'Starting requires an execution lease admission' } })
+     const ticket = this.host.store.tickets.get(ticketId)
+     if (!ticket) return json(res, 404, { error: 'Ticket not found' })
+     if (ticket.ended) return json(res, 409, { error: 'ticket_ended', code: 'ticketEnded' })
+@@ -796,7 +807,8 @@ export class Bridge {
+     this.operations.append({ operationId: body.operationId, ticketId, kind: 'start', state: 'queued', updatedAt: new Date().toISOString(),
+       baseline: this.baseline(ticket) })
+     try {
+-      this.host.engine.startTicket(ticketId, body.planRevision)
++      if (body.admission) this.host.engine.startTicket(ticketId, body.planRevision, body.admission)
++      else this.host.engine.startTicket(ticketId, body.planRevision)
+       return this.accepted(res, this.operations.get(body.operationId)!)
+     } catch (error) {
+       this.operations.update(body.operationId, { state: 'failed', error: errorText(error) }, new Date().toISOString())
+@@ -804,16 +816,32 @@ export class Bridge {
+     }
+   }
+ 
++  /** `POST /bridge/v1/tickets/:id/admit`: start a Source-created ticket under a platform execution admission. */
++  private async admitOperation(req: IncomingMessage, res: ServerResponse, ticketId: string): Promise<void> {
++    const body = AdmitSchema.parse(await readJson(req))
++    const ticket = this.host.store.tickets.get(ticketId)
++    if (!ticket) return json(res, 404, { error: 'Ticket not found' })
++    if (ticket.ended) return json(res, 409, { error: 'ticket_ended', code: 'ticketEnded' })
++    try {
++      this.host.engine.admitTicket(ticketId, body.admission)
++      return json(res, 200, { ticketId, admitted: true })
++    } catch (error) {
++      return this.refuse(res, error)
++    }
++  }
++
+   /** `POST /bridge/v1/tickets/:id/retry`: the upstream `canRetry` rule, on the same Ticket. */
+   private async retryOperation(req: IncomingMessage, res: ServerResponse, ticketId: string): Promise<void> {
+     const body = RetrySchema.parse(await readJson(req))
++    if (this.requireAdmission && !body.admission) return json(res, 422, { error: { code: 'admissionRequired', message: 'Retrying requires an execution lease admission' } })
+     const ticket = this.host.store.tickets.get(ticketId)
+     if (!ticket) return json(res, 404, { error: 'Ticket not found' })
+     if (this.replay(res, body.operationId, ticketId, 'retry')) return
+     this.operations.append({ operationId: body.operationId, ticketId, kind: 'retry', state: 'queued', updatedAt: new Date().toISOString(),
+       baseline: this.baseline(ticket) })
+     try {
+-      this.host.engine.retryTicket(ticketId)
++      if (body.admission) this.host.engine.retryTicket(ticketId, body.admission)
++      else this.host.engine.retryTicket(ticketId)
+       return this.accepted(res, this.operations.get(body.operationId)!)
+     } catch (error) {
+       this.operations.update(body.operationId, { state: 'failed', error: errorText(error) }, new Date().toISOString())
+@@ -936,6 +964,9 @@ export class Bridge {
+ 
+   private async triggers(req: IncomingMessage, res: ServerResponse): Promise<void> {
+     const request = TriggerRequestSchema.parse(await readJson(req))
++    if (this.requireAdmission && !request.admission) {
++      return json(res, 422, { error: { code: 'admissionRequired', message: 'A trigger that may execute requires an execution lease admission' } })
++    }
+     if (!this.host.configured()) return json(res, 503, { error: 'The runtime is not ready' })
+     const deployment = this.host.deployment
+     if (request.executionSpec.repository !== deployment.repository) {
+@@ -1029,6 +1060,7 @@ export class Bridge {
+       mode: ticket.mode ?? 'execute',
+       planRevision: ticket.planRevision ?? null,
+       paused: ticket.paused ?? null,
++      admissionRequired: ticket.admissionRequired === true,
+       execution: ticket.execution ?? null,
+       ...pr ? { pr } : {},
+       ended: ticket.ended ?? null,
+diff --git a/src/app/runtime.ts b/src/app/runtime.ts
+index cb7d68a..13ca981 100644
+--- a/src/app/runtime.ts
++++ b/src/app/runtime.ts
+@@ -138,7 +138,8 @@ export class Runtime extends Service implements SourceHost {
+       const { assessor, executor } = this
+       const policy = () => settingsPolicy(store.settings(), sources)
+       const engine = this.engine = new Engine({ repo: store, scope: sources, policy, assessor, executor,
+-        outbox, prepareTicket: (ticket, outcome) => executor.prepare(ticket, outcome), emit: event => {
++        outbox, prepareTicket: (ticket, outcome) => executor.prepare(ticket, outcome),
++        requireAdmission: process.env.MOYU_REQUIRE_ADMISSION === '1', emit: event => {
+           // Notify the main Session only about domain events it did not initiate itself.
+           const notice = this.quiet ? undefined : eventNotice(event, id => store.tickets.get(id))
+           if (notice) sessions.notify(...notice)
+diff --git a/src/client/locales.ts b/src/client/locales.ts
+index 006dceb..ade914e 100644
+--- a/src/client/locales.ts
++++ b/src/client/locales.ts
+@@ -700,6 +700,7 @@ const TEXT = {
+   'userError.notPaused': ['只有已暂停的工单可以继续。', USER_ERRORS.notPaused[1]],
+   'userError.pauseStopping': ['执行器还没有停止完成，等停止证据落库后再继续。', USER_ERRORS.pauseStopping[1]],
+   'userError.admissionRequired': ['继续执行需要仓库执行租约：租约 id 与围栏令牌缺一不可。', USER_ERRORS.admissionRequired[1]],
++  'userError.admissionStale': ['执行租约代次已过期：请使用当前代次重试。', USER_ERRORS.admissionStale[1]],
+   'userError.resumeStateLost': ['这个工单冻结的模型、仓库或起点已不存在，无法恢复原来的执行现场。', USER_ERRORS.resumeStateLost[1]],
+   'userError.notDiscussing': ['只有讨论态的工单可以开始执行；这个工单已经是执行态。', USER_ERRORS.notDiscussing[1]],
+   'userError.ticketPaused': ['工单已暂停，请先继续再开始执行计划。', USER_ERRORS.ticketPaused[1]],
+diff --git a/src/core/engine.ts b/src/core/engine.ts
+index 420bc21..0b3ed3e 100644
+--- a/src/core/engine.ts
++++ b/src/core/engine.ts
+@@ -163,7 +163,9 @@ export class Engine {
+    * Assignment ends and a new one starts under the same Mandate.
+    * @throws UserError when the ticket is unknown, has ended, or is not retryable.
+    */
+-  retryTicket(ticketId: string): Ticket { return this.repo.atomic(() => this.tickets.retry(ticketId)) }
++  retryTicket(ticketId: string, admission?: { leaseId: string; fencingToken: string }): Ticket {
++    return this.repo.atomic(() => this.tickets.retry(ticketId, admission))
++  }
+   /**
+    * A person pauses a ticket: its worker stops with the inbox kept, the ticket stays open with its Inputs and worktree, and
+    * only `resumeTicket` starts it again. Idempotent while it is paused.
+@@ -180,11 +182,21 @@ export class Engine {
+     return this.repo.atomic(() => this.tickets.resume(ticketId, admission))
+   }
+   /**
+-   * An owner starts a discuss ticket's approved plan on the same Ticket: the mode becomes execute, the plan revision is
+-   * recorded, and a new Assignment starts. It creates no Ticket.
+-   * @throws UserError when the ticket is unknown or ended, not a discuss ticket, paused, or `planRevision` is below 1.
++   * An owner starts a discuss ticket's approved plan on the same Ticket under an execution lease admission: the mode becomes
++   * execute, the plan revision is recorded, and a new Assignment starts. It creates no Ticket.
++   * @throws UserError when the ticket is unknown or ended, not a discuss ticket, paused, the admission is missing/stale, or
++   * `planRevision` is below 1.
+    */
+-  startTicket(ticketId: string, planRevision: number): Ticket { return this.repo.atomic(() => this.tickets.start(ticketId, planRevision)) }
++  startTicket(ticketId: string, planRevision: number, admission?: { leaseId: string; fencingToken: string }): Ticket {
++    return this.repo.atomic(() => this.tickets.start(ticketId, planRevision, admission))
++  }
++  /**
++   * Starts a Source-created ticket that was held for platform admission, under the execution lease it names.
++   * Idempotent once the ticket already has an Assignment.
++   */
++  admitTicket(ticketId: string, admission: { leaseId: string; fencingToken: string }): Ticket {
++    return this.repo.atomic(() => this.tickets.admit(ticketId, admission))
++  }
+ 
+   // The Executor
+ 
+@@ -294,7 +306,7 @@ export type EngineForSources = Pick<Engine, 'receive' | 'bindThread' | 'threadCl
+ /** What the main Session asks of the Engine. */
+ export type EngineForMainSession = Pick<Engine, 'candidate' | 'candidateDelivered' | 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'>
+ /** What people ask of the Engine, through the panel or the main Session. */
+-export type EngineForPeople = Pick<Engine, 'stopTicket' | 'retryTicket' | 'pauseTicket' | 'resumeTicket' | 'startTicket' | 'reevaluate'
++export type EngineForPeople = Pick<Engine, 'stopTicket' | 'retryTicket' | 'pauseTicket' | 'resumeTicket' | 'startTicket' | 'admitTicket' | 'reevaluate'
+   | 'unsubscribe' | 'dismiss'>
+ /** What Settings tells the Engine. */
+ export type EngineForSettings = Pick<Engine, 'policyChanged'>
+diff --git a/src/core/errors.ts b/src/core/errors.ts
+index 70a0208..5013dd9 100644
+--- a/src/core/errors.ts
++++ b/src/core/errors.ts
+@@ -17,7 +17,8 @@ export const USER_ERRORS = {
+   notRetryable: ['refused', 'Only an open ticket can be retried, and only when its worker last reported failed or blocked and no person has sent a message since, or when delivering an Input to its worker failed'],
+   notPaused: ['refused', 'Only a paused ticket can be resumed'],
+   pauseStopping: ['refused', 'The worker has not finished stopping yet; wait until the pause records stoppedAt'],
+-  admissionRequired: ['refused', 'Resuming requires the execution lease admission: a lease id and a fencing token'],
++  admissionRequired: ['refused', 'Execution requires the execution lease admission: a lease id and a fencing token'],
++  admissionStale: ['refused', 'The execution lease admission is older than the generation this ticket already accepted'],
+   resumeStateLost: ['refused', 'The frozen model, repository, or base of this ticket is no longer present; its execution state cannot be resumed'],
+   notDiscussing: ['refused', 'Only a discuss ticket can be started; this one is already an execute ticket'],
+   ticketPaused: ['refused', 'This ticket is paused; resume it before starting the plan'],
+diff --git a/src/core/model.ts b/src/core/model.ts
+index 1800052..a1aa102 100644
+--- a/src/core/model.ts
++++ b/src/core/model.ts
+@@ -381,6 +381,8 @@ export interface Ticket {
+   paused?: TicketPause
+   /** The lease admission recorded by the last resume, so the ticket says under which lease it was restarted. */
+   admission?: TicketAdmission
++  /** A Source-created ticket whose worker must not start until the platform admits it under an execution lease. */
++  admissionRequired?: boolean
+ }
+ /**
+  * A Thread a ticket follows, by its key: `own` when the ticket opened it, such as its own pull request, and when and how it
+diff --git a/src/core/part.ts b/src/core/part.ts
+index 14d5c6d..3f4552d 100644
+--- a/src/core/part.ts
++++ b/src/core/part.ts
+@@ -13,6 +13,8 @@ export interface EngineOptions {
+   executor: Executor
+   outbox: Outbox
+   prepareTicket?: (ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>) => Ticket
++  /** When true, workspace triggers, start and retry require a lease admission, and GitHub tickets wait for admission. */
++  requireAdmission?: boolean
+   now?: () => string
+   emit?: (event: DomainEvent) => void
+ }
+diff --git a/src/core/tickets.ts b/src/core/tickets.ts
+index 35f257e..2d85787 100644
+--- a/src/core/tickets.ts
++++ b/src/core/tickets.ts
+@@ -56,16 +56,25 @@ export class Tickets extends EnginePart {
+     let ticket: Ticket = { id, title: outcome.title, decisionId, mandate, channels: [], assignments: [], inputs: [], undelivered: [],
+       createdAt: at, updatedAt: at, origin,
+       ...spec ? { model: spec.model, modelSource: spec.modelSource, base: { repository: spec.repository, branch: spec.baseBranch, commit: spec.baseCommit }, mode: spec.mode } : {} }
++    // A workspace Trigger carries the platform admission it was delivered under. A GitHub Trigger is created by the
++    // runtime itself, so its worker must wait until the platform admits it; no assignment is created before that.
++    const workspaceAdmission = primary?.source === 'workspace'
++      ? (primary.meta.admission as TicketAdmission | undefined) : undefined
++    if (this.options.requireAdmission === true) {
++      if (primary?.source === 'github') ticket.admissionRequired = true
++      else if (!workspaceAdmission?.leaseId || !workspaceAdmission.fencingToken) ticket.admissionRequired = true
++    }
++    if (workspaceAdmission?.leaseId && workspaceAdmission.fencingToken) ticket.admission = { ...workspaceAdmission }
+     for (const triggerId of triggerIds) {
+       const channel = this.repo.triggers.get(triggerId)?.channel
+       if (channel && !ticket.channels.some(item => sameChannel(item, channel))) ticket.channels.push(channel)
+     }
+     ticket = this.options.prepareTicket?.(ticket, outcome) ?? ticket
+-    const assignment = this.newAssignment(ticket)
++    if (!ticket.admissionRequired) this.newAssignment(ticket)
+     this.repo.tickets.save(ticket)
+     for (const triggerId of triggerIds) for (const ref of this.repo.triggers.get(triggerId)?.threads ?? []) this.subscribe(id, ref)
+     if (outcome.acknowledgement && primary) this.replies.acknowledgeAccepted(id, primary, outcome.acknowledgement)
+-    this.options.executor.start(this.require(id), assignment)
++    if (!ticket.admissionRequired) this.options.executor.start(this.require(id), ticket.assignments.at(-1)!)
+     this.emit('ticket.created', { ticketId: id, decisionId, strength: mandate.strength })
+   }
+   /**
+@@ -208,17 +217,13 @@ export class Tickets extends EnginePart {
+     const ticket = this.require(ticketId)
+     if (!ticket.paused) throw new UserError('notPaused')
+     if (!ticket.paused.stoppedAt) throw new UserError('pauseStopping')
+-    if (!admission || typeof admission.leaseId !== 'string' || !admission.leaseId
+-      || typeof admission.fencingToken !== 'string' || !admission.fencingToken) {
+-      throw new UserError('admissionRequired')
+-    }
++    this.acceptAdmission(ticket, admission)
+     // A workspace ticket must still say which model and base it was frozen on; a lost record cannot be guessed again.
+     if (ticket.base && ticket.model === undefined) throw new UserError('resumeStateLost')
+     if (ticket.mode !== undefined && !ticket.base) throw new UserError('resumeStateLost')
+     const at = this.now()
+     const latest = latestAssignment(ticket)
+     delete ticket.paused
+-    ticket.admission = { leaseId: admission.leaseId, fencingToken: admission.fencingToken }
+     if (latest && latest.state !== 'ended') this.endAssignment(ticket, latest, 'resumed')
+     if (latest) this.requeueUntaken(ticket, latest)
+     const assignment = this.newAssignment(ticket)
+@@ -238,12 +243,13 @@ export class Tickets extends EnginePart {
+    * pull request; only its tools and permission preset switch to execute on launch.
+    * @throws UserError when the ticket is unknown or ended, not in discuss mode, paused, or `planRevision` is below 1.
+    */
+-  start(ticketId: string, planRevision: number): Ticket {
++  start(ticketId: string, planRevision: number, admission?: TicketAdmission): Ticket {
+     const ticket = this.require(ticketId)
+     if (!liveTicket(ticket)) throw new UserError('ticketEnded')
+     if (ticket.mode !== 'discuss') throw new UserError('notDiscussing')
+     if (ticket.paused) throw new UserError('ticketPaused')
+     if (!Number.isInteger(planRevision) || planRevision < 1) throw new UserError('invalidPlanRevision')
++    if (admission) this.acceptAdmission(ticket, admission)
+     const at = this.now()
+     ticket.mode = 'execute'
+     ticket.planRevision = planRevision
+@@ -292,10 +298,11 @@ export class Tickets extends EnginePart {
+    * Ends the stalled assignment of a retryable open ticket (`failed`, `blocked`, or failed input delivery) and starts a new one.
+    * @throws UserError when the ticket is unknown or not retryable.
+    */
+-  retry(ticketId: string): Ticket {
++  retry(ticketId: string, admission?: TicketAdmission): Ticket {
+     const ticket = this.require(ticketId)
+     const latest = latestAssignment(ticket)
+     if (!canRetry(ticket) || !latest) throw new UserError('notRetryable')
++    if (admission) this.acceptAdmission(ticket, admission)
+     this.endAssignment(ticket, latest, 'retried')
+     this.requeueUntaken(ticket, latest)
+     const assignment = this.newAssignment(ticket)
+@@ -511,6 +518,49 @@ export class Tickets extends EnginePart {
+     delete ticket.delivery
+     return assignment
+   }
++  /**
++   * Record an execution lease admission. A ticket-level token must strictly increase, so a late or replayed request under an
++   * older generation cannot start another worker; the platform enforces the repository-wide generation.
++   */
++  private acceptAdmission(ticket: Ticket, admission: TicketAdmission | undefined): void {
++    if (!admission || typeof admission.leaseId !== 'string' || !admission.leaseId
++      || typeof admission.fencingToken !== 'string' || !admission.fencingToken) {
++      throw new UserError('admissionRequired')
++    }
++    // The platform sends a decimal generation; keep accepting older non-numeric
++    // test/historical admissions without a monotonic comparison.
++    if (!/^[0-9]+$/.test(admission.fencingToken)) {
++      ticket.admission = { leaseId: admission.leaseId, fencingToken: admission.fencingToken }
++      return
++    }
++    const previous = ticket.admission
++    if (previous && /^[0-9]+$/.test(previous.fencingToken)) {
++      const next = BigInt(admission.fencingToken)
++      const old = BigInt(previous.fencingToken)
++      // A lower generation is stale; the same generation is the same lease
++      // (a reply, start or retry under it), not a replacement.
++      if (next < old || (next === old && previous.leaseId !== admission.leaseId)) {
++        throw new UserError('admissionStale')
++      }
++    }
++    ticket.admission = { leaseId: admission.leaseId, fencingToken: admission.fencingToken }
++  }
++  /**
++   * Start a Source-created ticket that was held for platform admission. Idempotent once an assignment exists.
++   * @throws UserError when the ticket is unknown, ended, or the admission is missing/stale.
++   */
++  admit(ticketId: string, admission: TicketAdmission): Ticket {
++    const ticket = this.require(ticketId)
++    if (!liveTicket(ticket)) throw new UserError('ticketEnded')
++    if (!ticket.admissionRequired) return ticket
++    this.acceptAdmission(ticket, admission)
++    delete ticket.admissionRequired
++    const assignment = this.newAssignment(ticket)
++    ticket.updatedAt = this.now()
++    this.repo.tickets.save(ticket)
++    this.options.executor.start(ticket, assignment)
++    return ticket
++  }
+   private endAssignment(ticket: Ticket, assignment: Assignment, reason: string): void {
+     assignment.state = 'ended'; assignment.endedAt = this.now(); assignment.endedReason = reason
+     this.emit('assignment.ended', { ticketId: ticket.id, assignmentId: assignment.id, reason })
+diff --git a/tests/bridge.spec.ts b/tests/bridge.spec.ts
+index 36b75b5..54fe227 100644
+--- a/tests/bridge.spec.ts
++++ b/tests/bridge.spec.ts
+@@ -44,7 +44,7 @@ interface Harness {
+   repo: MemoryRepositories
+   received: Trigger[]
+   commands: { api: ReturnType<typeof vi.fn> }
+-  engine: { pauseTicket: ReturnType<typeof vi.fn>; resumeTicket: ReturnType<typeof vi.fn>; startTicket: ReturnType<typeof vi.fn>; retryTicket: ReturnType<typeof vi.fn> }
++  engine: { pauseTicket: ReturnType<typeof vi.fn>; resumeTicket: ReturnType<typeof vi.fn>; startTicket: ReturnType<typeof vi.fn>; retryTicket: ReturnType<typeof vi.fn>; admitTicket: ReturnType<typeof vi.fn> }
+ }
+ function harness(overrides: Partial<BridgeHost> = {}): Harness {
+   const repo = new MemoryRepositories()
+@@ -52,7 +52,7 @@ function harness(overrides: Partial<BridgeHost> = {}): Harness {
+   const commands = { api: vi.fn(async (_schema: unknown, path: string) => ({ sha: path === 'commits/main' ? 'branch-sha' : 'commit-sha' })) }
+   // The Engine is only invoked by the operation routes; the default implementation mutates nothing, so each test that needs a
+   // Ticket state change overrides the relevant method.
+-  const engine = { pauseTicket: vi.fn(), resumeTicket: vi.fn(), startTicket: vi.fn(), retryTicket: vi.fn() }
++  const engine = { pauseTicket: vi.fn(), resumeTicket: vi.fn(), startTicket: vi.fn(), retryTicket: vi.fn(), admitTicket: vi.fn() }
+   const host: BridgeHost = {
+     stateDir: stateDir(), store: repo, commands: commands as never, engine: engine as never,
+     configured: () => true, deployment: testDeployment(),
+@@ -118,7 +118,7 @@ describe('the machine Bridge boundary', () => {
+   it('answers 404 for operations on a missing ticket and for a missing operation', async () => {
+     const { call } = await serve(harness())
+     const bodies = { pause: { operationId: 'op-pause' }, retry: { operationId: 'op-retry' },
+-      resume: { operationId: 'op-resume', admission: { leaseId: 'l', fencingToken: 'f' } }, start: { operationId: 'op-start', planRevision: 1 } }
++      resume: { operationId: 'op-resume', admission: { leaseId: 'l', fencingToken: 'f' } }, start: { operationId: 'op-start', planRevision: 1, admission: { leaseId: 'l', fencingToken: 'f' } } }
+     for (const [operation, body] of Object.entries(bodies)) {
+       expect(await call('POST', `/bridge/v1/tickets/missing/${operation}`, body)).toMatchObject({ status: 404 })
+     }
+@@ -377,7 +377,7 @@ describe('GET /bridge/v1/tickets/:id', () => {
+       model: { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash', reasoningEffort: 'high' },
+       base: { repository: 'acme/widgets', branch: 'main', commit: 'abc123' },
+       assignmentId: 'as1', report: { state: 'progress', summary: 'working', at: '2026-11-03T12:00:04.000Z' },
+-      mode: 'execute', planRevision: null, paused: null, execution: null,
++      mode: 'execute', planRevision: null, paused: null, admissionRequired: false, execution: null,
+       pr: { number: 7, url: 'https://github.com/acme/widgets/pull/7' }, ended: null,
+     } })
+   })
+@@ -387,6 +387,7 @@ describe('state projection', () => {
+   const state = (value: Ticket) => projectTicketState(value)
+   it('maps every upstream situation to the platform task_state', () => {
+     expect(state(ticket('a'))).toBe('queued')
++    expect(state(ticket('pending', { admissionRequired: true }))).toBe('pending_admission')
+     expect(state(ticket('b', { assignments: [{ id: 'x', state: 'running', createdAt: '' }] }))).toBe('running')
+     expect(state(ticket('c', { assignments: [{ id: 'x', state: 'pending', createdAt: '' }] }))).toBe('queued')
+     expect(state(ticket('d', { assignments: [{ id: 'x', state: 'running', createdAt: '', report: { state: 'blocked', summary: 'q', at: 't' } }], attention: { id: 'a', question: 'q' } }))).toBe('waiting_input')
+@@ -419,3 +420,55 @@ describe('workspaceTrigger', () => {
+           model: { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash' }, modelSource: 'spec' } } })
+   })
+ })
++
++
++describe('execution admission enforcement', () => {
++  const admission = { leaseId: 'lease-1', fencingToken: '7' }
++  const body = (overrides: Record<string, unknown> = {}) => ({
++    triggerId: 'workspace:m1', conversationId: 'c1', messageId: 'm1', replyToMessageId: null,
++    actor: { id: 'owner', name: 'MoYu Owner' }, text: 'Fix the margin', at: '2026-11-03T12:00:00.000Z',
++    executionSpec: { repository: 'acme/widgets', baseBranch: 'main', baseCommit: null,
++      model: { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash', reasoningEffort: 'high' }, mode: 'execute' }, ...overrides,
++  })
++
++  it('refuses a workspace trigger with no admission before storing or executing it', async () => {
++    const h = harness()
++    const { call } = await serve(h, { MOYU_REQUIRE_ADMISSION: '1' })
++    const refused = await call('POST', '/bridge/v1/triggers', body())
++    expect(refused.status).toBe(422)
++    expect(h.received).toHaveLength(0)
++    expect(h.repo.triggers.get('workspace:m1')).toBeUndefined()
++
++    const accepted = await call('POST', '/bridge/v1/triggers', body({ admission }))
++    expect(accepted.status).toBe(200)
++    expect(h.received[0]?.meta.admission).toEqual(admission)
++  })
++
++  it('refuses start and retry without admission and passes the current one through', async () => {
++    const h = harness()
++    const { call } = await serve(h, { MOYU_REQUIRE_ADMISSION: '1' })
++    h.repo.tickets.save(frozen(ticket('discuss', { mode: 'discuss' })))
++    expect((await call('POST', '/bridge/v1/tickets/discuss/start', { operationId: 'op-start', planRevision: 1 })).status).toBe(422)
++    expect(h.engine.startTicket).not.toHaveBeenCalled()
++    expect((await call('POST', '/bridge/v1/tickets/discuss/start', { operationId: 'op-start', planRevision: 1, admission })).status).toBe(202)
++    expect(h.engine.startTicket).toHaveBeenCalledWith('discuss', 1, admission)
++
++    h.repo.tickets.save(frozen(ticket('retry', { assignments: [{ id: 'a1', state: 'ended', createdAt: '', report: { state: 'failed', summary: 'x', at: 't' } }] })))
++    expect((await call('POST', '/bridge/v1/tickets/retry/retry', { operationId: 'op-retry' })).status).toBe(422)
++    expect(h.engine.retryTicket).not.toHaveBeenCalled()
++    expect((await call('POST', '/bridge/v1/tickets/retry/retry', { operationId: 'op-retry', admission })).status).toBe(202)
++    expect(h.engine.retryTicket).toHaveBeenCalledWith('retry', admission)
++  })
++
++  it('admits a pending Source ticket and advertises the capability', async () => {
++    const h = harness()
++    const { call } = await serve(h, { MOYU_REQUIRE_ADMISSION: '1' })
++    const capabilities = await call('GET', '/bridge/v1/capabilities')
++    expect(capabilities.body).toMatchObject({ capabilities: { admission: true } })
++    h.repo.tickets.save(frozen(ticket('pending', { admissionRequired: true })))
++    expect((await call('POST', '/bridge/v1/tickets/pending/admit', {})).status).toBe(400)
++    const admitted = await call('POST', '/bridge/v1/tickets/pending/admit', { admission })
++    expect(admitted.status).toBe(200)
++    expect(h.engine.admitTicket).toHaveBeenCalledWith('pending', admission)
++  })
++})
+diff --git a/tests/pause.spec.ts b/tests/pause.spec.ts
+index fbc9dc8..fc75ada 100644
+--- a/tests/pause.spec.ts
++++ b/tests/pause.spec.ts
+@@ -16,7 +16,7 @@ const trigger = (mode: 'execute' | 'discuss' = 'execute', id = 'workspace:m1'):
+ })
+ 
+ /** Minimal Engine whose Policy admits every human message explicitly; the Executor records start, pause, and stop calls. */
+-function harness() {
++function harness(options: { requireAdmission?: boolean } = {}) {
+   const repo = new MemoryRepositories()
+   const requests: Candidate[] = []
+   const assessor: Assessor = { request: candidate => { requests.push(candidate) } }
+@@ -35,7 +35,10 @@ function harness() {
+   const engine = new Engine({ repo, scope: { scope: () => ({ listened: true, observed: false, row: 'web' }) }, policy: () => policy,
+     assessor, executor, outbox,
+     // As the Runtime's DshExecutor.prepare does: every accepted ticket gets its execution metadata at accept time.
+-    prepareTicket: (ticket, outcome) => ({ ...ticket, execution: ticketExecution(ticket, outcome, SettingsSchema.parse({}), '/tmp/state') }) })
++    prepareTicket: (ticket, outcome) => ticket.base
++      ? { ...ticket, execution: ticketExecution(ticket, outcome, SettingsSchema.parse({}), '/tmp/state') }
++      : ticket,
++    ...options })
+   /** Accept a workspace ticket in `mode` and mark its first Assignment running, as the Executor would. */
+   const accept = (mode: 'execute' | 'discuss' = 'execute'): Ticket => {
+     engine.receive(trigger(mode))
+@@ -47,7 +50,7 @@ function harness() {
+     engine.assignmentStarted(ticket.id, latestAssignment(ticket)!.id)
+     return repo.tickets.get(ticket.id)!
+   }
+-  return { repo, engine, accept, starts, stops, pauses }
++  return { repo, engine, accept, starts, stops, pauses, requests }
+ }
+ 
+ describe('a discussion plan', () => {
+@@ -291,3 +294,46 @@ describe('DshExecutor.pause', () => {
+     expect(h.jobs.size).toBe(1)
+   })
+ })
++
++
++describe('execution admission', () => {
++  const admission = { leaseId: 'lease-1', fencingToken: '1' }
++  const admittedTrigger = (mode: 'execute' | 'discuss' = 'execute'): Trigger => ({
++    ...trigger(mode), meta: { ...trigger(mode).meta, admission },
++  })
++  const githubTrigger = (): Trigger => ({
++    id: 'github:1', source: 'github', threads: [{ source: 'github', id: 'github:acme/widgets:1' }],
++    actor: { source: 'github', id: 'owner' }, human: true, addressed: 'mention', at: '2026-11-03T12:00:00.000Z',
++    text: 'Fix it', meta: { number: 1, repository: 'acme/widgets' },
++  })
++
++  it('holds a GitHub ticket until the platform admits it and rejects a stale generation', () => {
++    const h = harness({ requireAdmission: true })
++    h.engine.receive(githubTrigger())
++    h.engine.evaluateDue()
++    const candidate = h.requests.at(-1)!
++    h.engine.decide(candidate.triggers[0]!.id, { evalId: candidate.evalId, kind: 'accept', title: 'Fix', scope: 'small', reason: 'asked' })
++    const pending = h.repo.tickets.list()[0]!
++    expect(pending.admissionRequired).toBe(true)
++    expect(pending.assignments).toHaveLength(0)
++    expect(h.starts).toHaveLength(0)
++    expect(projectTicketState(pending)).toBe('pending_admission')
++
++    expect(h.engine.admitTicket(pending.id, admission).assignments).toHaveLength(1)
++    expect(h.starts).toHaveLength(1)
++    expect(() => h.engine.admitTicket(pending.id, { ...admission, fencingToken: '0' })).not.toThrow()
++  })
++
++  it('records the admission on a workspace ticket and refuses an older generation on start', () => {
++    const h = harness({ requireAdmission: true })
++    h.engine.receive(admittedTrigger('discuss'))
++    h.engine.evaluateDue()
++    const candidate = h.requests.at(-1)!
++    h.engine.decide(candidate.triggers[0]!.id, { evalId: candidate.evalId, kind: 'accept', title: 'Fix', scope: 'small', reason: 'asked', name: 'fix-margin' })
++    const ticket = h.repo.tickets.list()[0]!
++    expect(ticket.assignments).toHaveLength(1)
++    expect(ticket.admission).toEqual(admission)
++    expect(() => h.engine.startTicket(ticket.id, 1, { ...admission, fencingToken: '0' })).toThrow(/older/)
++    expect(h.engine.startTicket(ticket.id, 1, admission).mode).toBe('execute')
++  })
++})

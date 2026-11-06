@@ -29,8 +29,8 @@ recovered / adopted / released / stale_receipt_rejected。回执写入前必须�
 | --- | --- |
 | 网页新任务（launch） | `deliverOnce` 发送 Trigger 前取得租约，写入 `deliveries` |
 | 网页回复/人工输入 | 同一 `deliverOnce` 路径；任务已占租约时续租同一代次 |
-| 网页 start / resume / retry | `sendOperation` 在发送前取得租约并记录；resume 仍带 admission |
-| 在线 GitHub @ | `ticket.imported` 投影在事务内绑定租约；租约被占用时任务置 `blocked` 并排入持久 pause |
+| 网页 start / resume / retry | `sendOperation` 在发送前取得租约；Bridge 支持 admission 时随请求发送，runtime 校验缺失/旧代次 |
+| 在线 GitHub @ | M5-B runtime 先把 Ticket 置 `pending_admission` 且不创建 Assignment；`ticket.imported` 后平台取得租约并调用 `/admit`，失败/无租约时没有 worker 和副作用 |
 | 显式唤醒 / 重启恢复 | `maintainLeases` 续租活跃任务、释放等待/终态任务；`reconcileLeases` 处理过期代次 |
 | 人工 pause | 不需要新租约；结果落库后释放任务占用的执行名额 |
 
@@ -112,13 +112,12 @@ supervisor 同时读取该 slice 的 `memory.max`：若 slice 上限高于
 
 ## 5. 已知限制（未完成即如实标记）
 
-1. **上游 runtime 侧 admission 只覆盖 resume**。start/retry 与 GitHub Trigger 的
-   `admission` 尚未进入上游 Bridge 契约；当前 fencing 在平台控制面（租约、回执落库）执行。
-   在线 GitHub @ 在 runtime 接受后才投影到平台，因此在租约被占用时平台会置 `blocked` 并
-   排队 pause，但存在 runtime 已开始执行的窗口。完整消除需要上游补丁与契约升级，未在本单完成。
-2. **单一 8 GB slice 与非 root supervisor 尚未 live 验证**。仓库内已有 slice/unit 示例、
-   配置校验与准入单测；本机验证因一次未受限 cgroup 探针触发宿主 OOM 而停止（见验证记录），
-   没有再次进行宿主级内存压力测试。
-3. **三仓库资源压力、真实 OOM、浏览器 before/after 截图尚未完成**。集成测试覆盖租约并发、
-   过期接管、旧代次回执与资源策略；live 层证据仍缺。
+1. **上游 admission 已实现但未部署到 live 实例**。`0023-execution-admission.patch` 在固定
+   upstream commit 上通过 typecheck、构建与 1296/1297 上游测试（唯一失败是既有可选项 Feishu
+   测试），平台 dispatcher 也按 capability 发送 admission 并在 `pending_admission` 上调用
+   `/admit`。但本单没有把该构建切换进 live profile，也没有三仓库/重启/pause 交错的 live 证据；
+   `MOYU_REQUIRE_ADMISSION=1` 才启用，旧 runtime 仍回退平台控制面 fencing。
+2. **单一 8 GB slice 与非 root supervisor 尚未完整 live 验证**。已有 slice/unit 示例、配置校验、
+   非 root 256 MiB 子组真实 OOM 与准入单测；未在真实平台+DB+runtime+构建测试同 slice 下压到边界。
+3. **三仓库资源压力、恢复清错与完整六类矩阵尚未完成**。
 4. 因此本单不能宣称完整六类矩阵通过；PR 必须保持未完成状态，由所有者决定是否继续补齐。

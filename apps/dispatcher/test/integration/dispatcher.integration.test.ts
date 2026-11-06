@@ -7,6 +7,7 @@ import type { BridgeEvent, BridgeTriggerInput } from '@moyu/runtime-client';
 import { RuntimeBridgeClient } from '@moyu/runtime-client';
 
 import { loadDispatcherConfig, type DispatcherConfig } from '../../src/config';
+import { admitImportedOnce } from '../../src/admissions';
 import { deliverOnce } from '../../src/delivery';
 import { createConsoleLogger } from '../../src/logger';
 import { resolveRepository, type RepositoryBinding } from '../../src/runtime';
@@ -16,6 +17,7 @@ import { createTestDatabase, type TestDatabase } from './helpers';
 interface FakeBridge {
   url: string;
   triggerCalls: BridgeTriggerInput[];
+  admitCalls: { ticketId: string; admission: unknown }[];
   events: BridgeEvent[];
   failNextTrigger: boolean;
   slowNextTrigger: boolean;
@@ -42,6 +44,7 @@ function readBody(request: IncomingMessage): Promise<unknown> {
 async function startFakeBridge(events: BridgeEvent[]): Promise<FakeBridge> {
   const state = {
     triggerCalls: [] as BridgeTriggerInput[],
+    admitCalls: [] as { ticketId: string; admission: unknown }[],
     events,
     failNextTrigger: false,
     slowNextTrigger: false,
@@ -87,6 +90,35 @@ async function startFakeBridge(events: BridgeEvent[]): Promise<FakeBridge> {
       });
       return;
     }
+    if (request.method === 'GET' && url.pathname === '/bridge/v1/capabilities') {
+      send(200, {
+        protocolVersion: 'moyu-bridge/1',
+        upstream: { package: 'dsh-superagent', version: '0.1.0' },
+        capabilities: {
+          trigger: true,
+          events: true,
+          tickets: true,
+          models: true,
+          pause: true,
+          resume: true,
+          retry: true,
+          readOnlyDiscussion: true,
+          start: true,
+          admission: true,
+        },
+      });
+      return;
+    }
+    const admitMatch = /^\/bridge\/v1\/tickets\/([^/]+)\/admit$/.exec(url.pathname);
+    if (request.method === 'POST' && admitMatch) {
+      const body = (await readBody(request)) as { admission: unknown };
+      state.admitCalls.push({
+        ticketId: decodeURIComponent(admitMatch[1]!),
+        admission: body.admission,
+      });
+      send(200, { ticketId: decodeURIComponent(admitMatch[1]!), admitted: true });
+      return;
+    }
     if (url.pathname === '/bridge/v1/events') {
       const after = Number(url.searchParams.get('after') ?? '0');
       const limit = Number(url.searchParams.get('limit') ?? '100');
@@ -110,6 +142,9 @@ async function startFakeBridge(events: BridgeEvent[]): Promise<FakeBridge> {
     url: `http://127.0.0.1:${address.port}`,
     get triggerCalls() {
       return state.triggerCalls;
+    },
+    get admitCalls() {
+      return state.admitCalls;
     },
     set failNextTrigger(value: boolean) {
       state.failNextTrigger = value;
@@ -526,6 +561,76 @@ describe('dispatcher delivery and Bridge event catch-up on real PostgreSQL', () 
     );
     expect(task.rows[0]?.upstream_ticket_id).toBeNull();
   });
+
+  it('sends the lease admission with an admitted runtime and starts a pending GitHub ticket once', async () => {
+    fakeBridge.triggerCalls.length = 0;
+    fakeBridge.admitCalls.length = 0;
+    const conversation = await testDatabase.pool.query<{ id: string }>(
+      `insert into conversations (owner_id, repository_id, mode, execution_mode, base_branch, title)
+       values ($1, $2, 'work', 'execute', 'main', 'admitted launch') returning id`,
+      [ownerId, repository.id],
+    );
+    const conversationId = conversation.rows[0]!.id;
+    const message = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, client_message_id, body)
+       values ($1, 'inbound', 'user', 'client-admitted', 'run admitted') returning id`,
+      [conversationId],
+    );
+    const messageId = message.rows[0]!.id;
+    await testDatabase.pool.query(
+      `insert into deliveries (message_id, upstream_trigger_id) values ($1, $2)`,
+      [messageId, `workspace:${messageId}`],
+    );
+    await testDatabase.pool.query(
+      `insert into task_links (conversation_id, repository_id, state, base_branch)
+       values ($1, $2, 'pending_admission', 'main')`,
+      [conversationId, repository.id],
+    );
+    expect(
+      await deliverOnce(
+        testDatabase.pool,
+        config,
+        repository,
+        client,
+        createConsoleLogger('test'),
+        true,
+      ),
+    ).toBe(true);
+    const sent = fakeBridge.triggerCalls.at(-1);
+    expect(sent?.admission).toMatchObject({
+      leaseId: expect.any(String),
+      fencingToken: expect.any(String),
+    });
+
+    const pending = await testDatabase.pool.query<{
+      id: string;
+      upstream_ticket_id: string | null;
+    }>(`select id, upstream_ticket_id from task_links where conversation_id = $1`, [
+      conversationId,
+    ]);
+    const taskId = pending.rows[0]!.id;
+    await testDatabase.pool.query(
+      `update task_links set upstream_ticket_id = 'ticket-admit', state = 'pending_admission' where id = $1`,
+      [taskId],
+    );
+    expect(
+      await admitImportedOnce(
+        testDatabase.pool,
+        config,
+        repository,
+        client,
+        true,
+        createConsoleLogger('test'),
+      ),
+    ).toBe(true);
+    expect(fakeBridge.admitCalls).toHaveLength(1);
+    expect(fakeBridge.admitCalls[0]?.ticketId).toBe('ticket-admit');
+    const admitted = await testDatabase.pool.query<{ state: string }>(
+      `select state from task_links where id = $1`,
+      [taskId],
+    );
+    expect(admitted.rows[0]?.state).toBe('queued');
+  }, 30_000);
 
   it('keeps a launch pending while another execution owns the repository lease', async () => {
     const holderConversation = await testDatabase.pool.query<{ id: string }>(

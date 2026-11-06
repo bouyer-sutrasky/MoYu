@@ -177,6 +177,7 @@ export async function deliverOnce(
   repository: RepositoryBinding,
   bridge: RuntimeBridgeClient,
   logger: DispatcherLogger,
+  admissionSupported = false,
 ): Promise<boolean> {
   const claimed = await claimDelivery(pool, config, repository.id);
   if (!claimed) {
@@ -311,6 +312,9 @@ export async function deliverOnce(
       // other conversation opens its own workspace ticket.
       ...(detail.conversationSource === 'github' && detail.taskUpstreamTicketId
         ? { targetTicketId: detail.taskUpstreamTicketId }
+        : {}),
+      ...(admissionSupported
+        ? { admission: { leaseId: account.lease.id, fencingToken: account.lease.fencingToken } }
         : {}),
       executionSpec: {
         repository: detail.fullName,
