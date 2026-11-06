@@ -13,6 +13,7 @@ const EXPECTED_TABLES = [
   'deliveries',
   'duplicate_tickets',
   'events',
+  'execution_reservations',
   'messages',
   'owners',
   'passkey_credentials',
