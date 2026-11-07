@@ -186,7 +186,6 @@ async function applyTaskEvent(
       const reserved = reservation.rows[0];
       if (
         reserved &&
-        reserved.state === 'reserved' &&
         (reserved.assignment_id !== assignmentId ||
           reserved.lease_id !== leaseId ||
           String(reserved.fencing_token) !== fencingToken)
@@ -206,6 +205,24 @@ async function applyTaskEvent(
         return;
       }
     }
+    const target = stateOf(data.state);
+    if (
+      (existing.state === 'stopped' || existing.state === 'paused') &&
+      (target === 'queued' || target === 'running')
+    ) {
+      // A projected state event cannot reactivate a stopped/paused task, even
+      // when its generation matches or it carries no identity at all.
+      await client.query(
+        `update task_links
+            set stop_evidence = coalesce(stop_evidence, '{}'::jsonb) || $2::jsonb,
+                last_event_seq = greatest(coalesce(last_event_seq, 0), $3),
+                version = version + 1,
+                updated_at = now()
+          where id = $1`,
+        [existing.id, JSON.stringify({ admissionProjection: 'stale_state' }), event.seq],
+      );
+      return;
+    }
     const updated = await client.query(
       `update task_links
           set state = $2,
@@ -215,7 +232,7 @@ async function applyTaskEvent(
               version = version + 1,
               updated_at = now()
         where id = $1 and (last_event_seq is null or last_event_seq < $4)`,
-      [existing.id, stateOf(data.state), question, event.seq],
+      [existing.id, target, question, event.seq],
     );
     if ((updated.rowCount ?? 0) === 0) {
       return;

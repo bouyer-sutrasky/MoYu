@@ -87,6 +87,7 @@
 
 ## 晚到错代事件投影（2026-11-07）
 
-- ticket.state_changed 携带身份且与 reserved identity 不一致时，只推进 last_event_seq 并合并 `admissionProjection: stale_generation`，不修改 task.state/不覆盖停止证明。
+- ticket.state_changed 身份与 reservation（无论 reserved/claimed）不一致时，只推进 last_event_seq 并合并 `admissionProjection: stale_generation`，不修改 task.state/不覆盖停止证明。
+- 即使身份一致，stopped/paused 任务也不会被 queued/running 状态事件重新激活；只记 `stale_state` 并推进游标。
 - 外部真实 HTTP/SQLite+PG 回归 `tests/moyu-review-b79a13b-stale-projection.spec.ts` 由红转绿（1/1）。
 - 仍待：真实 pause/子进程、旧 producer 升级、两库 dispatcher 重启与启动计数。
