@@ -12,7 +12,21 @@ import fs from 'node:fs';
 
 const port = Number(process.env.LOCAL_PROVIDER_PORT ?? 3801);
 const log = process.env.LOCAL_PROVIDER_LOG ?? '/tmp/moyu-local-provider.jsonl';
+const triggerFile = process.env.LOCAL_PROVIDER_TRIGGER_FILE;
 let sequence = 0;
+
+/** The trigger id the orchestrator route should accept: a per-run file wins over the fixed env value. */
+function routedTriggerId() {
+  if (triggerFile) {
+    try {
+      const value = fs.readFileSync(triggerFile, 'utf8').trim();
+      if (value) return value;
+    } catch {
+      /* a missing file falls back to the fixed probe id */
+    }
+  }
+  return process.env.LOCAL_PROVIDER_TRIGGER_ID ?? 'workspace:probe-1';
+}
 
 const readBody = (request) =>
   new Promise((resolve, reject) => {
@@ -76,7 +90,7 @@ const server = http.createServer(async (request, response) => {
     decisions: [
       {
         kind: 'accept',
-        trigger_id: process.env.LOCAL_PROVIDER_TRIGGER_ID ?? 'workspace:probe-1',
+        trigger_id: routedTriggerId(),
         title: 'Fix README probe line',
         worktree_name: 'fix-readme-probe',
         acknowledgement: 'On it: updating the README probe line.',

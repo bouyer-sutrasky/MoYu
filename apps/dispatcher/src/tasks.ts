@@ -41,13 +41,14 @@ export const TASK_COLUMNS = `
 
 export function taskModel(row: TaskRow): ModelSelection | null {
   const identity = decodeModelId(row.modelId);
-  return identity
-    ? {
-        provider: identity.provider,
-        model: identity.model,
-        reasoningEffort: row.modelReasoningEffort,
-      }
-    : null;
+  if (!identity) return null;
+  // The Bridge's strict model schema rejects an explicit `null` effort; omit
+  // the key instead so an instance-default model with no effort still delivers.
+  return {
+    provider: identity.provider,
+    model: identity.model,
+    ...(row.modelReasoningEffort ? { reasoningEffort: row.modelReasoningEffort } : {}),
+  };
 }
 
 export function taskSummary(row: TaskRow): TaskSummary {
