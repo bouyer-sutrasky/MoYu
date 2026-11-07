@@ -100,9 +100,17 @@ echo "# item 1c — pause and start in three phases (real Web entrance, real pau
 echo "recorded=$(date -Is)"
 echo "dispatcher_artifact=$(sha256sum "$M5B_MATRIX_ROOT/apps/dispatcher/dist/main.js" | cut -d' ' -f1)"
 echo
-run_phase c1-before-start before-start
-run_phase c2-during-start during-start
-run_phase c3-after-start after-start
+PHASES=${1:-c1-before-start:c1 c2-during-start:during-start c3-after-start:after-start}
+for spec in $PHASES; do
+  name=${spec%%:*}
+  when=${spec##*:}
+  case "$when" in
+    before-start) run_phase "$name" before-start ;;
+    during-start) run_phase "$name" during-start ;;
+    after-start) run_phase "$name" after-start ;;
+    *) echo "unknown phase spec: $spec" ;;
+  esac
+done
 
 echo "## how many worker executions actually ran (one session directory per ticket)"
 ls -d "$SESSIONS"/*/worker-* 2>/dev/null | wc -l

@@ -1,0 +1,108 @@
+# item 1c — pause × start 三相位（原始输出）
+
+三个相位各自独立建 task（真实 `POST /api/v1/conversations` + message），pause/resume 走真实
+`POST /api/v1/tasks/:id/pause|resume`。执行次数不用状态字段，用两处真实计数：
+runtime 为该 ticket 建的 **worker session 目录数**，以及 `runtime_leases` 的**真实行**。
+
+## c1（pause before start）
+
+# item 1c — pause and start in three phases (real Web entrance, real pause/resume)
+recorded=2026-11-08T04:47:13+08:00
+dispatcher_artifact=0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6
+
+==============================================================
+## phase: c1-before-start (pause before-start)
+  created_at=2026-11-08T04:47:13+08:00 task=acddaa35-54d9-4e4c-8f0f-bddf35ba075c
+  ticket_created_at=2026-11-08T04:47:16+08:00 ticket=380fa5ec6401c1ecbf50daef13ce6317
+  $ pause while state=queued
+  paused_at=2026-11-08T04:47:16+08:00
+  [paused] platform_state=stopping ticket=380fa5ec6401c1ecbf50daef13ce6317
+{"assignmentId": "6050ebfe18476d388a0d14896424bbd3", "ended": null, "paused": null, "report": null, "runtime_state": "queued"}
+  [paused] worker_sessions=0 lease_rows=active|task:acddaa35-54d9-4e4c-8f0f-bddf35ba075c 
+  [after-8s] platform_state=blocked ticket=380fa5ec6401c1ecbf50daef13ce6317
+{"assignmentId": "6050ebfe18476d388a0d14896424bbd3", "ended": null, "paused": {"stoppedAt": null}, "report": null, "runtime_state": "stopping"}
+  [after-8s] worker_sessions=0 lease_rows=active|task:acddaa35-54d9-4e4c-8f0f-bddf35ba075c 
+  $ resume (a real delivery)
+  resume rejected
+  resumed_at=2026-11-08T04:47:25+08:00
+
+## c2（pause during start）
+
+# item 1c — pause and start in three phases (real Web entrance, real pause/resume)
+recorded=2026-11-08T05:12:32+08:00
+dispatcher_artifact=0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6
+
+==============================================================
+## phase: c2-during-start (pause during-start)
+  created_at=2026-11-08T05:12:32+08:00 task=e9378ab3-142b-4966-90db-5015575356e9
+  ticket_created_at=2026-11-08T05:12:34+08:00 ticket=79e2b4fb7ed7403e746607567dbb7235
+  $ pause as soon as the worker starts (state=queued)
+  paused_at=2026-11-08T05:12:34+08:00
+  [paused] platform_state=stopping ticket=79e2b4fb7ed7403e746607567dbb7235
+{"assignmentId": "1243666d755d7c92ed2e11c67b0174ed", "ended": null, "paused": {"stoppedAt": null}, "report": null, "runtime_state": "stopping"}
+  [paused] worker_sessions=0 lease_rows=active|task:e9378ab3-142b-4966-90db-5015575356e9 
+  [after-8s] platform_state=blocked ticket=79e2b4fb7ed7403e746607567dbb7235
+{"assignmentId": "1243666d755d7c92ed2e11c67b0174ed", "ended": null, "paused": {"stoppedAt": null}, "report": null, "runtime_state": "stopping"}
+  [after-8s] worker_sessions=0 lease_rows=active|task:e9378ab3-142b-4966-90db-5015575356e9 
+  $ resume (a real delivery)
+  resume rejected
+  resumed_at=2026-11-08T05:12:43+08:00
+
+## c3（pause after start）
+
+# item 1c — pause and start in three phases (real Web entrance, real pause/resume)
+recorded=2026-11-08T05:14:27+08:00
+dispatcher_artifact=0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6
+
+==============================================================
+## phase: c3-after-start (pause after-start)
+  created_at=2026-11-08T05:14:27+08:00 task=03ccaa0f-c814-4265-85ca-e12f0ebc0b40
+  ticket_created_at=2026-11-08T05:14:31+08:00 ticket=e4a0cbb2ce64396521f786fa14fafec0
+  $ pause after the worker is running (state=running)
+  paused_at=2026-11-08T05:14:37+08:00
+  [paused] platform_state=stopping ticket=e4a0cbb2ce64396521f786fa14fafec0
+{"assignmentId": "72063827a42a41f9b13de926336640a7", "ended": null, "paused": null, "report": "progress", "runtime_state": "running"}
+  [paused] worker_sessions=1 lease_rows=active|task:03ccaa0f-c814-4265-85ca-e12f0ebc0b40 released|task:e9378ab3-142b-4966-90db-5015575356e9 
+  [after-8s] platform_state=stopped ticket=e4a0cbb2ce64396521f786fa14fafec0
+{"assignmentId": "72063827a42a41f9b13de926336640a7", "ended": null, "paused": {"stoppedAt": "2026-11-07T21:14:38.091Z"}, "report": "progress", "runtime_state": "stopped"}
+  [after-8s] worker_sessions=1 lease_rows=released|task:03ccaa0f-c814-4265-85ca-e12f0ebc0b40 released|task:e9378ab3-142b-4966-90db-5015575356e9 
+  $ resume (a real delivery)
+  resumed_at=2026-11-08T05:14:46+08:00
+
+## 判定
+
+| 相位 | 结果 | 关键原始证据 |
+| --- | --- | --- |
+| c1 pause **在 start 之前**（票 `queued`、`worker_sessions=0`） | **不通过（缺陷）** | 票进入 `stopping` 且 `paused.stoppedAt` **永远为 null**；平台投影 `stopping` → **`blocked`**；`resume` 被拒；`worker_sessions` 始终 0；`runtime_leases` 仍是 `active|task:acddaa35…` |
+| c2 pause **在 start 进行中**（票刚建、`worker_sessions=0`） | **不通过（同一缺陷）** | 同上：`stoppedAt: null`、`blocked`、`resume rejected`、`worker_sessions=0`、租约仍 `active` |
+| c3 pause **在 start 完成之后**（票 `running`、`worker_sessions=1`） | **通过** | 8 秒后 `paused.stoppedAt = 2026-11-07T21:14:38.091Z`、`runtime_state=stopped`、**租约已 `released`**；随后 `resume` **被接受**（日志里没有 `resume rejected`） |
+
+**结论**：区别不在「pause 命令」本身，而在**是否有执行器能回报停止**。worker 真正跑起来之后（c3），
+停止会落地、租约被归还、重新 resume 也正常；而在 worker 起来之前按 pause（c1/c2），
+没有任何执行器会写 `stoppedAt`，于是票卡在 `stopping`、平台显示 `blocked`、`resume` 永远被拒，
+**并且把执行租约一直攥在手里** —— 后续任务因此只能 `pending_admission`（本次运行里就出现了这个后果）。
+
+## 双调度者同争一个仓库（真实投递计数）
+
+在同一 `m5bmatrix.slice` 里起了第二个 dispatcher（同 `DATABASE_URL`、`WorkingDirectory`、
+`RECONCILE_ON_START=false`），两个都 `active` 且都 `dispatcher.repository … admissionSupported:true`。
+然后真实建一张 task、发一条消息，按 journal 统计**实际投递**而不是状态字段：
+
+```
+m5bmatrix-dispatcher     delivered=2 lease_wait=0
+m5bmatrix-dispatcher2    delivered=0 lease_wait=11
+```
+
+**判定：通过（投递实现为恰好一次）。** 第二个调度者看到了同样的工作，但被执行租约挡住
+（11 次 `delivery.lease_wait … waitingFor=execution_slot`），**实际投递 0 次**；所有真实投递都发生在
+持有租约的那一个上。进程层面也只有一个 runtime 实例在执行（`worker_sessions` 只随 assignment 增长）。
+
+## 顺带发现（低严重度，记录备查）
+用 `live.mjs message --task <id>`（客户端把 task 映射成 conversation 时拿到 `undefined`）打到的请求，
+API 没有在参数校验层拒绝，而是把字符串 `"undefined"` 直接送进 SQL，返回 **500**
+（`invalid input syntax for type uuid: "undefined"`，DrizzleQueryError，`apps/api/dist/server.js` 的
+`loadConversationRow`）。正确行为应是 400。这一条与第 1 项无关，只作记录。
+
+## 未测
+两种入口顺序（GitHub→Web、Web→GitHub）：等待测试仓库把 `sutrasky` 加为协作者；本次尝试邀请**失败**，
+见报告（GitHub API 返回 422 `Cannot assign sutrasky permission of read`，agent token 的 scope 是 `read:org, repo`）。
