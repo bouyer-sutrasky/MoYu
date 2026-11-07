@@ -534,7 +534,8 @@ async function sendOperation(
       const bound = await pool.query<{ id: string; fencing_token: string }>(
         `select l.id, l.fencing_token
            from task_links t join runtime_leases l on l.id = t.runtime_lease_id
-          where t.id = $1 and l.state = 'active'`,
+          where t.id = $1 and l.state = 'active'
+            and (l.expires_at is null or l.expires_at > now())`,
         [task.id],
       );
       const observed = bound.rows[0];
