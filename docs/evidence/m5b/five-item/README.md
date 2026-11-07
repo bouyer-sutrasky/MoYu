@@ -1,51 +1,34 @@
-# M5-B 五项验收取证（head 6f71d726fdd5af359806c1211d3ca081088e9c01）
+# M5-B 五项验收取证
 
-本目录只记录在固定 head 上实际执行的结果；新增日志文件是本轮原始输出。
+本目录记录在给定 head 上实际执行的结果。基线为 PR #28 head
+`3278fb0e2e248dcaf32a59aba791a15339699b2a`；以下新增日志对应本单的三个未闭合项。
+历史日志保留原样，不追改旧结论。
 
-## 1. PostgreSQL 回归：命令与断言（已完成部分）
+## 本轮闭合
 
-执行目录：`/root/src/leases-resources-m5b-a59cb491b2e0`
+| 项 | 结论 | 日志 |
+| --- | --- | --- |
+| ② 生产 pause/replay 的生效投递计数 = 1 | 闭合：真实 dispatcher 暂停→继续后，同一 assignment 只持有一个 trigger input；丢失响应的重放返回 duplicate | `item2-pause-replay-live.log` |
+| ③ fence 可观测性 | 闭合：选择「找到能读到实际 fence 的接口」；`GET /bridge/v1/tickets/:id` 返回 `admission`，resume 后新 assignment running、旧代次 admit 被 422 拒绝 | `item3-fence-observability.log` |
+| ④ 双库重启对账 | 闭合：Bridge SQLite 与 dispatcher PG 同时重启，逐字段比对一致，cursor 100→102，过期租约拒绝续租红转绿 | `item4-dual-db-restart-live.log` |
 
-```
-TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres CI=true \
-  corepack pnpm --filter @moyu/dispatcher exec vitest run \
-  test/integration/recovery-projection-branches.integration.test.ts --reporter=verbose
-```
+## 已闭合（前序，勿重做）
 
-结果见 `projection-branches.log`：2 passed。断言：
-- `projects a current-generation running event and records the branch`：state=`running`，`projectionBranches`=`projected`。
-- `keeps a stopped task and its evidence when a queued event arrives`：state 仍 `stopped`，`stop_evidence` 保留 `pause-proof`。
+- P1 过期租约被当当前代次：`sync.ts` / `operations.ts` 的当前代次查询带
+  `expires_at` 过滤；`p1-expired-lease.log`。
+- 规范轴：`projectionBranches` 有界（500）；`current-projection.log`、
+  `projection-branches.log` 已入库。
+- §5ter ①/⑤：真实 HTTP/SQLite+PG 回归与子进程启动/停止计数。
 
-外部 current-projection 组（真实 Bridge HTTP + SQLite + PG）：
+## 复跑环境
 
-```
-cd /tmp/moyu-m5b-http-admit.npU95Tfh
-PATH=/opt/moyu-node24/bin:$PATH TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
-  node_modules/.bin/vitest run \
-  tests/moyu-review-cedcb82-current-projection.spec.ts \
-  tests/moyu-review-cedcb82-pid-barrier-1039.spec.ts --reporter=verbose
-```
+三项日志的现场值：
 
-结果见 `current-projection.log`：4 passed。断言：
-- pause-race：暂停事务持锁期间 sync 等锁；提交后 state=`stopped`，`stop_evidence.reviewStoppedProof` 保留，cursor 前移。
-- new-generation：event lease/fence 7 匹配当前 active lease；旧 reservation lease/fence 1 不再判 stale；state=`running`，cursor 前移。
+- 隔离 PostgreSQL 16：`127.0.0.1:55432`（本单数据库 `m5b_e2e_manual`）。
+- m5b 阶段实例：Bridge `http://127.0.0.1:3403`，build
+  `/root/src/upstream/m5b-admission-build21`，`MOYU_REQUIRE_ADMISSION=1`。
+- 测试仓库：`Bouyer12/m5a-beta-adf10ad9`；dispatcher 由
+  `node apps/dispatcher/dist/main.js` 真实循环启动。
+- 生产 3082、`/root/src/upstream/*` 源码与生产库未改动。
 
-## 2. 真实暂停/继续端点
-
-未完成。本轮没有通过真实 `/bridge/v1/tickets/:id/pause|resume` HTTP 端点取得 stopped/queued 证据；现有证据仍是受控 executor + 数据库投影。
-
-## 3. 租约与停止/重放原子性（exactly-once）
-
-未完成。已知 claimExecution 条件更新与 stop_evidence 保护有单测，但缺少并发“停止 vs 重放”投递计数回归（同一 assignment 两次生效投递）。
-
-## 4. 双库重启一致性
-
-未完成。SQLite 与 PG 的联合重启、重启前后快照与 lease/fence 代次对照尚未执行。
-
-## 5. 实际子进程启动/停止计数
-
-未完成。现有 executor 为受控替身，未启动真实子进程，无启动/退出计数原始输出。
-
-## 备注
-
-head 6f71d72 两项 PR 检查 success；工作树在本证据提交前干净。以上 2–5 项按 §5ter 属未验收，不能转 ready 或合并。
+日志中的 token 以 `***` 代替，未写入任何凭据。

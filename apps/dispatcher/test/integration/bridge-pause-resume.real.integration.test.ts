@@ -7,12 +7,23 @@ const token = process.env.MOYU_BRIDGE_TOKEN;
 const repository = process.env.MOYU_BRIDGE_REPOSITORY;
 const maybe = url && token && repository ? it : it.skip;
 
+interface Admission {
+  leaseId: string;
+  fencingToken: string;
+}
+
+interface PausedEvidence {
+  stoppedAt?: string;
+  evidence?: Record<string, unknown>;
+}
+
 interface Snapshot {
   ticketId: string;
   state: string;
   assignmentId?: string | null;
+  admission?: Admission | null;
   admissionRequired?: boolean;
-  paused?: unknown;
+  paused?: PausedEvidence | null;
 }
 
 async function bridge(path: string, init: RequestInit = {}) {
@@ -69,7 +80,7 @@ describe('live Bridge pause and resume over HTTP', () => {
   });
 
   maybe(
-    'pauses to stopped and resumes with a newer generation',
+    'pause records stop evidence, resume records the actual fence and a running generation',
     async () => {
       const conversationId = randomUUID();
       const triggerId = `m5b-pause-${randomUUID()}`;
@@ -99,6 +110,7 @@ describe('live Bridge pause and resume over HTTP', () => {
       created.push(ticketId);
       const before = await ticket(ticketId);
       expect(before.state).not.toBe('stopped');
+      expect(before.assignmentId).toBeTruthy();
 
       const paused = await bridge(`/bridge/v1/tickets/${ticketId}/pause`, {
         method: 'POST',
@@ -110,13 +122,28 @@ describe('live Bridge pause and resume over HTTP', () => {
         return snapshot.state === 'stopped' ? snapshot : null;
       }, 'stopped');
       expect(stopped.state).toBe('stopped');
+      // A stopped projection is not enough: the runtime must have recorded the
+      // worker stop evidence, and the dispatcher can assert it.
+      expect(stopped.paused?.stoppedAt).toBeTruthy();
+      expect(stopped.paused?.evidence).toMatchObject({
+        ticketId,
+        assignmentId: before.assignmentId,
+      });
+      const evidence = stopped.paused?.evidence ?? {};
+      expect(Array.isArray(evidence.lingeringPids)).toBe(true);
+      expect(evidence.lingeringPids).toEqual([]);
 
+      const admission: Admission = {
+        leaseId: process.env.MOYU_BRIDGE_ADMISSION_LEASE_ID ?? `lease-${randomUUID()}`,
+        fencingToken:
+          process.env.MOYU_BRIDGE_ADMISSION_FENCE ??
+          // A token strictly above the current generation; the runtime keeps a
+          // repository-wide fence and refuses a replayed older one.
+          String(BigInt(before.admission?.fencingToken ?? '0') + 1n),
+      };
       const resumed = await bridge(`/bridge/v1/tickets/${ticketId}/resume`, {
         method: 'POST',
-        body: JSON.stringify({
-          operationId: randomUUID(),
-          admission: { leaseId: `lease-${randomUUID()}`, fencingToken: '101' },
-        }),
+        body: JSON.stringify({ operationId: randomUUID(), admission }),
       });
       expect([200, 202]).toContain(resumed.status);
       const running = await waitFor(async () => {
@@ -126,6 +153,27 @@ describe('live Bridge pause and resume over HTTP', () => {
           : null;
       }, 'resumed assignment');
       expect(running.assignmentId).not.toBe(before.assignmentId);
+      expect(running.state).toBe('running');
+      // The snapshot exposes the fence the runtime actually accepted, not just
+      // the value the caller submitted.
+      expect(running.admission).toEqual(admission);
+
+      // The superseded generation can no longer be admitted for this Ticket.
+      const stale = await bridge(`/bridge/v1/tickets/${ticketId}/admit`, {
+        method: 'POST',
+        body: JSON.stringify({
+          ...(running.assignmentId ? { assignmentId: running.assignmentId } : {}),
+          admission: {
+            leaseId: before.admission?.leaseId ?? 'stale-lease',
+            fencingToken: before.admission?.fencingToken ?? '0',
+          },
+        }),
+      });
+      expect(stale.status).toBe(422);
+      const afterStale = await ticket(ticketId);
+      expect(afterStale.admission).toEqual(admission);
+      expect(afterStale.assignmentId).toBe(running.assignmentId);
+      expect(afterStale.state).toBe('running');
     },
     90_000,
   );

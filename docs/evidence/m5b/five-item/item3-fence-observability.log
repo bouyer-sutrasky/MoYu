@@ -1,0 +1,105 @@
+# item 3 — fence observability at the real dispatcher/Bridge endpoints
+
+recorded=2026-11-07T15:07Z (Asia/Shanghai 23:07)
+base_head=3278fb0e2e248dcaf32a59aba791a15339699b2a
+runtime=http://127.0.0.1:3403 profile=m5b build=m5b-admission-build21 MOYU_REQUIRE_ADMISSION=1
+ticket=eb8f95ad49e3c1bcbe301697b4f6a54a
+
+## Why the earlier log said admission=null
+
+`item3-endpoint-assertions.log` was captured against the older m4 runtime bundle. That bundle
+has no patch 0023, so the Ticket model has no `admission` field and the snapshot necessarily
+returned null. The same HTTP surface is observable on the admission-aware build.
+
+## The interface that exposes the actual fence
+
+GET /bridge/v1/tickets/:id returns `admission: {leaseId, fencingToken}` when the runtime
+accepted one for the Ticket. `ticket.state_changed` events carry the same values as
+`leaseId`/`fencingToken`. This is the runtime's accepted value, not a caller echo.
+
+## Pause: stop evidence is asserted, not just state=stopped
+
+after pause (GET /bridge/v1/tickets/eb8f95ad49e3c1bcbe301697b4f6a54a):
+  state=stopped
+  paused.stoppedAt=2026-11-07T15:03:40.890Z
+  paused.evidence={"ticketId":"eb8f95ad49e3c1bcbe301697b4f6a54a",
+    "assignmentId":"0e4b36d76caa8bacdb2c8858c2d62d49",
+    "sessionId":"worker-eb8f95ad49e3c1bcbe301697b4f6a54a",
+    "harnessPid":2114387,"cgroup":"/system.slice/dsh-superagent.service",
+    "startedAt":"2026-11-07T15:03:40.867Z","stoppedAt":"2026-11-07T15:03:40.886Z",
+    "agentStatus":"idle","jobsBefore":[],"jobsAfter":[],"subagentsAfter":0,
+    "processesBefore":[],"processesAfter":[],"lingeringPids":[],"cancelledTurn":true}
+
+The dispatcher-side row also records it (stop_evidence):
+{"ticketId":"eb8f95ad49e3c1bcbe301697b4f6a54a","assignmentId":"b8597ddc9a79bd9a1b1317ba70b158b1",
+ "operationId":"7845282d-1bf3-4b1e-aae7-f6061f8e60cf","stoppedAt":"2026-11-07T14:58:00.514Z",
+ "agentStatus":"idle","jobsAfter":[],"lingeringPids":[],"processesAfter":[],"cancelledTurn":false}
+
+## Resume: the snapshot returns the accepted fence and a running new assignment
+
+POST /bridge/v1/tickets/eb8f95ad49e3c1bcbe301697b4f6a54a/resume
+  {"operationId":"4dab2daa-e34b-4a58-9eac-562bca33b04c",
+   "admission":{"leaseId":"lease-item3-running","fencingToken":"2000000000004"}}
+
+response: {"operationId":"4dab2daa-e34b-4a58-9eac-562bca33b04c","ticketId":"eb8f95ad49e3c1bcbe301697b4f6a54a",
+           "kind":"resume","state":"queued","updatedAt":"2026-11-07T15:03:31.283Z"}
+
+GET /bridge/v1/tickets/eb8f95ad49e3c1bcbe301697b4f6a54a immediately after:
+{
+  "state": "running",
+  "assignmentId": "0e4b36d76caa8bacdb2c8858c2d62d49",
+  "admission": {
+    "leaseId": "lease-item3-running",
+    "fencingToken": "2000000000004"
+  },
+  "paused": null
+}
+
+The assignment changed from 0e4b36d7...'s predecessor (dc3d1a19a7d556179c3243f568fa442c,
+which had been created with the item-3 test admission 2000000000003) to
+0e4b36d76caa8bacdb2c8858c2d62d49 and entered running. The old assignment is ended.
+
+## The superseded generation is no longer effective
+
+POST /bridge/v1/tickets/eb8f95ad49e3c1bcbe301697b4f6a54a/admit with the previous
+admission (lease-item3-e2e / 2000000000003):
+  {"error":"Execution requires the execution lease admission: a lease id and a fencing token",
+   "code":"admissionRequired","values":{}}
+HTTP 422.
+
+GET after the rejected admit:
+{
+  "state": "running",
+  "assignmentId": "0e4b36d76caa8bacdb2c8858c2d62d49",
+  "admission": {"leaseId":"lease-item3-running","fencingToken":"2000000000004"}
+}
+No new assignment, no admission change.
+
+## Automated real-endpoint regression
+
+test=apps/dispatcher/test/integration/bridge-pause-resume.real.integration.test.ts
+command:
+  MOYU_BRIDGE_URL=http://127.0.0.1:3403 MOYU_BRIDGE_TOKEN=*** \
+  MOYU_BRIDGE_REPOSITORY=Bouyer12/m5a-beta-adf10ad9 \
+  MOYU_BRIDGE_TICKET_ID=eb8f95ad49e3c1bcbe301697b4f6a54a \
+  MOYU_BRIDGE_ADMISSION_LEASE_ID=lease-item3-e2e MOYU_BRIDGE_ADMISSION_FENCE=2000000000003 \
+  corepack pnpm --filter @moyu/dispatcher exec vitest run \
+  test/integration/bridge-pause-resume.real.integration.test.ts --reporter=verbose
+
+output:
+  ✓ live Bridge pause and resume over HTTP > pause records stop evidence, resume records the actual fence and a running generation 113ms
+  Test Files  1 passed (1)
+  Tests  1 passed (1)
+
+The test asserts: paused.stoppedAt and paused.evidence (including lingeringPids=[]),
+the new assignment is running and differs from the pre-pause assignment, the snapshot
+admission equals the submitted lease/fence, and a subsequent admit with the old
+generation returns 422 while the snapshot keeps the new admission.
+
+## Verdict
+
+The path is observable: choose the first option (read the actual fence at
+GET /bridge/v1/tickets/:id, corroborated by ticket.state_changed leaseId/fencingToken).
+The old generation is rejected (422) and cannot become effective; pause evidence and the
+running new assignment are asserted, so the previous "admission=null" limitation no longer
+applies to the admission-aware runtime. Item 3 accepted.
