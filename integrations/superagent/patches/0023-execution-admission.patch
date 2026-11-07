@@ -389,7 +389,7 @@ index b55ccfd..ab90a82 100644
      get(id: string): Decision | undefined
      save(decision: Decision): void
 diff --git a/src/core/tickets.ts b/src/core/tickets.ts
-index 35f257e..12db123 100644
+index 35f257e..51e1e7f 100644
 --- a/src/core/tickets.ts
 +++ b/src/core/tickets.ts
 @@ -56,16 +56,37 @@ export class Tickets extends EnginePart {
@@ -531,7 +531,7 @@ index 35f257e..12db123 100644
      this.endAssignment(ticket, running, reason)
      this.requeueUntaken(ticket, running)
      const assignment = this.newAssignment(ticket)
-@@ -505,12 +551,87 @@ export class Tickets extends EnginePart {
+@@ -505,12 +551,93 @@ export class Tickets extends EnginePart {
      return report?.state !== 'ready' || ticket.undelivered.length > 0 || later
    }
    /** Add a pending Assignment; a failed delivery to the one before it no longer concerns the ticket. */
@@ -602,6 +602,12 @@ index 35f257e..12db123 100644
 +      if (assignmentId && latestAssignment(ticket)?.id !== assignmentId) {
 +        throw new UserError('unknownAssignment', { assignmentId })
 +      }
++      // A replay must still name the generation this Ticket was admitted under.
++      if (ticket.admission && (ticket.admission.leaseId !== admission.leaseId
++        || ticket.admission.fencingToken !== admission.fencingToken)) {
++        throw new UserError('admissionRequired')
++      }
++      if (ticket.admission && !this.admissionCurrent(ticket)) throw new UserError('admissionRequired')
 +      return ticket
 +    }
 +    this.acceptAdmission(ticket, admission)
@@ -937,10 +943,10 @@ index e7ed695..48f1e6f 100644
    /** Sessions: prompt revisions each Session has worked under, ordered oldest first; the last entry (`.at(-1)`) is its active revision. */
 diff --git a/tests/admission.spec.ts b/tests/admission.spec.ts
 new file mode 100644
-index 0000000..e909b1e
+index 0000000..891954d
 --- /dev/null
 +++ b/tests/admission.spec.ts
-@@ -0,0 +1,187 @@
+@@ -0,0 +1,198 @@
 +import { describe, expect, it, vi } from 'vitest'
 +import { projectTicketState } from '../src/app/bridge.ts'
 +import { Engine, MemoryRepositories, latestAssignment, type Assessor, type Candidate, type Executor, type Outbox, type Policy, type Ticket, type Trigger } from '../src/core/index.ts'
@@ -1049,7 +1055,7 @@ index 0000000..e909b1e
 +    expect(h.starts).toHaveLength(1)
 +    h.engine.admitTicket(ticket.id, admission(8))
 +    expect(h.starts).toHaveLength(2)
-+    h.engine.admitTicket(ticket.id, admission(7))
++    expect(() => h.engine.admitTicket(ticket.id, admission(7))).toThrow(/admission/i)
 +    expect(h.starts).toHaveLength(2)
 +    h.engine.admitTicket(ticket.id, admission(8))
 +    expect(h.starts).toHaveLength(2)
@@ -1116,6 +1122,17 @@ index 0000000..e909b1e
 +    expect(() => h.engine.admitTicket(pending.id, admission(9), latestAssignment(other)!.id)).toThrow(/Unknown assignment/)
 +    expect(h.starts).toHaveLength(before)
 +    expect(latestAssignment(h.repo.tickets.get(pending.id)!)?.state).not.toBe('pending')
++  })
++
++  it('rejects an already-admitted replay with a different generation', () => {
++    const h = harness()
++    const ticket = h.accept(githubTrigger())
++    h.engine.admitTicket(ticket.id, admission(7), 'reserved-assignment')
++    const starts = h.starts.length
++    const fence = h.repo.admission.fence()
++    expect(() => h.engine.admitTicket(ticket.id, admission(8), 'reserved-assignment')).toThrow(/admission/i)
++    expect(h.starts).toHaveLength(starts)
++    expect(h.repo.admission.fence()).toEqual(fence)
 +  })
 +
 +  it('never starts a pending admitted ticket after a pause', () => {
@@ -1362,7 +1379,7 @@ index 0000000..1243579
 +/** A generation tests use when they are not exercising fencing itself. */
 +export const TEST_ADMISSION = { leaseId: 'test-lease', fencingToken: '999999' }
 diff --git a/tests/pause.spec.ts b/tests/pause.spec.ts
-index fbc9dc8..5ef7643 100644
+index fbc9dc8..f4aa149 100644
 --- a/tests/pause.spec.ts
 +++ b/tests/pause.spec.ts
 @@ -5,6 +5,7 @@ import { Engine, MemoryRepositories, canRetry, latestAssignment, ticketStage, ty
@@ -1487,7 +1504,7 @@ index fbc9dc8..5ef7643 100644
  describe('DshExecutor.pause', () => {
    it('cancels the turn keeping the inbox, kills the shell jobs, and records the stop evidence', async () => {
      const h = executorHarness()
-@@ -291,3 +308,46 @@ describe('DshExecutor.pause', () => {
+@@ -291,3 +308,47 @@ describe('DshExecutor.pause', () => {
      expect(h.jobs.size).toBe(1)
    })
  })
@@ -1518,7 +1535,8 @@ index fbc9dc8..5ef7643 100644
 +
 +    expect(h.engine.admitTicket(pending.id, admission).assignments).toHaveLength(1)
 +    expect(h.starts).toHaveLength(1)
-+    expect(() => h.engine.admitTicket(pending.id, { ...admission, fencingToken: '0' })).not.toThrow()
++    expect(() => h.engine.admitTicket(pending.id, { ...admission, fencingToken: '0' })).toThrow(/admission/i)
++    expect(h.starts).toHaveLength(1)
 +  })
 +
 +  it('records the admission on a workspace ticket and refuses an older generation on start', () => {
