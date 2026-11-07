@@ -79,7 +79,8 @@
 
 ## 恢复并发与预算（2026-11-07）
 
-- 恢复写入只更新仍为 queued/running 的任务，并合并 stop_evidence（`coalesce(...) ||`），不覆盖并发暂停证明；成功后只删除 admissionRecovery 键。
-- 单轮恢复最多扫描 32 条，避免 N×30s 串行快照阻塞事件消费。
-- 外部红测 race.test.ts（快照 barrier 期间写 stopped+pause marker）现为绿；positive.test.ts null-base 认领通过。
-- 仍待：完整 Bridge admission lease/fence 权威证明、真实两库/dispatcher 重启、真实子进程启动数。
+- mismatch、catch、成功三条路径都只更新仍 queued/running 的任务；stop_evidence 一律合并，成功只删除本次恢复的键。
+- 单轮最多 32 条并按 task id 轮转 cursor；失败/不匹配不重复写同值。
+- 回归已收录：`apps/dispatcher/test/integration/recovery-{positive,race,review-catch,review-clear,review-idempotent,review-fairness}.integration.test.ts`。
+- 命令：`TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm --filter @moyu/dispatcher test:integration`；6 个恢复文件 12/12。
+- 仍待：完整 Bridge admission lease/fence 权威证明、真实两库/dispatcher 重启、真实子进程启动数。cursor 为进程内状态，重启后从头部开始但会轮转。

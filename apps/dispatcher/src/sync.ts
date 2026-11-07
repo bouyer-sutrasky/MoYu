@@ -1049,6 +1049,9 @@ export async function applyEvent(
   }
 }
 
+/** Rotates the recovery pass across tasks; cleared on wrap/restart. */
+let recoveryCursor: string | undefined;
+
 /**
  * Historical identity recovery: a queued/running task whose reservation is
  * still reserved may predate identity fields on state events. Confirm the
@@ -1062,22 +1065,31 @@ export async function recoverReservedTasks(
   bridge: RuntimeBridgeClient,
   logger: DispatcherLogger,
 ): Promise<void> {
-  const rows = await pool.query<{
-    id: string;
-    upstream_ticket_id: string | null;
-    assignment_id: string;
-    lease_id: string;
-    fencing_token: string;
-  }>(
-    `select t.id, t.upstream_ticket_id, r.assignment_id, r.lease_id, r.fencing_token
+  const load = async (cursor: string | undefined) =>
+    pool.query<{
+      id: string;
+      upstream_ticket_id: string | null;
+      assignment_id: string;
+      lease_id: string;
+      fencing_token: string;
+    }>(
+      `select t.id, t.upstream_ticket_id, r.assignment_id, r.lease_id, r.fencing_token
        from task_links t
        join execution_reservations r
          on r.repository_id = t.repository_id and r.request_key = 'admit:' || t.id
       where t.repository_id = $1 and t.state in ('queued', 'running') and r.state = 'reserved'
-      order by t.updated_at
+        and ($2::uuid is null or t.id > $2::uuid)
+      order by t.id
       limit 32`,
-    [repository.id],
-  );
+      [repository.id, cursor ?? null],
+    );
+  let rows = await load(recoveryCursor);
+  if (rows.rows.length === 0 && recoveryCursor) {
+    recoveryCursor = undefined;
+    rows = await load(undefined);
+  }
+  const last = rows.rows.at(-1);
+  if (last) recoveryCursor = last.id;
   for (const row of rows.rows) {
     if (!row.upstream_ticket_id) continue;
     let snapshot: Awaited<ReturnType<RuntimeBridgeClient['ticket']>>;
@@ -1109,7 +1121,8 @@ export async function recoverReservedTasks(
         `update task_links
             set stop_evidence = coalesce(stop_evidence, '{}'::jsonb) || $2::jsonb,
                 version = version + 1, updated_at = now()
-          where id = $1 and state in ('queued', 'running')`,
+          where id = $1 and state in ('queued', 'running')
+            and coalesce(stop_evidence->>'admissionRecovery', '') is distinct from 'snapshot_mismatch'`,
         [row.id, JSON.stringify({ admissionRecovery: 'snapshot_mismatch' })],
       );
       continue;
@@ -1129,16 +1142,26 @@ export async function recoverReservedTasks(
           { event: 'admission.recovery_not_claimable', taskId: row.id },
           'snapshot matched but the reservation was already claimed',
         );
+      } else {
+        await pool.query(
+          `update task_links
+              set stop_evidence = stop_evidence - 'admissionRecovery' - 'admissionRecoveryError',
+                  version = version + 1, updated_at = now()
+            where id = $1 and state in ('queued', 'running')`,
+          [row.id],
+        );
       }
     } catch (error) {
       await pool.query(
-        `update task_links set stop_evidence = $2::jsonb, version = version + 1, updated_at = now()
-          where id = $1`,
+        `update task_links
+            set stop_evidence = coalesce(stop_evidence, '{}'::jsonb) || $2::jsonb,
+                version = version + 1, updated_at = now()
+          where id = $1 and state in ('queued', 'running')`,
         [
           row.id,
           JSON.stringify({
             admissionRecovery: 'generation_mismatch',
-            error: bridgeErrorMessage(error),
+            admissionRecoveryError: bridgeErrorMessage(error),
           }),
         ],
       );
