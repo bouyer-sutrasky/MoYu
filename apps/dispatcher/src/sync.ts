@@ -185,7 +185,13 @@ async function applyTaskEvent(
     next = await taskByTicket(client, ticketId, repository.id);
     if (next) {
       if (next.state === 'queued' || next.state === 'running') {
-        await reconcileExecutionClaimOn(client, repository.id, `admit:${next.id}`, ticketId);
+        await reconcileExecutionClaimOn(
+          client,
+          repository.id,
+          `admit:${next.id}`,
+          ticketId,
+          asString(data.assignmentId),
+        );
       }
       await emit(client, repository, event, 'task.state_changed', next.conversationId, next.id, {
         task: taskSummary(next),

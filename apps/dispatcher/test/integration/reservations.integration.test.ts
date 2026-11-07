@@ -76,11 +76,27 @@ describe('execution reservation on real PostgreSQL', () => {
     await reserveExecution(db.pool, { ...input(), requestKey: key3 });
     const client = await db.pool.connect();
     try {
-      expect(await reconcileExecutionClaimOn(client, repository.id, key3, 'ticket-1')).toBe(true);
+      expect(
+        await reconcileExecutionClaimOn(client, repository.id, key3, 'ticket-1', 'assignment-1'),
+      ).toBe(true);
     } finally {
       client.release();
     }
     expect((await readReservation(db.pool, repository.id, key3))?.state).toBe('claimed');
+    const wrongClient = await db.pool.connect();
+    try {
+      expect(
+        await reconcileExecutionClaimOn(
+          wrongClient,
+          repository.id,
+          key3,
+          'ticket-1',
+          'old-assignment',
+        ),
+      ).toBe(false);
+    } finally {
+      wrongClient.release();
+    }
     const stale = await reserveExecution(db.pool, {
       ...input('assignment-stale'),
       requestKey: `event-stale-${process.pid}`,

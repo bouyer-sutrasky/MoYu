@@ -217,17 +217,19 @@ export async function claimExecution(
 }
 
 /**
- * Claim a still-reserved identity when a Bridge state event proves the
- * admission landed before the platform recorded it. The current lease must
- * still match the reservation; a queued/running state alone is not proof.
+ * Claim a still-reserved identity from an event that names the Assignment.
+ * Lock order matches reserve/claim (lease then reservation); both the event
+ * identity and the active generation must match, or nothing is claimed.
  */
 export async function reconcileExecutionClaimOn(
   client: pg.PoolClient,
   repositoryId: string,
   requestKey: string,
   ticketId: string,
+  assignmentId: string | null | undefined,
 ): Promise<boolean> {
-  const row = await client.query<{
+  if (!assignmentId) return false;
+  const initial = await client.query<{
     id: string;
     assignment_id: string;
     lease_id: string;
@@ -236,22 +238,42 @@ export async function reconcileExecutionClaimOn(
   }>(
     `select id, assignment_id, lease_id, fencing_token, state
        from execution_reservations
-      where repository_id = $1 and request_key = $2 and ticket_id = $3
-      for update`,
+      where repository_id = $1 and request_key = $2 and ticket_id = $3`,
     [repositoryId, requestKey, ticketId],
   );
-  const reservation = row.rows[0];
-  if (!reservation || reservation.state !== 'reserved') return false;
+  const candidate = initial.rows[0];
+  if (!candidate || candidate.state !== 'reserved' || candidate.assignment_id !== assignmentId) {
+    return false;
+  }
   const lease = await client.query<{ repository_id: string; fencing_token: string; state: string }>(
     `select repository_id, fencing_token, state from runtime_leases where id = $1 for update`,
-    [reservation.lease_id],
+    [candidate.lease_id],
   );
   const current = lease.rows[0];
   if (
     !current ||
     current.repository_id !== repositoryId ||
     current.state !== 'active' ||
-    String(current.fencing_token) !== reservation.fencing_token
+    String(current.fencing_token) !== candidate.fencing_token
+  ) {
+    return false;
+  }
+  const locked = await client.query<{
+    id: string;
+    assignment_id: string;
+    fencing_token: string;
+    state: string;
+  }>(
+    `select id, assignment_id, fencing_token, state from execution_reservations
+      where id = $1 for update`,
+    [candidate.id],
+  );
+  const reservation = locked.rows[0];
+  if (
+    !reservation ||
+    reservation.state !== 'reserved' ||
+    reservation.assignment_id !== assignmentId ||
+    String(reservation.fencing_token) !== candidate.fencing_token
   ) {
     return false;
   }
