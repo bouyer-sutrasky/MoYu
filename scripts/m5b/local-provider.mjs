@@ -8,6 +8,7 @@
  * and a dummy apiKeyEnv. Requests are logged to LOCAL_PROVIDER_LOG.
  */
 import http from 'node:http';
+import { Buffer } from 'node:buffer';
 import fs from 'node:fs';
 
 const port = Number(process.env.LOCAL_PROVIDER_PORT ?? 3801);
@@ -18,6 +19,8 @@ const triggerFile = process.env.LOCAL_PROVIDER_TRIGGER_FILE;
  * remain `running` while it pauses it writes this file; the value comes from the
  * provider's own environment so a stale file cannot change a normal run.
  */
+const held = [];
+
 function longTurnSeconds() {
   const file = process.env.LOCAL_PROVIDER_WORKER_SLEEP_FILE;
   if (!file) return 0;
@@ -145,6 +148,22 @@ const server = http.createServer(async (request, response) => {
       /* a missing file answers immediately */
     }
   }
+  // Item 6 stress mode: the provider itself holds memory, so the slice has a real
+  // provider contribution and not only a filler.
+  const allocateFile = process.env.LOCAL_PROVIDER_ALLOCATE_MB_FILE;
+  if (allocateFile) {
+    try {
+      const megabytes = Number(fs.readFileSync(allocateFile, 'utf8').trim());
+      if (Number.isFinite(megabytes) && megabytes > 0) {
+        const chunk = Buffer.alloc(32 * 1024 * 1024, 1);
+        for (let index = 0; index < megabytes / 32; index += 1) {
+          held.push(chunk);
+        }
+      }
+    } catch {
+      /* no allocation asked for */
+    }
+  }
   const id = `chatcmpl-local-${++sequence}`;
   // Deterministic route decision for an isolated probe. Replace the trigger id
   // with the candidate card's id when driving a different fixture.
@@ -196,6 +215,17 @@ const server = http.createServer(async (request, response) => {
       message.tool_calls.some((call) => call?.function?.name === 'bash'),
   );
   const sleepSeconds = longTurnSeconds();
+  // Item 6 stress: how much memory the worker's turn should hold.
+  const memoryFile = process.env.LOCAL_PROVIDER_WORKER_MEM_FILE;
+  let memoryMb = 0;
+  if (memoryFile) {
+    try {
+      const value = Number(fs.readFileSync(memoryFile, 'utf8').trim());
+      if (Number.isFinite(value) && value > 0) memoryMb = Math.floor(value);
+    } catch {
+      memoryMb = 0;
+    }
+  }
   // Fixture mode for the awaiting_review scenario: the worker runs one script that
   // pushes its ticket branch and opens a real PR in the test repository, then
   // reports with that `pr_number`. The runtime claims the PR thread, so the ready
@@ -277,6 +307,13 @@ const server = http.createServer(async (request, response) => {
       state: 'ready',
       summary: 'Lifecycle probe ready for review.',
       ...(number ? { pr_number: number } : {}),
+    });
+  } else if (tools.includes('bash') && memoryMb > 0 && !longBashAlready) {
+    // A real background child of the runtime that holds memory, so the runtime's
+    // own cgroup carries the load instead of a stand-in filler.
+    choice = call('bash', {
+      description: 'Matrix item 6: hold worker memory',
+      command: `node -e "const h=[];for(let i=0;i<${memoryMb}/32;i++)h.push(Buffer.alloc(32*1024*1024,7));setTimeout(()=>{},900000)"`,
     });
   } else if (tools.includes('bash') && sleepSeconds > 0 && !longBashAlready && reportedAlready) {
     choice = call('bash', {

@@ -1,0 +1,149 @@
+# item 6b — 四类真实服务同一切片下的聚合 8 GiB 压力
+
+原始输出如下。切片 `m5bmatrix.slice`：`memory.max=8 GiB`、`memory.high=6 GiB`、`swap.max=0`。
+四类服务（PostgreSQL / API / dispatcher / runtime（supervisor + instances）/ provider）**都在这一个切片里**
+（单元全部由 `systemd-run --slice=m5bmatrix.slice` 启动，日志第一段给了每个单元的 `MemoryMax`）。
+
+分两段跑，日志里每段的数据分开标注：
+
+- **phase 1**：每个服务都加压、但留在它自己的准入上限内 —— 这是「真实服务自己能达到的聚合」；
+- **phase 2**：在**同一个切片内**再放一个明确标注的 filler（合成的，只用来顶到天花板），
+  观察切片在 `memory.high` / `memory.max` 上的行为。
+
+# item 6b — aggregate pressure on the shared 8 GiB slice
+recorded=2026-11-08T04:17:40+08:00
+dispatcher_artifact=0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6 (211968 bytes)
+slice=/sys/fs/cgroup/m5bmatrix.slice
+  memory.max=8589934592
+  memory.high=6442450944
+  memory.current=459689984
+  memory.peak=1513365504
+  memory.events=low 0 high 0 max 321 oom 1 oom_kill 1 oom_group_kill 0 
+  memory.swap.max=0
+host_mem_available_kb=13778064
+
+## the admission caps that sit under the slice budget (systemctl show -p MemoryMax)
+m5bmatrix-pg               MemoryMax=1073741824   MemoryHigh=infinity
+m5bmatrix-api              MemoryMax=1073741824   MemoryHigh=infinity
+m5bmatrix-dispatcher       MemoryMax=536870912    MemoryHigh=infinity
+m5bmatrix-supervisor       MemoryMax=536870912    MemoryHigh=infinity
+m5bmatrix-provider         MemoryMax=536870912    MemoryHigh=infinity
+sum_of_member_caps_bytes=3758096384
+
+baseline_events: high=0 max=321 oom_kill=1 current=459689984
+
+## phase 1 — every service loaded but inside its own admission cap
+postgres: sort with work_mem=256MB over 10M rows (stays under 1 GiB)
+runtime: a worker turn holding 600 MiB inside the runtime's cgroup
+task=eddeb866-dfeb-402f-9ee4-39b8edcbeadc
+provider: hold 300 MiB inside the provider process
+api: a steady stream of 64 KiB requests (memory inside the api cgroup)
+
+### timeline, phase 1 (1 s samples)
+t_s    slice_cur    high_d   max_d    oom_d    pg           runtime      dispatcher   api         provider   
+1      365301760    0        96       1        142700544    34394112     25501696     48472064    114036736  
+2      365314048    0        96       1        142700544    34394112     25501696     48472064    114036736  
+3      363847680    0        96       1        140668928    34426880     25522176     48500736    114036736  
+4      363347968    0        96       1        140664832    34426880     25522176     48500736    114036736  
+5      363368448    0        96       1        140664832    34422784     25538560     48500736    114036736  
+6      363368448    0        96       1        140664832    34422784     25538560     48500736    114036736  
+7      363376640    0        96       1        140664832    34422784     25554944     48500736    114036736  
+8      363716608    0        96       1        140664832    34762752     25554944     48500736    114036736  
+9      363741184    0        96       1        140664832    34762752     25571328     48500736    114036736  
+10     363741184    0        96       1        140673024    34762752     25571328     48500736    114036736  
+
+phase1_services_alive: pg=active api={"data":{"status":"ok","service":"moyu-api","version":"0.1.0","uptimeSeconds":40,"timestamp":"2026-11-07T20:18:04.782Z"},"requestId":"98a49864-234d-4c5b-a432-14427a95a337"} dispatcher=active bridge=down provider=active
+phase1_slice_current=363753472
+phase1_postgres_result=  count   
+
+## phase 2 — a labelled filler in the same slice drives the aggregate to the 8 GiB ceiling
+$ systemd-run --slice=m5bmatrix.slice --unit=m5bmatrix-stress-fill -p MemoryMax=infinity python3 -c 'hold 6500 MiB'
+t_s    slice_cur    high_d   max_d    oom_d    filler       pg           runtime     api         provider   
+1      366891008    0        0        0        11788288     140664832    34762752    48504832    114036736  
+2      1099005952   0        0        0        759140352    133722112    34762752    48504832    114036736  
+3      1846669312   0        0        0        1506312192   133722112    34762752    48504832    114036736  
+4      2592288768   0        0        0        2252505088   133718016    34721792    48504832    114036736  
+5      3313852416   0        0        0        2956861440   133718016    34721792    48504832    114036736  
+6      4013867008   0        0        0        3672596480   133718016    34721792    48504832    114036736  
+7      4739665920   0        0        0        4399661056   133718016    34725888    48504832    114036736  
+8      5474885632   0        0        0        5136699392   133718016    34725888    48504832    114036736  
+9      6214201344   0        0        0        5875224576   133722112    34725888    48504832    114036736  
+10     6529495040   1932     0        0        6266707968   39387136     34729984    48513024    114028544  
+11     6545293312   3244     0        0        6282743808   39387136     34729984    48513024    114028544  
+12     6555602944   4286     0        0        6292779008   39387136     34729984    48513024    114028544  
+13     6564835328   5155     0        0        6302527488   39387136     34729984    48513024    114028544  
+14     6571728896   5993     0        0        6309150720   39387136     34729984    48513024    114028544  
+15     6579884032   6641     0        0        6317297664   39395328     34729984    48513024    114028544  
+16     6585978880   7343     0        0        6323376128   39387136     34734080    48513024    114028544  
+17     6593593344   8210     0        0        6328406016   41721856     34734080    48513024    114028544  
+18     6594519040   8979     0        0        6331879424   39403520     34738176    48513024    114028544  
+19     6598504448   9509     0        0        6335868928   39403520     34738176    48513024    114028544  
+20     6602248192   10040    0        0        6339592192   39403520     34738176    48513024    114028544  
+21     6605709312   10520    0        0        6343311360   39403520     34738176    48513024    114028544  
+22     6608924672   11073    0        0        6346248192   39403520     34738176    48513024    114028544  
+23     6612119552   11539    0        0        6349443072   39403520     34738176    48513024    114028544  
+24     6614036480   12056    0        0        6351343616   39403520     34738176    48513024    114028544  
+25     6617227264   12488    0        0        6354534400   39403520     34738176    48513024    114028544  
+26     6619238400   12935    0        0        6356430848   39403520     34742272    48513024    114028544  
+27     6620880896   13388    0        0        6358065152   39403520     34742272    48513024    114028544  
+28     6623318016   13893    0        0        6360473600   39407616     35012608    48513024    114028544  
+29     6625968128   14256    0        0        6363140096   39403520     34750464    48513024    114028544  
+30     6628909056   14652    0        0        6365798400   39403520     34750464    48513024    114028544  
+31     6630027264   15048    0        0        6367428608   39411712     34750464    48513024    114028544  
+32     6632448000   15447    0        0        6369570816   39403520     34750464    48513024    114028544  
+33     6636384256   15791    0        0        6372999168   39403520     34750464    48513024    114028544  
+34     6637518848   16187    0        0        6374363136   39411712     34750464    48513024    114028544  
+35     6638358528   16534    0        0        6375211008   39403520     34750464    48513024    114028544  
+36     6639218688   16987    0        0        6376312832   39403520     34750464    48513024    114028544  
+37     6641610752   17297    0        0        6378967040   39403520     34750464    48513024    114028544  
+38     6642987008   17695    0        0        6379806720   39403520     34750464    48513024    114028544  
+39     6645633024   17988    0        0        6382710784   39403520     34750464    48513024    114028544  
+40     6647525376   18367    0        0        6384324608   39403520     34750464    48513024    114028544  
+
+filler_unit_active=active
+after_phase2_services: pg=active api=active dispatcher=active bridge=down provider=active
+
+## raw readings at the end
+m5bmatrix.slice (aggregate)    current=6648102912  peak=6648360960  events=[low 0 high 18680 max 417 oom 4 oom_kill 2 oom_group_kill 0 ]
+m5bmatrix-pg                   current=39403520    peak=816259072   events=[low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 ]
+m5bmatrix-api                  current=48513024    peak=55078912    events=[low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 ]
+m5bmatrix-dispatcher           current=26136576    peak=39899136    events=[low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 ]
+m5bmatrix-supervisor           current=34750464    peak=536879104   events=[low 0 high 0 max 96 oom 3 oom_kill 1 oom_group_kill 0 ]
+m5bmatrix-provider             current=114028544   peak=114290688   events=[low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 ]
+filler (synthetic, label only) current=6385164288  peak=6385422336  events=[low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 ]
+
+## release the load
+postgres_output=  count    ---------- 
+
+## verdict
+slice_peak_bytes=6648365056 (~6.19 GiB)
+events_delta_over_the_whole_run: high=18697 max=96 oom_kill=1
+sum_of_member_caps_bytes=see above against slice memory.max=8589934592
+OBSERVED: an OOM kill inside the slice; which member died is named above (filler vs service).
+
+## 判定
+
+**部分通过 —— 并发压力与调度行为的原始读数拿到了，「压到 8 GiB 上限」这一步没有做到。**
+
+成立的部分：
+
+- 四类服务确实同处一个切片，成员上限之和 **3,758,096,384 B = 3.5 GiB**（pg 1 GiB、api 1 GiB、
+  dispatcher 512 MiB、supervisor 512 MiB、provider 512 MiB），远低于切片的 8 GiB —— 这是结构性事实：
+  **真实服务在现有准入策略下永远够不到切片的 8 GiB**，因为每个成员先撞自己的上限。
+- phase 1 里出现了一次真实 OOM kill，但它是**成员级**的：supervisor 单元 `events=[max 96 oom 3 oom_kill 1]`、
+  `peak=536879104`（正好 512 MiB 上限）—— 我给 worker 那个 600 MiB 的分配超过了 runtime 自己的 512 MiB 上限，
+  内核在这个成员的 cgroup 里杀了它，切片本身（`memory.events.local`：`max 0 oom_kill 0`）没有被触发。
+- phase 2 里 filler 把聚合推到 **6.19 GiB（peak 6,648,365,056 B）**，切片在 `memory.high` 上开始**节流**：
+  `high` 计数涨到 **18,697**，`max` 在切片本地始终 **0**，`oom_kill` 在切片本地始终 **0**，
+  四个服务全程 `active`。也就是说：**观察到的是调度时序（节流/回收），不是 OOM kill。**
+
+没做到的部分（如实标为未验证）：
+
+- **8 GiB 上限本身没有顶到**。filler 在 `memory.high`(6 GiB) 之后被内核节流，40 秒里只从 6.28 GiB 爬到 6.38 GiB，
+  始终没越过 8 GiB，所以「到 max 时会怎样（杀谁、`oom_group_kill` 是否触发）」**未观测到**。
+- **一次冒进实验的副作用，必须记录**：我另外用 3 个 `systemd-run --slice=m5bmatrix.slice` 的并行 filler
+  想强行顶过 6 GiB，其中两个单元没有落进切片（`systemctl show -p ControlGroup` 为空），
+  跑在 `/system.slice` 里各吃到 ~10 GB，触发的是**宿主全局 OOM**（journal：`global_oom`,
+  `task_memcg=/system.slice/m5bmatrix-max-probe-3.service`，`Out of memory: Killed process … (python3) anon-rss:10060288kB`），
+  而不是切片内 OOM。这条说明：**合成压力成员必须逐个校验 `ControlGroup` 是否真在切片里**，
+  否则测到的不是切片的语义。该次实验随后全部清理，未进入本文件的正式读数。
