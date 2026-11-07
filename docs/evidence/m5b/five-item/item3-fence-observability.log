@@ -61,19 +61,25 @@ which had been created with the item-3 test admission 2000000000003) to
 
 ## The superseded generation is no longer effective
 
-POST /bridge/v1/tickets/eb8f95ad49e3c1bcbe301697b4f6a54a/admit with the previous
-admission (lease-item3-e2e / 2000000000003):
-  {"error":"Execution requires the execution lease admission: a lease id and a fencing token",
-   "code":"admissionRequired","values":{}}
-HTTP 422.
+A generic 422 for a missing admission does not prove staleness, so the regression
+pauses the ticket again and attempts a resume with the previous admission
+(lease-item3-e2e / 2000000000003) after the ticket has accepted
+lease-item3-running / 2000000000004:
 
-GET after the rejected admit:
+  POST /bridge/v1/tickets/eb8f95ad49e3c1bcbe301697b4f6a54a/resume
+    {"operationId":"...","admission":{"leaseId":"lease-item3-e2e","fencingToken":"2000000000003"}}
+  HTTP 409
+  {"error":"The execution lease admission is older than the generation this ticket already accepted",
+   "code":"admissionStale","values":{}}
+
+GET after the rejected resume:
 {
-  "state": "running",
+  "state": "stopped",
   "assignmentId": "0e4b36d76caa8bacdb2c8858c2d62d49",
   "admission": {"leaseId":"lease-item3-running","fencingToken":"2000000000004"}
 }
-No new assignment, no admission change.
+No new assignment, no admission change. The dedicated `admissionStale` code is what
+distinguishes a superseded generation from a caller that supplied no admission.
 
 ## Automated real-endpoint regression
 
@@ -91,10 +97,14 @@ output:
   Test Files  1 passed (1)
   Tests  1 passed (1)
 
-The test asserts: paused.stoppedAt and paused.evidence (including lingeringPids=[]),
-the new assignment is running and differs from the pre-pause assignment, the snapshot
-admission equals the submitted lease/fence, and a subsequent admit with the old
-generation returns 422 while the snapshot keeps the new admission.
+The test first asserts before.admission is non-null (no `?? 'stale-lease'` fallback), then
+asserts paused.stoppedAt and paused.evidence (including lingeringPids=[]), the new
+assignment is running and differs from the pre-pause assignment, the snapshot admission
+equals the submitted lease/fence, and a second pause followed by a resume with the old
+admission returns HTTP 409 with code `admissionStale` while the snapshot keeps the new
+admission and assignment. Final green run:
+  ✓ live Bridge pause and resume over HTTP > pause records stop evidence, resume records the actual fence and a running generation 390ms
+  Tests 1 passed (1)
 
 ## Verdict
 

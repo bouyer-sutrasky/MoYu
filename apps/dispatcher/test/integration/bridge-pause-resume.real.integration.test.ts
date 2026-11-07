@@ -111,6 +111,9 @@ describe('live Bridge pause and resume over HTTP', () => {
       const before = await ticket(ticketId);
       expect(before.state).not.toBe('stopped');
       expect(before.assignmentId).toBeTruthy();
+      expect(before.admission).toBeTruthy();
+      const previous = before.admission;
+      if (!previous) throw new Error('the running ticket has no admission to supersede');
 
       const paused = await bridge(`/bridge/v1/tickets/${ticketId}/pause`, {
         method: 'POST',
@@ -139,7 +142,7 @@ describe('live Bridge pause and resume over HTTP', () => {
           process.env.MOYU_BRIDGE_ADMISSION_FENCE ??
           // A token strictly above the current generation; the runtime keeps a
           // repository-wide fence and refuses a replayed older one.
-          String(BigInt(before.admission?.fencingToken ?? '0') + 1n),
+          String(BigInt(previous.fencingToken) + 1n),
       };
       const resumed = await bridge(`/bridge/v1/tickets/${ticketId}/resume`, {
         method: 'POST',
@@ -158,22 +161,31 @@ describe('live Bridge pause and resume over HTTP', () => {
       // the value the caller submitted.
       expect(running.admission).toEqual(admission);
 
-      // The superseded generation can no longer be admitted for this Ticket.
-      const stale = await bridge(`/bridge/v1/tickets/${ticketId}/admit`, {
+      // Pause again so a resume can exercise the stale-admission branch. The
+      // generic 422 for a missing admission is not enough: the rejection must
+      // carry the dedicated admissionStale code, which distinguishes a
+      // superseded generation from a caller that sent no admission at all.
+      const pausedAgain = await bridge(`/bridge/v1/tickets/${ticketId}/pause`, {
         method: 'POST',
-        body: JSON.stringify({
-          ...(running.assignmentId ? { assignmentId: running.assignmentId } : {}),
-          admission: {
-            leaseId: before.admission?.leaseId ?? 'stale-lease',
-            fencingToken: before.admission?.fencingToken ?? '0',
-          },
-        }),
+        body: JSON.stringify({ operationId: randomUUID() }),
       });
-      expect(stale.status).toBe(422);
+      expect([200, 202]).toContain(pausedAgain.status);
+      await waitFor(async () => {
+        const snapshot = await ticket(ticketId);
+        return snapshot.state === 'stopped' ? snapshot : null;
+      }, 'stopped again');
+      const stale = await bridge(`/bridge/v1/tickets/${ticketId}/resume`, {
+        method: 'POST',
+        body: JSON.stringify({ operationId: randomUUID(), admission: previous }),
+      });
+      // A superseded generation is a conflict (`admissionStale`), distinct
+      // from the 422 `admissionRequired` used when no admission was supplied.
+      expect(stale.status).toBe(409);
+      expect(stale.body?.code).toBe('admissionStale');
       const afterStale = await ticket(ticketId);
+      expect(afterStale.state).toBe('stopped');
       expect(afterStale.admission).toEqual(admission);
       expect(afterStale.assignmentId).toBe(running.assignmentId);
-      expect(afterStale.state).toBe('running');
     },
     90_000,
   );
