@@ -73,3 +73,41 @@ $ psql … -c "select count(*) from task_links"
 
 **双调度者同争一个仓库（实际启动进程数、实际投递次数）**：未测。第二个 dispatcher 可以在同一切片内启动
 （同 `DATABASE_URL`、`RECONCILE_ON_START=true` 的瞬态单元），但本轮没有跑完计数。
+
+## 追加：GitHub source 其实已配置，卡点是别的（2026-11-08 04:59Z-05:05Z）
+
+上一段写「没有 GitHub source」是**不准确的**，这里更正。从 runtime 自己的设置库
+（`state/m5b/orchestrator.sqlite` 的 `kv`）读到：
+
+```
+sources.github = {"enabled": true, "config": {"repository": "Bouyer12/m5a-beta-adf10ad9",
+  "cli": "/root/.local/bin/gh-agent", "pollSeconds": 60, "observeIssues": true,
+  "observePulls": true, "observeComments": true, "observeCi": false}}
+policy.sources.github.allowed = [{"id": "sutrasky"}]        ← agent 账号 Bouyer12 不在白名单
+github-stream:issues / :comments / github-since 都有游标    ← 轮询确实在跑
+```
+
+所以第一次那条评论没成为候选，是因为**发送者白名单只允许 `sutrasky`**，agent 账号被过滤。
+
+随后我通过面板 API（`PUT /orchestrator/api/settings/policy`，需要 `Host` + `x-orchestrator-request: 1` +
+同源 `Origin` 才能过 `sameOrigin` 检查）把 `Bouyer12` 加进 github 白名单，保存成功：
+
+```
+saved: {'saved': True, 'revision': 2, 'policy_changed': True, 'restarting': False, 'context_delivery': 'injected'}
+github allowed now: ['sutrasky', 'Bouyer12']
+```
+
+再发一条真实评论（`@Bouyer12 …`，issue #1 评论 6712967127），等 2 分钟以上：
+
+```
+trigger 0
+decision 0
+thread 0
+task_links 0
+local-provider.jsonl 不存在（0 次模型请求）
+```
+
+**仍然没有任何候选。** 又试了清掉 `github-since` / `github-stream:*` 游标并重启 supervisor（意图让它重读），
+结果 bridge 直接没起来（`healthz` 不通），也没产生任何 trigger。所以 GitHub 入口的卡点目前**不是白名单**，
+而是轮询本身没有把这条评论读进来 —— 需要读源码里那条 poll 循环（`src/sources/github.ts` 的
+`commentTrigger`/`scope`/`pollEach` 组合与 `POLL_HORIZON_MS`）才能定位，属于下一轮的工作。
