@@ -30,6 +30,16 @@
 - `scripts/m5b/concurrent-trigger-race.mjs` 退出码只校验 HTTP 结果 —— 已在脚本头写明持久
   input 与投递次数是**另查两个库**证实的，并给出可执行的 SQL（Bridge SQLite / dispatcher PG）。
 
+## 两项子状态的判断（详见 [RECOMMENDATION-waiting-awaiting.md](RECOMMENDATION-waiting-awaiting.md)）
+
+- `waiting_input` 跨重启换 assignmentId：**缺陷**。`interrupted()` 的 settled 判定只看报告状态
+  （`waiting/ready/blocked/failed`），而「在等一个人」记在 `ticket.attention` 上；`orchestrator_report`
+  的词表里根本没有 `waiting`，提问写的是 `progress`，因此被当成没结论的回合重发。
+  改法是一处上游补丁（`src/core/assignments.ts` 的 settled 条件加 attention），代价是 runtime 产物变化。
+- `awaiting_review` 取不到：**判据问题，不是缺陷**。ready 报告只在不跟随任何未闭合 Thread 时结票
+  （`src/core/assignments.ts:129-135` 有明确注释），PR 由 `src/sources/github-pull.ts` 绑成 Thread；
+  本轮 fixture 不开 PR，所以合法地直接 `completed`。要现场看到它需要一个仍 open 的真实 PR。
+
 ## 现场发现（需要产品/代码决策，本单未擅自改）
 
 1. **新受管 cgroup 根目录无法首次使用**：`supervisor/src/process.ts` 的 `ensureCgroup` 先调
