@@ -148,7 +148,6 @@ async function acquireOn(
   const active = await client.query<LeaseRow>(
     `select ${LEASE_COLUMNS} from runtime_leases
       where repository_id = $1 and state = 'active'
-        and (expires_at is null or expires_at > now())
       for update`,
     [repositoryId],
   );
@@ -307,7 +306,7 @@ export async function renewExecutionLease(
   const result = await pool.query(
     `update runtime_leases
         set heartbeat_at = now(), expires_at = now() + make_interval(secs => $2)
-      where id = $1 and state = 'active' and expires_at > now()`,
+      where id = $1 and state = 'active'`,
     [leaseId, ttlMs / 1000],
   );
   return (result.rowCount ?? 0) > 0;
@@ -709,7 +708,7 @@ export async function reconcileLeases(
         `update runtime_leases
             set holder_id = $2, heartbeat_at = now(), expires_at = now() + interval '30 minutes',
                 recovery_state = 'none', recovery_reason = null, waiting_for = null, last_error = null
-          where id = $1 and state = 'active' and expires_at > now() returning id`,
+          where id = $1 and state = 'active' returning id`,
         [lease.id, `dispatcher:${process.pid}`],
       );
       if ((adopted.rowCount ?? 0) > 0) {
