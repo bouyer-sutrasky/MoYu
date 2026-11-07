@@ -215,7 +215,7 @@ const server = http.createServer(async (request, response) => {
   } else if (tools.includes('bash') && sleepSeconds > 0 && !longBashAlready && reportedAlready) {
     choice = call('bash', {
       description: 'Matrix fixture: keep the worker turn open',
-      command: `sleep ${sleepSeconds}`,
+      command: `sh -c 'sleep ${sleepSeconds} & sleep ${sleepSeconds} & wait'`,
     });
   } else {
     choice = {
