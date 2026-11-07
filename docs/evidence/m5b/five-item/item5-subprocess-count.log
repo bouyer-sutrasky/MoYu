@@ -1,0 +1,26 @@
+# item5 real subprocess start/stop count
+head=fc5c783b99252588bb4fe55f64435c67724046d7 (pre-commit)
+bridge=3403 pid=2071068 ticket=5f1870af53b4aa3c8a6f1d89bbe79374
+
+method: ps -eo pid,ppid,etime,cmd | awk -v b=<bridge pid> '$2==b' (PPID tree)
+
+== before execution ==
+only bridge pid 2071068, no child
+
+== during execution (ps at pause, matched child) ==
+2076821 2071068 bash -c printf 'PROC-COUNT\n' > PROC-COUNT.md && ... git push ...
+
+paused.evidence.processesBefore (cross-check, same PIDs):
+2076821 bash -c ..., 2076826 git push -u origin ..., 2076827 /usr/bin/ssh -p 443 git@ssh.github.com
+
+== after pause (ps) ==
+(no child rows under bridge)
+processesAfter=[]
+lingeringPids=[]
+stoppedAt=2026-11-07T13:56:46.847Z
+
+== expected vs actual ==
+started execution command processes: expected 1 (bash); actual 1 bash + 2 descendants (git push, ssh) = 3 total
+stopped at pause: expected all; actual 3/3 no child remains
+residual after cleanup: expected 0; actual 0 (ps + lingeringPids)
+verdict: pass (3 started, 3 stopped, 0 residual)
