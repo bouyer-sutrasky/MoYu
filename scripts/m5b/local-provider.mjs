@@ -196,6 +196,48 @@ const server = http.createServer(async (request, response) => {
       message.tool_calls.some((call) => call?.function?.name === 'bash'),
   );
   const sleepSeconds = longTurnSeconds();
+  // Fixture mode for the awaiting_review scenario: the worker runs one script that
+  // pushes its ticket branch and opens a real PR in the test repository, then
+  // reports with that `pr_number`. The runtime claims the PR thread, so the ready
+  // report keeps the ticket open instead of ending it.
+  const openPrFile = process.env.LOCAL_PROVIDER_WORKER_OPEN_PR_FILE;
+  let openPrScript = null;
+  if (openPrFile) {
+    try {
+      const value = fs.readFileSync(openPrFile, 'utf8').trim();
+      if (value) openPrScript = value;
+    } catch {
+      openPrScript = null;
+    }
+  }
+  // The harness opens the PR from the pushed branch (the worker's bash tool has a
+  // short foreground budget), so the report waits briefly for that number.
+  const prNumberFile = process.env.LOCAL_PROVIDER_PR_NUMBER_FILE;
+  const numberFromFile = async () => {
+    if (!prNumberFile) return null;
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      try {
+        const value = fs.readFileSync(prNumberFile, 'utf8').trim();
+        if (/^\d+$/.test(value)) return Number(value);
+      } catch {
+        /* not written yet */
+      }
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 250));
+    }
+    return null;
+  };
+  const prNumberFrom = (messageList) => {
+    for (let index = messageList.length - 1; index >= 0; index -= 1) {
+      const message = messageList[index];
+      if (message.role !== 'tool') continue;
+      const text =
+        typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
+      const match = /PR_NUMBER=(\d+)/.exec(text ?? '');
+      if (match) return Number(match[1]);
+    }
+    return null;
+  };
+
   function call(name, args) {
     return {
       index: 0,
@@ -220,9 +262,22 @@ const server = http.createServer(async (request, response) => {
     tools.includes('orchestrator_report') &&
     turnStart &&
     reportArguments &&
-    !reportedAlready
+    !reportedAlready &&
+    !openPrScript
   ) {
     choice = call('orchestrator_report', JSON.parse(reportArguments));
+  } else if (tools.includes('bash') && openPrScript && !longBashAlready) {
+    choice = call('bash', {
+      description: 'Matrix fixture: push the ticket branch and open a real PR',
+      command: `sh ${openPrScript}`,
+    });
+  } else if (tools.includes('orchestrator_report') && openPrScript && !reportedAlready) {
+    const number = prNumberFrom(messages) ?? (await numberFromFile());
+    choice = call('orchestrator_report', {
+      state: 'ready',
+      summary: 'Lifecycle probe ready for review.',
+      ...(number ? { pr_number: number } : {}),
+    });
   } else if (tools.includes('bash') && sleepSeconds > 0 && !longBashAlready && reportedAlready) {
     choice = call('bash', {
       description: 'Matrix fixture: keep the worker turn open',

@@ -17,7 +17,7 @@
 | 2 | 非 root 与统一资源核算 | **非 root 已补齐 + 同一受管边界内的计量**：anchor/provider/supervisor/dispatcher/api 全部 `m5bmatrix`(995)、PG `postgres`(111)、runtime 与构建测试进程 995，逐 cgroup 读数；4/6/8 GiB 三档与混合真实负载压力**未做** | `item2-boundary-cgroup.log` |
 | 3 | 4／6／8 GiB 预算与宿主余量 | **未做**：6 GiB 调度阈值与弹性上限没有实证 | — |
 | 4 | 准入、迟滞、OOM | **未做**：A/B 执行、C 排队、解除压力后的有界恢复/回收/清错没有实测 | — |
-| 5 | 重启对账及保持暂停／等待／审阅 | **部分**：`paused` 通过（43 字段全同、双 PID 均变、重启后真实 resume 使 `runtime_cursors` 6 → 9）；`running` 两条路径都测了 —— between-steps（最后报告 `waiting`）**通过**（24 字段全同、游标 3 → 3 → 4），被打断回合（报告 `progress`）**不通过**（assignment 重发、状态转 `queued`、重启本身推进游标 2 → 3 且随后投递未再推进）；`waiting_input` 按窄化判据通过（状态/问题/注意力/报告/admission/执行目录保持，`assignmentId` 允许重发，记 `DIFFERS`）；`awaiting_review` 按新判据待取证（需 open PR） | `item5-paused-restart.log`、`item5-running-between-steps-restart.log`、`item5-running-interrupted-turn-restart.log`、`item5-waiting_input-restart.log`、`item5-awaiting_review-attempt.log` |
+| 5 | 重启对账及保持暂停／等待／审阅 | **部分**：`paused` 通过（43 字段全同、双 PID 均变、重启后真实 resume 使 `runtime_cursors` 6 → 9）；`running` 两条路径都测了 —— between-steps（最后报告 `waiting`）**通过**（24 字段全同、游标 3 → 3 → 4），被打断回合（报告 `progress`）**不通过**（assignment 重发、状态转 `queued`、重启本身推进游标 2 → 3 且随后投递未再推进）；`waiting_input` 按窄化判据通过（状态/问题/注意力/报告/admission/执行目录保持，`assignmentId` 允许重发，记 `DIFFERS`）；`awaiting_review` 按新判据**通过**（真实 open PR #6：ready 后投影 `awaiting_review`、`ended: null`，关闭 PR 后转 `closed_unmerged`，PR 未合并、分支已删） | `item5-paused-restart.log`、`item5-running-between-steps-restart.log`、`item5-running-interrupted-turn-restart.log`、`item5-waiting_input-restart.log`、`item5-awaiting_review-attempt.log`、`item5-awaiting_review-pr.log` |
 | 6 | 子进程与聚合 8 GiB 压力 | **未做**：全进程树遍历与孤儿验证、四类服务同切片聚合压力都没有实测 | — |
 | 7 | 状态原因、恢复引导、重试与清错 | **未做**：真实 OOM／重试耗尽／人工恢复／旧错误清除并在重启后保持的闭环没有实测 | — |
 

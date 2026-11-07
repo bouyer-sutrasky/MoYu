@@ -1,0 +1,176 @@
+# item 5 — `awaiting_review` with a real open PR（按新判据）
+
+本文件是一次完整运行的原始输出（`recorded=` 即该次运行）。命令：
+
+```
+source /tmp/m5bmatrix/state.env
+bash scripts/m5b/matrix/item5-awaiting-review.sh
+```
+
+产物：`apps/dispatcher/dist/main.js` sha256
+`0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6`（211968 B）。
+所有服务以 `m5bmatrix`（uid 995）运行。
+
+真实验证路径：真实 owner API 建票 → worker 回合里真实 `git push` 自己的票分支
+（`agent/fix-readme-probe-<ticket>`）→ 由 harness 在**测试仓库** `Bouyer12/m5a-beta-adf10ad9`
+用一个**真实 draft PR** 盖上（标题含 `m5b-matrix-fixture`）→ worker 用
+`orchestrator_report{state:"ready", pr_number:6}` 认领该 PR → runtime 绑 Thread，
+`followsDone` 未成立 → 票保持打开、投影为 `awaiting_review` → 关闭 PR（**不合并**）→ 票转 `closed_unmerged`。
+
+# item 5 — awaiting_review with a real open PR (criterion change accepted by the owner)
+recorded=2026-11-08T03:55:42+08:00
+head=7eb46c783d6cd820a9c8796f4b2d2a056c956bfd
+dispatcher_artifact=0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6 (211968 bytes)
+fixture_repository=Bouyer12/m5a-beta-adf10ad9 (test repository only; never the MoYu repository)
+
+## the worker fixture: push its ticket branch
+script=scripts/m5b/matrix/fixture-open-pr.sh (push only; the PR is opened by the harness)
+open_pr_fixture=/root/src/live-matrix-m5b-a222254fd0d8/scripts/m5b/matrix/fixture-open-pr.sh
+
+## create the ticket through the real owner API
+{
+  "conversationId": "9e29f65e-a2c7-4959-9458-723325d394da",
+  "taskId": "5c241824-406c-45d0-ac15-9c1cb92420fb",
+  "state": "pending_admission",
+  "messageStatus": 202,
+  "clientRequestId": "item5-review-1794081342"
+}
+
+## wait for the ticket
+ticket=f2165eb691ad408c4a96f42a49a708ed
+ticket_name=fix-readme-probe-f2165eb691ad
+ticket_branch=agent/fix-readme-probe-f2165eb691ad
+
+## wait for the worker's push, then open a real draft PR from that branch
+$ gh pr create --repo Bouyer12/m5a-beta-adf10ad9 --head agent/fix-readme-probe-f2165eb691ad --base main --draft
+fixture_pr=6
+{"headRefName":"agent/fix-readme-probe-f2165eb691ad","isDraft":true,"number":6,"state":"OPEN","url":"https://github.com/Bouyer12/m5a-beta-adf10ad9/pull/6"}
+
+## wait for awaiting_review
+runtime_ticket_state=awaiting_review
+## raw ticket snapshot while awaiting review
+{
+  "ticketId": "f2165eb691ad408c4a96f42a49a708ed",
+  "title": "Fix README probe line",
+  "state": "awaiting_review",
+  "question": null,
+  "attentionId": null,
+  "model": {
+    "provider": "local-test",
+    "model": "local-test"
+  },
+  "base": {
+    "repository": "Bouyer12/m5a-beta-adf10ad9",
+    "branch": "main",
+    "commit": "4f4639ceb87693cc00e3c87e8cfa168074141ce0"
+  },
+  "assignmentId": "3ea34fac603a9daf73b078b94b098838",
+  "admission": {
+    "leaseId": "9a5fadfc-7ee0-422c-8318-1b5d3dbb6d88",
+    "fencingToken": "1"
+  },
+  "report": {
+    "state": "ready",
+    "summary": "Lifecycle probe ready for review.",
+    "at": "2026-11-07T19:55:59.722Z"
+  },
+  "mode": "execute",
+  "planRevision": null,
+  "paused": null,
+  "admissionRequired": false,
+  "execution": {
+    "name": "fix-readme-probe-f2165eb691ad",
+    "directory": "/tmp/m5bmatrix/worktrees/m5b/fix-readme-probe-f2165eb691ad",
+    "assignment": ""
+  },
+  "pr": {
+    "number": 6,
+    "url": "https://github.com/Bouyer12/m5a-beta-adf10ad9/pull/6"
+  },
+  "ended": null
+}
+
+## close the fixture PR (never merged) and watch the ticket end
+$ gh pr close 6 --repo Bouyer12/m5a-beta-adf10ad9
+✓ Closed pull request Bouyer12/m5a-beta-adf10ad9#6 (m5b-matrix-fixture: awaiting_review probe)
+runtime_ticket_state_after_close=closed_unmerged
+## raw ticket snapshot after the close
+{
+  "ticketId": "f2165eb691ad408c4a96f42a49a708ed",
+  "title": "Fix README probe line",
+  "state": "closed_unmerged",
+  "question": null,
+  "attentionId": null,
+  "model": {
+    "provider": "local-test",
+    "model": "local-test"
+  },
+  "base": {
+    "repository": "Bouyer12/m5a-beta-adf10ad9",
+    "branch": "main",
+    "commit": "4f4639ceb87693cc00e3c87e8cfa168074141ce0"
+  },
+  "assignmentId": "3ea34fac603a9daf73b078b94b098838",
+  "admission": {
+    "leaseId": "9a5fadfc-7ee0-422c-8318-1b5d3dbb6d88",
+    "fencingToken": "1"
+  },
+  "report": {
+    "state": "ready",
+    "summary": "Lifecycle probe ready for review.",
+    "at": "2026-11-07T19:55:59.722Z"
+  },
+  "mode": "execute",
+  "planRevision": null,
+  "paused": null,
+  "admissionRequired": false,
+  "execution": {
+    "name": "fix-readme-probe-f2165eb691ad",
+    "directory": "/tmp/m5bmatrix/worktrees/m5b/fix-readme-probe-f2165eb691ad",
+    "assignment": ""
+  },
+  "pr": {
+    "number": 6,
+    "url": "https://github.com/Bouyer12/m5a-beta-adf10ad9/pull/6"
+  },
+  "ended": {
+    "at": "2026-11-07T19:56:01.000Z",
+    "by": "executor",
+    "outcome": "closed"
+  }
+}
+
+## the fixture PR as GitHub reports it now
+  state
+  statusCheckRollup
+  title
+  updatedAt
+  url
+
+## the platform task as recorded
+5c241824-406c-45d0-ac15-9c1cb92420fb|awaiting_review|4|f2165eb691ad408c4a96f42a49a708ed
+
+## verdict
+awaiting_review_state=awaiting_review
+state_after_close=closed_unmerged
+fixture_pr=6 fixture_repo=Bouyer12/m5a-beta-adf10ad9
+VERDICT: with a real open PR the ticket projects as awaiting_review, and closing that PR ends it as closed_unmerged. Sub-state passed.
+note: the fixture PR exists only in Bouyer12/m5a-beta-adf10ad9 (the test repository). It was closed without merging; its branch remains on the test repository until pruned.
+
+## 判定
+
+**通过（`awaiting_review` 子状态，按 2026-11-07T19:12Z 裁决的新判据）。**
+
+| 步骤 | 原始证据 |
+| --- | --- |
+| 真实 Web 入口建票 | `new-task` 返回 `taskId`，runtime 建票 `f2165eb691ad408c4a96f42a49a708ed` |
+| 票分支真实推送 | `ticket_branch=agent/fix-readme-probe-f2165eb691ad` |
+| 测试仓库真实 PR | `fixture_pr=6`，`isDraft=true`，标题 `m5b-matrix-fixture: awaiting_review probe` |
+| ready 后票保持打开 | 快照 `"state": "awaiting_review"`、`"report": {"state": "ready"}`、`"pr": {"number": 6, …}`、`"ended": null` |
+| 关闭 PR 后转终态 | `runtime_ticket_state_after_close=closed_unmerged`，快照里 `ended` 记录关闭结果 |
+
+**fixture PR 的最终处置（裁决第 3、4 条）**
+- 本次取证用的 **PR #6**：`gh pr close 6`，**未合并**（`state=CLOSED`），head 分支已删除。
+- 另有一次并发试跑产生的 **PR #5**（同一 fixture、同一测试仓库）：同样**未合并即关闭**，head 分支已删除。
+- 所有 `agent/fix-readme-probe-*` 分支已从测试仓库删除；测试仓库只剩更早轮次留下的分支，
+  本次没有新建任何长期痕迹。**`bouyer-sutrasky/MoYu` 完全未涉及。**

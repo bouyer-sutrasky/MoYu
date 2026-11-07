@@ -167,7 +167,7 @@ start_provider() {
   note "starting the loopback test provider"
   # A stale log or dump owned by another user makes the provider's own writes
   # fail; remove them so the unit always starts with a writable file.
-  rm -f "$PROVIDER_LOG" "$RUN/provider-prompts.jsonl"
+  rm -f "$PROVIDER_LOG" "$RUN/provider-prompts.jsonl" "$RUN/open-pr.txt" "$RUN/pr-number.txt"
   m5b_run systemd-run --unit="${PROV_UNIT%.service}" --slice="$SLICE" \
     --uid="$M5B_MATRIX_USER" --gid="$M5B_MATRIX_GROUP" \
     --property=MemoryMax=512M --property=MemorySwapMax=0 \
@@ -178,6 +178,8 @@ start_provider() {
     --setenv=LOCAL_PROVIDER_WORKER_REPORT_FILE="$RUN/worker-report.json" \
     --setenv=LOCAL_PROVIDER_WORKER_SLEEP_FILE="$RUN/worker-sleep.txt" \
     --setenv=LOCAL_PROVIDER_WORKER_DELAY_FILE="$RUN/worker-delay.txt" \
+    --setenv=LOCAL_PROVIDER_WORKER_OPEN_PR_FILE="$RUN/open-pr.txt" \
+    --setenv=LOCAL_PROVIDER_PR_NUMBER_FILE="$RUN/pr-number.txt" \
     --working-directory="$M5B_MATRIX_ROOT" \
     /usr/bin/node scripts/m5b/local-provider.mjs >/dev/null \
     || fail "could not start the local test provider"
