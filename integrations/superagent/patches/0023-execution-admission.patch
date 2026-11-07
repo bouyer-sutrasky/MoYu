@@ -21,7 +21,7 @@ index 12b62a4..2600465 100644
  | `tests/bridge-branches.spec.ts` | The read-only branch list: the sorted 200 shape and `branches` capability, one page versus pagination, the ten-page `hasMore` cap, repository-scoped `commands.api` paths, a CLI failure as 503, malformed data as 502, and bearer auth |
  | `tests/process-tree.spec.ts` | The harness process tree used as stop evidence: a live child PID and its command, and its disappearance after exit |
 diff --git a/src/app/bridge.ts b/src/app/bridge.ts
-index 0b600f9..09e630d 100644
+index 0b600f9..8f764e5 100644
 --- a/src/app/bridge.ts
 +++ b/src/app/bridge.ts
 @@ -52,7 +52,7 @@ const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost'])
@@ -96,7 +96,36 @@ index 0b600f9..09e630d 100644
      this.log.open()
      this.operations.open()
      try {
-@@ -557,6 +566,7 @@ export class Bridge {
+@@ -518,10 +527,10 @@ export class Bridge {
+       if (previous === undefined) {
+         // A GitHub ticket has no `ticket.linked` to seed its state; emit the initial projection so the platform tracks it.
+         if (github) this.log.append(`ticket-state:${ticket.id}:${ticket.updatedAt}:${state}`, 'ticket.state_changed', ticket.updatedAt,
+-          { ticketId: ticket.id, previousState: null, state, ...ticket.attention ? { question: ticket.attention.question } : {}, at: ticket.updatedAt })
++          { ticketId: ticket.id, previousState: null, state, ...this.identity(ticket), ...ticket.attention ? { question: ticket.attention.question } : {}, at: ticket.updatedAt })
+       } else if (previous !== state) {
+         this.log.append(`ticket-state:${ticket.id}:${ticket.updatedAt}:${state}`, 'ticket.state_changed', ticket.updatedAt,
+-          { ticketId: ticket.id, previousState: previous, state, ...ticket.attention ? { question: ticket.attention.question } : {}, at: ticket.updatedAt })
++          { ticketId: ticket.id, previousState: previous, state, ...this.identity(ticket), ...ticket.attention ? { question: ticket.attention.question } : {}, at: ticket.updatedAt })
+       }
+       if (ticket.ended) this.log.append(`ticket-ended:${ticket.id}`, 'ticket.ended', ticket.ended.at,
+         { ticketId: ticket.id, by: ticket.ended.by, outcome: ticket.ended.outcome, ...ticket.ended.reason ? { reason: ticket.ended.reason } : {} })
+@@ -533,6 +542,15 @@ export class Bridge {
+    * base. The platform deduplicates by `(repository, 'github', externalId)` and binds the Ticket by `upstream_ticket_id`, so
+    * the deterministic id keeps a restart or a repeated projection tick from importing it twice.
+    */
++  private identity(ticket: Ticket): Record<string, string | null> {
++    return {
++      repository: ticket.base?.repository ?? this.host.deployment.repository,
++      assignmentId: latestAssignment(ticket)?.id ?? null,
++      leaseId: ticket.admission?.leaseId ?? null,
++      fencingToken: ticket.admission?.fencingToken ?? null,
++    }
++  }
++
+   private importTicket(ticket: Ticket, origin: Trigger | undefined): void {
+     const githubInput = ticket.inputs
+       .filter(input => input.kind === 'trigger')
+@@ -557,6 +575,7 @@ export class Bridge {
        url,
        title: ticket.title,
        state: projectTicketState(ticket),
@@ -104,7 +133,7 @@ index 0b600f9..09e630d 100644
        triggerId: identity?.id ?? ticket.origin.triggerId,
        text: identity?.text ?? '',
        base: { branch: ticket.base?.branch ?? '', commit: ticket.base?.commit ?? '', model: modelLabel(ticket.model) },
-@@ -612,6 +622,7 @@ export class Bridge {
+@@ -612,6 +631,7 @@ export class Bridge {
          if (action === 'resume') return await this.resumeOperation(req, res, ticketId)
          if (action === 'start') return await this.startOperation(req, res, ticketId)
          if (action === 'retry') return await this.retryOperation(req, res, ticketId)
@@ -112,7 +141,7 @@ index 0b600f9..09e630d 100644
        }
        return json(res, 404, { error: 'Unknown operation' })
      } catch (error) {
-@@ -628,7 +639,7 @@ export class Bridge {
+@@ -628,7 +648,7 @@ export class Bridge {
        protocolVersion: PROTOCOL_VERSION,
        upstream: { ...UPSTREAM },
        capabilities: { trigger: true, events: true, tickets: true, models: true, branches: true, pause: true, resume: true, retry: true,
@@ -121,7 +150,7 @@ index 0b600f9..09e630d 100644
        source: { kind: 'workspace', enabled: this.host.workspaceEnabled() },
      })
    }
-@@ -782,6 +793,7 @@ export class Bridge {
+@@ -782,6 +802,7 @@ export class Bridge {
    /** `POST /bridge/v1/tickets/:id/start`: an owner-approved plan revision moves the discuss Ticket to execute. */
    private async startOperation(req: IncomingMessage, res: ServerResponse, ticketId: string): Promise<void> {
      const body = StartSchema.parse(await readJson(req))
@@ -129,7 +158,7 @@ index 0b600f9..09e630d 100644
      const ticket = this.host.store.tickets.get(ticketId)
      if (!ticket) return json(res, 404, { error: 'Ticket not found' })
      if (ticket.ended) return json(res, 409, { error: 'ticket_ended', code: 'ticketEnded' })
-@@ -796,7 +808,8 @@ export class Bridge {
+@@ -796,7 +817,8 @@ export class Bridge {
      this.operations.append({ operationId: body.operationId, ticketId, kind: 'start', state: 'queued', updatedAt: new Date().toISOString(),
        baseline: this.baseline(ticket) })
      try {
@@ -139,7 +168,7 @@ index 0b600f9..09e630d 100644
        return this.accepted(res, this.operations.get(body.operationId)!)
      } catch (error) {
        this.operations.update(body.operationId, { state: 'failed', error: errorText(error) }, new Date().toISOString())
-@@ -804,16 +817,34 @@ export class Bridge {
+@@ -804,16 +826,34 @@ export class Bridge {
      }
    }
  
@@ -175,7 +204,7 @@ index 0b600f9..09e630d 100644
        return this.accepted(res, this.operations.get(body.operationId)!)
      } catch (error) {
        this.operations.update(body.operationId, { state: 'failed', error: errorText(error) }, new Date().toISOString())
-@@ -936,6 +967,9 @@ export class Bridge {
+@@ -936,6 +976,9 @@ export class Bridge {
  
    private async triggers(req: IncomingMessage, res: ServerResponse): Promise<void> {
      const request = TriggerRequestSchema.parse(await readJson(req))
@@ -185,7 +214,7 @@ index 0b600f9..09e630d 100644
      if (!this.host.configured()) return json(res, 503, { error: 'The runtime is not ready' })
      const deployment = this.host.deployment
      if (request.executionSpec.repository !== deployment.repository) {
-@@ -1029,6 +1063,7 @@ export class Bridge {
+@@ -1029,6 +1072,7 @@ export class Bridge {
        mode: ticket.mode ?? 'execute',
        planRevision: ticket.planRevision ?? null,
        paused: ticket.paused ?? null,
