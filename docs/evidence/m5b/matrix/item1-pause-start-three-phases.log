@@ -106,3 +106,41 @@ API 没有在参数校验层拒绝，而是把字符串 `"undefined"` 直接送�
 ## 未测
 两种入口顺序（GitHub→Web、Web→GitHub）：等待测试仓库把 `sutrasky` 加为协作者；本次尝试邀请**失败**，
 见报告（GitHub API 返回 422 `Cannot assign sutrasky permission of read`，agent token 的 scope 是 `read:org, repo`）。
+
+## 追加：GitHub source 已指向探测仓库 `bouyer-sutrasky/m4-github-probe`（方案 3）
+
+按 2026-11-07T21:43Z 的裁决执行。改动只发生在**暂存的矩阵实例**
+（`DSH_HOME=/tmp/m5bmatrix/dsh-home`），共享 profile 未动。全部通过面板 API 完成
+（需要 `Host` + `x-orchestrator-request: 1` + 同源 `Origin`）：
+
+```
+$ PUT /orchestrator/api/settings/source:github   {"value": {…, "repository": "bouyer-sutrasky/m4-github-probe"}, "revision": 1}
+{'saved': True, 'revision': 2, 'policy_changed': False, 'restarting': True, 'context_delivery': 'pending'}
+
+$ PUT /orchestrator/api/settings/policy          {"value": {… "sources": {"github": {"allowed": [{"id": "sutrasky"}]}}}, "revision": 1}
+{'saved': True, 'revision': 1, 'policy_changed': False, 'restarting': False}
+
+$ GET /orchestrator/api/settings
+after: {"repository": "bouyer-sutrasky/m4-github-probe", "cli": "/root/.local/bin/gh-agent", "pollSeconds": 60, "observeIssues": true, "observePulls": true, "observeComments": true, "observeCi": false}
+allowed after: ['sutrasky']
+```
+
+轮询确认（runtime 重启后）：
+
+```
+$ curl http://127.0.0.1:3403/healthz
+{"ok":true,"configured":true}
+
+kv 中的游标（都在 21:43-21:44 之后）：
+  github-since          "2026-11-07T21:44:05.262Z"
+  github-retry          {}                                  ← 没有失败的轮询
+  github-stream:issues  {"since":"2026-11-07T21:43:15.933Z", …}
+  github-stream:comments{"since":"2026-11-07T21:43:15.933Z", …}
+
+$ gh api repos/bouyer-sutrasky/m4-github-probe --jq .permissions
+{"admin":true,"maintain":true,"pull":true,"push":true,"triage":true}   ← agent 账号可读该 public 仓库
+```
+
+也就是说：**探测仓库已指好**，游标落后于当前时间，`sutrasky` 在该仓库里留下的下一条评论会落进轮询窗口，
+且不会命中 `sameName(item.user.login, login) → continue`（发言者不是 agent 账号）。
+栈保持运行，等那条评论到达后即可测 GitHub→Web。
