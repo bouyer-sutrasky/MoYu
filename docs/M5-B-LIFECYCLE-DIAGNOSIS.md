@@ -56,3 +56,16 @@
 - 缺口根因：DSH Jobs 只暴露 job id，不暴露进程归属；共享 harness 进程树不能作为 A 的边界。
   需要每 Ticket/Assignment 的受管进程边界（cgroup/pid namespace）或可持久对账的 job 终止
   事件，才能把“已清空”写成权威证明。否则只能保守占用名额。
+
+## 跨存储准入断点证据（2026-11-07）
+
+外部隔离回归（jd-mc，`tests/moyu-http-replay.spec.ts`，SHA256 `3da58493f6d142c65127208a9dacb51ad4afef21da1b195abb35f408941393a4`）：
+真实 Bridge HTTP + SQLite，首次 admit 已提交后断响应并重开 Store。旧实现对错误代次也返回 200；050b84d 返回 422。一个 Assignment、一个持久 launch effect，重放不改变 generation。Ticket save 后、DshExecutor 入队前注入异常时，pending Ticket/fence/launch effect 一起回滚。
+
+平台侧 PostgreSQL 断点（本仓库 `apps/dispatcher/test/integration/reservations.integration.test.ts`）：
+- `keeps one reserved identity across a lost Bridge response before claim`
+- 断言同一 requestKey 的 reservation 保持 `reserved`、行数 1、身份/代次不变，重试返回原行，claim 恰好一次。
+- 命令：`TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm --filter @moyu/dispatcher test:integration -- reservations`
+- 结果：dispatcher 集成 54/54。
+
+边界：两次存储不在同一事务；平台保留租约与 reservation 作为恢复依据，Bridge 的 SQLite 负责其本地 Assignment/launch effect。尚未跑真实 dispatcher 重启 + event sync。

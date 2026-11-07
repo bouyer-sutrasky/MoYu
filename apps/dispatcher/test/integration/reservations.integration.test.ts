@@ -66,6 +66,28 @@ describe('execution reservation on real PostgreSQL', () => {
     fencingToken,
   });
 
+  it('keeps one reserved identity across a lost Bridge response before claim', async () => {
+    const key2 = `lost-response-${process.pid}`;
+    const first = await reserveExecution(db.pool, { ...input(), requestKey: key2 });
+    // The Bridge has persisted/started, but the platform never reaches claim.
+    const reread = await readReservation(db.pool, repository.id, key2);
+    expect(reread).toMatchObject({
+      assignmentId: 'assignment-1',
+      leaseId,
+      fencingToken: token,
+      state: 'reserved',
+    });
+    const retry = await reserveExecution(db.pool, { ...input(), requestKey: key2 });
+    expect(retry.id).toBe(first.id);
+    const rows = await db.pool.query<{ count: number }>(
+      `select count(*)::int as count from execution_reservations where repository_id = $1 and request_key = $2`,
+      [repository.id, key2],
+    );
+    expect(rows.rows[0]?.count).toBe(1);
+    const claim = await claimExecution(db.pool, { ...input(), requestKey: key2 });
+    expect(claim).toMatchObject({ claimed: true, id: first.id });
+  });
+
   it('replays the same reservation, rejects identity and stale-fence changes, and claims once', async () => {
     const first = await reserveExecution(db.pool, input());
     const replay = await reserveExecution(db.pool, input());
