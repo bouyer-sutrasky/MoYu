@@ -168,6 +168,44 @@ async function applyTaskEvent(
 
   if (event.type === 'ticket.state_changed') {
     const question = asString(data.question);
+    const assignmentId = asString(data.assignmentId);
+    const leaseId = asString(data.leaseId);
+    const fencingToken = asString(data.fencingToken);
+    if (assignmentId && leaseId && fencingToken) {
+      const reservation = await client.query<{
+        assignment_id: string;
+        lease_id: string;
+        fencing_token: string;
+        state: string;
+      }>(
+        `select assignment_id, lease_id, fencing_token, state
+           from execution_reservations
+          where repository_id = $1 and request_key = $2`,
+        [repository.id, `admit:${existing.id}`],
+      );
+      const reserved = reservation.rows[0];
+      if (
+        reserved &&
+        reserved.state === 'reserved' &&
+        (reserved.assignment_id !== assignmentId ||
+          reserved.lease_id !== leaseId ||
+          String(reserved.fencing_token) !== fencingToken)
+      ) {
+        // A late event from another generation must not project queued/running
+        // over a stopped task or advance its state; keep the projection and
+        // record the mismatch, while still consuming the event cursor.
+        await client.query(
+          `update task_links
+              set stop_evidence = coalesce(stop_evidence, '{}'::jsonb) || $2::jsonb,
+                  last_event_seq = greatest(coalesce(last_event_seq, 0), $3),
+                  version = version + 1,
+                  updated_at = now()
+            where id = $1`,
+          [existing.id, JSON.stringify({ admissionProjection: 'stale_generation' }), event.seq],
+        );
+        return;
+      }
+    }
     const updated = await client.query(
       `update task_links
           set state = $2,

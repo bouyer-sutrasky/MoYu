@@ -84,3 +84,9 @@
 - 回归已收录：`recovery-positive`、`recovery-race`、`recovery-review-{catch,clear,idempotent,multi-repository,ordered-fairness,repeat-catch}`。
 - 命令：`TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm --filter @moyu/dispatcher test:integration`；6 个恢复文件 12/12。
 - 仍待：完整 Bridge admission lease/fence 权威证明、真实两库/dispatcher 重启、真实子进程启动数。cursor 为进程内状态，重启后从头部开始但会轮转。
+
+## 晚到错代事件投影（2026-11-07）
+
+- ticket.state_changed 携带身份且与 reserved identity 不一致时，只推进 last_event_seq 并合并 `admissionProjection: stale_generation`，不修改 task.state/不覆盖停止证明。
+- 外部真实 HTTP/SQLite+PG 回归 `tests/moyu-review-b79a13b-stale-projection.spec.ts` 由红转绿（1/1）。
+- 仍待：真实 pause/子进程、旧 producer 升级、两库 dispatcher 重启与启动计数。
