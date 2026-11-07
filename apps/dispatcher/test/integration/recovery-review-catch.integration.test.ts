@@ -1,12 +1,7 @@
 import { recoverReservedTasks } from '../../src/sync';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { acquireExecutionLease } from '../../src/leases';
-import {
-  claimExecution,
-  readReservation,
-  reconcileExecutionClaimOn,
-  reserveExecution,
-} from '../../src/reservations';
+import { reserveExecution } from '../../src/reservations';
 import type { RepositoryBinding } from '../../src/runtime';
 import { createTestDatabase, type TestDatabase } from './helpers';
 
