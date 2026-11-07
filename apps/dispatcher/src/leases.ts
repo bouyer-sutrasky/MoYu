@@ -145,15 +145,17 @@ async function acquireOn(
   ttlMs: number,
 ): Promise<LeaseAccount> {
   const holderId = deriveHolderId(subject);
-  const active = await client.query<LeaseRow>(
-    `select ${LEASE_COLUMNS} from runtime_leases
+  const active = await client.query<LeaseRow & { expired: boolean }>(
+    `select ${LEASE_COLUMNS}, (expires_at <= now()) as expired from runtime_leases
       where repository_id = $1 and state = 'active'
       for update`,
     [repositoryId],
   );
   const current = active.rows[0];
   if (current) {
-    const expired = current.expires_at.getTime() <= Date.now();
+    // Compare against the database clock in the same statement that locks the
+    // row: a JS `Date.now()` can disagree with the `now()` that writes expiry.
+    const expired = current.expired;
     if (!expired) {
       if (current.holder_id === holderId) {
         const renewed = await client.query<LeaseRow>(
@@ -296,22 +298,6 @@ export async function acquireExecutionLeaseOn(
   ttlMs: number,
 ): Promise<LeaseAccount> {
   return acquireOn(client, repositoryId, subject, ttlMs);
-}
-
-export async function renewExecutionLease(
-  pool: pg.Pool,
-  leaseId: string,
-  ttlMs: number,
-): Promise<boolean> {
-  // An expired generation is fenced: it may only be replaced after a recorded
-  // stop proof, never revived by a late heartbeat/renewal.
-  const result = await pool.query(
-    `update runtime_leases
-        set heartbeat_at = now(), expires_at = now() + make_interval(secs => $2)
-      where id = $1 and state = 'active' and expires_at > now()`,
-    [leaseId, ttlMs / 1000],
-  );
-  return (result.rowCount ?? 0) > 0;
 }
 
 /** Releases a live lease. Only a proven-safe or voluntarily finished execution may call this. */
@@ -704,8 +690,12 @@ export async function reconcileLeases(
       continue;
     }
     if (RUNNING_RUNTIME_STATES.has(snapshot.state)) {
-      // The same task is still executing under this generation. Adopt it
-      // instead of killing work or issuing a replacement generation.
+      // Intentional exemption: the runtime's authoritative snapshot confirms the
+      // same generation is still running, so extending its expiry keeps an
+      // execution that never stopped. It is not a late renewal after loss of
+      // authority; every other state keeps the generation fenced until a stop
+      // proof exists. The expired+idle regression in leases.integration.test.ts
+      // pins this boundary.
       const adopted = await pool.query(
         `update runtime_leases
             set holder_id = $2, heartbeat_at = now(), expires_at = now() + interval '30 minutes',

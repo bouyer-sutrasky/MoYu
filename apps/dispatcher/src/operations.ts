@@ -809,23 +809,29 @@ export async function maintainLeases(
        from runtime_leases l
       where t.runtime_lease_id = l.id and l.state <> 'active'`,
   );
-  // Live admissions are renewed; expiry alone never frees the slot.
+  // A live admission is renewed, but an expired generation is not revived by a
+  // heartbeat: expiry fences the generation until reconcileLeases either adopts
+  // it from an authoritative `running` snapshot or requires a stop proof. The
+  // guard must be here, in the production maintenance path; a helper without
+  // callers cannot prove production behavior.
   await pool.query(
     `update runtime_leases l
         set heartbeat_at = now(), expires_at = now() + make_interval(secs => $2)
       from task_links t
      where t.runtime_lease_id = l.id and l.state = 'active'
        and l.repository_id = $1
+       and (l.expires_at is null or l.expires_at > now())
        and t.state::text in (${ACTIVE_EXECUTION_STATES.map((_, index) => `$${index + 3}`).join(', ')})`,
     [repository.id, config.operationLeaseTtlMs / 1000, ...ACTIVE_EXECUTION_STATES],
   );
   // Launch leases carry no task yet. Keep them alive while their delivery is
-  // still in flight, and leave the rest to expiry + recovery.
+  // still in flight, and leave expired generations to expiry + recovery.
   await pool.query(
     `update runtime_leases l
         set heartbeat_at = now(), expires_at = now() + make_interval(secs => $2)
        from deliveries d
       where d.runtime_lease_id = l.id and l.state = 'active'
+        and (l.expires_at is null or l.expires_at > now())
         and l.repository_id = $1 and d.state in ('pending', 'delivering')`,
     [repository.id, config.operationLeaseTtlMs / 1000],
   );

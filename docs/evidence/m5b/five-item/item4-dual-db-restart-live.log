@@ -58,7 +58,7 @@ PostgreSQL (same isolated DB; values as json_build_object snapshots)
 | task.stopped_at / stop_evidence | null / {} | null / {} | identical |
 | delivery workspace:e2e-launch-3 | delivered, attempt 1, lease b177c126.../2000000000001 | same | identical |
 | delivery workspace:e2e-replay-1 | delivered, attempt 2, lease 3d626c99.../2000000000002, delivered_at 22:59:06.662204+08 | same | identical |
-| active lease | 3d626c99-e624-4d8c-9911-7e051013d381 / 2000000000002 / active | same | identical (expiry heartbeated, generation unchanged) |
+| active lease | 3d626c99-e624-4d8c-9911-7e051013d381 / 2000000000002 / active | same | generation/fence identical; expires_at was extended because this generation was still live (renewable), not because an expired one was revived |
 | released lease | b177c126-e945-4b75-9f05-dd7ce0662f80 / 2000000000001 / released | same | identical |
 | runtime_cursors.cursor | 100 | 100 immediately after restart; 102 after the post-restart delivery below | advances |
 
@@ -78,30 +78,46 @@ A post-restart message was delivered through the same dispatcher:
 Bridge events consumed in the advance: 101 task.progress, 102 message.read
 (triggerId=workspace:e2e-postrestart-1).
 
-## Expired lease refuses renewal (red -> green, real PostgreSQL)
+## Expired lease refuses renewal on the production maintenance path (red -> green, real PostgreSQL)
 
 test=apps/dispatcher/test/integration/leases.integration.test.ts
-      "refuses to renew an expired lease and keeps its generation fenced"
+      "does not renew an expired lease on an active task and requires a stop proof"
+      "adopts an expired lease only when the runtime confirms the same generation running"
 command:
   TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
     corepack pnpm --filter @moyu/dispatcher exec vitest run \
-    test/integration/leases.integration.test.ts -t "refuses to renew an expired lease" --reporter=verbose
+    test/integration/leases.integration.test.ts --reporter=verbose
 
-red before fix (base head 3278fb0):
-  × refuses to renew an expired lease and keeps its generation fenced 23ms
-    → expected true to be false // Object.is equality
-  Tests 1 failed | 4 skipped (5)
+This calls `maintainLeases` (the 5-second production loop at dispatcher.ts:121), not an
+unused helper. The fixture has an active lease bound to a task in `running` and moves
+`expires_at` into the past.
 
-green after fix:
-  ✓ refuses to renew an expired lease and keeps its generation fenced 18ms
-  Tests 1 passed | 4 skipped (5)
+red before the operations.ts guard:
+  × does not renew an expired lease on an active task and requires a stop proof
+    AssertionError: expected '2026-11-07T16:29:47.503Z' to be '2026-11-07T15:29:46.500Z'
+    (the maintenance heartbeat extended the expired lease by an hour)
+  Tests 1 failed | 5 skipped (6)
 
-The test asserts: a live renewal succeeds; after `expires_at` is moved into the past,
-`renewExecutionLease` returns false and leaves `expires_at` and `state='active'` untouched;
-the same holder's `acquireExecutionLease` returns refused=stop_proof_required and the row's
-expiry is still not extended. The fix adds `and expires_at > now()` only to the explicit
-renewal statement; the maintenance queries in operations.ts keep their documented
-"expiry alone never frees the slot" semantics.
+green after the guard:
+  ✓ does not renew an expired lease on an active task and requires a stop proof 25ms
+  ✓ adopts an expired lease only when the runtime confirms the same generation running 15ms
+  Tests 2 passed | 4 skipped (6)
+
+The first test asserts `expires_at` is unchanged, state stays `active`, and the lease is
+`recovery_state='blocked'` waiting for `execution_stop_proof` after an idle snapshot. The
+second pins the intentional exemption: when the Bridge authoritatively reports the same
+generation `running`, `reconcileLeases` adopts it, extends expiry and records an `adopted`
+event; an expired generation with no such confirmation is never revived.
+
+Code scope:
+- operations.ts `maintainLeases`: both renewal statements now require
+  `(expires_at is null or expires_at > now())`; expired generations fall through to
+  reconcileLeases.
+- leases.ts `acquireOn`: expiration is read as `(expires_at <= now())` in the same locking
+  statement, so the lock check uses the database clock that writes expiry, not `Date.now()`.
+- leases.ts `reconcileLeases`: the `running` adopt branch is documented as the intentional
+  continuation exemption; all other/unknown states stay fenced.
+- `renewExecutionLease` was deleted: it had no production call site.
 
 ## Verdict
 
