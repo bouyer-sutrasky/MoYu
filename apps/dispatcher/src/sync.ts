@@ -12,6 +12,9 @@ import { endedState, stateFromSnapshot, TASK_COLUMNS, taskSummary, type TaskRow 
 import { pauseEvidenceProblem, pauseEvidenceProven } from './pause-evidence';
 import { acquireExecutionLeaseOn } from './leases';
 
+/** Last projection branch per Bridge event, for lifecycle diagnostics/tests. */
+export const projectionBranches = new Map<string, string>();
+
 interface ProjectedTask {
   task: TaskRow;
 }
@@ -82,6 +85,10 @@ async function emit(
   });
 }
 
+function traceBranch(eventId: string, branch: string): void {
+  projectionBranches.set(eventId, branch);
+}
+
 async function applyTaskEvent(
   client: pg.PoolClient,
   repository: RepositoryBinding,
@@ -91,6 +98,7 @@ async function applyTaskEvent(
   const data = asRecord(event.data);
   const ticketId = asString(data.ticketId);
   if (!ticketId) {
+    traceBranch(event.id, 'return-no-ticket-id');
     logger.warn(
       { event: 'bridge.event_invalid', bridgeEvent: event.id },
       'ticket event had no ticketId',
@@ -102,6 +110,7 @@ async function applyTaskEvent(
     ? await taskByConversation(client, conversationId, repository.id)
     : await taskByTicket(client, ticketId, repository.id);
   if (!existing) {
+    traceBranch(event.id, 'return-task-missing');
     // The run may not have linked the ticket yet; a later ticket.linked event
     // carries the conversation. Dropping the projection is safer than
     // inventing a task row.
@@ -172,6 +181,17 @@ async function applyTaskEvent(
     const leaseId = asString(data.leaseId);
     const fencingToken = asString(data.fencingToken);
     if (assignmentId && leaseId && fencingToken) {
+      const active = await client.query<{ id: string; fencing_token: string }>(
+        `select id, fencing_token from runtime_leases
+          where repository_id = $1 and state = 'active'
+          order by fencing_token desc limit 1`,
+        [repository.id],
+      );
+      const activeLease = active.rows[0];
+      const currentGeneration =
+        activeLease !== undefined &&
+        activeLease.id === leaseId &&
+        String(activeLease.fencing_token) === fencingToken;
       const reservation = await client.query<{
         assignment_id: string;
         lease_id: string;
@@ -185,6 +205,7 @@ async function applyTaskEvent(
       );
       const reserved = reservation.rows[0];
       if (
+        !currentGeneration &&
         reserved &&
         (reserved.assignment_id !== assignmentId ||
           reserved.lease_id !== leaseId ||
@@ -202,6 +223,7 @@ async function applyTaskEvent(
             where id = $1`,
           [existing.id, JSON.stringify({ admissionProjection: 'stale_generation' }), event.seq],
         );
+        traceBranch(event.id, 'return-stale-generation');
         return;
       }
     }
@@ -225,7 +247,7 @@ async function applyTaskEvent(
     }
     const updated = await client.query(
       `update task_links
-          set state = $2,
+          set state = case when state in ('stopped', 'stopping') then state else $2 end,
               question = $3::text,
               question_message_id = case when $3::text is null then null else question_message_id end,
               last_event_seq = greatest(coalesce(last_event_seq, 0), $4),
@@ -235,8 +257,10 @@ async function applyTaskEvent(
       [existing.id, target, question, event.seq],
     );
     if ((updated.rowCount ?? 0) === 0) {
+      traceBranch(event.id, 'return-stale-cursor');
       return;
     }
+    traceBranch(event.id, 'projected');
     next = await taskByTicket(client, ticketId, repository.id);
     if (next) {
       if (next.state === 'queued' || next.state === 'running') {

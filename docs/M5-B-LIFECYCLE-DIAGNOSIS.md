@@ -91,3 +91,11 @@
 - 即使身份一致，stopped/paused 任务也不会被 queued/running 状态事件重新激活；只记 `stale_state` 并推进游标。
 - 外部真实 HTTP/SQLite+PG 回归 `tests/moyu-review-b79a13b-stale-projection.spec.ts` 由红转绿（1/1）。
 - 仍待：真实 pause/子进程、旧 producer 升级、两库 dispatcher 重启与启动计数。
+
+## 新代次与暂停投影分支（2026-11-07）
+
+- 事件身份先与当前 active lease/fence 比对；当前代次即使历史 reservation 不同也允许投影。
+- 投影 UPDATE 使用 `CASE WHEN state IN ('stopped','stopping') THEN state ELSE $2 END`，在暂停事务提交后仍保持停止态；SQL 谓词不得出现 `'paused'`（不是 task_state 枚举值）。
+- `projectionBranches` 记录每事件分支：`return-no-ticket-id`、`return-task-missing`、`return-stale-generation`、`return-stale-cursor`、`projected`。
+- 回归：`apps/dispatcher/test/integration/recovery-projection-branches.integration.test.ts`（2/2）。
+- 外部真实 HTTP/PG：`tests/moyu-review-cedcb82-current-projection.spec.ts` 与 `...pid-barrier-1039.spec.ts` 4/4。
