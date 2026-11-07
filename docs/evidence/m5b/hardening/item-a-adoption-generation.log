@@ -1,0 +1,26 @@
+# item A — 过期旧租约不得被跨代次 adopt
+recorded=2026-11-07T16:22:24Z
+defect: reconcileLeases 只要 snapshot.state 属于 queued/discussing/running/starting 就把已过期租约延长 30 分钟，
+        未校验 snapshot.admission 是否等于本代次 → 另一代次（或没有 admission）时旧代次被复活。
+
+command: TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres corepack pnpm --filter @moyu/dispatcher exec vitest run test/integration/leases.integration.test.ts --reporter=verbose
+red 复现：先用 `git show 54b4b0d -- apps/dispatcher/src/leases.ts | git apply -R` 移出源码守卫（保留测试），再跑上面命令。
+
+## Red（守卫移出）  exit=1
+   × test/integration/leases.integration.test.ts > repository execution lease on real PostgreSQL > does not adopt an expired lease when the runtime reports a different admission 20ms
+   × test/integration/leases.integration.test.ts > repository execution lease on real PostgreSQL > does not adopt an expired lease when the runtime reports no admission 13ms
+  ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+   Test Files  1 failed (1)
+        Tests  2 failed | 6 passed (8)
+
+## Green（守卫就位）  exit=0
+   Test Files  1 passed (1)
+        Tests  8 passed (8)
+
+## 最终确认（含复审后新增护栏）  exit=0
+   Test Files  2 passed (2)
+        Tests  11 passed (11)
+
+## 判定
+过期代次不再被延长：state 保持 active、recovery_state=blocked、waiting_for=execution_stop_proof，且不产生 adopted 事件。
+代价（已知且有意）：运行时若从不返回 admission，过期但仍在跑的租约将一直 blocked、占住槽位，不复活、不杀进程。

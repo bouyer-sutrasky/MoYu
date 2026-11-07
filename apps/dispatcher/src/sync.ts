@@ -211,13 +211,19 @@ async function applyTaskEvent(
         [repository.id, `admit:${existing.id}`],
       );
       const reserved = reservation.rows[0];
-      if (
-        !currentGeneration &&
-        reserved &&
+      // Only queued/running advance a task. A generation that is not the current
+      // live one may never promote it, whatever the reservation says: a matching
+      // reservation records what was once admitted, not what is live now. This
+      // covers an expired, superseded or released lease alike, and it leaves
+      // de-escalating events (stopped/completed) free to project.
+      const eventTarget = stateOf(data.state);
+      const promotes = eventTarget === 'queued' || eventTarget === 'running';
+      const reservationMismatch =
+        reserved !== undefined &&
         (reserved.assignment_id !== assignmentId ||
           reserved.lease_id !== leaseId ||
-          String(reserved.fencing_token) !== fencingToken)
-      ) {
+          String(reserved.fencing_token) !== fencingToken);
+      if (!currentGeneration && (promotes || reservationMismatch)) {
         // A late event from another generation must not project queued/running
         // over a stopped task or advance its state; keep the projection and
         // record the mismatch, while still consuming the event cursor.

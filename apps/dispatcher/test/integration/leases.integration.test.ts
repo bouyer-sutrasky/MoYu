@@ -194,7 +194,13 @@ describe('repository execution lease on real PostgreSQL', () => {
       testDatabase.pool,
       config,
       repository,
-      bridgeWith({ state: 'running' }),
+      bridgeWith({
+        state: 'running',
+        admission: {
+          leaseId: first.lease!.id,
+          fencingToken: String(first.lease!.fencingToken),
+        },
+      }),
       logger,
     );
 
@@ -219,6 +225,96 @@ describe('repository execution lease on real PostgreSQL', () => {
       [first.lease!.id],
     );
     expect(events.rows[0]?.type).toBe('adopted');
+  });
+
+  it('does not adopt an expired lease when the runtime reports a different admission', async () => {
+    const running = await seedTask('running');
+    const first = await acquireExecutionLease(
+      testDatabase.pool,
+      repository.id,
+      { taskId: running.taskId },
+      60_000,
+    );
+    expect(first.lease).not.toBeNull();
+    await testDatabase.pool.query(
+      `update runtime_leases set expires_at = now() - interval '1 second' where id = $1`,
+      [first.lease!.id],
+    );
+    const expired = await testDatabase.pool.query<{ expires_at: Date }>(
+      `select expires_at from runtime_leases where id = $1`,
+      [first.lease!.id],
+    );
+
+    // The runtime says running, but under a different lease id and a higher
+    // fence: this generation was superseded and must not be revived.
+    await maintainLeases(
+      testDatabase.pool,
+      config,
+      repository,
+      bridgeWith({
+        state: 'running',
+        admission: {
+          leaseId: '00000000-0000-4000-8000-000000000000',
+          fencingToken: '9007199254740993',
+        },
+      }),
+      logger,
+    );
+
+    const after = await testDatabase.pool.query<{
+      expires_at: Date;
+      state: string;
+      recovery_state: string;
+      waiting_for: string | null;
+    }>(
+      `select expires_at, state, recovery_state, waiting_for
+         from runtime_leases where id = $1`,
+      [first.lease!.id],
+    );
+    expect(after.rows[0]!.expires_at.toISOString()).toBe(expired.rows[0]!.expires_at.toISOString());
+    expect(after.rows[0]!.state).toBe('active');
+    expect(after.rows[0]!.recovery_state).toBe('blocked');
+    expect(after.rows[0]!.waiting_for).toBe('execution_stop_proof');
+    const events = await testDatabase.pool.query<{ type: string }>(
+      `select type from runtime_lease_events where lease_id = $1`,
+      [first.lease!.id],
+    );
+    expect(events.rows.map((row) => row.type)).not.toContain('adopted');
+  });
+
+  it('does not adopt an expired lease when the runtime reports no admission', async () => {
+    const running = await seedTask('running');
+    const first = await acquireExecutionLease(
+      testDatabase.pool,
+      repository.id,
+      { taskId: running.taskId },
+      60_000,
+    );
+    expect(first.lease).not.toBeNull();
+    await testDatabase.pool.query(
+      `update runtime_leases set expires_at = now() - interval '1 second' where id = $1`,
+      [first.lease!.id],
+    );
+    const expired = await testDatabase.pool.query<{ expires_at: Date }>(
+      `select expires_at from runtime_leases where id = $1`,
+      [first.lease!.id],
+    );
+
+    // Without an admission the runtime cannot prove which generation it runs.
+    await maintainLeases(
+      testDatabase.pool,
+      config,
+      repository,
+      bridgeWith({ state: 'running' }),
+      logger,
+    );
+
+    const after = await testDatabase.pool.query<{
+      expires_at: Date;
+      recovery_state: string;
+    }>(`select expires_at, recovery_state from runtime_leases where id = $1`, [first.lease!.id]);
+    expect(after.rows[0]!.expires_at.toISOString()).toBe(expired.rows[0]!.expires_at.toISOString());
+    expect(after.rows[0]!.recovery_state).toBe('blocked');
   });
 
   it('refuses a replacement until the old execution is proven stopped, then fences a new generation', async () => {
@@ -248,7 +344,18 @@ describe('repository execution lease on real PostgreSQL', () => {
 
     // The same running ticket is adopted under its original generation: no
     // second execution is started and no stop is fabricated.
-    await reconcileLeases(testDatabase.pool, repository, bridgeWith({ state: 'running' }), logger);
+    await reconcileLeases(
+      testDatabase.pool,
+      repository,
+      bridgeWith({
+        state: 'running',
+        admission: {
+          leaseId: first.lease!.id,
+          fencingToken: String(first.lease!.fencingToken),
+        },
+      }),
+      logger,
+    );
     const adopted = await testDatabase.pool.query<{ holder_id: string; state: string }>(
       `select holder_id, state from runtime_leases where id = $1`,
       [first.lease!.id],

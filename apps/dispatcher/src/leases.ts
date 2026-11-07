@@ -582,8 +582,14 @@ export async function receiptIsCurrent(
 /**
  * Reconciles an expired lease with the runtime.
  *
- * - A still-running ticket is adopted under the same fencing generation; no new
- *   execution is started and no second worker can appear.
+ * - A still-running ticket is adopted only when the runtime reports the SAME
+ *   generation, i.e. `snapshot.admission.leaseId` equals this lease id and the
+ *   fencing token matches. No new execution is started and no second worker can
+ *   appear. A different admission, or no admission at all, means the runtime
+ *   cannot prove this generation is the live one, so the lease stays blocked.
+ *   Deliberate tradeoff: a runtime build that never reports an admission will
+ *   block on every expired-but-running lease instead of reviving it. Safety wins
+ *   here; the slot is held, nothing is killed, and the stop proof path applies.
  * - An idle/stopped snapshot or pause evidence is not a supervisor stop proof;
  *   the lease stays active/blocked until a supervisor-owned cgroup proof for
  *   the exact old generation exists.
@@ -690,12 +696,30 @@ export async function reconcileLeases(
       continue;
     }
     if (RUNNING_RUNTIME_STATES.has(snapshot.state)) {
-      // Intentional exemption: the runtime's authoritative snapshot confirms the
-      // same generation is still running, so extending its expiry keeps an
-      // execution that never stopped. It is not a late renewal after loss of
-      // authority; every other state keeps the generation fenced until a stop
-      // proof exists. The expired+idle regression in leases.integration.test.ts
-      // pins this boundary.
+      // The runtime reporting a live state is not enough: the generation must
+      // still be the one the runtime accepted. A snapshot carrying a different
+      // lease id or fencing token means another generation owns the ticket, and
+      // a snapshot carrying no admission cannot prove this generation at all.
+      // Either way the expired generation stays fenced instead of being
+      // extended, so a late heartbeat can never revive a superseded lease.
+      const admission = snapshot.admission;
+      const sameGeneration =
+        admission !== null &&
+        admission !== undefined &&
+        admission.leaseId === lease.id &&
+        String(admission.fencingToken) === String(lease.fencing_token);
+      if (!sameGeneration) {
+        await markRecoveryBlocked(
+          pool,
+          repository.id,
+          lease,
+          admission
+            ? `The runtime is running under a different admission (${admission.leaseId}/${String(admission.fencingToken)})`
+            : 'The runtime reported no admission, so this generation cannot be proven current',
+          'execution_stop_proof',
+        );
+        continue;
+      }
       const adopted = await pool.query(
         `update runtime_leases
             set holder_id = $2, heartbeat_at = now(), expires_at = now() + interval '30 minutes',
