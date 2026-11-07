@@ -389,7 +389,7 @@ index b55ccfd..ab90a82 100644
      get(id: string): Decision | undefined
      save(decision: Decision): void
 diff --git a/src/core/tickets.ts b/src/core/tickets.ts
-index 35f257e..9178401 100644
+index 35f257e..12db123 100644
 --- a/src/core/tickets.ts
 +++ b/src/core/tickets.ts
 @@ -56,16 +56,37 @@ export class Tickets extends EnginePart {
@@ -531,7 +531,7 @@ index 35f257e..9178401 100644
      this.endAssignment(ticket, running, reason)
      this.requeueUntaken(ticket, running)
      const assignment = this.newAssignment(ticket)
-@@ -505,12 +551,80 @@ export class Tickets extends EnginePart {
+@@ -505,12 +551,87 @@ export class Tickets extends EnginePart {
      return report?.state !== 'ready' || ticket.undelivered.length > 0 || later
    }
    /** Add a pending Assignment; a failed delivery to the one before it no longer concerns the ticket. */
@@ -592,12 +592,19 @@ index 35f257e..9178401 100644
 +    const ticket = this.require(ticketId)
 +    if (!liveTicket(ticket)) throw new UserError('ticketEnded')
 +    if (ticket.paused) throw new UserError('ticketPaused')
-+    if (!ticket.admissionRequired) return ticket
-+    this.acceptAdmission(ticket, admission)
++    // Validate the reserved identity before any durable fence change: a rejected
++    // cross-Ticket id must not advance this Ticket's admission generation.
 +    if (assignmentId && this.repo.tickets.list().some(other => other.id !== ticket.id
 +      && other.assignments.some(item => item.id === assignmentId))) {
 +      throw new UserError('unknownAssignment', { assignmentId })
 +    }
++    if (!ticket.admissionRequired) {
++      if (assignmentId && latestAssignment(ticket)?.id !== assignmentId) {
++        throw new UserError('unknownAssignment', { assignmentId })
++      }
++      return ticket
++    }
++    this.acceptAdmission(ticket, admission)
 +    const latest = latestAssignment(ticket)
 +    if (latest && latest.state !== 'ended') {
 +      this.endAssignment(ticket, latest, 'replaced')
@@ -930,10 +937,10 @@ index e7ed695..48f1e6f 100644
    /** Sessions: prompt revisions each Session has worked under, ordered oldest first; the last entry (`.at(-1)`) is its active revision. */
 diff --git a/tests/admission.spec.ts b/tests/admission.spec.ts
 new file mode 100644
-index 0000000..4654d36
+index 0000000..e909b1e
 --- /dev/null
 +++ b/tests/admission.spec.ts
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,187 @@
 +import { describe, expect, it, vi } from 'vitest'
 +import { projectTicketState } from '../src/app/bridge.ts'
 +import { Engine, MemoryRepositories, latestAssignment, type Assessor, type Candidate, type Executor, type Outbox, type Policy, type Ticket, type Trigger } from '../src/core/index.ts'
@@ -1075,6 +1082,29 @@ index 0000000..4654d36
 +    h.engine.admitTicket(ticket.id, admission(7), 'reserved-assignment')
 +    expect(latestAssignment(h.repo.tickets.get(ticket.id)!)?.id).toBe('reserved-assignment')
 +    expect(h.starts).toHaveLength(1)
++  })
++
++  it('rejects a cross-ticket reserved id before writing the fence', () => {
++    const h = harness()
++    const other = h.accept(wsTrigger('workspace:1', 1))
++    h.engine.assignmentStarted(other.id, latestAssignment(other)!.id)
++    const pending = h.accept(githubTrigger())
++    const fence = h.repo.admission.fence()
++    const starts = h.starts.length
++    expect(() => h.engine.admitTicket(pending.id, admission(9), latestAssignment(other)!.id)).toThrow(/Unknown assignment/)
++    expect(h.repo.admission.fence()).toEqual(fence)
++    expect(h.starts).toHaveLength(starts)
++    expect(h.repo.tickets.get(pending.id)?.admissionRequired).toBe(true)
++  })
++
++  it('rejects a wrong reserved id on an already-admitted ticket without changing it', () => {
++    const h = harness()
++    const ticket = h.accept(githubTrigger())
++    h.engine.admitTicket(ticket.id, admission(7), 'reserved-assignment')
++    const starts = h.starts.length
++    expect(() => h.engine.admitTicket(ticket.id, admission(7), 'other-assignment')).toThrow(/Unknown assignment/)
++    expect(h.starts).toHaveLength(starts)
++    expect(latestAssignment(h.repo.tickets.get(ticket.id)!)?.id).toBe('reserved-assignment')
 +  })
 +
 +  it('rejects a reserved assignment id owned by another ticket before starting', () => {
