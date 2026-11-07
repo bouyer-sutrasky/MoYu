@@ -145,3 +145,10 @@ verdict: DIFFERS
 在本 fixture 下不成立；这是被观测到的行为，不判定为通过。
 
 字段数 24 少于 paused 的 43，因为本快照没有 `paused` 对象（未暂停）。
+
+## 判据窄化后的结论（所有者 2026-11-07T19:12Z 裁决）
+
+所有者的裁决：该缺陷成立但本轮不改代码（上游补丁 0024 另单跟踪），M5-B 该子项的验收判据窄化为
+「重启后 `state` / `question` / `attention` / 报告 / admission / 执行目录保持；`assignmentId` 允许被上游重发，
+并记录 `verdict: DIFFERS` 与原因」。按此判据，本次运行**通过**：上面已逐项给出保持的字段，
+`assignmentId` 变化与原因（被中断的回合按 `assignments.ts` 的 `interrupted()` 重发）也已记录。

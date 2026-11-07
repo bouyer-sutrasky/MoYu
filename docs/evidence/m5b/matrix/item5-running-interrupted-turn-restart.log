@@ -1,0 +1,206 @@
+# item 5 — running 票（回合被打断、报告 progress）：重启对账未通过
+
+本文件是一次完整运行的原始输出（`recorded=` 时间戳即该次运行）。命令：
+
+```
+source /tmp/m5bmatrix/state.env
+bash scripts/m5b/matrix/item5-restart.sh running
+```
+
+产物：`apps/dispatcher/dist/main.js` sha256
+`0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6`（211968 B）。
+矩阵栈全部服务以 `m5bmatrix`（uid 995）运行，与 item 2 同一身份；测试仓库
+`Bouyer12/m5a-beta-adf10ad9`；跑完即 `stack.sh down`。
+
+# item 5 — restart reconciliation in state: running
+recorded=2026-11-08T03:18:53+08:00
+head=03f418362c376beed2cd6320fc6075a2f021706a
+dispatcher_artifact=0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6 (211968 bytes)
+slice=0 procs directly in slice
+
+## worker report fixture
+{"state":"progress","summary":"Lifecycle probe is running."}
+turn_delay_ms=0
+
+## create and drive the ticket through the real owner API
+{
+  "conversationId": "0545dad7-e039-4ab2-959f-df7dab6d39c6",
+  "taskId": "764fd2f3-3969-449e-83f3-7b2babae6ea3",
+  "state": "pending_admission",
+  "messageStatus": 202,
+  "clientRequestId": "item5-running-1794079133"
+}
+
+## wait for the runtime to accept the task
+ticket=c40f3e209e8bd4778e0938643da7c192 task_state=queued
+
+## wait for the target runtime state
+platform task state: running  (waited for running)
+
+## runtime_cursors BEFORE the restart
+$ psql "$DATABASE_URL" -c "select repository_id, cursor, updated_at from runtime_cursors"
+            repository_id             | cursor |          updated_at           
+--------------------------------------+--------+-------------------------------
+ 6c42e65a-a035-4db1-96d1-78e7909c9417 |      2 | 2026-11-08 03:19:01.972185+08
+(1 row)
+
+cursor_before_restart=2
+
+## snapshot before the restart
+{
+  "status": 200,
+  "body": {
+    "ticketId": "c40f3e209e8bd4778e0938643da7c192",
+    "title": "Fix README probe line",
+    "state": "running",
+    "question": null,
+    "attentionId": null,
+    "model": {
+      "provider": "local-test",
+      "model": "local-test"
+    },
+    "base": {
+      "repository": "Bouyer12/m5a-beta-adf10ad9",
+      "branch": "main",
+      "commit": "4f4639ceb87693cc00e3c87e8cfa168074141ce0"
+    },
+    "assignmentId": "8ef579326696c464f88c1cbf02365080",
+    "admission": {
+      "leaseId": "91315404-afed-4350-876c-8749a9a0eb95",
+      "fencingToken": "1"
+    },
+    "report": {
+      "state": "progress",
+      "summary": "Lifecycle probe is running.",
+      "at": "2026-11-07T19:19:01.547Z"
+    },
+    "mode": "execute",
+    "planRevision": null,
+    "paused": null,
+    "admissionRequired": false,
+    "execution": {
+      "name": "fix-readme-probe-c40f3e209e8b",
+      "directory": "/tmp/m5bmatrix/worktrees/m5b/fix-readme-probe-c40f3e209e8b",
+      "assignment": ""
+    },
+    "ended": null
+  }
+}
+task|running|3|c40f3e209e8bd4778e0938643da7c192|91315404-afed-4350-876c-8749a9a0eb95|-
+lease|active|1|-|-
+delivery|1|delivered
+bridge_pid_before=2307751 dispatcher_pid_before=2307903
+
+## restart both stores
+$ kill -TERM <runtime pid> (abrupt restart while the turn waits on the model)
+old bridge pid alive after stop: 0
+$ supervisor wake (fresh runtime process)
+{"data":{"accepted":true,"duplicate":false,"instance":{"repositoryId":"6c42e65a-a035-4db1-96d1-78e7909c9417","fullName":"Bouyer12/m5a-beta-adf10ad9","defaultBranch":"main","state":"sleeping","desiredState":"online","reasonCode":"wake_queued","reasonDetail":null,"waitingFor":"capacity","queuePriority
+bridge_pid_after=2308342
+$ systemctl restart dispatcher
+dispatcher_pid_after=2308728
+bridge restarted: yes
+dispatcher restarted: yes
+
+## restart reconciliation lines from the dispatcher
+Nov 08 03:18:41 lavm-flnape7bgu node[2307903]: {"level":"info","time":"2026-11-07T19:18:41.798Z","service":"moyu-dispatcher","event":"dispatcher.ready","nodeEnv":"test","msg":"dispatcher connected to PostgreSQL"}
+Nov 08 03:19:13 lavm-flnape7bgu node[2308728]: {"level":"info","time":"2026-11-07T19:19:13.111Z","service":"moyu-dispatcher","event":"dispatcher.ready","nodeEnv":"test","msg":"dispatcher connected to PostgreSQL"}
+Nov 08 03:19:13 lavm-flnape7bgu node[2308728]: {"level":"info","time":"2026-11-07T19:19:13.177Z","service":"moyu-dispatcher","event":"reconcile.task","taskId":"764fd2f3-3969-449e-83f3-7b2babae6ea3","previous":"running","state":"queued","contradictory":false,"msg":"reconciled a task with its runtime ticket"}
+
+## snapshot after the restart
+{
+  "status": 200,
+  "body": {
+    "ticketId": "c40f3e209e8bd4778e0938643da7c192",
+    "title": "Fix README probe line",
+    "state": "queued",
+    "question": null,
+    "attentionId": null,
+    "model": {
+      "provider": "local-test",
+      "model": "local-test"
+    },
+    "base": {
+      "repository": "Bouyer12/m5a-beta-adf10ad9",
+      "branch": "main",
+      "commit": "4f4639ceb87693cc00e3c87e8cfa168074141ce0"
+    },
+    "assignmentId": "6eb2d2f8fead9ffb805d621d09e37d3f",
+    "admission": {
+      "leaseId": "91315404-afed-4350-876c-8749a9a0eb95",
+      "fencingToken": "1"
+    },
+    "report": {
+      "state": "progress",
+      "summary": "Lifecycle probe is running.",
+      "at": "2026-11-07T19:19:01.547Z"
+    },
+    "mode": "execute",
+    "planRevision": null,
+    "paused": null,
+    "admissionRequired": false,
+    "execution": {
+      "name": "fix-readme-probe-c40f3e209e8b",
+      "directory": "/tmp/m5bmatrix/worktrees/m5b/fix-readme-probe-c40f3e209e8b",
+      "assignment": ""
+    },
+    "ended": null
+  }
+}
+task|queued|5|c40f3e209e8bd4778e0938643da7c192|91315404-afed-4350-876c-8749a9a0eb95|-
+lease|active|1|-|-
+
+## field-by-field comparison
+field                                            before                                 after
+assignmentId                                     8ef579326696c464f88c1cbf02365080       6eb2d2f8fead9ffb805d621d09e37d3f
+state                                            running                                queued
+
+compared_fields=24 differing=2 material_differences=2
+verdict: DIFFERS
+
+## runtime_cursors AFTER the restart, before any new delivery
+$ psql "$DATABASE_URL" -c "select repository_id, cursor, updated_at from runtime_cursors"
+            repository_id             | cursor |          updated_at           
+--------------------------------------+--------+-------------------------------
+ 6c42e65a-a035-4db1-96d1-78e7909c9417 |      3 | 2026-11-08 03:19:13.200463+08
+(1 row)
+
+cursor_after_restart=3
+
+## a real delivery after the restart (same ticket, real entrance)
+$ POST /bridge/v1/triggers  (real runtime entrance, targetTicketId + current admission)
+{"result": "stored", "triggerId": "workspace:matrix-running-b721af0dba9f", "baseCommit": "4f4639ceb87693cc00e3c87e8cfa168074141ce0", "ticketId": "c40f3e209e8bd4778e0938643da7c192"}
+
+## wait for the cursor to advance after that delivery
+## runtime_cursors AFTER the real delivery
+$ psql "$DATABASE_URL" -c "select repository_id, cursor, updated_at from runtime_cursors"
+            repository_id             | cursor |          updated_at           
+--------------------------------------+--------+-------------------------------
+ 6c42e65a-a035-4db1-96d1-78e7909c9417 |      3 | 2026-11-08 03:19:13.200463+08
+(1 row)
+
+cursor_after_delivery=3
+
+## verdict on the cursor
+cursor_before_restart=2
+cursor_after_restart=3
+cursor_after_delivery=3
+VERDICT: the cursor moved only during the restart (2 -> 3) and not on the new delivery; NOT proven.
+
+## 判定
+
+**不通过（`running` 子状态的另一条路径，如实记录）。**
+
+这张票被重启时**最后一次报告是 `progress`**（worker 在回合中报过进度），不满足上游 settled 判据，
+于是 `assignments.ts` 的 `interrupted()` 走 `restart(ticket, running, 'hostRestarted', RECOVERY_NOTE)`：
+
+- 逐字段比对 `verdict: DIFFERS`：`assignmentId` `8ef5793…` → `6eb2d2f…`，`state` `running` → `queued`；
+- `runtime_cursors`：重启前 **2** → 重启后 **3**（重启本身推进）→ 真实 Bridge 投递后仍是 **3**；
+- 脚本原样判定：`VERDICT: the cursor moved only during the restart (2 -> 3) and not on the new delivery; NOT proven.`
+
+也就是说：**被打断的 `running` 票，重启本身就是一次 assignment 重发，会发出事件并推进游标**，
+「重启不推进 / 新投递才推进」这个区分对它不成立；重启后票还退到 `queued`，
+随后 90 秒内一次真实 Bridge 输入也没有让游标继续推进（两次原始值都是 3，未修饰）。
+
+这条与 A 类缺陷同源（settled 判据只看报告状态词表，不看票实际在等什么），
+是「本轮不改代码、只改判据」的直接后果。

@@ -63,10 +63,23 @@ echo
 # Every scenario keeps the worker's turn open with a real long-running bash call
 # so the ticket is still live when the restart happens; without that a finished
 # turn ends the ticket as completed and there is nothing to reconcile.
-echo 600000 >"$RUN/worker-delay.txt"
 case "$STATE" in
   paused)
+    # Quiescent: the ticket is stopped, so the restart itself must not emit events.
+    echo 600000 >"$RUN/worker-delay.txt"
     printf '%s\n' '{"state":"progress","summary":"Working on the lifecycle probe."}' >"$REPORT_FILE"
+    ;;
+  running)
+    # Between steps: the worker's report is `waiting` while its assignment still
+    # runs, so the ticket is `running` but the turn is not mid-command.
+    echo 0 >"$RUN/worker-delay.txt"
+    printf '%s\n' '{"state":"progress","summary":"Lifecycle probe is running."}' >"$REPORT_FILE"
+    ;;
+  running-live)
+    # Mid-turn: the model request stays in flight, so the host restart interrupts a
+    # live turn (no child process) and the recovery path decides what happens.
+    echo 600000 >"$RUN/worker-delay.txt"
+    printf '%s\n' '{"state":"progress","summary":"Lifecycle probe is mid-turn."}' >"$REPORT_FILE"
     ;;
   waiting_input)
     printf '%s\n' '{"state":"progress","summary":"Need a decision before continuing.","human_action":"Which branch should the probe use?"}' >"$REPORT_FILE"
@@ -78,8 +91,14 @@ case "$STATE" in
     fail "unknown state ${STATE}"
     ;;
 esac
+# The provider runs as the matrix identity, so it must be able to read the
+# fixtures this script writes.
+chown "$M5B_MATRIX_USER:$M5B_MATRIX_GROUP" "$REPORT_FILE" \
+  "$RUN/worker-delay.txt" "$RUN/worker-sleep.txt" 2>/dev/null || true
+chmod 0640 "$REPORT_FILE" "$RUN/worker-delay.txt" "$RUN/worker-sleep.txt" 2>/dev/null || true
 echo "## worker report fixture"
 cat "$REPORT_FILE"
+echo "turn_delay_ms=$(cat "$RUN/worker-delay.txt")"
 echo
 
 echo "## create and drive the ticket through the real owner API"
@@ -103,6 +122,7 @@ echo "## wait for the target runtime state"
 deadline=$(( $(date +%s) + 180 ))
 target=$STATE
 [[ $STATE == paused ]] && target=stopped
+[[ $STATE == running-live ]] && target=running
 while (( $(date +%s) < deadline )); do
   current=$(task_field state)
   [[ $current == "$target" ]] && break
@@ -240,6 +260,38 @@ echo
 
 echo "## a real delivery after the restart (same ticket, real entrance)"
 case "$STATE" in
+  running|running-live)
+    # The platform queues a message delivery while the task holds the repository
+    # execution slot, so for a running ticket the entrance that actually reaches
+    # the runtime is the Bridge trigger route the dispatcher itself uses. It is
+    # signed with the admission this ticket already accepted.
+    echo '$ POST /bridge/v1/triggers  (real runtime entrance, targetTicketId + current admission)'
+    python3 - "$M5B_BRIDGE_URL" "$M5B_BRIDGE_TOKEN" "$ticket" <<'PYRUN'
+import json, sys, urllib.request, uuid, datetime
+url, token, ticket = sys.argv[1], sys.argv[2], sys.argv[3]
+def call(path, body=None):
+    data = None if body is None else json.dumps(body).encode()
+    request = urllib.request.Request(url + path, data=data, method='GET' if body is None else 'POST',
+                                     headers={'authorization': 'Bearer ' + token,
+                                              **({} if body is None else {'content-type': 'application/json'})})
+    return json.load(urllib.request.urlopen(request))
+current = call('/bridge/v1/tickets/' + ticket)
+body = {
+    'triggerId': 'workspace:matrix-running-' + uuid.uuid4().hex[:12],
+    'conversationId': str(uuid.uuid4()),
+    'messageId': str(uuid.uuid4()),
+    'replyToMessageId': None,
+    'actor': {'id': 'm5bmatrix', 'name': 'M5-B matrix'},
+    'text': 'Matrix running restart follow-up.',
+    'at': datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z'),
+    'targetTicketId': ticket,
+    'executionSpec': {'repository': current['base']['repository'], 'baseBranch': current['base']['branch'],
+                      'baseCommit': None, 'model': current['model'], 'mode': 'execute'},
+    'admission': current['admission'],
+}
+print(json.dumps(call('/bridge/v1/triggers', body)))
+PYRUN
+    ;;
   paused)
     echo '$ live.mjs resume --task <id>   (POST /api/v1/tasks/:id/resume)'
     $LIVE resume --task "$M5B_TASK_ID" | head -12
@@ -270,6 +322,11 @@ echo "cursor_after_restart=${CURSOR_AFTER_RESTART}"
 echo "cursor_after_delivery=${CURSOR_AFTER_DELIVERY}"
 if (( CURSOR_AFTER_DELIVERY > CURSOR_AFTER_RESTART )); then
   echo "VERDICT: cursor ${CURSOR_AFTER_RESTART} -> ${CURSOR_AFTER_DELIVERY}; the reconciliation chain still advances after the restart."
+  if (( CURSOR_AFTER_RESTART != CURSOR_BEFORE )); then
+    echo "  note: the cursor also moved during the restart (${CURSOR_BEFORE} -> ${CURSOR_AFTER_RESTART}). For a running ticket that is expected: the"
+    echo "  interrupted assignment is replaced with a recovery note (assignments.ts interrupted() -> restart()), and those"
+    echo "  assignment/ticket events are what the dispatcher ingests. Only a quiescent ticket (paused) can show a restart that emits nothing."
+  fi
 elif (( CURSOR_AFTER_RESTART != CURSOR_BEFORE )); then
   echo "VERDICT: the cursor moved only during the restart (${CURSOR_BEFORE} -> ${CURSOR_AFTER_RESTART}) and not on the new delivery; NOT proven."
 else
