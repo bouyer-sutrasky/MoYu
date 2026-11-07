@@ -174,3 +174,24 @@ note: the fixture PR exists only in Bouyer12/m5a-beta-adf10ad9 (the test reposit
 - 另有一次并发试跑产生的 **PR #5**（同一 fixture、同一测试仓库）：同样**未合并即关闭**，head 分支已删除。
 - 所有 `agent/fix-readme-probe-*` 分支已从测试仓库删除；测试仓库只剩更早轮次留下的分支，
   本次没有新建任何长期痕迹。**`bouyer-sutrasky/MoYu` 完全未涉及。**
+
+## 附注：fixture PR 处置的独立复核（所有者 2026-11-07T20:12Z 要求）
+
+所有者用 `sutrasky` 身份查不到测试仓库，因为它是 **PRIVATE**（只有 agent 账号可见）。
+以下三条命令在同一身份下重跑过，原始输出就是这几行：
+
+```
+$ gh pr view 5 -R Bouyer12/m5a-beta-adf10ad9 --json number,state,mergedAt
+{"mergedAt":null,"number":5,"state":"CLOSED"}
+
+$ gh pr view 6 -R Bouyer12/m5a-beta-adf10ad9 --json number,state,mergedAt
+{"mergedAt":null,"number":6,"state":"CLOSED"}
+
+$ gh api 'repos/Bouyer12/m5a-beta-adf10ad9/branches?per_page=100' --jq '.[].name | select(startswith("agent/fix-readme-probe-"))'
+（空）
+
+$ gh repo view Bouyer12/m5a-beta-adf10ad9 --json visibility,nameWithOwner
+{"nameWithOwner":"Bouyer12/m5a-beta-adf10ad9","visibility":"PRIVATE"}
+```
+
+两个 PR 都是 `state=CLOSED` 且 `mergedAt=null`（未合并），fixture 分支为空，仓库为 PRIVATE。
