@@ -13,7 +13,7 @@
 
 | # | 项 | 本轮结论 | 证据 |
 | --- | --- | --- | --- |
-| 1 | 全入口统一租约、停止后替代 | **未做**：GitHub→Web 与 Web→GitHub 顺序、pause 与 start 三处交错、两个调度者的外部副作用计数都没有实测 | — |
+| 1 | 全入口统一租约、停止后替代 | **部分**：三相位实测 —— c1（start 前 pause）与 c2（start 进行中 pause）**不通过**（票卡 `stopping`、`stoppedAt` 永远 null、平台 `blocked`、resume 被拒、仍持有执行租约），c3（start 后 pause）**通过**（`stoppedAt` 落库、租约归还、resume 接受）；双调度者**通过**（持租约者 delivered=2，另一个 delivered=0 / lease_wait=11）；GitHub→Web **通过**（真实 @ 提及评论 → trigger → decision accept/explicitRouted 10 秒 → ticket → 平台 task，Web API 可见 `source=github`）；Web→GitHub **部分**（唯一外发写入是接受回执 comment 6714588079；Web 追加消息被 Bridge **409** 永久拒绝，未到达 runtime） | `item1-pause-start-three-phases.log`、`item1-entrance-orders.log`、`stress-guard.log` |
 | 2 | 非 root 与统一资源核算 | **非 root 已补齐 + 同一受管边界内的计量**：anchor/provider/supervisor/dispatcher/api 全部 `m5bmatrix`(995)、PG `postgres`(111)、runtime 与构建测试进程 995，逐 cgroup 读数；4/6/8 GiB 三档与混合真实负载压力**未做** | `item2-boundary-cgroup.log` |
 | 3 | 4／6／8 GiB 预算与宿主余量 | **未做**：6 GiB 调度阈值与弹性上限没有实证 | — |
 | 4 | 准入、迟滞、OOM | **未做**：A/B 执行、C 排队、解除压力后的有界恢复/回收/清错没有实测 | — |
