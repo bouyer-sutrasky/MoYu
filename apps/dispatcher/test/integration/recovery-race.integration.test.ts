@@ -96,7 +96,6 @@ describe('execution reservation on real PostgreSQL', () => {
           state: 'queued',
           base: null,
           admission: { leaseId, fencingToken: token },
-          admission: { leaseId, fencingToken: token },
         };
       },
     };
