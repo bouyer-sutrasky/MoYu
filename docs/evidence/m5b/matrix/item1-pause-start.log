@@ -45,3 +45,31 @@ dispatcher_artifact=0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9
 `if (!ticket.paused.stoppedAt) throw new UserError('pauseStopping')` 永远拒绝。
 
 **其余相位与两种入口顺序：本轮未测**，见下面「未测与原因」。
+
+## 未测与原因（本轮结束时的事实，不是猜测）
+
+**两种入口顺序（GitHub→Web、Web→GitHub）：阻塞在「GitHub 入口没有被接入这套矩阵栈」。**
+
+证据（同一次栈运行时采集）：
+
+```
+$ gh issue comment 1 -R Bouyer12/m5a-beta-adf10ad9 --body "M5-B matrix item 1 probe …"
+https://github.com/Bouyer12/m5a-beta-adf10ad9/issues/1#issuecomment-6712798447   ← 评论确实发出去了
+$ wc -l /tmp/m5bmatrix/local-provider.jsonl
+0                                    ← 90 秒内 runtime 一次模型请求都没有
+$ psql … -c "select count(*) from task_links"
+0                                    ← 平台也没有任何任务被导入
+```
+
+也就是说：这条真实评论既没有变成候选、也没有生成票据。栈里的 runtime 只接入了平台 Bridge
+（实例 env 里只有 `MOYU_PLATFORM_URL/TOKEN`、`MOYU_BRIDGE_*`、`MOYU_REQUIRE_ADMISSION`，
+没有 GitHub source 的仓库/轮询配置），`GITHUB_CLI` 虽然指向 agent 的 gh 包装脚本，
+但那只是执行器按需读 PR 用的（`orchestrator_report` 带 `pr_number` 时的 `readPull`），
+**没有一个在轮询仓库的 source 循环**。所以要把「GitHub→Web」测出来，得先给这套栈配置 GitHub source
+（`repository` + `cli` + `observeIssues/observeComments` 等），那是栈配置步骤，不是产品改动。
+
+**c2（start 进行中 pause）、c3（start 完成后 pause）**：未测 —— 第一相位把脚本卡在等待 `running` 的循环里，
+我中止了它，没有可用快照。
+
+**双调度者同争一个仓库（实际启动进程数、实际投递次数）**：未测。第二个 dispatcher 可以在同一切片内启动
+（同 `DATABASE_URL`、`RECONCILE_ON_START=true` 的瞬态单元），但本轮没有跑完计数。
