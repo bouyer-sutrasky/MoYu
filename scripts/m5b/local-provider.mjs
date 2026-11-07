@@ -56,7 +56,9 @@ function routedTriggerId(body) {
   // The candidate card carries `"trigger_id":"..."`; a bare scan would also
   // match the thread key (`workspace:workspace:<conversation>`), so read the
   // field first and fall back to the scan.
-  const cards = [...text.matchAll(/"trigger_id"\s*:\s*"(workspace:[^"]+|github:[0-9]+)"/g)];
+  // The card's value is the trigger's own id: `workspace:…` for the workspace
+  // source, a bare id for GitHub, so accept any value the field carries.
+  const cards = [...text.matchAll(/"trigger_id"\s*:\s*"([^"]+)"/g)];
   if (cards.length > 0) return cards[cards.length - 1][1];
   const matches = [...text.matchAll(/(workspace:[A-Za-z0-9._:-]+|github:[0-9]+)/g)];
   return matches.length > 0 ? matches[matches.length - 1][1] : 'workspace:probe-1';

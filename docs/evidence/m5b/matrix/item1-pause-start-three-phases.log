@@ -144,3 +144,36 @@ $ gh api repos/bouyer-sutrasky/m4-github-probe --jq .permissions
 也就是说：**探测仓库已指好**，游标落后于当前时间，`sutrasky` 在该仓库里留下的下一条评论会落进轮询窗口，
 且不会命中 `sameName(item.user.login, login) → continue`（发言者不是 agent 账号）。
 栈保持运行，等那条评论到达后即可测 GitHub→Web。
+
+## GitHub 入口实测（`bouyer-sutrasky/m4-github-probe` issue #1，两条真实评论）
+
+### 第一条（22:11:13Z，comment 6713686530，未 @ 提及 agent）
+```
+trigger 82a3b10a1157b89088d601393cea6978  source=github actor=sutrasky human=true
+thread  github:1  createdAt=22:11:38.491Z  meta.title="M4 human @ probe"
+eval     cf29f5b3…  basis={"sender":"sutrasky","via":"admission","cell":"listedUnaddressed","row":"comments","kind":"conversation"}
+decision be214a9a…  kind="unavailable" reason=[{"code":"timeout"}] at=22:26:38.898Z
+```
+第一次失败的直接原因：provider 的 `orchestrator_route` 用了 `trigger_id: "github:1"`（线程键）而不是
+`82a3b10a…`（trigger id）—— 我的正则只接受 `workspace:…|github:<数字>`，而 GitHub 的 trigger id 是**裸 32 位十六进制**。
+
+### 第二条（22:41:15Z，comment 6713993704，同样未 @ 提及）
+修好正则后 provider 给出了**正确**的 trigger id：
+```
+RESP tool_calls orchestrator_route {"decisions":[{"kind":"accept","trigger_id":"56470fdeb3ac0bc95bf043cd941f6f5e", …}]}
+```
+但 runtime 明确拒绝了这个 accept，原文（orchestrator session 的 tool/result）：
+```
+{"results":[{"trigger_id":"56470fdeb3ac0bc95bf043cd941f6f5e","kind":"accept",
+ "refused":"An accept through orchestrator_route is for explicit requests from allowed senders;
+            assess proactive candidates with orchestrator_eval and orchestrator_eval_decide"}]}
+```
+随后 `decision eeab961a… kind="unavailable" reason=[{"code":"timeout"}]`（5 分钟评估期限到点）。
+
+**结论（这条对第 1 项很关键）**：GitHub 入口有两条设计好的路径 ——
+1. **被明确点名**（评论里 @ 了 agent，准入单元格为 addressed）→ `orchestrator_route` 的 `accept` 才被允许，直接建票；
+2. **未被点名**（单元格 `listedUnaddressed`，即我这两条）→ 只能走**主动评估**：`orchestrator_eval` + `orchestrator_eval_decide`，
+   `route accept` 会被拒。这是产品规则，不是缺陷。
+
+所以「GitHub→Web」要建票，需要一条**@ 了 agent 的真实请求**；或者按主动评估路径实现 fixture（需要给出完整的
+`rule_assessments`/`direction` 评估内容，属于伪造评估，不做）。
