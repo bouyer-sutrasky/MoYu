@@ -582,8 +582,14 @@ export async function receiptIsCurrent(
 /**
  * Reconciles an expired lease with the runtime.
  *
- * - A still-running ticket is adopted under the same fencing generation; no new
- *   execution is started and no second worker can appear.
+ * - A still-running ticket is adopted only when the runtime reports the SAME
+ *   generation, i.e. `snapshot.admission.leaseId` equals this lease id and the
+ *   fencing token matches. No new execution is started and no second worker can
+ *   appear. A different admission, or no admission at all, means the runtime
+ *   cannot prove this generation is the live one, so the lease stays blocked.
+ *   Deliberate tradeoff: a runtime build that never reports an admission will
+ *   block on every expired-but-running lease instead of reviving it. Safety wins
+ *   here; the slot is held, nothing is killed, and the stop proof path applies.
  * - An idle/stopped snapshot or pause evidence is not a supervisor stop proof;
  *   the lease stays active/blocked until a supervisor-owned cgroup proof for
  *   the exact old generation exists.

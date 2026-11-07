@@ -1,36 +1,32 @@
-# item B — 过期代次不得借匹配 reservation 进入投影
+# item B — 非当前代次不得借匹配 reservation 提升任务状态
+recorded=2026-11-07T16:22:24Z
+defect: applyEvent 只在事件身份与预留“不匹配”时判 stale；恰好匹配历史 claimed 预留时，
+        过期/已释放的 active 租约照样把 queued 改成 running。
 
-recorded=2026-11-07T16:17:09Z
-defect: applyEvent 只在事件身份与预留“不匹配”时判 stale。当事件的 assignment/lease/fence
-        恰好等于历史 claimed 预留时，即使 active 租约已过期也照样投影，queued 被改成 running。
+command: TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres corepack pnpm --filter @moyu/dispatcher exec vitest run test/integration/expired-reservation-projection.integration.test.ts --reporter=verbose
+red 复现：`git show 3b7f1f5 -- apps/dispatcher/src/sync.ts | git apply -R` 后跑上面命令。
 
-## Red（守卫未加）
-command:
-  TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
-    corepack pnpm --filter @moyu/dispatcher exec vitest run \
-    test/integration/expired-reservation-projection.integration.test.ts --reporter=verbose
-output:
+## Red（守卫移出）  exit=1
    × test/integration/expired-reservation-projection.integration.test.ts > an expired generation cannot project through a matching reservation > keeps the task queued when the only matching lease has expired 17ms
      → expected 'running' to be 'queued' // Object.is equality
   ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
    Test Files  1 failed (1)
         Tests  1 failed (1)
 
-## Green（守卫就位）
-output:
+## Green（promotion 守卫）  exit=0
+   ✓ test/integration/recovery-projection-branches.integration.test.ts > event projection generation branch on real PostgreSQL > projects a current-generation running event and records the branch 11ms
+   ✓ test/integration/recovery-projection-branches.integration.test.ts > event projection generation branch on real PostgreSQL > keeps a stopped task and its evidence when a queued event arrives 5ms
+   ✓ test/integration/recovery-projection-branches.integration.test.ts > event projection generation branch on real PostgreSQL > does not project an event from an expired active lease 6ms
    ✓ test/integration/expired-reservation-projection.integration.test.ts > an expired generation cannot project through a matching reservation > keeps the task queued when the only matching lease has expired 8ms
-   Test Files  1 passed (1)
-        Tests  1 passed (1)
+   ✓ test/integration/expired-reservation-projection.integration.test.ts > an expired generation cannot project through a matching reservation > keeps the task queued when the matching lease was already released 4ms
+   ✓ test/integration/expired-reservation-projection.integration.test.ts > an expired generation cannot project through a matching reservation > still projects a de-escalating event from that generation 7ms
+   Test Files  2 passed (2)
+        Tests  6 passed (6)
 
-## 既有投影回归（suite: recovery-projection-branches.integration.test.ts）
-command:
-  TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
-    corepack pnpm --filter @moyu/dispatcher exec vitest run \
-    test/integration/recovery-projection-branches.integration.test.ts --reporter=verbose
-output:
+## 既有投影回归（suite: recovery-projection-branches.integration.test.ts）  exit=0
    Test Files  1 passed (1)
         Tests  3 passed (3)
 
 ## 判定
-过期 active 租约一律判 stale（与预留身份是否吻合无关），task 保持 queued，
-stop_evidence 记录 admissionProjection=stale_generation；未过期的既有流程行为不变。
+非当前代次一律不得把任务提升为 queued/running（无论租约是过期、已释放还是被替代，也无论 reservation 是否吻合）；
+降级类事件（stopped/completed）仍照常投影，避免丢掉真实终态。

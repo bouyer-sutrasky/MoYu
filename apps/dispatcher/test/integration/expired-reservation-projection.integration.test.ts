@@ -95,4 +95,76 @@ describe('an expired generation cannot project through a matching reservation', 
     expect(task.rows[0]?.state).toBe('queued');
     expect(task.rows[0]?.stop_evidence).toMatchObject({ admissionProjection: 'stale_generation' });
   });
+
+  it('keeps the task queued when the matching lease was already released', async () => {
+    // The same hole exists for a lease that moved to released rather than merely
+    // expiring: the reservation and identity still agree, so identity alone must
+    // not promote the task.
+    await db.pool.query(
+      `update runtime_leases set state = 'released', released_at = now() where id = $1`,
+      [leaseId],
+    );
+
+    const event = {
+      id: 'evt-released-reservation',
+      type: 'ticket.state_changed',
+      seq: 11,
+      at: new Date().toISOString(),
+      data: {
+        ticketId: 'ticket-1',
+        state: 'running',
+        assignmentId: 'assignment-1',
+        leaseId,
+        fencingToken: token,
+      },
+    } as unknown as BridgeEvent;
+
+    const client = await db.pool.connect();
+    try {
+      await client.query('begin');
+      await applyEvent(client, repository, event, logger);
+      await client.query('commit');
+    } finally {
+      client.release();
+    }
+
+    const task = await db.pool.query<{ state: string }>(
+      `select state from task_links where id = $1`,
+      [taskId],
+    );
+    expect(task.rows[0]?.state).toBe('queued');
+  });
+
+  it('still projects a de-escalating event from that generation', async () => {
+    // Blocking promotions must not swallow a genuine stop: dropping it would
+    // leave the task stuck with no way to observe the outcome.
+    const event = {
+      id: 'evt-released-stop',
+      type: 'ticket.state_changed',
+      seq: 12,
+      at: new Date().toISOString(),
+      data: {
+        ticketId: 'ticket-1',
+        state: 'stopped',
+        assignmentId: 'assignment-1',
+        leaseId,
+        fencingToken: token,
+      },
+    } as unknown as BridgeEvent;
+
+    const client = await db.pool.connect();
+    try {
+      await client.query('begin');
+      await applyEvent(client, repository, event, logger);
+      await client.query('commit');
+    } finally {
+      client.release();
+    }
+
+    const task = await db.pool.query<{ state: string }>(
+      `select state from task_links where id = $1`,
+      [taskId],
+    );
+    expect(task.rows[0]?.state).toBe('stopped');
+  });
 });

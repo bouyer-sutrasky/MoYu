@@ -211,29 +211,19 @@ async function applyTaskEvent(
         [repository.id, `admit:${existing.id}`],
       );
       const reserved = reservation.rows[0];
-      // A matching reservation only records what was once admitted; it does not
-      // prove the generation is still live. The event's own lease is looked up
-      // only when the generation is already known not to be current, so the
-      // happy path pays no extra query.
-      let eventLeaseExpired = false;
-      if (!currentGeneration) {
-        const eventLease = await client.query<{ state: string; expired: boolean }>(
-          `select state, (expires_at is not null and expires_at <= now()) as expired
-             from runtime_leases where id = $1`,
-          [leaseId],
-        );
-        const eventLeaseRow = eventLease.rows[0];
-        eventLeaseExpired =
-          eventLeaseRow !== undefined && eventLeaseRow.state === 'active' && eventLeaseRow.expired;
-      }
-      if (
-        !currentGeneration &&
-        (eventLeaseExpired ||
-          (reserved !== undefined &&
-            (reserved.assignment_id !== assignmentId ||
-              reserved.lease_id !== leaseId ||
-              String(reserved.fencing_token) !== fencingToken)))
-      ) {
+      // Only queued/running advance a task. A generation that is not the current
+      // live one may never promote it, whatever the reservation says: a matching
+      // reservation records what was once admitted, not what is live now. This
+      // covers an expired, superseded or released lease alike, and it leaves
+      // de-escalating events (stopped/completed) free to project.
+      const eventTarget = stateOf(data.state);
+      const promotes = eventTarget === 'queued' || eventTarget === 'running';
+      const reservationMismatch =
+        reserved !== undefined &&
+        (reserved.assignment_id !== assignmentId ||
+          reserved.lease_id !== leaseId ||
+          String(reserved.fencing_token) !== fencingToken);
+      if (!currentGeneration && (promotes || reservationMismatch)) {
         // A late event from another generation must not project queued/running
         // over a stopped task or advance its state; keep the projection and
         // record the mismatch, while still consuming the event cursor.
