@@ -6,7 +6,7 @@ import type { RuntimeBridgeClient } from '@moyu/runtime-client';
 
 import type { DispatcherConfig } from './config';
 import { appendEventSql } from './events-sql';
-import { acquireExecutionLease, releaseTaskLease } from './leases';
+import { acquireExecutionLease } from './leases';
 import { claimExecution, reserveExecution } from './reservations';
 import type { DispatcherLogger } from './logger';
 import { bridgeErrorMessage, isRetryableBridgeError, type RepositoryBinding } from './runtime';
