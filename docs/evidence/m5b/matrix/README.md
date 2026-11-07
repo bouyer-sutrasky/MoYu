@@ -68,3 +68,12 @@ supervisor 的凭据/env/日志/worktree 目录都搬到了 `/tmp/m5bmatrix`，�
   `stack.sh` 在 `down` 时用 `cgroup.kill` 收掉 runtime 的 instance 子树，避免端口被孤儿进程占住。
 - 日志里的 token 一律 `***`；feishu/生产凭据未进入任何日志。
 - `local-provider` 的 prompt dump 只在 `/tmp/m5bmatrix/provider-prompts.jsonl`，不入库。
+
+## 非 root 运行还需要两样东西
+
+- `prepare-nonroot.sh` 之外，runtime 的 worker 要 clone 私有仓库：该身份在自己的
+  `/home/m5bmatrix/.ssh` 有一份 0600 的 agent 私钥副本与 `known_hosts`（源自 root 的
+  `/root/.ssh/sa_agent2` 与 `ssh-keyscan -p 443 ssh.github.com`），脚本会实测
+  `ssh -T git@ssh.github.com` 输出 `successfully authenticated`。
+- 构建测试进程用 `/opt/moyu-node24`，该目录组只读；不安装/不升级任何包。
+这两项都只给 `m5bmatrix` 组，退役时可用脚本打印的原始 group/mode 回退。

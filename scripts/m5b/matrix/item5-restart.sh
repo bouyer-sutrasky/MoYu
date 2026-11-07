@@ -38,6 +38,20 @@ task_field() {
   m5b_sql "select $1 from task_links where id='$M5B_TASK_ID'"
 }
 
+cursor_raw() {
+  local label=$1
+  echo "## runtime_cursors ${label}"
+  echo '$ psql "$DATABASE_URL" -c "select repository_id, cursor, updated_at from runtime_cursors"'
+  PGPASSWORD= psql "${M5B_MATRIX_PG_URL}" -c \
+    "select repository_id, cursor, updated_at from runtime_cursors"
+}
+
+cursor_value() {
+  PGPASSWORD= psql "${M5B_MATRIX_PG_URL}" -X -q -tA -c \
+    "select coalesce((select cursor from runtime_cursors where repository_id='$M5B_REPOSITORY_ID'), 0)" |
+    tr -d '[:space:]'
+}
+
 echo "# item 5 — restart reconciliation in state: ${STATE}"
 echo "recorded=$(date -Is)"
 echo "head=$(cd "$M5B_MATRIX_ROOT" && git rev-parse HEAD)"
@@ -107,6 +121,11 @@ print(json.load(urllib.request.urlopen(req))['state'])
   sleep 1
 done
 echo "platform task state: $(task_field state)  (waited for ${target})"
+echo
+
+cursor_raw "BEFORE the restart"
+CURSOR_BEFORE=$(cursor_value)
+echo "cursor_before_restart=${CURSOR_BEFORE}"
 echo
 
 echo "## snapshot before the restart"
@@ -212,3 +231,48 @@ print()
 print(f"compared_fields={len(set(b)|set(a))} differing={len(diffs)} material_differences={len(material)}")
 print("verdict:", "identical" if not material else "DIFFERS")
 PY
+echo
+
+cursor_raw "AFTER the restart, before any new delivery"
+CURSOR_AFTER_RESTART=$(cursor_value)
+echo "cursor_after_restart=${CURSOR_AFTER_RESTART}"
+echo
+
+echo "## a real delivery after the restart (same ticket, real entrance)"
+case "$STATE" in
+  paused)
+    echo '$ live.mjs resume --task <id>   (POST /api/v1/tasks/:id/resume)'
+    $LIVE resume --task "$M5B_TASK_ID" | head -12
+    ;;
+  *)
+    echo '$ live.mjs message --conversation <id>   (POST /api/v1/conversations/:id/messages)'
+    $LIVE message --conversation "$(task_field conversation_id)" \
+      --text "Matrix restart follow-up." | head -12
+    ;;
+esac
+echo
+
+echo "## wait for the cursor to advance after that delivery"
+CURSOR_DEADLINE=$(( $(date +%s) + 90 ))
+CURSOR_AFTER_DELIVERY=$CURSOR_AFTER_RESTART
+while (( $(date +%s) < CURSOR_DEADLINE )); do
+  CURSOR_AFTER_DELIVERY=$(cursor_value)
+  (( CURSOR_AFTER_DELIVERY > CURSOR_AFTER_RESTART )) && break
+  sleep 1
+done
+cursor_raw "AFTER the real delivery"
+echo "cursor_after_delivery=${CURSOR_AFTER_DELIVERY}"
+echo
+
+echo "## verdict on the cursor"
+echo "cursor_before_restart=${CURSOR_BEFORE}"
+echo "cursor_after_restart=${CURSOR_AFTER_RESTART}"
+echo "cursor_after_delivery=${CURSOR_AFTER_DELIVERY}"
+if (( CURSOR_AFTER_DELIVERY > CURSOR_AFTER_RESTART )); then
+  echo "VERDICT: cursor ${CURSOR_AFTER_RESTART} -> ${CURSOR_AFTER_DELIVERY}; the reconciliation chain still advances after the restart."
+elif (( CURSOR_AFTER_RESTART != CURSOR_BEFORE )); then
+  echo "VERDICT: the cursor moved only during the restart (${CURSOR_BEFORE} -> ${CURSOR_AFTER_RESTART}) and not on the new delivery; NOT proven."
+else
+  echo "VERDICT: cursor did not advance (${CURSOR_BEFORE} -> ${CURSOR_AFTER_DELIVERY}); the reconciliation chain is NOT proven."
+fi
+

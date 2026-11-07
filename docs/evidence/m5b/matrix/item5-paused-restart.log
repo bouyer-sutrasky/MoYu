@@ -1,9 +1,21 @@
-# item 5 — full restart while the ticket is paused (platform state stopped)
-command: source /tmp/m5bmatrix/state.env && bash scripts/m5b/matrix/item5-restart.sh paused
+# item 5 — paused 票：完整重启 + 重启后游标推进
+
+本文件是一次完整运行的原始输出（`recorded=` 时间戳即该次运行）。命令：
+
+```
+bash scripts/m5b/matrix/stack.sh up            # 非 root 栈，与 item 2 同一身份
+source /tmp/m5bmatrix/state.env
+bash scripts/m5b/matrix/item5-restart.sh paused
+```
+
+被测票：真实 Web 入口建票 → 真实 `POST /api/v1/tasks/:id/stop` 暂停 → 双库完整重启
+（supervisor sleep/wake 换 runtime 进程 + `systemctl restart` dispatcher，脚本在任一 PID
+未变化时直接 FAIL）→ 逐字段比对 → 重启后用真实 `POST /api/v1/tasks/:id/resume` 再投递一次 →
+读 `runtime_cursors`。
 
 # item 5 — restart reconciliation in state: paused
-recorded=2026-11-08T01:16:53+08:00
-head=f2ba6e91e66c964171b6ed9568bc942f5588ede3
+recorded=2026-11-08T02:20:07+08:00
+head=65e094086b7ccf8844c0debd1298dc7f069f0d5f
 dispatcher_artifact=0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6 (211968 bytes)
 slice=0 procs directly in slice
 
@@ -12,25 +24,34 @@ slice=0 procs directly in slice
 
 ## create and drive the ticket through the real owner API
 {
-  "conversationId": "72eecd96-dda4-43ee-9612-b802a6b8cb35",
-  "taskId": "f7103c3f-d188-41ff-aaa6-5988ab757225",
+  "conversationId": "da975a54-1e9c-421a-a90f-622ba62384fa",
+  "taskId": "7a5fc623-316f-466a-aaa2-0de6f18bb440",
   "state": "pending_admission",
   "messageStatus": 202,
-  "clientRequestId": "item5-paused-1794071813"
+  "clientRequestId": "item5-paused-1794075607"
 }
 
 ## wait for the runtime to accept the task
-ticket=d9adc154e9c6f0335116a1cb315a43df task_state=queued
+ticket=3e16abad318561f1d78546250ff5ae15 task_state=queued
 
 ## wait for the target runtime state
 state: running; pausing through the real owner API
 platform task state: stopped  (waited for stopped)
 
+## runtime_cursors BEFORE the restart
+$ psql "$DATABASE_URL" -c "select repository_id, cursor, updated_at from runtime_cursors"
+            repository_id             | cursor |          updated_at           
+--------------------------------------+--------+-------------------------------
+ f1dcf81e-c86e-4392-ba31-516c4b9fa6d9 |      6 | 2026-11-08 02:20:17.585349+08
+(1 row)
+
+cursor_before_restart=6
+
 ## snapshot before the restart
 {
   "status": 200,
   "body": {
-    "ticketId": "d9adc154e9c6f0335116a1cb315a43df",
+    "ticketId": "3e16abad318561f1d78546250ff5ae15",
     "title": "Fix README probe line",
     "state": "stopped",
     "question": null,
@@ -44,91 +65,77 @@ platform task state: stopped  (waited for stopped)
       "branch": "main",
       "commit": "4f4639ceb87693cc00e3c87e8cfa168074141ce0"
     },
-    "assignmentId": "2e28d1e3a353c7110a4fb4f137ee4c64",
+    "assignmentId": "b30dc1ebde42db6442c8f88ef8774a2a",
     "admission": {
-      "leaseId": "945b49a1-58be-481b-aeb8-c42b01e21e7e",
+      "leaseId": "52ee4454-de6f-4e97-947a-6425c2052474",
       "fencingToken": "1"
     },
     "report": {
-      "state": "progress",
-      "summary": "Working on the lifecycle probe.",
-      "at": "2026-11-07T17:17:07.938Z"
+      "state": "waiting",
+      "summary": "Deterministic local provider response.",
+      "at": "2026-11-07T18:20:14.714Z"
     },
     "mode": "execute",
     "planRevision": null,
     "paused": {
-      "at": "2026-11-07T17:17:09.366Z",
+      "at": "2026-11-07T18:20:17.072Z",
       "by": "human",
-      "operationId": "8353085c-1313-45ee-a392-cf0b5eefb44a",
-      "stoppedAt": "2026-11-07T17:17:09.423Z",
+      "operationId": "c262ff0f-3d46-4f1b-baa7-d94e520c25c7",
+      "stoppedAt": "2026-11-07T18:20:17.097Z",
       "evidence": {
-        "ticketId": "d9adc154e9c6f0335116a1cb315a43df",
-        "assignmentId": "2e28d1e3a353c7110a4fb4f137ee4c64",
-        "operationId": "8353085c-1313-45ee-a392-cf0b5eefb44a",
-        "sessionId": "worker-d9adc154e9c6f0335116a1cb315a43df",
-        "harnessPid": 2219861,
-        "cgroup": "/m5bmatrix.slice/instances/m5b-1794071796629",
-        "startedAt": "2026-11-07T17:17:09.369Z",
-        "stoppedAt": "2026-11-07T17:17:09.415Z",
+        "ticketId": "3e16abad318561f1d78546250ff5ae15",
+        "assignmentId": "b30dc1ebde42db6442c8f88ef8774a2a",
+        "operationId": "c262ff0f-3d46-4f1b-baa7-d94e520c25c7",
+        "sessionId": "worker-3e16abad318561f1d78546250ff5ae15",
+        "harnessPid": 2272364,
+        "cgroup": "/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-1794075579798",
+        "startedAt": "2026-11-07T18:20:17.076Z",
+        "stoppedAt": "2026-11-07T18:20:17.090Z",
         "agentStatus": "idle",
-        "jobsBefore": [
-          {
-            "id": "bash-c816f8a1f60f4443",
-            "name": "sleep 240"
-          }
-        ],
+        "jobsBefore": [],
         "jobsAfter": [],
         "subagentsAfter": 0,
-        "processesBefore": [
-          {
-            "pid": 2220484,
-            "ppid": 2219861,
-            "command": "sleep 240"
-          }
-        ],
+        "processesBefore": [],
         "processesAfter": [],
         "lingeringPids": [],
-        "cancelledTurn": true
+        "cancelledTurn": false
       }
     },
     "admissionRequired": false,
     "execution": {
-      "name": "fix-readme-probe-d9adc154e9c6",
-      "directory": "/root/.dsh-m5/worktrees/m5b/fix-readme-probe-d9adc154e9c6",
+      "name": "fix-readme-probe-3e16abad3185",
+      "directory": "/tmp/m5bmatrix/worktrees/m5b/fix-readme-probe-3e16abad3185",
       "assignment": ""
     },
     "ended": null
   }
 }
-task|stopped|7|d9adc154e9c6f0335116a1cb315a43df|945b49a1-58be-481b-aeb8-c42b01e21e7e|2026-11-08 01:17:09.423+08
+task|stopped|7|3e16abad318561f1d78546250ff5ae15|52ee4454-de6f-4e97-947a-6425c2052474|2026-11-08 02:20:17.097+08
 lease|active|1|-|-
-ERROR:  function string_agg(delivery_state, unknown) does not exist
-LINE 1: select 'delivery', count(*), string_agg(state, ',') from del...
-                                     ^
-HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
-bridge_pid_before=2219861 dispatcher_pid_before=2220073
+delivery|1|delivered
+bridge_pid_before=2272364 dispatcher_pid_before=2272518
 
 ## restart both stores
-$ supervisor sleep (graceful runtime stop)
-{"data":{"accepted":true,"duplicate":false,"instance":{"repositoryId":"1e154e3d-c103-4e56-b18d-e5a2547a4ea9","fullName":"Bouyer12/m5a-beta-adf10ad9","defaultBranch":"main","state":"sleeping","desiredState":"sleeping","reasonCode":"sleeping","reasonDetail":null,"waitingFor":null,"queuePriority":20,"w
+$ supervisor sleep --manual (graceful runtime stop with stop proof)
+{"data":{"accepted":true,"duplicate":false,"instance":{"repositoryId":"f1dcf81e-c86e-4392-ba31-516c4b9fa6d9","fullName":"Bouyer12/m5a-beta-adf10ad9","defaultBranch":"main","state":"sleeping","desiredState":"sleeping","reasonCode":"sleeping","reasonDetail":null,"waitingFor":null,"queuePriority":20,"w
 old bridge pid alive after stop: 0
 $ supervisor wake (fresh runtime process)
-{"data":{"accepted":true,"duplicate":false,"instance":{"repositoryId":"1e154e3d-c103-4e56-b18d-e5a2547a4ea9","fullName":"Bouyer12/m5a-beta-adf10ad9","defaultBranch":"main","state":"sleeping","desiredState":"online","reasonCode":"wake_queued","reasonDetail":null,"waitingFor":"capacity","queuePriority
-bridge_pid_after=2220585
+{"data":{"accepted":true,"duplicate":false,"instance":{"repositoryId":"f1dcf81e-c86e-4392-ba31-516c4b9fa6d9","fullName":"Bouyer12/m5a-beta-adf10ad9","defaultBranch":"main","state":"sleeping","desiredState":"online","reasonCode":"wake_queued","reasonDetail":null,"waitingFor":"capacity","queuePriority
+bridge_pid_after=2272861
 $ systemctl restart dispatcher
-dispatcher_pid_after=2220768
+dispatcher_pid_after=2272953
 bridge restarted: yes
 dispatcher restarted: yes
 
 ## restart reconciliation lines from the dispatcher
-Nov 08 01:16:45 lavm-flnape7bgu node[2220073]: {"level":"info","time":"2026-11-07T17:16:45.674Z","service":"moyu-dispatcher","event":"dispatcher.ready","nodeEnv":"test","msg":"dispatcher connected to PostgreSQL"}
-Nov 08 01:17:19 lavm-flnape7bgu node[2220768]: {"level":"info","time":"2026-11-07T17:17:19.046Z","service":"moyu-dispatcher","event":"dispatcher.ready","nodeEnv":"test","msg":"dispatcher connected to PostgreSQL"}
+Nov 08 02:19:50 lavm-flnape7bgu node[2272518]: {"level":"info","time":"2026-11-07T18:19:50.365Z","service":"moyu-dispatcher","event":"dispatcher.ready","nodeEnv":"test","msg":"dispatcher connected to PostgreSQL"}
+Nov 08 02:20:25 lavm-flnape7bgu node[2272953]: {"level":"info","time":"2026-11-07T18:20:25.943Z","service":"moyu-dispatcher","event":"dispatcher.ready","nodeEnv":"test","msg":"dispatcher connected to PostgreSQL"}
 
 ## snapshot after the restart
 {
   "status": 200,
   "body": {
-    "ticketId": "d9adc154e9c6f0335116a1cb315a43df",
+    "ticketId": "3e16abad318561f1d78546250ff5ae15",
     "title": "Fix README probe line",
     "state": "stopped",
     "question": null,
@@ -142,63 +149,52 @@ Nov 08 01:17:19 lavm-flnape7bgu node[2220768]: {"level":"info","time":"2026-11-0
       "branch": "main",
       "commit": "4f4639ceb87693cc00e3c87e8cfa168074141ce0"
     },
-    "assignmentId": "2e28d1e3a353c7110a4fb4f137ee4c64",
+    "assignmentId": "b30dc1ebde42db6442c8f88ef8774a2a",
     "admission": {
-      "leaseId": "945b49a1-58be-481b-aeb8-c42b01e21e7e",
+      "leaseId": "52ee4454-de6f-4e97-947a-6425c2052474",
       "fencingToken": "1"
     },
     "report": {
-      "state": "progress",
-      "summary": "Working on the lifecycle probe.",
-      "at": "2026-11-07T17:17:07.938Z"
+      "state": "waiting",
+      "summary": "Deterministic local provider response.",
+      "at": "2026-11-07T18:20:14.714Z"
     },
     "mode": "execute",
     "planRevision": null,
     "paused": {
-      "at": "2026-11-07T17:17:09.366Z",
+      "at": "2026-11-07T18:20:17.072Z",
       "by": "human",
-      "operationId": "8353085c-1313-45ee-a392-cf0b5eefb44a",
-      "stoppedAt": "2026-11-07T17:17:09.423Z",
+      "operationId": "c262ff0f-3d46-4f1b-baa7-d94e520c25c7",
+      "stoppedAt": "2026-11-07T18:20:17.097Z",
       "evidence": {
-        "ticketId": "d9adc154e9c6f0335116a1cb315a43df",
-        "assignmentId": "2e28d1e3a353c7110a4fb4f137ee4c64",
-        "operationId": "8353085c-1313-45ee-a392-cf0b5eefb44a",
-        "sessionId": "worker-d9adc154e9c6f0335116a1cb315a43df",
-        "harnessPid": 2219861,
-        "cgroup": "/m5bmatrix.slice/instances/m5b-1794071796629",
-        "startedAt": "2026-11-07T17:17:09.369Z",
-        "stoppedAt": "2026-11-07T17:17:09.415Z",
+        "ticketId": "3e16abad318561f1d78546250ff5ae15",
+        "assignmentId": "b30dc1ebde42db6442c8f88ef8774a2a",
+        "operationId": "c262ff0f-3d46-4f1b-baa7-d94e520c25c7",
+        "sessionId": "worker-3e16abad318561f1d78546250ff5ae15",
+        "harnessPid": 2272364,
+        "cgroup": "/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-1794075579798",
+        "startedAt": "2026-11-07T18:20:17.076Z",
+        "stoppedAt": "2026-11-07T18:20:17.090Z",
         "agentStatus": "idle",
-        "jobsBefore": [
-          {
-            "id": "bash-c816f8a1f60f4443",
-            "name": "sleep 240"
-          }
-        ],
+        "jobsBefore": [],
         "jobsAfter": [],
         "subagentsAfter": 0,
-        "processesBefore": [
-          {
-            "pid": 2220484,
-            "ppid": 2219861,
-            "command": "sleep 240"
-          }
-        ],
+        "processesBefore": [],
         "processesAfter": [],
         "lingeringPids": [],
-        "cancelledTurn": true
+        "cancelledTurn": false
       }
     },
     "admissionRequired": false,
     "execution": {
-      "name": "fix-readme-probe-d9adc154e9c6",
-      "directory": "/root/.dsh-m5/worktrees/m5b/fix-readme-probe-d9adc154e9c6",
+      "name": "fix-readme-probe-3e16abad3185",
+      "directory": "/tmp/m5bmatrix/worktrees/m5b/fix-readme-probe-3e16abad3185",
       "assignment": ""
     },
     "ended": null
   }
 }
-task|stopped|7|d9adc154e9c6f0335116a1cb315a43df|-|2026-11-08 01:17:09.423+08
+task|stopped|7|3e16abad318561f1d78546250ff5ae15|-|2026-11-08 02:20:17.097+08
 
 ## field-by-field comparison
 field                                            before                                 after
@@ -206,13 +202,61 @@ field                                            before                         
 compared_fields=43 differing=0 material_differences=0
 verdict: identical
 
-## 判定
+## runtime_cursors AFTER the restart, before any new delivery
+$ psql "$DATABASE_URL" -c "select repository_id, cursor, updated_at from runtime_cursors"
+            repository_id             | cursor |          updated_at           
+--------------------------------------+--------+-------------------------------
+ f1dcf81e-c86e-4392-ba31-516c4b9fa6d9 |      6 | 2026-11-08 02:20:17.585349+08
+(1 row)
 
-`paused`（平台 `stopped`）通过：Bridge ticket 43 个字段逐项比对全部相同，含
-`state=stopped`、`paused.at/by/operationId/stoppedAt`、`paused.evidence`（assignment、session、
-`cgroup=/m5bmatrix.slice/instances/...`、cancelledTurn、jobsAfter/processesAfter/lingeringPids 为空）、
-`assignmentId`、`admission.leaseId/fencingToken`、`base`、`model`、`execution.directory`、`report`。
-Bridge PID 与 dispatcher PID 都确实换了（脚本在重启未发生时直接 FAIL，避免「没重启也算通过」）。
-重启后 `ended=null`、`paused` 仍在，dispatcher 未把 `stopped` 覆盖成 `running`。
-本项用的是最终产物：`apps/dispatcher/dist/main.js` sha256
-`0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6`（211968 字节）。
+cursor_after_restart=6
+
+## a real delivery after the restart (same ticket, real entrance)
+$ live.mjs resume --task <id>   (POST /api/v1/tasks/:id/resume)
+{
+  "status": 202,
+  "body": {
+    "data": {
+      "operation": {
+        "id": "074c6983-27c4-4da7-aeef-2ec279989791",
+        "taskId": "7a5fc623-316f-466a-aaa2-0de6f18bb440",
+        "kind": "resume",
+        "state": "queued",
+        "evidence": {},
+        "error": null,
+        "createdAt": "2026-11-07T18:20:35.741Z",
+
+## wait for the cursor to advance after that delivery
+## runtime_cursors AFTER the real delivery
+$ psql "$DATABASE_URL" -c "select repository_id, cursor, updated_at from runtime_cursors"
+            repository_id             | cursor |          updated_at          
+--------------------------------------+--------+------------------------------
+ f1dcf81e-c86e-4392-ba31-516c4b9fa6d9 |      9 | 2026-11-08 02:20:37.07618+08
+(1 row)
+
+cursor_after_delivery=9
+
+## verdict on the cursor
+cursor_before_restart=6
+cursor_after_restart=6
+cursor_after_delivery=9
+VERDICT: cursor 6 -> 9; the reconciliation chain still advances after the restart.
+
+
+## 判定（游标）
+
+`runtime_cursors` 三次原始查询都在上面：
+
+| 时点 | cursor | updated_at |
+| --- | --- | --- |
+| 重启前 | 6 | 2026-11-08 02:20:17.585349+08 |
+| 重启后、未投递 | 6 | 2026-11-08 02:20:17.585349+08（未变） |
+| 真实 resume 投递后 | 9 | 2026-11-08 02:20:37.07618+08 |
+
+**游标 6 → 9，说明重启后对账仍推进。** 中间那次「重启后、未投递」保持 6，正好把
+「重启本身不会凭空推进」和「新投递会推进」分开：字段全同不是把内存状态原样读回来，
+重启后的对账链路还在读事件、写事件、推进游标。
+
+同一次运行里另一条结论也成立：重启前后 Bridge ticket 43 个字段逐项相同（`verdict: identical`），
+含 `state=stopped`、`paused.*`、`paused.evidence`、`assignmentId`、`admission`、`execution.directory`。
+bridge/dispatcher 两个 PID 都确实换了（`bridge restarted: yes`、`dispatcher restarted: yes`）。

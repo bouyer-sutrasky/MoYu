@@ -105,21 +105,32 @@ const server = http.createServer(async (request, response) => {
   }
   const tools = (body.tools ?? []).map((tool) => tool?.function?.name).filter(Boolean);
   if (process.env.LOCAL_PROVIDER_DUMP) {
-    fs.appendFileSync(
-      process.env.LOCAL_PROVIDER_DUMP,
-      JSON.stringify({ at: new Date().toISOString(), tools, messages: body.messages ?? [] }) + '\n',
-    );
+    // Diagnostic only: a write failure must never turn into a failed model
+    // request (a stale file owned by another user did exactly that once).
+    try {
+      fs.appendFileSync(
+        process.env.LOCAL_PROVIDER_DUMP,
+        JSON.stringify({ at: new Date().toISOString(), tools, messages: body.messages ?? [] }) +
+          '\n',
+      );
+    } catch {
+      /* ignore a diagnostic dump that cannot be written */
+    }
   }
-  fs.appendFileSync(
-    log,
-    JSON.stringify({
-      at: new Date().toISOString(),
-      stream: !!body.stream,
-      model: body.model,
-      tools,
-      roles: (body.messages ?? []).map((message) => message.role),
-    }) + '\n',
-  );
+  try {
+    fs.appendFileSync(
+      log,
+      JSON.stringify({
+        at: new Date().toISOString(),
+        stream: !!body.stream,
+        model: body.model,
+        tools,
+        roles: (body.messages ?? []).map((message) => message.role),
+      }) + '\n',
+    );
+  } catch {
+    /* the log is diagnostic; never fail the request because of it */
+  }
   // An open turn without a child process: the worker is waiting on the model.
   // A matrix scenario that restarts the runtime in a waiting state uses this so
   // the restart cannot orphan a descendant.

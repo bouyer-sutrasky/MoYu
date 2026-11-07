@@ -165,12 +165,15 @@ migrate_and_seed() {
 
 start_provider() {
   note "starting the loopback test provider"
+  # A stale log or dump owned by another user makes the provider's own writes
+  # fail; remove them so the unit always starts with a writable file.
+  rm -f "$PROVIDER_LOG" "$RUN/provider-prompts.jsonl"
   m5b_run systemd-run --unit="${PROV_UNIT%.service}" --slice="$SLICE" \
     --uid="$M5B_MATRIX_USER" --gid="$M5B_MATRIX_GROUP" \
     --property=MemoryMax=512M --property=MemorySwapMax=0 \
     --setenv=LOCAL_PROVIDER_PORT="$M5B_MATRIX_PROVIDER_PORT" \
     --setenv=LOCAL_PROVIDER_LOG="$PROVIDER_LOG" \
-    --setenv=LOCAL_PROVIDER_DUMP="$RUN/provider-prompts.jsonl" \
+    ${M5B_MATRIX_PROVIDER_DUMP:+--setenv=LOCAL_PROVIDER_DUMP="$RUN/provider-prompts.jsonl"} \
     --setenv=LOCAL_PROVIDER_WORKER_REPORT="${M5B_MATRIX_WORKER_REPORT:-}" \
     --setenv=LOCAL_PROVIDER_WORKER_REPORT_FILE="$RUN/worker-report.json" \
     --setenv=LOCAL_PROVIDER_WORKER_SLEEP_FILE="$RUN/worker-sleep.txt" \

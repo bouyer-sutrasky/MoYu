@@ -93,6 +93,39 @@ grant_tree /opt/moyu-node24 g+rx g+r
 grant_tree "$GH_DIR" g+rwX g+rw
 echo
 
+# The runtime's worker clones the repository over the agent's SSH route. The key
+# and the host route live in root's home, so the identity gets its own copy in its
+# own home directory: same key material, 0600, never in the repository or a log.
+SSH_SOURCE_KEY=${M5B_MATRIX_SSH_KEY:-/root/.ssh/sa_agent2}
+if (( CHECK_ONLY == 0 )) && [[ -r $SSH_SOURCE_KEY ]]; then
+  install -d -m 0700 -o "$USER_" -g "$GROUP" "/home/$USER_/.ssh" 2>/dev/null || {
+    mkdir -p "/home/$USER_/.ssh"
+    chown "$USER_:$GROUP" "/home/$USER_" "/home/$USER_/.ssh"
+    chmod 0700 "/home/$USER_" "/home/$USER_/.ssh"
+  }
+  install -m 0600 -o "$USER_" -g "$GROUP" "$SSH_SOURCE_KEY" "/home/$USER_/.ssh/sa_agent2"
+  cat >"/home/$USER_/.ssh/config" <<SSHCONF
+Host ssh.github.com
+  HostName ssh.github.com
+  Port 443
+  IdentityFile /home/$USER_/.ssh/sa_agent2
+  IdentitiesOnly yes
+
+Host github.com
+  HostName github.com
+  Port 22
+  IdentityFile /home/$USER_/.ssh/sa_agent2
+  IdentitiesOnly yes
+SSHCONF
+  chown "$USER_:$GROUP" "/home/$USER_/.ssh/config"
+  chmod 0600 "/home/$USER_/.ssh/config"
+  ssh-keyscan -p 443 ssh.github.com >"/home/$USER_/.ssh/known_hosts" 2>/dev/null
+  chown "$USER_:$GROUP" "/home/$USER_/.ssh/known_hosts"
+  chmod 0600 "/home/$USER_/.ssh/known_hosts"
+  echo "ssh_material=/home/$USER_/.ssh (key copied 0600, known_hosts entries: $(wc -l < "/home/$USER_/.ssh/known_hosts"))"
+fi
+echo
+
 echo "## what the identity can actually do, checked as that user"
 as_user() {
   if runuser -u "$USER_" -- "$@" >/dev/null 2>&1; then echo "  ok   $*"; else echo "  DENY $*"; fi
@@ -103,6 +136,13 @@ as_user test -w "$DSH_HOME"
 as_user test -r "$GH_CLI_DIR/gh-agent"
 as_user test -r "$GH_DIR/hosts.yml"
 as_user /usr/bin/node --version
+as_user test -r "/home/$USER_/.ssh/sa_agent2"
+ssh_probe=$(runuser -u "$USER_" -- ssh -o BatchMode=yes -o StrictHostKeyChecking=yes \
+  -p 443 -T git@ssh.github.com 2>&1 || true)
+case "$ssh_probe" in
+  *"successfully authenticated"*) echo "  ok   ssh git@ssh.github.com:443 authenticated as $(printf '%s' "$ssh_probe" | sed -n 's/^Hi \([^!]*\)!.*/\1/p')" ;;
+  *) echo "  DENY ssh authentication: $(printf '%s' "$ssh_probe" | head -1)" ;;
+esac
 echo
 
 echo "## the dispatcher artifact the units will execute"
