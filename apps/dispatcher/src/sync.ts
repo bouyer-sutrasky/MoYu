@@ -211,17 +211,21 @@ async function applyTaskEvent(
         [repository.id, `admit:${existing.id}`],
       );
       const reserved = reservation.rows[0];
-      // A matching reservation only records what was once admitted. It does not
-      // prove the generation is still live, so an expired (or superseded) lease
-      // must never project a state change just because the identity agrees.
-      const eventLease = await client.query<{ state: string; expired: boolean }>(
-        `select state, (expires_at is not null and expires_at <= now()) as expired
-           from runtime_leases where id = $1`,
-        [leaseId],
-      );
-      const eventLeaseRow = eventLease.rows[0];
-      const expiredGeneration =
-        eventLeaseRow !== undefined && eventLeaseRow.state === 'active' && eventLeaseRow.expired;
+      // A matching reservation only records what was once admitted; it does not
+      // prove the generation is still live. The event's own lease is looked up
+      // only when the generation is already known not to be current, so the
+      // happy path pays no extra query.
+      let expiredGeneration = false;
+      if (!currentGeneration) {
+        const eventLease = await client.query<{ state: string; expired: boolean }>(
+          `select state, (expires_at is not null and expires_at <= now()) as expired
+             from runtime_leases where id = $1`,
+          [leaseId],
+        );
+        const eventLeaseRow = eventLease.rows[0];
+        expiredGeneration =
+          eventLeaseRow !== undefined && eventLeaseRow.state === 'active' && eventLeaseRow.expired;
+      }
       if (
         !currentGeneration &&
         (expiredGeneration ||
