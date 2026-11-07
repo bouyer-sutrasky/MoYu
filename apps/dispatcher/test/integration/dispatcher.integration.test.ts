@@ -44,7 +44,7 @@ function readBody(request: IncomingMessage): Promise<unknown> {
 async function startFakeBridge(events: BridgeEvent[]): Promise<FakeBridge> {
   const state = {
     triggerCalls: [] as BridgeTriggerInput[],
-    admitCalls: [] as { ticketId: string; admission: unknown }[],
+    admitCalls: [] as { ticketId: string; admission: unknown; assignmentId?: string }[],
     events,
     failNextTrigger: false,
     slowNextTrigger: false,
