@@ -73,7 +73,7 @@ describe('execution reservation on real PostgreSQL', () => {
 
   it('claims a reserved identity from a queued state event only for the current lease', async () => {
     const key3 = `event-claim-${process.pid}`;
-    const reserved = await reserveExecution(db.pool, { ...input(), requestKey: key3 });
+    await reserveExecution(db.pool, { ...input(), requestKey: key3 });
     const client = await db.pool.connect();
     try {
       expect(await reconcileExecutionClaimOn(client, repository.id, key3, 'ticket-1')).toBe(true);
