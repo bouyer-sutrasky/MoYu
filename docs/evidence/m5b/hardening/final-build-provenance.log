@@ -1,34 +1,29 @@
 # 最终 dispatcher 产物溯源
-
-recorded=2026-11-07T16:18:28Z
+recorded=2026-11-07T16:22:35Z
 branch=agent/m5b-hardening-full
-source_head=25b0d0d9d94bb355779080a75f83254a09f86575
+source_head=4080d238ea4046a4f4e96b0f0627b1927ce3af31
 base_main=4d36024efdec1f86d5f74cf13f625539c93ab46f
 node=v24.22.2
 pnpm=11.7.0
 
 ## 构建
-command:
-  PATH=/opt/moyu-node24/bin:$PATH corepack pnpm build
-result: exit 0
-reproduce: git checkout 25b0d0d9d94bb355779080a75f83254a09f86575 && pnpm install --frozen-lockfile && pnpm build
-  （dist/ 不入库，所以本文件的 hash 无法直接从 commit 复算，须按上面两步重建后比对。）
+command: PATH=/opt/moyu-node24/bin:$PATH corepack pnpm build      result: exit 0
+reproduce: git checkout 4080d238ea4046a4f4e96b0f0627b1927ce3af31 && pnpm install --frozen-lockfile && pnpm build
+（dist/ 不入库，本文件的 hash 不能直接从 commit 复算，须按上面两步重建后比对。）
 
 ## 产物
-apps/dispatcher/dist/main.js  sha256=3248b5aa308dc0e622ec84419176ab43d71f6b0f6786beccde1b5be3ae2ea371
-apps/dispatcher/dist/main.js  bytes=212251
+apps/dispatcher/dist/main.js  sha256=0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6
+apps/dispatcher/dist/main.js  bytes=211968
 
 ## 守卫是否在产物里（证明跑的是最终源码，不是合并前那份旧 dist）
-grep -c 'cannot be proven current'              -> 1
-grep -c 'running under a different admission'   -> 1
-grep -c 'eventLeaseExpired'                     -> 3
-grep -c 'stale_generation'                      -> 1
+grep -c 'cannot be proven current'            -> 1
+grep -c 'running under a different admission' -> 1
+grep -c 'stale_generation'                    -> 1
 
 ## 旧产物对照
-合并进来的那份 dist/main.js：211014 bytes，2026-11-07 22:56 —— 不含上述守卫，
+合并进来的那份 dist/main.js：211014 bytes / 2026-11-07 22:56，不含上述守卫 —— 
 因此此前那次「双库重启复验」跑的不是最终源码。
 
 ## 使用前提
-本产物构建自 PR #30 分支，尚未合并进 main。按用户指定优先级，现场矩阵必须在
-「两条租约红测 + 0014 回滚」落地之后才开跑，本产物用于合并后的同一运行复验。
-它不是 M5-B 全线通过的证据。
+本产物构建自 PR #30 分支，尚未合并进 main。现场矩阵必须在三条修复落地之后才开跑；
+本产物用于合并后的同一运行复验，不是 M5-B 全线通过的证据。
