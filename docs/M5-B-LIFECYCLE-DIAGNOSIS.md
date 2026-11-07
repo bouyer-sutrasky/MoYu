@@ -80,7 +80,7 @@
 ## 恢复并发与预算（2026-11-07）
 
 - mismatch、catch、成功三条路径都只更新仍 queued/running 的任务；stop_evidence 一律合并，成功只删除本次恢复的键。
-- 单轮最多 32 条并按 task id 轮转 cursor；失败/不匹配不重复写同值。
+- 单轮最多 32 条，按仓库隔离的 task-id cursor 轮转；失败/不匹配不重复写同值（含 catch 的 generation_mismatch）。
 - 回归已收录：`apps/dispatcher/test/integration/recovery-{positive,race,review-catch,review-clear,review-idempotent,review-fairness}.integration.test.ts`。
 - 命令：`TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm --filter @moyu/dispatcher test:integration`；6 个恢复文件 12/12。
 - 仍待：完整 Bridge admission lease/fence 权威证明、真实两库/dispatcher 重启、真实子进程启动数。cursor 为进程内状态，重启后从头部开始但会轮转。

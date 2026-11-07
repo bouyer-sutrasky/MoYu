@@ -1,7 +1,12 @@
 import { recoverReservedTasks } from '../../src/sync';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { acquireExecutionLease } from '../../src/leases';
-import { readReservation, reserveExecution } from '../../src/reservations';
+import {
+  claimExecution,
+  readReservation,
+  reconcileExecutionClaimOn,
+  reserveExecution,
+} from '../../src/reservations';
 import type { RepositoryBinding } from '../../src/runtime';
 import { createTestDatabase, type TestDatabase } from './helpers';
 
@@ -67,40 +72,33 @@ describe('execution reservation on real PostgreSQL', () => {
     fencingToken,
   });
 
-  it('review recovery eventually reaches row 33 after earlier snapshot failures', async () => {
-    let target = '';
-    for (let i = 0; i < 33; i++) {
-      const cv = await db.pool.query(
-        "insert into conversations(owner_id,repository_id,mode,execution_mode,base_branch,title) select c.owner_id,c.repository_id,'work','execute','main','recovery fairness' from conversations c join task_links t on t.conversation_id=c.id where t.id=$1 returning id",
-        [taskId],
-      );
-      const t = await db.pool.query(
-        "insert into task_links(conversation_id,repository_id,state,base_branch,upstream_ticket_id,updated_at) values($1,$2,'queued','main',$3,now()+($4*interval '1 second')) returning id",
-        [cv.rows[0].id, repository.id, 'recovery-' + i, i],
-      );
-      const id = t.rows[0].id;
-      await reserveExecution(db.pool, {
-        ...input(),
-        taskId: id,
-        ticketId: 'recovery-' + i,
-        assignmentId: 'assignment-' + i,
-        requestKey: 'admit:' + id,
-      });
-      if (i === 32) target = id;
-    }
-    let calls = 0;
+  it('review recovery does not rewrite identical claim failure', async () => {
+    await db.pool.query("update task_links set upstream_ticket_id='ticket-1' where id=$1", [
+      taskId,
+    ]);
+    await reserveExecution(db.pool, { ...input(), requestKey: 'admit:' + taskId });
+    await db.pool.query(
+      "update runtime_leases set state='released', released_at=now() where id=$1",
+      [leaseId],
+    );
     const bridge = {
-      ticket: async (id: string) => {
-        calls++;
-        if (id !== 'recovery-32') throw new Error('isolated unavailable snapshot');
-        return { ticketId: id, assignmentId: 'assignment-32', state: 'queued', base: null };
-      },
+      ticket: async () => ({
+        ticketId: 'ticket-1',
+        assignmentId: 'assignment-1',
+        state: 'queued',
+        base: null,
+      }),
     };
     const logger = { info: () => {}, warn: () => {}, error: () => {} };
     await recoverReservedTasks(db.pool, repository, bridge as never, logger);
+    const before = (
+      await db.pool.query('select version,stop_evidence from task_links where id=$1', [taskId])
+    ).rows[0];
     await recoverReservedTasks(db.pool, repository, bridge as never, logger);
-    const result = await readReservation(db.pool, repository.id, 'admit:' + target);
-    console.log('REVIEW_STARVATION', JSON.stringify({ calls, targetState: result?.state }));
-    expect(result?.state).toBe('claimed');
+    const after = (
+      await db.pool.query('select version,stop_evidence from task_links where id=$1', [taskId])
+    ).rows[0];
+    console.log('REVIEW_REPEAT_CLAIM_FAILURE', JSON.stringify({ before, after }));
+    expect(after).toEqual(before);
   });
 });

@@ -1049,8 +1049,8 @@ export async function applyEvent(
   }
 }
 
-/** Rotates the recovery pass across tasks; cleared on wrap/restart. */
-let recoveryCursor: string | undefined;
+/** Rotates the recovery pass per repository; in-process and wrapped on restart. */
+const recoveryCursors = new Map<string, string>();
 
 /**
  * Historical identity recovery: a queued/running task whose reservation is
@@ -1083,13 +1083,14 @@ export async function recoverReservedTasks(
       limit 32`,
       [repository.id, cursor ?? null],
     );
-  let rows = await load(recoveryCursor);
-  if (rows.rows.length === 0 && recoveryCursor) {
-    recoveryCursor = undefined;
+  const cursor = recoveryCursors.get(repository.id);
+  let rows = await load(cursor);
+  if (rows.rows.length === 0 && cursor) {
+    recoveryCursors.delete(repository.id);
     rows = await load(undefined);
   }
   const last = rows.rows.at(-1);
-  if (last) recoveryCursor = last.id;
+  if (last) recoveryCursors.set(repository.id, last.id);
   for (const row of rows.rows) {
     if (!row.upstream_ticket_id) continue;
     let snapshot: Awaited<ReturnType<RuntimeBridgeClient['ticket']>>;
@@ -1156,13 +1157,18 @@ export async function recoverReservedTasks(
         `update task_links
             set stop_evidence = coalesce(stop_evidence, '{}'::jsonb) || $2::jsonb,
                 version = version + 1, updated_at = now()
-          where id = $1 and state in ('queued', 'running')`,
+          where id = $1 and state in ('queued', 'running')
+            and (
+              coalesce(stop_evidence->>'admissionRecovery', '') is distinct from 'generation_mismatch'
+              or coalesce(stop_evidence->>'admissionRecoveryError', '') is distinct from $3
+            )`,
         [
           row.id,
           JSON.stringify({
             admissionRecovery: 'generation_mismatch',
             admissionRecoveryError: bridgeErrorMessage(error),
           }),
+          bridgeErrorMessage(error),
         ],
       );
       logger.warn(
