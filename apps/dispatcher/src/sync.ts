@@ -191,6 +191,8 @@ async function applyTaskEvent(
           `admit:${next.id}`,
           ticketId,
           asString(data.assignmentId),
+          asString(data.leaseId),
+          asString(data.fencingToken),
         );
       }
       await emit(client, repository, event, 'task.state_changed', next.conversationId, next.id, {

@@ -227,8 +227,10 @@ export async function reconcileExecutionClaimOn(
   requestKey: string,
   ticketId: string,
   assignmentId: string | null | undefined,
+  leaseId: string | null | undefined,
+  fencingToken: string | null | undefined,
 ): Promise<boolean> {
-  if (!assignmentId) return false;
+  if (!assignmentId || !leaseId || !fencingToken) return false;
   const initial = await client.query<{
     id: string;
     assignment_id: string;
@@ -242,7 +244,13 @@ export async function reconcileExecutionClaimOn(
     [repositoryId, requestKey, ticketId],
   );
   const candidate = initial.rows[0];
-  if (!candidate || candidate.state !== 'reserved' || candidate.assignment_id !== assignmentId) {
+  if (
+    !candidate ||
+    candidate.state !== 'reserved' ||
+    candidate.assignment_id !== assignmentId ||
+    candidate.lease_id !== leaseId ||
+    String(candidate.fencing_token) !== fencingToken
+  ) {
     return false;
   }
   const lease = await client.query<{ repository_id: string; fencing_token: string; state: string }>(
@@ -273,7 +281,7 @@ export async function reconcileExecutionClaimOn(
     !reservation ||
     reservation.state !== 'reserved' ||
     reservation.assignment_id !== assignmentId ||
-    String(reservation.fencing_token) !== candidate.fencing_token
+    String(reservation.fencing_token) !== fencingToken
   ) {
     return false;
   }

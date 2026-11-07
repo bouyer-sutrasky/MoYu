@@ -108,6 +108,8 @@ describe('execution reservation on real PostgreSQL', () => {
           key4,
           'ticket-1',
           'old-assignment',
+          leaseId,
+          token,
         ),
       ).toBe(false);
     } finally {
@@ -123,6 +125,8 @@ describe('execution reservation on real PostgreSQL', () => {
           key4,
           'ticket-1',
           'assignment-1',
+          leaseId,
+          token,
         ),
       ).toBe(true);
     } finally {
@@ -131,7 +135,15 @@ describe('execution reservation on real PostgreSQL', () => {
     const client = await db.pool.connect();
     try {
       expect(
-        await reconcileExecutionClaimOn(client, repository.id, key3, 'ticket-1', 'assignment-1'),
+        await reconcileExecutionClaimOn(
+          client,
+          repository.id,
+          key3,
+          'ticket-1',
+          'assignment-1',
+          leaseId,
+          token,
+        ),
       ).toBe(true);
     } finally {
       client.release();
@@ -146,6 +158,8 @@ describe('execution reservation on real PostgreSQL', () => {
           key3,
           'ticket-1',
           'old-assignment',
+          leaseId,
+          token,
         ),
       ).toBe(false);
     } finally {
@@ -165,6 +179,8 @@ describe('execution reservation on real PostgreSQL', () => {
           `event-stale-${process.pid}`,
           'ticket-1',
           'assignment-stale',
+          leaseId,
+          token,
         ),
       ).toBe(false);
     } finally {

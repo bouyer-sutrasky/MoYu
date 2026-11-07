@@ -85,10 +85,28 @@ describe('execution reservation on real PostgreSQL', () => {
           key4,
           'ticket-1',
           'old-assignment',
+          leaseId,
+          token,
         ),
       ).toBe(false);
     } finally {
       wrongEarly.release();
+    }
+    const wrongFence = await db.pool.connect();
+    try {
+      expect(
+        await reconcileExecutionClaimOn(
+          wrongFence,
+          repository.id,
+          key4,
+          'ticket-1',
+          'assignment-1',
+          leaseId,
+          String(Number(token) + 1),
+        ),
+      ).toBe(false);
+    } finally {
+      wrongFence.release();
     }
     expect((await readReservation(db.pool, repository.id, key4))?.state).toBe('reserved');
     const rightEarly = await db.pool.connect();
@@ -100,6 +118,8 @@ describe('execution reservation on real PostgreSQL', () => {
           key4,
           'ticket-1',
           'assignment-1',
+          leaseId,
+          token,
         ),
       ).toBe(true);
     } finally {
@@ -108,7 +128,15 @@ describe('execution reservation on real PostgreSQL', () => {
     const client = await db.pool.connect();
     try {
       expect(
-        await reconcileExecutionClaimOn(client, repository.id, key3, 'ticket-1', 'assignment-1'),
+        await reconcileExecutionClaimOn(
+          client,
+          repository.id,
+          key3,
+          'ticket-1',
+          'assignment-1',
+          leaseId,
+          token,
+        ),
       ).toBe(true);
     } finally {
       client.release();
@@ -123,6 +151,8 @@ describe('execution reservation on real PostgreSQL', () => {
           key3,
           'ticket-1',
           'old-assignment',
+          leaseId,
+          token,
         ),
       ).toBe(false);
     } finally {
@@ -142,6 +172,8 @@ describe('execution reservation on real PostgreSQL', () => {
           `event-stale-${process.pid}`,
           'ticket-1',
           'assignment-stale',
+          leaseId,
+          token,
         ),
       ).toBe(false);
     } finally {
