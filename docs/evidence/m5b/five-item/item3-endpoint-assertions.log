@@ -1,0 +1,12 @@
+# item3 endpoint assertions (real 3403)
+head=cc56289 (pre-commit) ticket=ce045290da163e6e6605b0ac88f6d98d
+
+pause before resume: state=stopped paused.evidence.stoppedAt=2026-11-07T13:06:32.599Z lingeringPids=[]
+
+resume request admission={leaseId:'lease-final-303',fencingToken:'303'}
+resume response: {"kind":"resume","state":"queued"}
+after resume: state=running assignmentId=17cb6cb4f5076bf99649123128b73bd5
+
+cleanup pause: state=stopped assignmentId=17cb6cb4f5076bf99649123128b73bd5 stoppedAt=2026-11-07T14:26:53.869Z lingeringPids=[]
+
+limitation: ticket snapshot admission=null after resume; bridge does not echo the submitted fence (303) in this discuss/execute path.

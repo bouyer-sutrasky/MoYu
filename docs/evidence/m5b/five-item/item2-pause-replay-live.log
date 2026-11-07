@@ -1,0 +1,152 @@
+# item 2 — production pause/replay: effective delivery count for one assignment
+
+recorded=2026-11-07T15:05Z (Asia/Shanghai 23:05)
+base_head=3278fb0e2e248dcaf32a59aba791a15339699b2a
+worktree=/root/src/remaining-items-m5b-03563327c935
+postgres=postgres://moyu@127.0.0.1:55432/m5b_e2e_manual (isolated; migrations 0001..0014)
+bridge=http://127.0.0.1:3403 profile=m5b build=m5b-admission-build21 MOYU_REQUIRE_ADMISSION=1
+repository=Bouyer12/m5a-beta-adf10ad9
+dispatcher=node apps/dispatcher/dist/main.js (real loop set; no test harness substituted)
+fixture=real workspace ticket eb8f95ad49e3c1bcbe301697b4f6a54a created through the dispatcher delivery entry,
+        assignment b8597ddc9a79bd9a1b1317ba70b158b1 running, model local-test/local-test
+
+## Why this is not `deliveries` table uniqueness
+
+The count below is read from the runtime that received the HTTP delivery: the
+persisted Ticket input (`TicketInput.deliveredTo`) and the append-only Bridge
+event log. The dispatcher database row is shown only as the caller-side record.
+
+## Interleaving (all real dispatcher/Bridge entries)
+
+2026-11-07T22:58:00.498+08:00  pause operation 7845282d-... sent by the dispatcher operations loop
+2026-11-07T22:58:00.514+08:00  Bridge recorded stoppedAt; assignment b8597ddc... ended 'paused'
+2026-11-07T22:58:00.52+08:00   PG task state=stopped, stop_evidence={...stoppedAt, lingeringPids:[]}
+2026-11-07T22:59:02.239+08:00  resume operation 8c47b82a-... sent; PG lease 3d626c99.../2000000000002
+2026-11-07T22:59:02.257+08:00  Bridge started assignment 2b50ee7a80093c2ee5d2eab4071593e5
+2026-11-07T22:59:03.504+08:00  follow-up delivery POST /bridge/v1/triggers triggerId=workspace:e2e-replay-1
+2026-11-07T22:59:05.641+08:00  Bridge response was {"result":"stored",...} and was dropped by the proxy
+2026-11-07T22:59:05.644+08:00  dispatcher logged delivery.retry attempt=1 error="The runtime Bridge could not be reached"
+2026-11-07T22:59:06.659+08:00  replay POST same triggerId; Bridge answered duplicate
+2026-11-07T22:59:06.664+08:00  dispatcher delivery.delivered attempt=2 result="duplicate"
+
+drop command (test transport only; the Bridge writes its own SQLite/event log first):
+  printf '%s' 'workspace:e2e-replay-1' > /tmp/m5b-upgrade/drop-trigger
+  # proxy forwards the first request, discards its HTTP response, then replays the same body
+
+raw dispatcher lines:
+{"event":"operation.sent","kind":"pause","operationId":"7845282d-1bf3-4b1e-aae7-f6061f8e60cf","runtimeState":"queued"}
+{"event":"operation.sent","kind":"resume","operationId":"8c47b82a-bc01-48bd-836f-137be373b990","runtimeState":"queued","leaseId":"3d626c99-e624-4d8c-9911-7e051013d381","fencingToken":"2000000000002"}
+{"event":"delivery.retry","messageId":"fc27d1e7-236f-465b-82f9-0f0616fe73c7","attempt":1,"delayMs":1000,"error":"The runtime Bridge could not be reached"}
+{"event":"delivery.delivered","messageId":"fc27d1e7-236f-465b-82f9-0f0616fe73c7","result":"duplicate","attempt":2}
+
+## Raw count at the runtime
+
+SQLite state copy read-only while the Bridge was live:
+  node - <<'JS'
+  const { DatabaseSync } = require('node:sqlite');
+  const db = new DatabaseSync('/root/.dsh-m5/state/m5b/orchestrator.sqlite', { readOnly: true });
+  for (const row of db.prepare('select value from ticket').all()) {
+    const t = JSON.parse(row.value);
+    if (t.id === 'eb8f95ad49e3c1bcbe301697b4f6a54a') console.log(JSON.stringify(t.inputs));
+  }
+  JS
+
+output (single trigger input; no second input after the replay):
+[{"id":"8ee2638d7b0b9da4670b96305ef97d8e","kind":"text","at":"2026-11-07T14:59:02.257Z"},
+ {"id":"fca3b9261e4d804329091071b2c07ecd","kind":"trigger","triggerId":"workspace:e2e-replay-1",
+  "deliveredTo":"2b50ee7a80093c2ee5d2eab4071593e5","readAt":"2026-11-07T14:59:05.708Z"}]
+
+assignment 2b50ee7a80093c2ee5d2eab4071593e5 was started by the resume operation and is the
+only assignment that contains workspace:e2e-replay-1:
+  assignment b8597ddc9a79bd9a1b1317ba70b158b1: ended 'paused' at 14:58:00.499Z
+  assignment 2b50ee7a80093c2ee5d2eab4071593e5: running, started 14:59:02.257Z
+
+Bridge event log (append-only, fsynced):
+  98 ticket.state_changed ticketId=eb8f95ad49e3c1bcbe301697b4f6a54a previous=stopped state=running
+     assignmentId=2b50ee7a80093c2ee5d2eab4071593e5 leaseId=3d626c99-e624-4d8c-9911-7e051013d381 fencingToken=2000000000002
+  102 message.read triggerId=workspace:e2e-postrestart-1 (the later cursor-advance delivery)
+
+## Verdict
+
+Effective deliveries for assignment 2b50ee7a80093c2ee5d2eab4071593e5 = 1.
+Evidence: one persisted TicketInput with triggerId workspace:e2e-replay-1 and
+deliveredTo=2b50ee7a80093c2ee5d2eab4071593e5; the lost-response replay returned
+"duplicate" and created no second input. The caller-side delivery row is
+state=delivered attempt_count=2 runtime_lease_id=3d626c99-e624-4d8c-9911-7e051013d381
+fencing_token=2000000000002, and both attempts carried the same stable trigger id.
+
+Additional evidence for delivery option omission (required for this real path):
+  PATH=/opt/moyu-node24/bin:$PATH corepack pnpm --filter @moyu/dispatcher exec vitest run test/tasks.test.ts
+  ✓ 2 tests passed
+  commit adds: apps/dispatcher/test/tasks.test.ts; apps/dispatcher/src/tasks.ts now omits a null
+  reasoningEffort instead of sending `"reasoningEffort":null`, which the Bridge's strict model
+  schema rejects (HTTP 400).
+
+## Concurrent interleaving (same triggerId sent twice at once)
+
+The dispatcher path above is serial by construction: its delivery claim is
+`for update skip locked`, so two dispatcher workers cannot both claim the same
+delivery row, and a lost response is retried with the same persisted trigger id.
+To exercise the runtime invariant under real concurrency, the same trigger id was
+posted twice simultaneously while the ticket was stopped:
+
+  # probe run while the ticket was paused; both fetches started in one Promise.all
+  MOYU_BRIDGE_URL=http://127.0.0.1:3403 MOYU_BRIDGE_TOKEN=*** \
+  MOYU_BRIDGE_TICKET_ID=eb8f95ad49e3c1bcbe301697b4f6a54a \
+  MOYU_BRIDGE_REPOSITORY=Bouyer12/m5a-beta-adf10ad9 \
+  MOYU_BRIDGE_TRIGGER_ID=workspace:e2e-concurrent-1 \
+  MOYU_BRIDGE_ADMISSION_LEASE_ID=lease-concurrent-5 MOYU_BRIDGE_ADMISSION_FENCE=2000000000005 \
+  node scripts/m5b/concurrent-trigger-race.mjs
+  body: triggerId=workspace:e2e-concurrent-1 targetTicketId=eb8f95ad49e3c1bcbe301697b4f6a54a
+        admission=lease-concurrent-5/2000000000005
+
+  {
+    "at": "2026-11-07T15:30:55.911Z",
+    "posts": [
+      { "name": "A", "started": 1794065455845, "status": 200,
+        "body": {"result":"stored","triggerId":"workspace:e2e-concurrent-1","ticketId":"eb8f…"} },
+      { "name": "B", "started": 1794065455881, "status": 200,
+        "body": {"result":"duplicate","triggerId":"workspace:e2e-concurrent-1","ticketId":null} }
+    ]
+  }
+
+Both requests were in flight concurrently (36 ms apart, both completed by 1794065455911).
+Runtime-side count: exactly one persisted input for workspace:e2e-concurrent-1; after the
+subsequent resume (admission lease-concurrent-6/2000000000006) that single input was
+delivered once to the new assignment:
+
+  {
+    "inputCount": 1,
+    "inputs": [{
+      "triggerId": "workspace:e2e-concurrent-1",
+      "deliveredTo": "03a1b183152fceb8ea7393288c22b7b9",
+      "readAt": "2026-11-07T15:31:10.909Z"
+    }],
+    "undelivered": [],
+    "assignments": [..., { "id": "03a1b183152fceb8ea7393288c22b7b9", "state": "running" }]
+  }
+
+Two concurrent POSTs, two 200 responses, one stored + one duplicate, one input,
+one effective delivery on assignment 03a1b183152fceb8ea7393288c22b7b9.
+
+## Caller-side and runtime-side records side by side
+
+| trigger id | caller side (`deliveries`) | runtime side (persisted input) | verdict |
+| --- | --- | --- | --- |
+| `workspace:e2e-replay-1` | delivered, attempt_count=2, runtime_lease_id=3d626c99-e624-4d8c-9911-7e051013d381, fencing_token=2000000000002 | one input, deliveredTo=2b50ee7a80093c2ee5d2eab4071593e5; first POST stored (response dropped), retry duplicate | effective deliveries = 1 |
+| `workspace:e2e-concurrent-1` | none: this probe is runtime-level. The production dispatcher cannot claim one delivery twice (`for update skip locked`), so the only way to exercise the runtime's concurrent same-trigger path directly is two concurrent POSTs. | one input, deliveredTo=03a1b183152fceb8ea7393288c22b7b9; A stored, B duplicate | effective deliveries = 1 |
+
+The runtime's guard is the persisted Trigger id: `Engine.receive` stores the trigger
+atomically and a second request with the same id returns `duplicate` before adding an
+input or an assignment. The serial dispatcher replay and the concurrent probe therefore
+assert the same invariant; the concurrent probe closes the "two requests in flight"
+case rather than assuming serial equivalence.
+
+## Final verdict (item 2)
+
+- Serial production path (real dispatcher): 2 POSTs for workspace:e2e-replay-1; first
+  stored with a dropped response, second duplicate; one input, effective delivery = 1.
+- Concurrent runtime probe: 2 simultaneous POSTs for workspace:e2e-concurrent-1; one
+  stored, one duplicate; one input, delivered once to assignment 03a1… after resume.
+- Caller-side `deliveries` and runtime-side inputs are listed together above. Effective
+  deliveries for the tested assignment = 1 in both paths.
