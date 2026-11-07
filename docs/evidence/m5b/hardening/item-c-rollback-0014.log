@@ -1,0 +1,34 @@
+# item C — 0014 回滚后必须能重迁
+
+recorded=2026-11-07T16:07:07Z
+test=packages/db/test/integration/rollback-0014.integration.test.ts
+down_sql=packages/db/migrations/rollback/0014_execution_reservations.down.sql
+
+## 缺陷
+0014 down SQL 只删表，未删 drizzle.__drizzle_migrations 里 0014 的记录。
+migrateDatabase 据该记录认为 0014 已应用，不会重建表 → 回滚后重迁，表永远缺失。
+0013 的 down SQL 末尾本来就有 DELETE FROM drizzle.__drizzle_migrations，0014 漏了。
+
+## Red（down SQL 未修）
+output:
+   × test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > removes the reservation schema and re-applies it 408ms
+     → expected { table_present: false, …(1) } to deeply equal { table_present: false, …(1) }
+  ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+   Test Files  1 failed (1)
+        Tests  1 failed (1)
+（回滚后 table_present=false 但 ledger_present=true）
+
+## Green（补 ledger 删除）
+output:
+   ✓ test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > removes the reservation schema and re-applies it 438ms
+   Test Files  1 passed (1)
+        Tests  1 passed (1)
+
+## 既有 0013 回滚回归
+output:
+   Test Files  1 passed (1)
+        Tests  1 passed (1)
+
+## 判定
+回滚后 table_present=false 且 ledger_present=false；再跑 migrateDatabase 恢复 true/true。
+down SQL 保持纯 SQL（未引入 psql 专属元命令），因此 psql 与普通 pg 客户端都能执行。
