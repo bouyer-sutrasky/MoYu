@@ -1,0 +1,49 @@
+
+ RUN  v4.1.8 /tmp/moyu-m5b-http-admit.npU95Tfh
+
+stdout | tests/moyu-review-cedcb82-pid-barrier-1039.spec.ts > pause-race preserves the authoritative task state
+REVIEW_GITHUB_SNAPSHOT {"ticketId":"813c3ea55b1c2acf69361a0514a0309a","title":"Fix","state":"queued","question":null,"attentionId":null,"model":null,"base":null,"assignmentId":"0123456789abcdef0123456789abcdef","admission":{"leaseId":"07000000-0000-4000-8000-000000000007","fencingToken":"7"},"report":null,"mode":"execute","planRevision":null,"paused":null,"admissionRequired":false,"execution":null,"ended":null}
+
+stdout | tests/moyu-review-cedcb82-current-projection.spec.ts > pause-race preserves the authoritative task state
+REVIEW_GITHUB_SNAPSHOT {"ticketId":"b1912f0700d2a9befa778f16c310a921","title":"Fix","state":"queued","question":null,"attentionId":null,"model":null,"base":null,"assignmentId":"0123456789abcdef0123456789abcdef","admission":{"leaseId":"07000000-0000-4000-8000-000000000007","fencingToken":"7"},"report":null,"mode":"execute","planRevision":null,"paused":null,"admissionRequired":false,"execution":null,"ended":null}
+
+stdout | tests/moyu-review-cedcb82-pid-barrier-1039.spec.ts > pause-race preserves the authoritative task state
+REVIEW_PAUSE_BARRIER {
+  blocked: true,
+  event: 'ticket-state:813c3ea55b1c2acf69361a0514a0309a:2026-11-07T11:40:27.778Z:queued'
+}
+
+stdout | tests/moyu-review-cedcb82-current-projection.spec.ts > pause-race preserves the authoritative task state
+REVIEW_PAUSE_BARRIER {
+  blocked: true,
+  event: 'ticket-state:b1912f0700d2a9befa778f16c310a921:2026-11-07T11:40:27.780Z:queued'
+}
+
+stdout | tests/moyu-review-cedcb82-pid-barrier-1039.spec.ts > pause-race preserves the authoritative task state
+REVIEW_PROJECTION {"scenario":"pause-race","projected":{"state":"stopped","stopped_at":"2026-11-07T11:40:28.223Z","stop_evidence":{"reviewStoppedProof":true},"runtime_lease_id":"07000000-0000-4000-8000-000000000007","last_event_seq":"3"},"cursor":"3","event":{"ticketId":"813c3ea55b1c2acf69361a0514a0309a","previousState":"pending_admission","state":"queued","repository":"acme/widgets","assignmentId":"0123456789abcdef0123456789abcdef","leaseId":"07000000-0000-4000-8000-000000000007","fencingToken":"7","at":"2026-11-07T11:40:27.778Z"},"reservation":{"leaseId":"07000000-0000-4000-8000-000000000007","fencingToken":"7","assignmentId":"0123456789abcdef0123456789abcdef"}}
+
+stdout | tests/moyu-review-cedcb82-current-projection.spec.ts > pause-race preserves the authoritative task state
+REVIEW_PROJECTION {"scenario":"pause-race","projected":{"state":"stopped","stopped_at":"2026-11-07T11:40:28.230Z","stop_evidence":{"reviewStoppedProof":true},"runtime_lease_id":"07000000-0000-4000-8000-000000000007","last_event_seq":"3"},"cursor":"3","event":{"ticketId":"b1912f0700d2a9befa778f16c310a921","previousState":"pending_admission","state":"queued","repository":"acme/widgets","assignmentId":"0123456789abcdef0123456789abcdef","leaseId":"07000000-0000-4000-8000-000000000007","fencingToken":"7","at":"2026-11-07T11:40:27.780Z"},"reservation":{"leaseId":"07000000-0000-4000-8000-000000000007","fencingToken":"7","assignmentId":"0123456789abcdef0123456789abcdef"}}
+
+ ✓ tests/moyu-review-cedcb82-pid-barrier-1039.spec.ts > pause-race preserves the authoritative task state 628ms
+ ✓ tests/moyu-review-cedcb82-current-projection.spec.ts > pause-race preserves the authoritative task state 638ms
+stdout | tests/moyu-review-cedcb82-pid-barrier-1039.spec.ts > new-generation preserves the authoritative task state
+REVIEW_GITHUB_SNAPSHOT {"ticketId":"689fd772434ba687a167892d70deabbf","title":"Fix","state":"queued","question":null,"attentionId":null,"model":null,"base":null,"assignmentId":"0123456789abcdef0123456789abcdef","admission":{"leaseId":"07000000-0000-4000-8000-000000000007","fencingToken":"7"},"report":null,"mode":"execute","planRevision":null,"paused":null,"admissionRequired":false,"execution":null,"ended":null}
+
+stdout | tests/moyu-review-cedcb82-current-projection.spec.ts > new-generation preserves the authoritative task state
+REVIEW_GITHUB_SNAPSHOT {"ticketId":"500995e65161665bc68be4ea2bf34f01","title":"Fix","state":"queued","question":null,"attentionId":null,"model":null,"base":null,"assignmentId":"0123456789abcdef0123456789abcdef","admission":{"leaseId":"07000000-0000-4000-8000-000000000007","fencingToken":"7"},"report":null,"mode":"execute","planRevision":null,"paused":null,"admissionRequired":false,"execution":null,"ended":null}
+
+stdout | tests/moyu-review-cedcb82-pid-barrier-1039.spec.ts > new-generation preserves the authoritative task state
+REVIEW_PROJECTION {"scenario":"new-generation","projected":{"state":"running","stopped_at":null,"stop_evidence":{},"runtime_lease_id":"07000000-0000-4000-8000-000000000007","last_event_seq":"3"},"cursor":"3","event":{"ticketId":"689fd772434ba687a167892d70deabbf","previousState":"pending_admission","state":"running","repository":"acme/widgets","assignmentId":"0123456789abcdef0123456789abcdef","leaseId":"07000000-0000-4000-8000-000000000007","fencingToken":"7","at":"2026-11-07T11:40:28.781Z"},"reservation":{"leaseId":"c7c962e1-ac63-473e-85c4-e34da82e8332","fencingToken":"1","assignmentId":"fedcba9876543210fedcba9876543210"}}
+
+stdout | tests/moyu-review-cedcb82-current-projection.spec.ts > new-generation preserves the authoritative task state
+REVIEW_PROJECTION {"scenario":"new-generation","projected":{"state":"running","stopped_at":null,"stop_evidence":{},"runtime_lease_id":"07000000-0000-4000-8000-000000000007","last_event_seq":"3"},"cursor":"3","event":{"ticketId":"500995e65161665bc68be4ea2bf34f01","previousState":"pending_admission","state":"running","repository":"acme/widgets","assignmentId":"0123456789abcdef0123456789abcdef","leaseId":"07000000-0000-4000-8000-000000000007","fencingToken":"7","at":"2026-11-07T11:40:28.781Z"},"reservation":{"leaseId":"45cc8d1b-b042-44d7-936c-69009625cd37","fencingToken":"1","assignmentId":"fedcba9876543210fedcba9876543210"}}
+
+ ✓ tests/moyu-review-cedcb82-pid-barrier-1039.spec.ts > new-generation preserves the authoritative task state 540ms
+ ✓ tests/moyu-review-cedcb82-current-projection.spec.ts > new-generation preserves the authoritative task state 539ms
+
+ Test Files  2 passed (2)
+      Tests  4 passed (4)
+   Start at  19:40:25
+   Duration  3.06s (transform 1.46s, setup 0ms, import 3.46s, tests 2.35s, environment 0ms)
+

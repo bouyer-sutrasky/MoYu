@@ -1,0 +1,6 @@
+# P1 expired active lease must not be the current generation
+head=fc5c783 (pre-fix)
+command: TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres corepack pnpm --filter @moyu/dispatcher exec vitest run test/integration/recovery-projection-branches.integration.test.ts
+red before fix: Tests 1 failed | 2 passed (3); expired-lease test expected stopped but projected running.
+fix: sync.ts active-lease query adds `and (expires_at is null or expires_at > now())`; leases acquire/renew/adopt add expiry guards.
+green after fix: Tests 3 passed (3).

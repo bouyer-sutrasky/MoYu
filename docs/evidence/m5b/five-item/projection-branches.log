@@ -1,0 +1,12 @@
+.                                        | [WARN] Unsupported engine: wanted: {"node":"24.22.2"} (current: {"node":"v22.23.3","pnpm":"11.7.0"})
+
+ RUN  v3.2.7 /root/src/leases-resources-m5b-a59cb491b2e0/apps/dispatcher
+
+ ✓ test/integration/recovery-projection-branches.integration.test.ts > event projection generation branch on real PostgreSQL > projects a current-generation running event and records the branch 10ms
+ ✓ test/integration/recovery-projection-branches.integration.test.ts > event projection generation branch on real PostgreSQL > keeps a stopped task and its evidence when a queued event arrives 5ms
+
+ Test Files  1 passed (1)
+      Tests  2 passed (2)
+   Start at  19:40:14
+   Duration  1.73s (transform 334ms, setup 0ms, collect 1.03s, tests 437ms, environment 0ms, prepare 75ms)
+

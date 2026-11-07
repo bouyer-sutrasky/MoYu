@@ -110,4 +110,47 @@ describe('event projection generation branch on real PostgreSQL', () => {
     expect(task.rows[0]?.state).toBe('stopped');
     expect(task.rows[0]?.stop_evidence).toMatchObject(evidence);
   });
+
+  it('does not project an event from an expired active lease', async () => {
+    const expiredId = '07000000-0000-4000-8000-000000000099';
+    await db.pool.query(
+      `update runtime_leases set state = 'released', released_at = now() where repository_id = $1 and state = 'active'`,
+      [repository.id],
+    );
+    await db.pool.query(
+      `insert into runtime_leases(id, repository_id, holder_id, fencing_token, state, expires_at)
+       values ($1, $2, 'expired-holder', 99, 'active', now() - interval '1 minute')`,
+      [expiredId, repository.id],
+    );
+    const client = await db.pool.connect();
+    try {
+      await client.query('begin');
+      await applyEvent(
+        client,
+        repository,
+        {
+          id: 'evt-expired',
+          type: 'ticket.state_changed',
+          seq: 12,
+          at: new Date().toISOString(),
+          data: {
+            ticketId: 'ticket-1',
+            state: 'running',
+            assignmentId: 'assignment-1',
+            leaseId: expiredId,
+            fencingToken: '99',
+          },
+        } as BridgeEvent,
+        { info() {}, warn() {}, error() {} },
+      );
+      await client.query('commit');
+    } finally {
+      client.release();
+    }
+    const task = await db.pool.query<{ state: string }>(
+      `select state from task_links where id = $1`,
+      [taskId],
+    );
+    expect(task.rows[0]?.state).toBe('stopped');
+  });
 });

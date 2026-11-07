@@ -14,6 +14,7 @@ import { acquireExecutionLeaseOn } from './leases';
 
 /** Last projection branch per Bridge event, for lifecycle diagnostics/tests. */
 export const projectionBranches = new Map<string, string>();
+const PROJECTION_BRANCH_LIMIT = 500;
 
 interface ProjectedTask {
   task: TaskRow;
@@ -87,6 +88,11 @@ async function emit(
 
 function traceBranch(eventId: string, branch: string): void {
   projectionBranches.set(eventId, branch);
+  while (projectionBranches.size > PROJECTION_BRANCH_LIMIT) {
+    const oldest = projectionBranches.keys().next().value;
+    if (oldest === undefined) break;
+    projectionBranches.delete(oldest);
+  }
 }
 
 async function applyTaskEvent(
@@ -184,6 +190,7 @@ async function applyTaskEvent(
       const active = await client.query<{ id: string; fencing_token: string }>(
         `select id, fencing_token from runtime_leases
           where repository_id = $1 and state = 'active'
+            and (expires_at is null or expires_at > now())
           order by fencing_token desc limit 1`,
         [repository.id],
       );
