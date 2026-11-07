@@ -75,4 +75,4 @@
 
 - event sync 在消费页前后执行 `recoverReservedTasks`：对 queued/running 且 reservation 仍 reserved 的旧任务，读取 Bridge `/bridge/v1/tickets/:id` 权威快照，核对 repository/Ticket/Assignment/state，再由 `claimExecution` 复核 lease/fence。
 - 快照缺失/不匹配时保留 reserved，并在 task stop_evidence 记录 `snapshot_mismatch`/`generation_mismatch`，不无证据 claim。
-- 仍待：真实旧 producer→新 producer 升级 + 丢响应 + dis9patcher 重启整链与真实启动计数。
+- 仍待：真实旧 producer→新 producer 升级 + 丢响应 + dispatcher 重启整链与真实启动计数。
