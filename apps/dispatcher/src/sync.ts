@@ -6,6 +6,7 @@ import type { RuntimeBridgeClient, BridgeEvent } from '@moyu/runtime-client';
 
 import type { DispatcherLogger } from './logger';
 import type { RepositoryBinding } from './runtime';
+import { reconcileExecutionClaimOn } from './reservations';
 import { appendEventSql } from './events-sql';
 import { endedState, stateFromSnapshot, TASK_COLUMNS, taskSummary, type TaskRow } from './tasks';
 import { pauseEvidenceProblem, pauseEvidenceProven } from './pause-evidence';
@@ -183,6 +184,9 @@ async function applyTaskEvent(
     }
     next = await taskByTicket(client, ticketId, repository.id);
     if (next) {
+      if (next.state === 'queued' || next.state === 'running') {
+        await reconcileExecutionClaimOn(client, repository.id, `admit:${next.id}`, ticketId);
+      }
       await emit(client, repository, event, 'task.state_changed', next.conversationId, next.id, {
         task: taskSummary(next),
       });

@@ -62,10 +62,11 @@
 外部隔离回归（jd-mc，`tests/moyu-http-replay.spec.ts`，SHA256 `3da58493f6d142c65127208a9dacb51ad4afef21da1b195abb35f408941393a4`）：
 真实 Bridge HTTP + SQLite，首次 admit 已提交后断响应并重开 Store。旧实现对错误代次也返回 200；050b84d 返回 422。一个 Assignment、一个持久 launch effect，重放不改变 generation。Ticket save 后、DshExecutor 入队前注入异常时，pending Ticket/fence/launch effect 一起回滚。
 
-平台侧 PostgreSQL 断点（本仓库 `apps/dispatcher/test/integration/reservations.integration.test.ts`）：
+平台侧 PostgreSQL 预留行复用（本仓库 `apps/dispatcher/test/integration/reservations.integration.test.ts`，直接调用 helper，不是完整 dispatcher 断点）：
 - `keeps one reserved identity across a lost Bridge response before claim`
 - 断言同一 requestKey 的 reservation 保持 `reserved`、行数 1、身份/代次不变，重试返回原行，claim 恰好一次。
+- 事件同步路径新增 `reconcileExecutionClaimOn`：只有 queued/running 事件且当前 lease 匹配时才把仍 reserved 的行 claim；lease 已释放时拒绝。
 - 命令：`TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm --filter @moyu/dispatcher test:integration -- reservations`
-- 结果：dispatcher 集成 54/54。
+- 结果：dispatcher 集成 55/55。
 
-边界：两次存储不在同一事务；平台保留租约与 reservation 作为恢复依据，Bridge 的 SQLite 负责其本地 Assignment/launch effect。尚未跑真实 dispatcher 重启 + event sync。
+边界：两次存储不在同一事务；平台保留租约与 reservation 作为恢复依据，Bridge 的 SQLite 负责其本地 Assignment/launch effect。event-sync 先消费的整链重启仍未跑真实 dispatcher。

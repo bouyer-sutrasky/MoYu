@@ -215,3 +215,50 @@ export async function claimExecution(
     client.release();
   }
 }
+
+/**
+ * Claim a still-reserved identity when a Bridge state event proves the
+ * admission landed before the platform recorded it. The current lease must
+ * still match the reservation; a queued/running state alone is not proof.
+ */
+export async function reconcileExecutionClaimOn(
+  client: pg.PoolClient,
+  repositoryId: string,
+  requestKey: string,
+  ticketId: string,
+): Promise<boolean> {
+  const row = await client.query<{
+    id: string;
+    assignment_id: string;
+    lease_id: string;
+    fencing_token: string;
+    state: string;
+  }>(
+    `select id, assignment_id, lease_id, fencing_token, state
+       from execution_reservations
+      where repository_id = $1 and request_key = $2 and ticket_id = $3
+      for update`,
+    [repositoryId, requestKey, ticketId],
+  );
+  const reservation = row.rows[0];
+  if (!reservation || reservation.state !== 'reserved') return false;
+  const lease = await client.query<{ repository_id: string; fencing_token: string; state: string }>(
+    `select repository_id, fencing_token, state from runtime_leases where id = $1 for update`,
+    [reservation.lease_id],
+  );
+  const current = lease.rows[0];
+  if (
+    !current ||
+    current.repository_id !== repositoryId ||
+    current.state !== 'active' ||
+    String(current.fencing_token) !== reservation.fencing_token
+  ) {
+    return false;
+  }
+  const updated = await client.query(
+    `update execution_reservations set state = 'claimed', updated_at = now()
+      where id = $1 and state = 'reserved'`,
+    [reservation.id],
+  );
+  return (updated.rowCount ?? 0) === 1;
+}

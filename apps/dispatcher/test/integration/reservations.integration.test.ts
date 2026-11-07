@@ -1,6 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { acquireExecutionLease } from '../../src/leases';
-import { claimExecution, readReservation, reserveExecution } from '../../src/reservations';
+import {
+  claimExecution,
+  readReservation,
+  reconcileExecutionClaimOn,
+  reserveExecution,
+} from '../../src/reservations';
 import type { RepositoryBinding } from '../../src/runtime';
 import { createTestDatabase, type TestDatabase } from './helpers';
 
@@ -64,6 +69,41 @@ describe('execution reservation on real PostgreSQL', () => {
     assignmentId,
     leaseId,
     fencingToken,
+  });
+
+  it('claims a reserved identity from a queued state event only for the current lease', async () => {
+    const key3 = `event-claim-${process.pid}`;
+    const reserved = await reserveExecution(db.pool, { ...input(), requestKey: key3 });
+    const client = await db.pool.connect();
+    try {
+      expect(await reconcileExecutionClaimOn(client, repository.id, key3, 'ticket-1')).toBe(true);
+    } finally {
+      client.release();
+    }
+    expect((await readReservation(db.pool, repository.id, key3))?.state).toBe('claimed');
+    const stale = await reserveExecution(db.pool, {
+      ...input('assignment-stale'),
+      requestKey: `event-stale-${process.pid}`,
+    });
+    await db.pool.query(`update runtime_leases set state = 'released' where id = $1`, [leaseId]);
+    const staleClient = await db.pool.connect();
+    try {
+      expect(
+        await reconcileExecutionClaimOn(
+          staleClient,
+          repository.id,
+          `event-stale-${process.pid}`,
+          'ticket-1',
+        ),
+      ).toBe(false);
+    } finally {
+      staleClient.release();
+    }
+    expect(stale.id).toBeDefined();
+    await db.pool.query(
+      `update runtime_leases set state = 'active', released_at = null where id = $1`,
+      [leaseId],
+    );
   });
 
   it('keeps one reserved identity across a lost Bridge response before claim', async () => {
