@@ -1,0 +1,32 @@
+# item B — 过期代次不得借匹配 reservation 进入投影
+
+recorded=2026-11-07T16:05:49Z
+base_commit=54b4b0dca906ba12154771f637171b71e5c3edad
+test=apps/dispatcher/test/integration/expired-reservation-projection.integration.test.ts
+
+## 缺陷
+applyEvent 只在事件身份与预留记录“不匹配”时才判 stale。当事件的 assignment/lease/fence
+恰好等于历史 claimed 预留时，即使 active 租约已过期也照样投影，queued 被改成 running。
+
+## Red（守卫未加）
+output:
+   × test/integration/expired-reservation-projection.integration.test.ts > an expired generation cannot project through a matching reservation > keeps the task queued when the only matching lease has expired 17ms
+     → expected 'running' to be 'queued' // Object.is equality
+  ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+   Test Files  1 failed (1)
+        Tests  1 failed (1)
+
+## Green（守卫就位）
+output:
+   ✓ test/integration/expired-reservation-projection.integration.test.ts > an expired generation cannot project through a matching reservation > keeps the task queued when the only matching lease has expired 8ms
+   Test Files  1 passed (1)
+        Tests  1 passed (1)
+
+## 既有投影回归不受影响
+output:
+   Test Files  1 passed (1)
+        Tests  3 passed (3)
+
+## 判定
+过期 active 租约一律判 stale（与预留身份是否吻合无关），task 保持 queued，
+stop_evidence 记录 admissionProjection=stale_generation；未过期的既有流程行为不变。
