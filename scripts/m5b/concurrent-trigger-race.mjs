@@ -6,6 +6,19 @@
  * must keep one input. Prints the raw responses and exits non-zero when the
  * invariant does not hold.
  *
+ * The HTTP result alone does not prove the two invariants this fixture claims.
+ * Two further checks are done against the two real stores, separately, and their
+ * exact statements are recorded with the evidence:
+ *
+ *   persisted runtime input (Bridge SQLite state, one row per trigger id):
+ *     sqlite3 /root/.dsh-m5/state/m5b/orchestrator.sqlite \
+ *       "select count(*) from bridge_triggers where id='<triggerId>';"
+ *   platform delivery count (dispatcher PostgreSQL):
+ *     psql "$DATABASE_URL" -c "select count(*) from deliveries where payload->>'triggerId'='<triggerId>';"
+ *
+ * Run this script only against the isolated matrix stack; point both statements at
+ * that stack's state directory and database, never at production.
+ *
  * Required env:
  *   MOYU_BRIDGE_URL, MOYU_BRIDGE_TOKEN, MOYU_BRIDGE_TICKET_ID, MOYU_BRIDGE_REPOSITORY
  * Optional:

@@ -1,0 +1,158 @@
+# item 2 — 非 root 运行身份 + 同一受管边界内的计量
+
+本文件是一次完整运行的原始输出（下面的 `recorded=` 即该次运行）。
+命令：
+```
+bash scripts/m5b/matrix/prepare-nonroot.sh     # 专用 m5bmatrix 身份 + 访问授权（打印每处 before -> after）
+bash scripts/m5b/matrix/stack.sh up            # 所有单元以 --uid/--gid 启动
+source /tmp/m5bmatrix/state.env && bash scripts/m5b/matrix/item2-cgroup.sh
+```
+
+上一轮被判「非 root 这一半没做到」的是同一份脚本的旧版：当时只有 PostgreSQL 用了 `--uid`。
+现在 anchor / provider / supervisor / dispatcher / api 全部以 `m5bmatrix`（uid 995）运行，
+runtime 实例进程与构建测试进程同样是 995；PostgreSQL 保持 `postgres`（uid 111），从来不是 root。
+
+# item 2 — measured memory inside one managed boundary
+recorded=2026-11-08T01:58:27+08:00
+head=a67554f92ec7702ca03ce2e6e3be488940b8b663
+host_mem_available_kb=13842136
+
+## boundary
+slice=/m5bmatrix.slice
+memory.max=8589934592
+memory.high=6442450944
+memory.current=404684800
+memory.peak=815882240
+memory.swap.max=0
+memory.events=low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 
+cgroup.controllers=cpuset cpu io memory pids
+
+## identity of every unit (non-root check)
+matrix_identity=995 uid / 986 gid  user=m5bmatrix
+  m5bmatrix-pg.service                   User=postgres   pid=2251293  Uid:	111	111	111	111 Gid:	112	112	112	112
+  m5bmatrix-api.service                  User=m5bmatrix  pid=2251542  Uid:	995	995	995	995 Gid:	986	986	986	986
+  m5bmatrix-dispatcher.service           User=m5bmatrix  pid=2251912  Uid:	995	995	995	995 Gid:	986	986	986	986
+  m5bmatrix-supervisor.service           User=m5bmatrix  pid=2251504  Uid:	995	995	995	995 Gid:	986	986	986	986
+  m5bmatrix-provider.service             User=m5bmatrix  pid=2251443  Uid:	995	995	995	995 Gid:	986	986	986	986
+  m5bmatrix-anchor.service               User=m5bmatrix  pid=2251267  Uid:	995	995	995	995 Gid:	986	986	986	986
+  runtime instance process:
+    m5b-1794074137444                    pid=2251605  Uid:	995	995	995	995
+
+## members of the slice (unit, pid, own cgroup)
+  m5bmatrix-pg.service pid=2251293 cgroup=/m5bmatrix.slice/m5bmatrix-pg.service
+    in this slice: yes
+  m5bmatrix-api.service pid=2251542 cgroup=/m5bmatrix.slice/m5bmatrix-api.service
+    in this slice: yes
+  m5bmatrix-dispatcher.service pid=2251912 cgroup=/m5bmatrix.slice/m5bmatrix-dispatcher.service
+    in this slice: yes
+  m5bmatrix-supervisor.service pid=2251504 cgroup=/m5bmatrix.slice/m5bmatrix-supervisor.service/payload
+    in this slice: yes
+  m5bmatrix-provider.service pid=2251443 cgroup=/m5bmatrix.slice/m5bmatrix-provider.service
+    in this slice: yes
+  runtime cgroup m5b-1794074137444 pids=[2251605 ] cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-1794074137444
+    in this slice: yes
+
+## measured memory per member
+## postgresql (m5bmatrix-pg.service)
+  path=/m5bmatrix.slice/m5bmatrix-pg.service
+  memory.current=49311744
+  memory.peak=60121088
+  memory.max=1073741824
+  memory.high=max
+  memory.events=low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 
+  pids.current=10
+## platform api (m5bmatrix-api.service)
+  path=/m5bmatrix.slice/m5bmatrix-api.service
+  memory.current=38371328
+  memory.peak=50167808
+  memory.max=1073741824
+  memory.high=max
+  memory.events=low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 
+  pids.current=11
+## dispatcher (m5bmatrix-dispatcher.service)
+  path=/m5bmatrix.slice/m5bmatrix-dispatcher.service
+  memory.current=32403456
+  memory.peak=40402944
+  memory.max=536870912
+  memory.high=max
+  memory.events=low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 
+  pids.current=7
+## supervisor (m5bmatrix-supervisor.service)
+  path=/m5bmatrix.slice/m5bmatrix-supervisor.service
+  memory.current=264347648
+  memory.peak=321585152
+  memory.max=536870912
+  memory.high=max
+  memory.events=low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 
+  pids.current=18
+## local provider (m5bmatrix-provider.service)
+  path=/m5bmatrix.slice/m5bmatrix-provider.service
+  memory.current=11202560
+  memory.peak=14163968
+  memory.max=536870912
+  memory.high=max
+  memory.events=low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 
+  pids.current=7
+## runtime instance m5b-1794074137444
+  path=/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-1794074137444
+  memory.current=226521088
+  memory.peak=286773248
+  memory.max=3221225472
+  memory.high=2684354560
+  memory.events=low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 
+  pids.current=11
+
+## a real build/test process inside the same slice
+host_mem_available_before_kb=13849176
+Running as unit: m5bmatrix-testproc.service; invocation ID: cc99fb04d6b34197b53599ea3e772326
+test_process_user=m5bmatrix
+Nov 08 01:58:27 lavm-flnape7bgu systemd[1]: Started m5bmatrix-testproc.service - /bin/bash -c "echo \"test_process_id_u=\$(id -u) test_process_id_un=\$(id -un)\"; corepack pnpm --filter @moyu/api test 2>&1 | tail -6; sleep 4".
+  test_process_id_u=995 test_process_id_un=m5bmatrix
+        Tests  20 passed (20)
+test_process_cgroup=/m5bmatrix.slice/m5bmatrix-testproc.service
+test_process_memory_peak_bytes=411250688
+test_process_limit_bytes=2147483648
+test_process_events=low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 
+test_process_result=success
+slice_memory_peak_after=816115712
+slice_memory_events_after=low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 
+host_mem_available_after_kb=13835360
+
+## verdict
+slice_limit_matches_policy=yes
+slice_oom_kill_total=0
+All four services and the build/test process ran inside /m5bmatrix.slice.
+
+
+## 判定
+
+通过的：
+- 每个服务单元都打印了 `systemctl show -p User` 与 `/proc/<pid>/status` 的 `Uid:/Gid:` 原始行；
+  anchor/provider/supervisor/dispatcher/api 全是 `User=m5bmatrix`、`Uid: 995 995 995 995`；
+  PostgreSQL 是 `User=postgres`、`Uid: 111`。没有任何服务单元仍是 root。
+- 由 supervisor 启动的 runtime 实例进程也是 `Uid: 995`，并且位于它自己**被委托**的 cgroup
+  子树里：`/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-*`。委托用的是
+  `Delegate=yes` + `DelegateSubgroup=payload`（服务自身进程落在 `<unit>/payload`，单元 cgroup
+  保持无进程，身份才能在自己的子树里启用 memory 控制器），`+memory +pids` 是**以该身份**写入的。
+- 构建测试进程同样以 `m5bmatrix` 运行：单元属性 `User=m5bmatrix`，进程内 `id -u` 输出 995，
+  `@moyu/api` 单测 20 通过，位于同一 slice、`memory.max=2147483648`，峰值约 411 MB，
+  `memory.events` 全 0，`Result=success`。
+- 计量结论与上一轮一致：每个成员都有 `memory.current / peak / max / high / events / pids`，
+  slice `memory.max=8589934592`、`memory.high=6442450944`、`memory.swap.max=0`，
+  宿主 MemAvailable 全程约 13.4–13.8 GiB。
+
+为支持非 root 运行而做的现场改（`prepare-nonroot.sh` 全部打印 before/after，可回退）：
+`/root` 与 `/root/src` 组可穿越（0710）、仓库与 `/root/src/upstream/m5b-admission-build21` 组只读、
+`/root/.local/bin` 与 `/root/.config/gh-agent` 组只读（runtime 的 git 凭据助手读它）、
+`/opt/moyu-node24` 组只读（构建测试进程用它）、以及专用组 `m5bmatrix`。
+supervisor 的凭据/env/日志/worktree 目录已改到 `/tmp/m5bmatrix` 下，运行时 DSH_HOME 也换成了
+`/tmp/m5bmatrix/dsh-home`（supervisor 会对 `<dshHome>/profiles`、`<dshHome>/state` 做 `chmod 0700`，
+只能对自己拥有的目录这么做）；共享的 `/root/.dsh-m5/profiles/m5b` 因此不再被改动，
+测试用的 provider fixture 只写进暂存副本，首个 `LOCAL_TEST_API_KEY` 也只在暂存 home 的
+`.credentials.yaml`（0600，m5bmatrix 所有）。
+
+未覆盖（不冒充通过）：
+- 没有做非 root 身份下的 OOM / 压力场景（那属于第 4 项）。
+- `memory.events max=0` 是本次运行的真实读数；上一轮出现的 `max=9737` 已随 slice 重建消失，
+  仍按「生命周期累计、不可归因」处理，不当作压力证据。
+- 宿主的 `systemd-run`/`systemctl` 仍是 root 调用（编排者本身），不是服务单元。

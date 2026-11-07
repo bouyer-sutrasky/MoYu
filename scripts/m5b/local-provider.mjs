@@ -13,19 +13,50 @@ import fs from 'node:fs';
 const port = Number(process.env.LOCAL_PROVIDER_PORT ?? 3801);
 const log = process.env.LOCAL_PROVIDER_LOG ?? '/tmp/moyu-local-provider.jsonl';
 const triggerFile = process.env.LOCAL_PROVIDER_TRIGGER_FILE;
+/**
+ * Seconds a worker's turn stays open. A matrix scenario that needs the ticket to
+ * remain `running` while it pauses it writes this file; the value comes from the
+ * provider's own environment so a stale file cannot change a normal run.
+ */
+function longTurnSeconds() {
+  const file = process.env.LOCAL_PROVIDER_WORKER_SLEEP_FILE;
+  if (!file) return 0;
+  try {
+    const value = Number(fs.readFileSync(file, 'utf8').trim());
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+  } catch {
+    return 0;
+  }
+}
+
 let sequence = 0;
 
 /** The trigger id the orchestrator route should accept: a per-run file wins over the fixed env value. */
-function routedTriggerId() {
+function routedTriggerId(body) {
   if (triggerFile) {
     try {
       const value = fs.readFileSync(triggerFile, 'utf8').trim();
       if (value) return value;
     } catch {
-      /* a missing file falls back to the fixed probe id */
+      /* a missing file falls back to the prompt scan */
     }
   }
-  return process.env.LOCAL_PROVIDER_TRIGGER_ID ?? 'workspace:probe-1';
+  if (process.env.LOCAL_PROVIDER_TRIGGER_ID) return process.env.LOCAL_PROVIDER_TRIGGER_ID;
+  // The orchestrator prompt carries the candidate card, so the deterministic
+  // stand-in for a model decision reads the candidate id out of it. The last
+  // match wins: the newest delivered trigger is the one to answer.
+  const text = (body.messages ?? [])
+    .map((message) =>
+      typeof message.content === 'string' ? message.content : JSON.stringify(message.content),
+    )
+    .join('\n');
+  // The candidate card carries `"trigger_id":"..."`; a bare scan would also
+  // match the thread key (`workspace:workspace:<conversation>`), so read the
+  // field first and fall back to the scan.
+  const cards = [...text.matchAll(/"trigger_id"\s*:\s*"(workspace:[^"]+|github:[0-9]+)"/g)];
+  if (cards.length > 0) return cards[cards.length - 1][1];
+  const matches = [...text.matchAll(/(workspace:[A-Za-z0-9._:-]+|github:[0-9]+)/g)];
+  return matches.length > 0 ? matches[matches.length - 1][1] : 'workspace:probe-1';
 }
 
 const readBody = (request) =>
@@ -73,6 +104,12 @@ const server = http.createServer(async (request, response) => {
     /* a malformed request is answered deterministically below */
   }
   const tools = (body.tools ?? []).map((tool) => tool?.function?.name).filter(Boolean);
+  if (process.env.LOCAL_PROVIDER_DUMP) {
+    fs.appendFileSync(
+      process.env.LOCAL_PROVIDER_DUMP,
+      JSON.stringify({ at: new Date().toISOString(), tools, messages: body.messages ?? [] }) + '\n',
+    );
+  }
   fs.appendFileSync(
     log,
     JSON.stringify({
@@ -83,6 +120,20 @@ const server = http.createServer(async (request, response) => {
       roles: (body.messages ?? []).map((message) => message.role),
     }) + '\n',
   );
+  // An open turn without a child process: the worker is waiting on the model.
+  // A matrix scenario that restarts the runtime in a waiting state uses this so
+  // the restart cannot orphan a descendant.
+  const delayFile = process.env.LOCAL_PROVIDER_WORKER_DELAY_FILE;
+  if (delayFile && tools.includes('orchestrator_report')) {
+    try {
+      const delayMs = Number(fs.readFileSync(delayFile, 'utf8').trim());
+      if (Number.isFinite(delayMs) && delayMs > 0) {
+        await new Promise((resolve) => globalThis.setTimeout(resolve, delayMs));
+      }
+    } catch {
+      /* a missing file answers immediately */
+    }
+  }
   const id = `chatcmpl-local-${++sequence}`;
   // Deterministic route decision for an isolated probe. Replace the trigger id
   // with the candidate card's id when driving a different fixture.
@@ -90,40 +141,89 @@ const server = http.createServer(async (request, response) => {
     decisions: [
       {
         kind: 'accept',
-        trigger_id: routedTriggerId(),
+        trigger_id: routedTriggerId(body),
         title: 'Fix README probe line',
         worktree_name: 'fix-readme-probe',
         acknowledgement: 'On it: updating the README probe line.',
       },
     ],
   };
-  const sawRouteResult = (body.messages ?? []).some(
+  // A turn starts with a user message. Answering only there keeps one route
+  // decision (or one worker report) per delivered candidate, even when earlier
+  // turns already carry a tool result in the history.
+  const messages = body.messages ?? [];
+  const turnStart = messages.length === 0 || messages[messages.length - 1].role === 'user';
+  const sawRouteResult = false;
+  // A worker session reports through `orchestrator_report`. The report kind is
+  // the fixture knob: `ready` reaches awaiting_review, a `human_action` reaches
+  // waiting_input. LOCAL_PROVIDER_WORKER_REPORT carries the JSON arguments.
+  // A per-scenario file wins over the fixed value so a matrix run can change the
+  // worker's report kind without restarting the provider.
+  const reportFile = process.env.LOCAL_PROVIDER_WORKER_REPORT_FILE;
+  let reportArguments = process.env.LOCAL_PROVIDER_WORKER_REPORT;
+  if (reportFile) {
+    try {
+      const value = fs.readFileSync(reportFile, 'utf8').trim();
+      if (value) reportArguments = value;
+    } catch {
+      /* a missing file falls back to the fixed value */
+    }
+  }
+  // A worker turn: report once at the turn start, then keep the turn open with a
+  // real long-running bash call when the scenario asks for it. A plain text reply
+  // ends the turn, which is what the executor turns into an ended ticket.
+  const reportedAlready = messages.some(
     (message) =>
-      message.role === 'tool' &&
-      /accepted|ticket|decision|refused/i.test(String(message.content ?? '')),
+      message.role === 'assistant' &&
+      Array.isArray(message.tool_calls) &&
+      message.tool_calls.some((call) => call?.function?.name === 'orchestrator_report'),
   );
-  const choice =
-    tools.includes('orchestrator_route') && !sawRouteResult
-      ? {
-          index: 0,
-          message: {
-            role: 'assistant',
-            content: null,
-            tool_calls: [
-              {
-                id: `call_${id}`,
-                type: 'function',
-                function: { name: 'orchestrator_route', arguments: JSON.stringify(decision) },
-              },
-            ],
+  const longBashAlready = messages.some(
+    (message) =>
+      message.role === 'assistant' &&
+      Array.isArray(message.tool_calls) &&
+      message.tool_calls.some((call) => call?.function?.name === 'bash'),
+  );
+  const sleepSeconds = longTurnSeconds();
+  function call(name, args) {
+    return {
+      index: 0,
+      message: {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          {
+            id: `call_${id}`,
+            type: 'function',
+            function: { name, arguments: JSON.stringify(args) },
           },
-          finish_reason: 'tool_calls',
-        }
-      : {
-          index: 0,
-          message: { role: 'assistant', content: 'Deterministic local provider response.' },
-          finish_reason: 'stop',
-        };
+        ],
+      },
+      finish_reason: 'tool_calls',
+    };
+  }
+  let choice;
+  if (tools.includes('orchestrator_route') && turnStart) {
+    choice = call('orchestrator_route', decision);
+  } else if (
+    tools.includes('orchestrator_report') &&
+    turnStart &&
+    reportArguments &&
+    !reportedAlready
+  ) {
+    choice = call('orchestrator_report', JSON.parse(reportArguments));
+  } else if (tools.includes('bash') && sleepSeconds > 0 && !longBashAlready && reportedAlready) {
+    choice = call('bash', {
+      description: 'Matrix fixture: keep the worker turn open',
+      command: `sh -c 'sleep ${sleepSeconds} & sleep ${sleepSeconds} & wait'`,
+    });
+  } else {
+    choice = {
+      index: 0,
+      message: { role: 'assistant', content: 'Deterministic local provider response.' },
+      finish_reason: 'stop',
+    };
+  }
   fs.appendFileSync(
     log,
     JSON.stringify({
