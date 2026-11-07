@@ -105,6 +105,40 @@ export async function reserveExecution(
   }
 }
 
+/** Read the authoritative identity for an idempotency key, if one exists. */
+export async function readReservation(
+  pool: pg.Pool,
+  repositoryId: string,
+  requestKey: string,
+): Promise<{
+  ticketId: string;
+  assignmentId: string;
+  leaseId: string;
+  fencingToken: string;
+  state: string;
+} | null> {
+  const result = await pool.query<{
+    ticket_id: string;
+    assignment_id: string;
+    lease_id: string;
+    fencing_token: string;
+    state: string;
+  }>(
+    `select ticket_id, assignment_id, lease_id, fencing_token, state
+       from execution_reservations where repository_id = $1 and request_key = $2`,
+    [repositoryId, requestKey],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  return {
+    ticketId: row.ticket_id,
+    assignmentId: row.assignment_id,
+    leaseId: row.lease_id,
+    fencingToken: String(row.fencing_token),
+    state: row.state,
+  };
+}
+
 /** Claim a reservation exactly once; replays return the already claimed row. */
 export async function claimExecution(
   pool: pg.Pool,

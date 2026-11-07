@@ -7,7 +7,7 @@ import type { RuntimeBridgeClient } from '@moyu/runtime-client';
 import type { DispatcherConfig } from './config';
 import { appendEventSql } from './events-sql';
 import { acquireExecutionLease } from './leases';
-import { claimExecution, reserveExecution } from './reservations';
+import { claimExecution, readReservation, reserveExecution } from './reservations';
 import type { DispatcherLogger } from './logger';
 import { bridgeErrorMessage, isRetryableBridgeError, type RepositoryBinding } from './runtime';
 import { TASK_COLUMNS, taskSummary, type TaskRow } from './tasks';
@@ -104,10 +104,31 @@ export async function admitImportedOnce(
       );
       continue;
     }
-    const assignmentId = randomUUID().replaceAll('-', '').slice(0, 32);
+    const requestKey = `admit:${task.id}`;
+    const existing = await readReservation(pool, repository.id, requestKey);
+    if (
+      existing &&
+      (existing.leaseId !== account.lease.id ||
+        existing.fencingToken !== account.lease.fencingToken)
+    ) {
+      // The Bridge may already own this identity under another generation.
+      // Keep the slot and ask a person/recovery path to resolve it.
+      await pool.query(
+        `update task_links set state = 'blocked', stop_evidence = $2::jsonb,
+                version = version + 1, updated_at = now()
+          where id = $1 and state = 'pending_admission'`,
+        [task.id, JSON.stringify({ admissionReservation: 'generation_conflict', requestKey })],
+      );
+      logger.error(
+        { event: 'admission.reservation_generation_conflict', taskId: task.id },
+        'reservation belongs to another lease generation; keeping the execution slot',
+      );
+      continue;
+    }
+    const assignmentId = existing?.assignmentId ?? randomUUID().replaceAll('-', '').slice(0, 32);
     const reservation = {
       repositoryId: repository.id,
-      requestKey: `admit:${task.id}`,
+      requestKey,
       taskId: task.id,
       ticketId: task.upstreamTicketId ?? '',
       assignmentId,
@@ -144,7 +165,7 @@ export async function admitImportedOnce(
     } catch (error) {
       if (isRetryableBridgeError(error)) {
         // The request may or may not have started; keep the generation and
-        // retry the idempotent admit endpoint on the next pass.
+        // reuse the persisted reservation on the next pass.
         logger.warn(
           { event: 'admission.retry', taskId: task.id, error: bridgeErrorMessage(error) },
           'admission request failed transiently; the same grant will be retried',

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { acquireExecutionLease } from '../../src/leases';
-import { claimExecution, reserveExecution } from '../../src/reservations';
+import { claimExecution, readReservation, reserveExecution } from '../../src/reservations';
 import type { RepositoryBinding } from '../../src/runtime';
 import { createTestDatabase, type TestDatabase } from './helpers';
 
@@ -70,6 +70,11 @@ describe('execution reservation on real PostgreSQL', () => {
     const first = await reserveExecution(db.pool, input());
     const replay = await reserveExecution(db.pool, input());
     expect(replay).toEqual(first);
+    expect(await readReservation(db.pool, repository.id, key)).toMatchObject({
+      assignmentId: 'assignment-1',
+      leaseId,
+      fencingToken: token,
+    });
     await expect(reserveExecution(db.pool, input('assignment-2'))).rejects.toThrow(
       /different identity/,
     );

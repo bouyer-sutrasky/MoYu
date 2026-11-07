@@ -604,6 +604,62 @@ describe('dispatcher delivery and Bridge event catch-up on real PostgreSQL', () 
     expect(delivery.rows[0]?.last_error).toContain('runtime_admission_unsupported');
   }, 30_000);
 
+  it('reuses the persisted assignment identity when admission is replayed', async () => {
+    fakeBridge.admitCalls.length = 0;
+    const conversation = await testDatabase.pool.query<{ id: string }>(
+      `insert into conversations (owner_id, repository_id, mode, execution_mode, base_branch, title)
+       values ($1, $2, 'work', 'execute', 'main', 'replayed admission') returning id`,
+      [ownerId, repository.id],
+    );
+    const conversationId = conversation.rows[0]!.id;
+    const message = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, client_message_id, body)
+       values ($1, 'inbound', 'user', 'replay-admit', 'replay') returning id`,
+      [conversationId],
+    );
+    const messageId = message.rows[0]!.id;
+    await testDatabase.pool.query(
+      `insert into deliveries (message_id, upstream_trigger_id) values ($1, $2)`,
+      [messageId, `github:${messageId}`],
+    );
+    const task = await testDatabase.pool.query<{ id: string }>(
+      `insert into task_links (conversation_id, repository_id, state, base_branch, upstream_ticket_id)
+       values ($1, $2, 'pending_admission', 'main', 'ticket-replay') returning id`,
+      [conversationId, repository.id],
+    );
+    await admitImportedOnce(
+      testDatabase.pool,
+      config,
+      repository,
+      client,
+      true,
+      createConsoleLogger('test'),
+    );
+    expect(fakeBridge.admitCalls).toHaveLength(1);
+    const first = fakeBridge.admitCalls[0]!.assignmentId;
+    expect(first).toMatch(/^[0-9a-f]{32}$/);
+    await testDatabase.pool.query(
+      `update task_links set state = 'pending_admission' where id = $1`,
+      [task.rows[0]!.id],
+    );
+    await admitImportedOnce(
+      testDatabase.pool,
+      config,
+      repository,
+      client,
+      true,
+      createConsoleLogger('test'),
+    );
+    expect(fakeBridge.admitCalls).toHaveLength(2);
+    expect(fakeBridge.admitCalls[1]!.assignmentId).toBe(first);
+    await testDatabase.pool.query(`update task_links set state = 'not_accepted' where id = $1`, [
+      task.rows[0]!.id,
+    ]);
+    await testDatabase.pool.query(`delete from runtime_leases where repository_id = $1`, [
+      repository.id,
+    ]);
+  });
+
   it.fails(
     'binds the complete execution identity before a cold GitHub admission starts',
     async () => {
