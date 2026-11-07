@@ -1,0 +1,20 @@
+# item2 lease/stop/replay evidence
+head=571b0d6b84d7750a45d6ab1aa1cb07a64448a403 (pre-commit)
+ticket=ce045290da163e6e6605b0ac88f6d98d repo=Bouyer12/m5a-beta-adf10ad9 bridge=127.0.0.1:3403
+
+timeline (ticket.state_changed, raw /bridge/v1/events):
+2026-11-07T12:57:55.666Z queued -> running
+2026-11-07T12:58:13.569Z running -> stopped
+2026-11-07T13:06:17.414Z stopped -> running
+2026-11-07T13:06:32.606Z running -> stopped
+
+stop-before-replacement: 12:58:13.569Z < 13:06:17.414Z => true
+
+first pause evidence (raw):
+{"stoppedAt":"2026-11-07T12:58:13.569Z","lingeringPids":[],"processesAfter":[],"cancelledTurn":true}
+
+resume response: {"operationId":"56c4e580-3642-4439-a0de-61c1c45aafbf","kind":"resume","state":"queued"}
+new assignmentId=649e7f1b5cddfb382dca80c906506b3e
+running-transition count after resume=1 (exactly one new generation started)
+
+cleanup pause: stopped 2026-11-07T13:06:32.599Z lingeringPids=[]
