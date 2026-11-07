@@ -2,7 +2,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import type { BridgeTicketSnapshot, RuntimeBridgeClient } from '@moyu/runtime-client';
 
-import { acquireExecutionLease, reconcileLeases, releaseTaskLease } from '../../src/leases';
+import {
+  acquireExecutionLease,
+  reconcileLeases,
+  releaseTaskLease,
+  renewExecutionLease,
+} from '../../src/leases';
 import { createConsoleLogger } from '../../src/logger';
 import type { RepositoryBinding } from '../../src/runtime';
 import { createTestDatabase, type TestDatabase } from './helpers';
@@ -98,6 +103,66 @@ describe('repository execution lease on real PostgreSQL', () => {
       [repository.id],
     );
     expect(rows.rows[0]?.count).toBe(1);
+  });
+
+  it('refuses to renew an expired lease and keeps its generation fenced', async () => {
+    const running = await seedTask('running');
+    const first = await acquireExecutionLease(
+      testDatabase.pool,
+      repository.id,
+      { taskId: running.taskId },
+      60_000,
+    );
+    expect(first.lease).not.toBeNull();
+
+    // A live lease renews normally.
+    expect(await renewExecutionLease(testDatabase.pool, first.lease!.id, 60_000)).toBe(true);
+    const live = await testDatabase.pool.query<{ expires_at: Date }>(
+      `select expires_at from runtime_leases where id = $1`,
+      [first.lease!.id],
+    );
+
+    // An expired generation must not be revived by a renewal; only a recorded
+    // stop proof may replace it.
+    await testDatabase.pool.query(
+      `update runtime_leases set expires_at = now() - interval '1 second' where id = $1`,
+      [first.lease!.id],
+    );
+    const expired = await testDatabase.pool.query<{ expires_at: Date }>(
+      `select expires_at from runtime_leases where id = $1`,
+      [first.lease!.id],
+    );
+    expect(await renewExecutionLease(testDatabase.pool, first.lease!.id, 60_000)).toBe(false);
+    const untouched = await testDatabase.pool.query<{
+      expires_at: Date;
+      state: string;
+      recovery_state: string;
+    }>(`select expires_at, state, recovery_state from runtime_leases where id = $1`, [
+      first.lease!.id,
+    ]);
+    expect(untouched.rows[0]!.expires_at.toISOString()).toBe(
+      expired.rows[0]!.expires_at.toISOString(),
+    );
+    expect(untouched.rows[0]!.state).toBe('active');
+
+    // The same holder cannot re-acquire the expired generation either.
+    const sameHolder = await acquireExecutionLease(
+      testDatabase.pool,
+      repository.id,
+      { taskId: running.taskId },
+      60_000,
+    );
+    expect(sameHolder.lease).toBeNull();
+    expect(sameHolder.refused).toBe('stop_proof_required');
+    const stillExpired = await testDatabase.pool.query<{
+      expires_at: Date;
+      recovery_state: string;
+    }>(`select expires_at, recovery_state from runtime_leases where id = $1`, [first.lease!.id]);
+    expect(stillExpired.rows[0]!.expires_at.toISOString()).toBe(
+      expired.rows[0]!.expires_at.toISOString(),
+    );
+    expect(stillExpired.rows[0]!.recovery_state).toBe('required');
+    expect(live.rows[0]!.expires_at).toBeInstanceOf(Date);
   });
 
   it('refuses a replacement until the old execution is proven stopped, then fences a new generation', async () => {

@@ -303,10 +303,12 @@ export async function renewExecutionLease(
   leaseId: string,
   ttlMs: number,
 ): Promise<boolean> {
+  // An expired generation is fenced: it may only be replaced after a recorded
+  // stop proof, never revived by a late heartbeat/renewal.
   const result = await pool.query(
     `update runtime_leases
         set heartbeat_at = now(), expires_at = now() + make_interval(secs => $2)
-      where id = $1 and state = 'active'`,
+      where id = $1 and state = 'active' and expires_at > now()`,
     [leaseId, ttlMs / 1000],
   );
   return (result.rowCount ?? 0) > 0;

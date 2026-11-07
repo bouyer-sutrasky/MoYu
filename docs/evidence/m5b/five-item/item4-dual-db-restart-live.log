@@ -1,0 +1,111 @@
+# item 4 — dual-store restart reconciliation (Bridge SQLite + dispatcher PostgreSQL)
+
+recorded=2026-11-07T15:06Z (Asia/Shanghai 23:06)
+base_head=3278fb0e2e248dcaf32a59aba791a15339699b2a
+postgres=postgres://moyu@127.0.0.1:55432/m5b_e2e_manual (isolated)
+bridge=http://127.0.0.1:3403 profile=m5b build=m5b-admission-build21 MOYU_REQUIRE_ADMISSION=1
+repository row: full_name=Bouyer12/m5a-beta-adf10ad9 bridge_url=http://127.0.0.1:3398 (non-empty;
+the 3398 loopback proxy forwards to 3403 and was used only to drop one HTTP response in item 2)
+runtime_credentials_ref=MOYU_BRIDGE_TOKEN
+task=dd5dbf2c-15da-4aea-8ca3-eaa68c5c4682 ticket=eb8f95ad49e3c1bcbe301697b4f6a54a
+bridge state=/root/.dsh-m5/state/m5b (SQLite + bridge/events.jsonl)
+
+## Restart commands and PIDs
+
+bridge_old=2107062
+dispatcher_old=2112165
+kill -TERM 2107062
+for i in $(seq 1 60); do kill -0 2107062 2>/dev/null || break; sleep 1; done
+MOYU_PLATFORM_URL=http://127.0.0.1:4502 MOYU_PLATFORM_TOKEN=*** \
+MOYU_BRIDGE_TOKEN=*** MOYU_BRIDGE_HOST=127.0.0.1 MOYU_BRIDGE_PORT=3403 \
+MOYU_REQUIRE_ADMISSION=1 LOCAL_TEST_API_KEY=dummy DSH_HOME=/root/.dsh-m5 \
+  /usr/bin/dsh --profile m5b --no-open >> /tmp/m5b-upgrade/bridge-restart.log 2>&1 &
+bridge_new=2114387 (healthz {"ok":true,"configured":true})
+
+kill -TERM 2112165
+DATABASE_URL=postgres://moyu@127.0.0.1:55432/m5b_e2e_manual MOYU_BRIDGE_TOKEN=*** \
+NODE_ENV=test LOG_LEVEL=info node apps/dispatcher/dist/main.js &
+dispatcher_new=2114545
+{"event":"dispatcher.ready","nodeEnv":"test"}
+{"event":"reconcile.task","taskId":"dd5dbf2c-15da-4aea-8ca3-eaa68c5c4682",
+ "previous":"running","state":"running","contradictory":false}
+
+The same 3403 instance was upgraded from the older m4 bundle to m5b-admission-build21 before
+this measurement (2071068 -> 2104588, then 2104588 -> 2107062) so the dispatcher actually
+coupled to an admission-aware runtime; 2107062 -> 2114387 is the measured dual-store restart.
+
+## Pre/Post field-by-field comparison
+
+Bridge ticket GET /bridge/v1/tickets/eb8f95ad49e3c1bcbe301697b4f6a54a
+| field | pre | post | verdict |
+| --- | --- | --- | --- |
+| ticketId | eb8f95ad49e3c1bcbe301697b4f6a54a | same | identical |
+| state | running | running | identical |
+| assignmentId | 2b50ee7a80093c2ee5d2eab4071593e5 | same | identical |
+| admission | 3d626c99-e624-4d8c-9911-7e051013d381 / 2000000000002 | same | identical |
+| paused | null | null | identical |
+| base | Bouyer12/m5a-beta-adf10ad9 main 4f4639ceb87693cc00e3c87e8cfa168074141ce0 | same | identical |
+| model | local-test/local-test | same | identical |
+| execution.directory | /root/.dsh-m5/worktrees/m5b/fix-typo-api-contracts-eb8f95ad49e3 | same | identical |
+| report | waiting, 2026-11-07T14:59:05.733Z | same | identical |
+
+PostgreSQL (same isolated DB; values as json_build_object snapshots)
+| row | pre | post | verdict |
+| --- | --- | --- | --- |
+| task.state | running | running | identical |
+| task.upstream_ticket_id | eb8f95ad49e3c1bcbe301697b4f6a54a | same | identical |
+| task.runtime_lease_id | 3d626c99-e624-4d8c-9911-7e051013d381 | same | identical |
+| task.stopped_at / stop_evidence | null / {} | null / {} | identical |
+| delivery workspace:e2e-launch-3 | delivered, attempt 1, lease b177c126.../2000000000001 | same | identical |
+| delivery workspace:e2e-replay-1 | delivered, attempt 2, lease 3d626c99.../2000000000002, delivered_at 22:59:06.662204+08 | same | identical |
+| active lease | 3d626c99-e624-4d8c-9911-7e051013d381 / 2000000000002 / active | same | identical (expiry heartbeated, generation unchanged) |
+| released lease | b177c126-e945-4b75-9f05-dd7ce0662f80 / 2000000000001 / released | same | identical |
+| runtime_cursors.cursor | 100 | 100 immediately after restart; 102 after the post-restart delivery below | advances |
+
+The task and both deliveries carry PG lease ids. The replay delivery carries
+runtime_lease_id=3d626c99-e624-4d8c-9911-7e051013d381, fencing_token=2000000000002,
+matching the ticket's admission and the active lease; the task carries the same lease.
+
+## Cursor actually advances after the restart (not just "state stayed the same")
+
+A post-restart message was delivered through the same dispatcher:
+  message=694c2620-f266-4ab9-ba0e-4e8e3a31c1ae delivery=5fd0301f-673a-476b-8785-2857ad043f09
+  triggerId=workspace:e2e-postrestart-1
+  {"event":"delivery.delivered","messageId":"694c2620-f266-4ab9-ba0e-4e8e3a31c1ae","result":"stored","attempt":1}
+  PG row: delivered, attempt 1, runtime_lease_id=3d626c99-e624-4d8c-9911-7e051013d381,
+          fencing_token=2000000000002
+  runtime_cursors.cursor: 100 -> 102
+Bridge events consumed in the advance: 101 task.progress, 102 message.read
+(triggerId=workspace:e2e-postrestart-1).
+
+## Expired lease refuses renewal (red -> green, real PostgreSQL)
+
+test=apps/dispatcher/test/integration/leases.integration.test.ts
+      "refuses to renew an expired lease and keeps its generation fenced"
+command:
+  TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
+    corepack pnpm --filter @moyu/dispatcher exec vitest run \
+    test/integration/leases.integration.test.ts -t "refuses to renew an expired lease" --reporter=verbose
+
+red before fix (base head 3278fb0):
+  × refuses to renew an expired lease and keeps its generation fenced 23ms
+    → expected true to be false // Object.is equality
+  Tests 1 failed | 4 skipped (5)
+
+green after fix:
+  ✓ refuses to renew an expired lease and keeps its generation fenced 18ms
+  Tests 1 passed | 4 skipped (5)
+
+The test asserts: a live renewal succeeds; after `expires_at` is moved into the past,
+`renewExecutionLease` returns false and leaves `expires_at` and `state='active'` untouched;
+the same holder's `acquireExecutionLease` returns refused=stop_proof_required and the row's
+expiry is still not extended. The fix adds `and expires_at > now()` only to the explicit
+renewal statement; the maintenance queries in operations.ts keep their documented
+"expiry alone never frees the slot" semantics.
+
+## Verdict
+
+Both stores were restarted (bridge 2107062 -> 2114387, dispatcher 2112165 -> 2114545);
+ticket/assignment/admission/base/model/worktree and PG task/delivery/lease link are identical
+field by field, the sync cursor advanced 100 -> 102 on post-restart traffic, and an expired
+lease cannot be renewed or re-acquired without a stop proof. Item 4 accepted.
