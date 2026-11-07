@@ -1,0 +1,32 @@
+# 最终 dispatcher 产物溯源
+
+recorded=2026-11-07T16:10:57Z
+branch=agent/m5b-hardening-full
+source_head=f953c88b3efd2c39bca05bca1598477cc620119f
+base_main=4d36024efdec1f86d5f74cf13f625539c93ab46f
+node=v24.22.2
+pnpm=11.7.0
+
+## 构建
+command:
+  PATH=/opt/moyu-node24/bin:$PATH corepack pnpm build
+result: exit 0
+
+## 产物
+apps/dispatcher/dist/main.js  sha256=1798e005cd247c2d6464b287e5b7d10d87bc0dcda8ebd6d933f0ae95718e5051
+apps/dispatcher/dist/main.js  bytes=212166
+
+## 守卫是否在产物里（关键：证明跑的是最终源码，不是旧 dist）
+grep -c 'cannot be proven current'        -> 1
+grep -c 'running under a different admission' -> 1
+grep -c 'stale_generation'                 -> 1
+grep -c 'admissionProjection'              -> 2
+
+## 旧产物对照（合并进来但缺守卫的那份）
+apps/dispatcher/dist/main.js 旧: 211014 bytes, 2026-11-07 22:56
+apps/dispatcher/dist/main.js 新: 212166 bytes（见上）
+
+## 使用前提（重要）
+本产物构建自 PR #30 的分支，尚未合并进 main。按用户指定优先级，
+现场矩阵必须在「两条租约红测 + 0014 回滚」落地后才能开跑，
+因此本产物用于合并后的同一运行复验，不得作为 M5-B 全线通过的依据。
