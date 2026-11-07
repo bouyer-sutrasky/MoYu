@@ -1,0 +1,71 @@
+# item 1d — 两种入口顺序（GitHub→Web、Web→GitHub）
+
+探测仓库：`bouyer-sutrasky/m4-github-probe`（public），issue #1。
+暂存矩阵实例的 GitHub source 已指向它、策略允许 `sutrasky`（见上一份日志的追加段）。
+
+## GitHub→Web：通过
+
+真实输入是所有者第三次评论（**显式 @Bouyer12**，comment id 6714586352，2026-11-07T23:41:14Z）：
+
+```
+## trigger
+{"id": "91be173c56ec29bcc7fea330f9c4bd3d", "source": "github", "actor": {"source":"github","id":"sutrasky"},
+ "human": true, "at": "2026-11-07T23:41:14.000Z", "threads": [{"source":"github","id":"1"}],
+ "url": "https://github.com/bouyer-sutrasky/m4-github-probe/issues/1#issuecomment-6714586352"}
+
+## thread github:1 subscriptions: ['cb8c984fdbc46817f820f5c17f0d389c']
+
+## decision
+{"id": "bdd47f309676309b55661008c3520224", "evalId": "777cf8df4fe688c7c211699b189553bd",
+ "threadKey": "github:1", "triggerIds": ["91be173c56ec29bcc7fea330f9c4bd3d"],
+ "kind": "accept", "reason": [{"code": "explicitRouted"}], "at": "2026-11-07T23:41:24.539Z"}
+
+## 平台任务（Web 侧）
+ f5992d0e-8c1a-4a3f-9de3-0659d39c73aa | running | version 4 | upstream_ticket_id cb8c984fdbc46817f820f5c17f0d389c
+ conversation f9dbf8c4-2b39-473a-857e-2d7f28224646 | "Fix README probe line"
+
+## Web 侧真实 API（GET /api/v1/conversations/f9dbf8c4-…）
+{"id":"f9dbf8c4-…","mode":"work","executionMode":"execute","source":"github","externalKey":"github:1",
+ "externalUrl":"https://github.com/bouyer-sutrasky/m4-github-probe/issues/1#issuecomment-6714586352",
+ "title":"Fix README probe line","createdAt":"2026-11-07T23:41:25.327Z","task":{"id":"f5992d0e-…"}}
+
+## 外部副作用计数
+worker_sessions=1   runtime_tickets=1   platform_tasks=1
+```
+
+时间线：评论 23:41:14 → trigger 落库 23:41:15 → decision(accept, explicitRouted) **23:41:24**（10 秒）
+→ 平台 conversation/task **23:41:25** → 运行时 worker assignment 启动 **23:41:31**。
+
+**前两次失败的对照**（同一条 issue、同一发送者）：未 @ 提及 agent 时准入单元格是 `listedUnaddressed`，
+`orchestrator_route` 的 `accept` 被明确拒绝：
+`"An accept through orchestrator_route is for explicit requests from allowed senders; assess proactive candidates with
+orchestrator_eval and orchestrator_eval_decide"`，两次都以 `kind="unavailable" reason=[{"code":"timeout"}]` 收场。
+所以「点名」是这条入口从候选变成票的必要条件。
+
+## Web→GitHub：按真实实现记录
+
+**观察到的唯一外发写入是接受时的回执**，在 accept 后 12 秒出现：
+
+```
+$ gh api repos/bouyer-sutrasky/m4-github-probe/issues/1/comments
+{"id": 6714588079, "user": "Bouyer12", "created_at": "2026-11-07T23:41:26Z",
+ "body": "On it: updating the README probe line.\n\n<!-- dsh-superagent:ack:91be173c56ec29bcc7fea330f9c4bd3d -->"}
+```
+
+outbox 里也只有这一条：`ack:91be173c…`（channel `github:github:1`，address 指到该评论）。
+
+**从 Web 侧追加消息，没有产生新的 GitHub 评论**，而且这条消息根本没到 runtime —— 被 Bridge 以 409 永久拒绝：
+
+```
+2026-11-07T23:42:43Z moyu-dispatcher delivery.failed messageId=66cd4860-ee8e-42ee-be48-cbae0149f546
+  error="Runtime Bridge returned HTTP 409"  msg="delivery was rejected permanently"
+```
+
+（该 ticket 的 assignment 当时正在运行、刚报过 `progress`；平台侧 task 仍是 `running`。）
+
+## 判定
+
+| 方向 | 结果 | 依据 |
+| --- | --- | --- |
+| GitHub→Web | **通过** | trigger → decision(accept/explicitRouted) → runtime ticket → 平台 conversation+task，Web API 可见且 `source=github`、`externalUrl` 指向该评论；耗时 10-11 秒 |
+| Web→GitHub | **部分**（按真实实现） | 接受回执确实写回了 GitHub（带 `dsh-superagent:ack:` 去重标记）；但 Web 侧追加的消息被 Bridge 以 **409** 永久拒绝，没有到达 runtime，因此也没有后续 GitHub 写入 |
