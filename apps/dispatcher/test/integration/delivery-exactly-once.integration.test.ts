@@ -31,7 +31,9 @@ describe('delivery exactly-once on real PostgreSQL', () => {
     conversationId = conversation.rows[0]!.id;
   }, 60_000);
 
-  afterAll(async () => { await db.drop(); });
+  afterAll(async () => {
+    await db.drop();
+  });
 
   it('keeps one delivery row and one effective delivery across 5 concurrent rounds', async () => {
     for (let round = 1; round <= 5; round += 1) {
@@ -46,31 +48,44 @@ describe('delivery exactly-once on real PostgreSQL', () => {
          values ($1, $2) on conflict (message_id) do nothing`,
         [messageId, `workspace:${messageId}`],
       );
-      const inserts = await Promise.all(Array.from({ length: 4 }, () =>
-        db.pool.query(
-          `insert into deliveries (message_id, upstream_trigger_id)
+      const inserts = await Promise.all(
+        Array.from({ length: 4 }, () =>
+          db.pool.query(
+            `insert into deliveries (message_id, upstream_trigger_id)
            values ($1, $2) on conflict (message_id) do nothing returning id`,
-          [messageId, `workspace:${messageId}`],
+            [messageId, `workspace:${messageId}`],
+          ),
         ),
-      ));
-      expect(inserts.every(result => result.rowCount === 0)).toBe(true);
-      const delivered = await Promise.all(Array.from({ length: 4 }, () =>
-        db.pool.query(
-          `update deliveries set state = 'delivered', delivered_at = now()
+      );
+      expect(inserts.every((result) => result.rowCount === 0)).toBe(true);
+      const delivered = await Promise.all(
+        Array.from({ length: 4 }, () =>
+          db.pool.query(
+            `update deliveries set state = 'delivered', delivered_at = now()
             where message_id = $1 and delivered_at is null returning id`,
-          [messageId],
+            [messageId],
+          ),
         ),
-      ));
+      );
       expect(delivered.reduce((sum, result) => sum + (result.rowCount ?? 0), 0)).toBe(1);
-      const row = await db.pool.query<{ n: string; delivered: string; attempts: number; trigger: string }>(
+      const row = await db.pool.query<{
+        n: string;
+        delivered: string;
+        attempts: number;
+        trigger: string;
+      }>(
         `select count(*) as n, count(delivered_at) as delivered,
                 max(attempt_count) as attempts, min(upstream_trigger_id) as trigger
            from deliveries where message_id = $1`,
         [messageId],
       );
       rounds.push({
-        round, messageId, rows: Number(row.rows[0]!.n), delivered: Number(row.rows[0]!.delivered),
-        attempts: row.rows[0]!.attempts, triggerIds: [row.rows[0]!.trigger],
+        round,
+        messageId,
+        rows: Number(row.rows[0]!.n),
+        delivered: Number(row.rows[0]!.delivered),
+        attempts: row.rows[0]!.attempts,
+        triggerIds: [row.rows[0]!.trigger],
       });
       expect(Number(row.rows[0]!.n)).toBe(1);
       expect(Number(row.rows[0]!.delivered)).toBe(1);
