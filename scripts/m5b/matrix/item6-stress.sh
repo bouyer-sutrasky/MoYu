@@ -131,20 +131,11 @@ echo "phase1_postgres_result=$(head -1 "$RUN/stress-pg.out" 2>/dev/null)"
 echo
 
 echo "## phase 2 — a labelled filler in the same slice drives the aggregate to the 8 GiB ceiling"
-echo "\$ systemd-run --slice=${M5B_MATRIX_SLICE} --unit=${FILL_UNIT%.service} -p MemoryMax=infinity python3 -c 'hold ${FILL_MB} MiB'"
-systemd-run --slice="$M5B_MATRIX_SLICE" --unit="${FILL_UNIT%.service}" --collect \
-  -p MemoryAccounting=yes --description="M5-B matrix filler (not a service)" \
-  /usr/bin/python3 -c "
-import time
-chunks = []
-step = 64 * 1024 * 1024
-held = 0
-while held < ${FILL_MB} * 1024 * 1024:
-    chunks.append(bytearray(step))
-    held += step
-    time.sleep(0.05)
-time.sleep(120)
-" >/dev/null 2>&1 || echo "filler did not start"
+# The synthetic member goes through stress-member.sh, which refuses to allocate
+# unless the process proves it is inside the slice and unless the request fits the
+# slice's memory.max and its current headroom.
+echo "\$ scripts/m5b/matrix/stress-member.sh ${FILL_MB} fill"
+bash "$M5B_MATRIX_ROOT/scripts/m5b/matrix/stress-member.sh" "$FILL_MB" fill || echo "REFUSED: no synthetic member started"
 BASE2_HIGH=$(events_field high)
 BASE2_MAX=$(events_field max)
 BASE2_OOM=$(events_field oom_kill)

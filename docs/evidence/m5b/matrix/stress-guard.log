@@ -1,0 +1,34 @@
+# item 1 之前的硬约束：合成压力成员的两条断言
+
+按 2026-11-07T20:42Z 的要求，这两条不是写在文档里，而是实现在 `scripts/m5b/matrix/stress-member.sh` 里，
+四条断言都在现场跑过，原始输出如下。
+
+```
+$ scripts/m5b/matrix/stress-member.sh 64 probe1            # 一个成员，落位后确认
+slice=m5bmatrix.slice memory.max=8589934592 memory.current=452632576 requested=67108864 headroom=8137302016
+$ systemd-run --slice=m5bmatrix.slice --unit=m5bmatrix-stress-probe1 … (one member, confirmed before the next)
+unit=m5bmatrix-stress-probe1.service ControlGroup=/m5bmatrix.slice/m5bmatrix-stress-probe1.service
+PLACED: the member is inside m5bmatrix.slice
+member_state=active cgroup_current=14897152
+OK: 64 MiB synthetic member running inside m5bmatrix.slice as m5bmatrix-stress-probe1.service
+（随后 systemctl stop，slice memory.current 从 464429056 回落到 426909696）
+
+$ scripts/m5b/matrix/stress-member.sh 9000 probe2          # 断言 2：不得超过 memory.max
+slice=m5bmatrix.slice memory.max=8589934592 memory.current=452632576 requested=9437184000 headroom=8137302016
+REFUSED: 9437184000 B exceeds the slice memory.max 8589934592 B; synthetic pressure may not exceed the ceiling
+
+$ scripts/m5b/matrix/stress-member.sh 7900 probe3          # 断言 2b：不得超过当前余量
+slice=m5bmatrix.slice memory.max=8589934592 memory.current=463118336 requested=8283750400 headroom=8126816256
+REFUSED: 8283750400 B exceeds the current headroom 8126816256 B; start a smaller member
+
+$ python3 -c '<the allocator from stress-member.sh>' 64 m5bmatrix.slice   # 断言 1：分配前先校验落位
+REFUSED: this process is in cgroup '/user.slice/user-0.…/dsh-subprocess-….scope', not inside /m5bmatrix.slice/; no memory allocated
+exit=4
+```
+
+要点：
+- **分配前校验**：分配器读自己的 `/proc/self/cgroup`，路径不以 `/m5bmatrix.slice/` 开头就
+  `exit 4`，一个字节都不分配（上面第 4 条就是它在切片外的实测结果）。
+- **逐个启动、逐个确认**：启动后必须拿到 `systemctl show -p ControlGroup` 且以 `/m5bmatrix.slice/`
+  开头，否则立刻 `systemctl stop` 并 `exit 6`；脚本一次只起一个成员。
+- **总额不超 8 GiB**：请求超过 `memory.max` 直接拒绝（第 2 条），超过当前余量也拒绝（第 3 条）。

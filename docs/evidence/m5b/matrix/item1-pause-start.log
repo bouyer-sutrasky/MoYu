@@ -1,0 +1,47 @@
+# item 1c — pause 与 start 三相位（本轮只测到第一相位）
+
+原始输出如下。入口：真实 Web API 建 task（`POST /api/v1/conversations` + message），
+pause/resume 走真实 `POST /api/v1/tasks/:id/pause|resume`。计数用的是「真实执行次数」而不是状态字段：
+`worker_sessions` 数的是 runtime 为该 ticket 建的 worker session 目录，`lease_rows` 读的是
+`runtime_leases` 的真实行。
+
+# item 1c — pause and start in three phases (real Web entrance, real pause/resume)
+recorded=2026-11-08T04:47:13+08:00
+dispatcher_artifact=0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6
+
+==============================================================
+## phase: c1-before-start (pause before-start)
+  created_at=2026-11-08T04:47:13+08:00 task=acddaa35-54d9-4e4c-8f0f-bddf35ba075c
+  ticket_created_at=2026-11-08T04:47:16+08:00 ticket=380fa5ec6401c1ecbf50daef13ce6317
+  $ pause while state=queued
+  paused_at=2026-11-08T04:47:16+08:00
+  [paused] platform_state=stopping ticket=380fa5ec6401c1ecbf50daef13ce6317
+{"assignmentId": "6050ebfe18476d388a0d14896424bbd3", "ended": null, "paused": null, "report": null, "runtime_state": "queued"}
+  [paused] worker_sessions=0 lease_rows=active|task:acddaa35-54d9-4e4c-8f0f-bddf35ba075c 
+  [after-8s] platform_state=blocked ticket=380fa5ec6401c1ecbf50daef13ce6317
+{"assignmentId": "6050ebfe18476d388a0d14896424bbd3", "ended": null, "paused": {"stoppedAt": null}, "report": null, "runtime_state": "stopping"}
+  [after-8s] worker_sessions=0 lease_rows=active|task:acddaa35-54d9-4e4c-8f0f-bddf35ba075c 
+  $ resume (a real delivery)
+  resume rejected
+  resumed_at=2026-11-08T04:47:25+08:00
+
+## 判定（本轮）
+
+**第一相位 `pause before start`：测得并通过了「证据」，但结论是缺陷 —— 不通过。**
+
+时间线（同上）：
+- `04:47:13` 建 task，`04:47:16` runtime 建票 `380fa5ec…`，`state=queued`（**worker 还没启动**，
+  `worker_sessions=0` 可以证明）；
+- 此时 pause：runtime 票进入 `stopping`，但 `paused.stoppedAt = null`；
+- 8 秒后仍是 `stopping`、`stoppedAt` 依旧为 null，平台投影从 `stopping` 变成 **`blocked`**；
+- resume 被拒（`pauseStopping`：停止尚未落地，`stoppedAt` 还是空）。
+
+**后果是这张任务被永久卡住**：`blocked`、`worker_sessions=0`（从来没有执行过）、
+而 `runtime_leases` 里仍有一行 `active|task:acddaa35…` 被它自己持有 —— 也就是「先暂停再启动」这条入口序列
+会留下一个既不能 resume、又占着执行名额的死票。这与本项要验的「全入口统一租约、停止后替代」直接冲突。
+
+原因（代码层）：`assignments.ts` 的 pause 只有在「有 assignment 在跑、执行器回报 stoppedAt」时才落停；
+一个 `queued` 状态没有任何执行器可回报，`stoppedAt` 永远为空，于是 `resume` 的
+`if (!ticket.paused.stoppedAt) throw new UserError('pauseStopping')` 永远拒绝。
+
+**其余相位与两种入口顺序：本轮未测**，见下面「未测与原因」。
