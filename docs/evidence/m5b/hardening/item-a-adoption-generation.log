@@ -1,0 +1,31 @@
+# item A — 过期旧租约不得被跨代次 adopt
+
+recorded=2026-11-07T16:04:02Z
+branch=agent/m5b-hardening-full
+base_main=4d36024efdec1f86d5f74cf13f625539c93ab46f
+test=apps/dispatcher/test/integration/leases.integration.test.ts
+
+## 缺陷
+reconcileLeases 只要 snapshot.state 属于 queued/discussing/running/starting 就把已过期租约
+延长 30 分钟，未校验 snapshot.admission 是否等于本代次。另一代次（或没有 admission）时旧代次被复活。
+
+## Red（只留测试、移除源码守卫）
+command:
+  TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
+    corepack pnpm --filter @moyu/dispatcher exec vitest run \
+    test/integration/leases.integration.test.ts --reporter=verbose
+output:
+   × test/integration/leases.integration.test.ts > repository execution lease on real PostgreSQL > does not adopt an expired lease when the runtime reports a different admission 20ms
+   × test/integration/leases.integration.test.ts > repository execution lease on real PostgreSQL > does not adopt an expired lease when the runtime reports no admission 13ms
+  ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+   Test Files  1 failed (1)
+        Tests  2 failed | 6 passed (8)
+
+## Green（守卫就位）
+output:
+   Test Files  1 passed (1)
+        Tests  8 passed (8)
+
+## 判定
+red 段恰好 2 条新回归失败（跨代次 / 无 admission），green 段 8/8 通过：过期代次不再被延长，
+保持 state=active、recovery_state=blocked、waiting_for=execution_stop_proof，且不产生 adopted 事件。
