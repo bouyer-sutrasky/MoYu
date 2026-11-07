@@ -111,3 +111,26 @@ local-provider.jsonl 不存在（0 次模型请求）
 结果 bridge 直接没起来（`healthz` 不通），也没产生任何 trigger。所以 GitHub 入口的卡点目前**不是白名单**，
 而是轮询本身没有把这条评论读进来 —— 需要读源码里那条 poll 循环（`src/sources/github.ts` 的
 `commentTrigger`/`scope`/`pollEach` 组合与 `POLL_HORIZON_MS`）才能定位，属于下一轮的工作。
+
+## 定位结果：GitHub 入口会跳过 agent 账号自己的评论（代码级原因）
+
+读完 `src/sources/github.ts` 的仓库轮询后，原因很明确，不是白名单也不是游标：
+
+```ts
+// async function readStream(...) — repository-wide streams
+for (const item of items) {
+  if (stopped(ctx, round)) throw new Error('The GitHub Source stopped during the poll')
+  if (sameName(item.user.login, login)) continue      // ← agent 账号自己发的条目一律跳过
+  ...
+}
+```
+
+`login` 就是部署里 agent 的账号（本例 `Bouyer12`）。所以我那两条真实评论在流里被直接 `continue` 掉，
+既不会 `ctx.receive(commentTrigger(...))`，也就不会有 trigger → decision → ticket。
+白名单 `allowed` 是**后面**才用到的过滤，两次实验的 0 条 trigger 都发生在这一步之前。
+
+**结论**：本项要求的两种入口顺序都需要“**另一个账号**在测试仓库里说话”，而这套环境里只有 agent 账号
+（`Bouyer12`）能访问该私有仓库；`sutrasky` 正是策略允许的唯一发送者，却看不到这个私有仓库。
+所以「GitHub→Web」「Web→GitHub」两条顺序在当前环境下**无法由 agent 单方面造出真实输入**，
+这是环境缺口，不是产品缺陷 —— 要么让所有者账号获得该测试仓库的访问权并留一条评论，
+要么把这两个子项如实记为「当前环境不可测」。
