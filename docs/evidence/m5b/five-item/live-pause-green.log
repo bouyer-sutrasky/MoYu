@@ -1,0 +1,25 @@
+# live pause/resume green run
+head=2d9d0a1b8d617a55aed3a60667b531ec4fa3deef (pre-commit)
+cwd=/root/src/leases-resources-m5b-a59cb491b2e0
+command: MOYU_BRIDGE_URL=http://127.0.0.1:3403 MOYU_BRIDGE_REPOSITORY=Bouyer12/m5a-beta-adf10ad9 MOYU_BRIDGE_TICKET_ID=0cc19388c4de160737efeabf8e096311 corepack pnpm --filter @moyu/dispatcher exec vitest run test/integration/bridge-pause-resume.real.integration.test.ts
+
+Scope: all 9 workspace projects
+✓ Lockfile passes supply-chain policies (verified 2d ago)
+Lockfile is up to date, resolution step is skipped
+Already up to date
+
+Done in 1s using pnpm v11.7.0
+
+ RUN  v3.2.7 /root/src/leases-resources-m5b-a59cb491b2e0/apps/dispatcher
+
+ ✓ test/integration/bridge-pause-resume.real.integration.test.ts (1 test) 606ms
+   ✓ live Bridge pause and resume over HTTP > pauses to stopped and resumes with a newer generation  574ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  20:49:24
+   Duration  897ms (transform 50ms, setup 0ms, collect 44ms, tests 606ms, environment 0ms, prepare 80ms)
+
+
+pgrep worker residual:
+2040011 bash -c cd /root/src/leases-resources-m5b-a59cb491b2e0 && HEAD=$(git rev-parse HEAD); { echo "# live pause/resume green run"; echo "head=$HEAD (pre-commit)"; echo "cwd=$(pwd)"; echo "command: MOYU_BRIDGE_URL=http://127.0.0.1:3403 MOYU_BRIDGE_REPOSITORY=Bouyer12/m5a-beta-adf10ad9 MOYU_BRIDGE_TICKET_ID=0cc19388c4de160737efeabf8e096311 corepack pnpm --filter @moyu/dispatcher exec vitest run test/integration/bridge-pause-resume.real.integration.test.ts"; echo; cat /tmp/live-green.log; echo; echo "pgrep worker residual:"; pgrep -af 'worker-0cc19388c4de160737efeabf8e096311' || echo "(none)"; } > docs/evidence/m5b/five-item/live-pause-green.log git add apps/dispatcher/test/integration/bridge-pause-resume.real.integration.test.ts && git add -f docs/evidence/m5b/five-item/live-pause-green.log && git commit -q -F - <<'EOF' test(dispatcher): run live Bridge pause/resume green on an allowed ticket  - Use the policy-allowed workspace actor id and support a seeded ticket via   MOYU_BRIDGE_TICKET_ID; otherwise create via the real trigger endpoint. - Green run against 127.0.0.1:3403: Tests 1 passed, stopped state and pause   evidence asserted, new assignment after resume. EOF git push origin agent/leases-resources-m5b-a59cb491b2e0 2>&1 | tail -2; git rev-parse HEAD

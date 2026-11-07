@@ -73,27 +73,29 @@ describe('live Bridge pause and resume over HTTP', () => {
     async () => {
       const conversationId = randomUUID();
       const triggerId = `m5b-pause-${randomUUID()}`;
-      const createdTrigger = await bridge('/bridge/v1/triggers', {
-        method: 'POST',
-        body: JSON.stringify({
-          triggerId,
-          conversationId,
-          messageId: randomUUID(),
-          replyToMessageId: null,
-          actor: { id: 'm5b-probe' },
-          text: 'M5-B pause/resume probe',
-          at: new Date().toISOString(),
-          executionSpec: {
-            repository,
-            baseBranch: 'main',
-            baseCommit: null,
-            model: null,
-            mode: 'discuss',
-          },
-        }),
-      });
-      expect(createdTrigger.status).toBe(200);
-      const ticketId = await ticketIdFor(triggerId);
+      const createdTrigger = process.env.MOYU_BRIDGE_TICKET_ID
+        ? null
+        : await bridge('/bridge/v1/triggers', {
+            method: 'POST',
+            body: JSON.stringify({
+              triggerId,
+              conversationId,
+              messageId: randomUUID(),
+              replyToMessageId: null,
+              actor: { id: process.env.MOYU_BRIDGE_ACTOR ?? 'm5b-probe' },
+              text: 'M5-B pause/resume probe',
+              at: new Date().toISOString(),
+              executionSpec: {
+                repository,
+                baseBranch: 'main',
+                baseCommit: null,
+                model: null,
+                mode: 'discuss',
+              },
+            }),
+          });
+      if (createdTrigger) expect(createdTrigger.status).toBe(200);
+      const ticketId = process.env.MOYU_BRIDGE_TICKET_ID ?? (await ticketIdFor(triggerId));
       created.push(ticketId);
       const before = await ticket(ticketId);
       expect(before.state).not.toBe('stopped');
