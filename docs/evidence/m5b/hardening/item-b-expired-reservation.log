@@ -1,14 +1,14 @@
 # item B — 过期代次不得借匹配 reservation 进入投影
 
-recorded=2026-11-07T16:05:49Z
-base_commit=54b4b0dca906ba12154771f637171b71e5c3edad
-test=apps/dispatcher/test/integration/expired-reservation-projection.integration.test.ts
-
-## 缺陷
-applyEvent 只在事件身份与预留记录“不匹配”时才判 stale。当事件的 assignment/lease/fence
-恰好等于历史 claimed 预留时，即使 active 租约已过期也照样投影，queued 被改成 running。
+recorded=2026-11-07T16:17:09Z
+defect: applyEvent 只在事件身份与预留“不匹配”时判 stale。当事件的 assignment/lease/fence
+        恰好等于历史 claimed 预留时，即使 active 租约已过期也照样投影，queued 被改成 running。
 
 ## Red（守卫未加）
+command:
+  TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
+    corepack pnpm --filter @moyu/dispatcher exec vitest run \
+    test/integration/expired-reservation-projection.integration.test.ts --reporter=verbose
 output:
    × test/integration/expired-reservation-projection.integration.test.ts > an expired generation cannot project through a matching reservation > keeps the task queued when the only matching lease has expired 17ms
      → expected 'running' to be 'queued' // Object.is equality
@@ -22,7 +22,11 @@ output:
    Test Files  1 passed (1)
         Tests  1 passed (1)
 
-## 既有投影回归不受影响
+## 既有投影回归（suite: recovery-projection-branches.integration.test.ts）
+command:
+  TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
+    corepack pnpm --filter @moyu/dispatcher exec vitest run \
+    test/integration/recovery-projection-branches.integration.test.ts --reporter=verbose
 output:
    Test Files  1 passed (1)
         Tests  3 passed (3)

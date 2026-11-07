@@ -39,6 +39,21 @@ describe('0014 rollback script on real PostgreSQL', () => {
     );
   });
 
+  it('refuses a second rollback instead of silently deleting nothing', async () => {
+    const database = await createTestDatabase();
+    databases.push(database);
+
+    await database.pool.query(downSql);
+    expect(await read(database)).toEqual({ table_present: false, ledger_present: false });
+
+    await expect(database.pool.query(downSql)).rejects.toThrow(/0014 rollback refused/);
+    // The refusal is transactional: nothing is half-applied.
+    expect(await read(database)).toEqual({ table_present: false, ledger_present: false });
+
+    await migrateDatabase(database.db);
+    expect(await read(database)).toEqual({ table_present: true, ledger_present: true });
+  }, 30_000);
+
   it('removes the reservation schema and re-applies it', async () => {
     const database = await createTestDatabase();
     databases.push(database);

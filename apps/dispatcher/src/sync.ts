@@ -215,7 +215,7 @@ async function applyTaskEvent(
       // prove the generation is still live. The event's own lease is looked up
       // only when the generation is already known not to be current, so the
       // happy path pays no extra query.
-      let expiredGeneration = false;
+      let eventLeaseExpired = false;
       if (!currentGeneration) {
         const eventLease = await client.query<{ state: string; expired: boolean }>(
           `select state, (expires_at is not null and expires_at <= now()) as expired
@@ -223,12 +223,12 @@ async function applyTaskEvent(
           [leaseId],
         );
         const eventLeaseRow = eventLease.rows[0];
-        expiredGeneration =
+        eventLeaseExpired =
           eventLeaseRow !== undefined && eventLeaseRow.state === 'active' && eventLeaseRow.expired;
       }
       if (
         !currentGeneration &&
-        (expiredGeneration ||
+        (eventLeaseExpired ||
           (reserved !== undefined &&
             (reserved.assignment_id !== assignmentId ||
               reserved.lease_id !== leaseId ||
