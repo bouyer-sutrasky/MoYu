@@ -1,14 +1,23 @@
-# item2b launch delivery count attempt
-head=6678109b7a8e0e20dcfe4da408dff642118d610a (pre-commit)
-db=/root/.dsh-m5/state/m5b/orchestrator.sqlite ticket=ce045290da163e6e6605b0ac88f6d98d
+# deliveries exactly-once (real PG head 6678109 pre-commit)
+cwd=/root/src/leases-resources-m5b-a59cb491b2e0
+command: TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres corepack pnpm --filter @moyu/dispatcher exec vitest run test/integration/delivery-exactly-once.integration.test.ts
 
-SQL: select kind,count(*) n from effect group by kind
-raw: [{kind:'reply', n:2}]
+SQL per round:
+select count(*), count(delivered_at), max(attempt_count), min(upstream_trigger_id) from deliveries where message_id=$1;
+insert ... on conflict (message_id) do nothing (4 concurrent)
+update ... set delivered_at=now() where delivered_at is null returning id (4 concurrent)
 
-SQL: select count(*) n from effect where kind='launch'
-raw: [{n:0}]
+.                                        | [WARN] Unsupported engine: wanted: {"node":"24.22.2"} (current: {"node":"v22.23.3","pnpm":"11.7.0"})
 
-SQL (node:sqlite): select value from ticket where id=?
-assignments=[e141b5cc452c24e7f61c2597a6af2866, 649e7f1b5cddfb382dca80c906506b3e]
+ RUN  v3.2.7 /root/src/leases-resources-m5b-a59cb491b2e0/apps/dispatcher
 
-verdict: 当前 Bridge SQLite 只持久化 reply effect，没有 launch/outbox 投递记录；无法从投递表统计 exactly-once。assignments 每个代次 1 条，但不能替代并发投递计数。
+stdout | test/integration/delivery-exactly-once.integration.test.ts > delivery exactly-once on real PostgreSQL > keeps one delivery row and one effective delivery across 5 concurrent rounds
+DELIVERY_ROUNDS [{"round":1,"messageId":"5be92fac-3298-43d7-a0f6-31de78492de6","rows":1,"delivered":1,"attempts":0,"triggerIds":["workspace:5be92fac-3298-43d7-a0f6-31de78492de6"]},{"round":2,"messageId":"770dec46-643e-4659-aec4-e049089ee967","rows":1,"delivered":1,"attempts":0,"triggerIds":["workspace:770dec46-643e-4659-aec4-e049089ee967"]},{"round":3,"messageId":"1d73f7b6-62c2-49bf-9e9a-55935c6222dd","rows":1,"delivered":1,"attempts":0,"triggerIds":["workspace:1d73f7b6-62c2-49bf-9e9a-55935c6222dd"]},{"round":4,"messageId":"a21d8420-2577-43bb-b193-f2898a8f20d5","rows":1,"delivered":1,"attempts":0,"triggerIds":["workspace:a21d8420-2577-43bb-b193-f2898a8f20d5"]},{"round":5,"messageId":"27e4c21d-0e52-4919-9a38-023ecf9c6ef8","rows":1,"delivered":1,"attempts":0,"triggerIds":["workspace:27e4c21d-0e52-4919-9a38-023ecf9c6ef8"]}]
+
+ ✓ test/integration/delivery-exactly-once.integration.test.ts (1 test) 456ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  21:27:38
+   Duration  1.46s (transform 191ms, setup 0ms, collect 743ms, tests 456ms, environment 0ms, prepare 77ms)
+
