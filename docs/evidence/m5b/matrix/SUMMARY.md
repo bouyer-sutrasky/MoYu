@@ -7,13 +7,17 @@
 **这是一次不完整的矩阵取证。** 七项里只有第 2 项完整、第 5 项部分完成，
 其余五项没有实测证据，因此不能说 M5-B 通过，也不应据此推进 M6。
 
+> 复审轮（2026-11-07T17:43Z）之后更新：第 2 项已把**非 root** 这一半补齐
+> （所有服务单元 `User=m5bmatrix` / `Uid: 995`，构建测试进程同身份，runtime 在委托的 cgroup 子树里），
+> 见 `item2-boundary-cgroup.log`。第 5 项 paused 的「重启后游标推进」证据仍在补。
+
 | # | 项 | 本轮结论 | 证据 |
 | --- | --- | --- | --- |
 | 1 | 全入口统一租约、停止后替代 | **未做**：GitHub→Web 与 Web→GitHub 顺序、pause 与 start 三处交错、两个调度者的外部副作用计数都没有实测 | — |
-| 2 | 非 root 与统一资源核算 | **本次只做同一受管边界内的计量**（API/PG/dispatcher/supervisor/runtime/构建测试进程同 slice，逐 cgroup 读数 + 真单测进程峰值）；4/6/8 GiB 三档与混合真实负载压力**未做** | `item2-boundary-cgroup.log` |
+| 2 | 非 root 与统一资源核算 | **非 root 已补齐 + 同一受管边界内的计量**：anchor/provider/supervisor/dispatcher/api 全部 `m5bmatrix`(995)、PG `postgres`(111)、runtime 与构建测试进程 995，逐 cgroup 读数；4/6/8 GiB 三档与混合真实负载压力**未做** | `item2-boundary-cgroup.log` |
 | 3 | 4／6／8 GiB 预算与宿主余量 | **未做**：6 GiB 调度阈值与弹性上限没有实证 | — |
 | 4 | 准入、迟滞、OOM | **未做**：A/B 执行、C 排队、解除压力后的有界恢复/回收/清错没有实测 | — |
-| 5 | 重启对账及保持暂停／等待／审阅 | **部分**：`paused` 通过（43 字段全同、双 PID 均变）；`waiting_input` 状态保住但 assignment 被重发；`awaiting_review` **取不到** | `item5-paused-restart.log`、`item5-waiting_input-restart.log`、`item5-awaiting_review-attempt.log` |
+| 5 | 重启对账及保持暂停／等待／审阅 | **部分**：`paused` 字段比对通过（43 字段全同、双 PID 均变），但「重启后游标推进」证据待补；`waiting_input` 状态保住但 assignment 被重发；`awaiting_review` **取不到** | `item5-paused-restart.log`、`item5-waiting_input-restart.log`、`item5-awaiting_review-attempt.log` |
 | 6 | 子进程与聚合 8 GiB 压力 | **未做**：全进程树遍历与孤儿验证、四类服务同切片聚合压力都没有实测 | — |
 | 7 | 状态原因、恢复引导、重试与清错 | **未做**：真实 OOM／重试耗尽／人工恢复／旧错误清除并在重启后保持的闭环没有实测 | — |
 

@@ -50,6 +50,26 @@ echo "memory.events=$(tr '\n' ' ' <"$SLICE_PATH/memory.events")"
 echo "cgroup.controllers=$(cat "$SLICE_PATH/cgroup.controllers")"
 echo
 
+echo "## identity of every unit (non-root check)"
+echo "matrix_identity=$(id -u "$M5B_MATRIX_USER" 2>/dev/null) uid / $(id -g "$M5B_MATRIX_USER" 2>/dev/null) gid  user=$(id -un "$M5B_MATRIX_USER" 2>/dev/null)"
+for unit in "${PREFIX}-pg.service" "${PREFIX}-api.service" "${PREFIX}-dispatcher.service" \
+  "${PREFIX}-supervisor.service" "${PREFIX}-provider.service" "${PREFIX}-anchor.service"; do
+  user_field=$(systemctl show -p User --value "$unit" 2>/dev/null)
+  pid=$(m5b_unit_pid "$unit")
+  uid_line=$(awk '/^Uid:/{print $0}' "/proc/$pid/status" 2>/dev/null)
+  gid_line=$(awk '/^Gid:/{print $0}' "/proc/$pid/status" 2>/dev/null)
+  printf '  %-38s User=%-10s pid=%-8s %s %s\n' "$unit" "${user_field:-<unset>}" "$pid" "$uid_line" "$gid_line"
+  [[ ${user_field:-root} != root ]] || fail "${unit} still runs as root"
+done
+echo "  runtime instance process:"
+for dir in "$M5B_MATRIX_CGROUP_ROOT"/*/; do
+  [[ -d $dir ]] || continue
+  for pid in $(tr '\n' ' ' <"$dir/cgroup.procs" 2>/dev/null); do
+    printf '    %-36s pid=%-8s %s\n' "$(basename "$dir")" "$pid" "$(awk '/^Uid:/{print $0}' "/proc/$pid/status" 2>/dev/null)"
+  done
+done
+echo
+
 echo "## members of the slice (unit, pid, own cgroup)"
 for unit in "${PREFIX}-pg.service" "${PREFIX}-api.service" "${PREFIX}-dispatcher.service" \
   "${PREFIX}-supervisor.service" "${PREFIX}-provider.service"; do
@@ -89,12 +109,16 @@ echo
 echo "## a real build/test process inside the same slice"
 available_before=$(awk '/MemAvailable/{print $2}' /proc/meminfo)
 echo "host_mem_available_before_kb=${available_before}"
+started_at=$(date -Is)
 systemd-run --unit="${PREFIX}-testproc" --slice="$M5B_MATRIX_SLICE" \
+  --uid="$M5B_MATRIX_USER" --gid="$M5B_MATRIX_GROUP" \
   --working-directory="$M5B_MATRIX_ROOT" \
+  --setenv=HOME=/tmp/m5bmatrix \
   --setenv=PATH=/opt/moyu-node24/bin:/usr/bin:/bin \
   --property=MemoryMax=2G --property=MemorySwapMax=0 \
-  /bin/bash -c 'corepack pnpm --filter @moyu/api test 2>&1 | tail -6' >/dev/null 2>&1
+  /bin/bash -c 'echo "test_process_id_u=$(id -u) test_process_id_un=$(id -un)"; corepack pnpm --filter @moyu/api test 2>&1 | tail -6; sleep 4' 
 test_cg=""
+test_user=""
 peak=0
 events=""
 limit=""
@@ -105,11 +129,15 @@ for _ in $(seq 1 600); do
     value=$(cat "/sys/fs/cgroup${cg}/memory.peak" 2>/dev/null || echo 0)
     (( value > peak )) && peak=$value
     events=$(tr '\n' ' ' <"/sys/fs/cgroup${cg}/memory.events" 2>/dev/null || echo "")
+    test_user=$(systemctl show -p User --value "${PREFIX}-testproc.service" 2>/dev/null || true)
     limit=$(cat "/sys/fs/cgroup${cg}/memory.max" 2>/dev/null || echo "")
   fi
   systemctl is-active --quiet "${PREFIX}-testproc.service" || break
   sleep 0.2
 done
+echo "test_process_user=${test_user:-<unit already exited>}"
+journalctl -u "${PREFIX}-testproc.service" --since "$started_at" --no-pager 2>/dev/null \
+  | grep -E "test_process_id_u|Tests " | sed -E 's/^.*(bash\[[0-9]+\]|node\[[0-9]+\]): /  /' | head -4
 echo "test_process_cgroup=${test_cg#/sys/fs/cgroup}"
 echo "test_process_memory_peak_bytes=${peak}"
 echo "test_process_limit_bytes=${limit:-missing}"

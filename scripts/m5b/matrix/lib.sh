@@ -23,13 +23,27 @@ export M5B_MATRIX_PROVIDER_PORT=${M5B_MATRIX_PROVIDER_PORT:-3851}
 export M5B_MATRIX_DB=${M5B_MATRIX_DB:-m5b_matrix}
 export M5B_MATRIX_REPOSITORY=${M5B_MATRIX_REPOSITORY:-Bouyer12/m5a-beta-adf10ad9}
 export M5B_MATRIX_PROFILE=${M5B_MATRIX_PROFILE:-m5b}
-export M5B_MATRIX_DSH_HOME=${M5B_MATRIX_DSH_HOME:-/root/.dsh-m5}
+# The stack gets its own harness home: the supervisor chmods <dshHome>/profiles and
+# <dshHome>/state to 0700, which a non-root identity can only do on directories it
+# owns. The profile is staged from the shared m5b profile.
+export M5B_MATRIX_DSH_HOME=${M5B_MATRIX_DSH_HOME:-$M5B_MATRIX_RUN/dsh-home}
+export M5B_MATRIX_PROFILE_SOURCE=${M5B_MATRIX_PROFILE_SOURCE:-/root/.dsh-m5/profiles/m5b}
+export M5B_MATRIX_USER=${M5B_MATRIX_USER:-m5bmatrix}
+export M5B_MATRIX_GROUP=${M5B_MATRIX_GROUP:-m5bmatrix}
+export M5B_MATRIX_UPSTREAM_BUILD=${M5B_MATRIX_UPSTREAM_BUILD:-/root/src/upstream/m5b-admission-build21}
+# Supervisor-owned state stays inside the run directory so a non-root supervisor
+# never has to chmod a shared, root-owned home.
+export M5B_MATRIX_CREDENTIALS=${M5B_MATRIX_CREDENTIALS:-$M5B_MATRIX_RUN/credentials}
+export M5B_MATRIX_INSTANCE_ENV=${M5B_MATRIX_INSTANCE_ENV:-$M5B_MATRIX_RUN/instance-env}
+export M5B_MATRIX_INSTANCE_LOGS=${M5B_MATRIX_INSTANCE_LOGS:-$M5B_MATRIX_RUN/instance-logs}
+export M5B_MATRIX_WORKTREES=${M5B_MATRIX_WORKTREES:-$M5B_MATRIX_RUN/worktrees}
 export M5B_MATRIX_STATE=${M5B_MATRIX_STATE:-$M5B_MATRIX_RUN/state.env}
 
 export M5B_MATRIX_PG_URL="postgres://moyu@127.0.0.1:${M5B_MATRIX_PG_PORT}/${M5B_MATRIX_DB}"
 export M5B_MATRIX_PG_ADMIN="postgres://moyu@127.0.0.1:${M5B_MATRIX_PG_PORT}/postgres"
 export M5B_MATRIX_SLICE_PATH="/sys/fs/cgroup/${M5B_MATRIX_SLICE}"
-export M5B_MATRIX_CGROUP_ROOT="/sys/fs/cgroup/${M5B_MATRIX_SLICE}/instances"
+export M5B_MATRIX_SUPERVISOR_CGROUP="/sys/fs/cgroup/${M5B_MATRIX_SLICE}/${M5B_MATRIX_SLICE%.slice}-supervisor.service"
+export M5B_MATRIX_CGROUP_ROOT="$M5B_MATRIX_SUPERVISOR_CGROUP/instances"
 
 m5b_log() {
   printf '%s\n' "$*"

@@ -34,12 +34,21 @@ node scripts/m5b/matrix/live.mjs snapshot --task <id>
 node scripts/m5b/matrix/live.mjs ticket --ticket <id>
 ```
 
+## 非 root 运行身份
+
+`scripts/m5b/matrix/prepare-nonroot.sh` 建一个专用身份 `m5bmatrix`（uid 995）并打印每处访问授权的
+before/after。之后 `stack.sh up` 让 **anchor / provider / supervisor / dispatcher / api** 全部以该身份运行
+（PostgreSQL 一直是 `postgres`）。supervisor 的实例 cgroup 在它自己被委托的单元 cgroup 下
+（`Delegate=yes` + `DelegateSubgroup=payload`），控制器以该身份写入。运行时的 harness home 与
+supervisor 的凭据/env/日志/worktree 目录都搬到了 `/tmp/m5bmatrix`，共享的 `/root/.dsh-m5` 不再被改。
+
 ## 被刻意改过的现场配置（复跑前必读）
 
 隔离栈必须在没网、没真 key 的情况下把 worker 回合跑起来，因此对 `/root/.dsh-m5` 做了这些
 **测试侧**改动（都不在仓库里，也不影响生产 3082）：
 
-1. `profiles/m5b/cordis.patch.yml`：`local-test` provider 增加 `reasoningEfforts`
+1. 测试 fixture 只写**暂存副本**（`/tmp/m5bmatrix/dsh-home/profiles/m5b`），共享
+   `profiles/m5b/cordis.patch.yml` 保持原样：`local-test` provider 增加 `reasoningEfforts`
    （supervisor 给 eval 模型硬写 `reasoningEffort: "low"`，否则启动校验 400）；
    `agent-default-model` 改为 `local-test/local-test`；移除 `commandcode` provider，
    使 orchestrator 只能走 loopback provider（否则真实的 orchestrator 回合会调用外部模型，
