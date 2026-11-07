@@ -17,7 +17,7 @@ import { createTestDatabase, type TestDatabase } from './helpers';
 interface FakeBridge {
   url: string;
   triggerCalls: BridgeTriggerInput[];
-  admitCalls: { ticketId: string; admission: unknown }[];
+  admitCalls: { ticketId: string; admission: unknown; assignmentId?: string }[];
   events: BridgeEvent[];
   failNextTrigger: boolean;
   slowNextTrigger: boolean;
@@ -111,10 +111,11 @@ async function startFakeBridge(events: BridgeEvent[]): Promise<FakeBridge> {
     }
     const admitMatch = /^\/bridge\/v1\/tickets\/([^/]+)\/admit$/.exec(url.pathname);
     if (request.method === 'POST' && admitMatch) {
-      const body = (await readBody(request)) as { admission: unknown };
+      const body = (await readBody(request)) as { admission: unknown; assignmentId?: string };
       state.admitCalls.push({
         ticketId: decodeURIComponent(admitMatch[1]!),
         admission: body.admission,
+        assignmentId: body.assignmentId,
       });
       send(200, { ticketId: decodeURIComponent(admitMatch[1]!), admitted: true });
       return;
@@ -783,6 +784,7 @@ describe('dispatcher delivery and Bridge event catch-up on real PostgreSQL', () 
     ).toBe(true);
     expect(fakeBridge.admitCalls).toHaveLength(1);
     expect(fakeBridge.admitCalls[0]?.ticketId).toBe('ticket-admit');
+    expect(fakeBridge.admitCalls[0]?.assignmentId).toMatch(/^[0-9a-f]{32}$/);
     const admitted = await testDatabase.pool.query<{ state: string }>(
       `select state from task_links where id = $1`,
       [taskId],

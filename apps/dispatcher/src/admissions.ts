@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import type pg from 'pg';
 
 import type { RuntimeBridgeClient } from '@moyu/runtime-client';
@@ -5,6 +7,7 @@ import type { RuntimeBridgeClient } from '@moyu/runtime-client';
 import type { DispatcherConfig } from './config';
 import { appendEventSql } from './events-sql';
 import { acquireExecutionLease, releaseTaskLease } from './leases';
+import { claimExecution, reserveExecution } from './reservations';
 import type { DispatcherLogger } from './logger';
 import { bridgeErrorMessage, isRetryableBridgeError, type RepositoryBinding } from './runtime';
 import { TASK_COLUMNS, taskSummary, type TaskRow } from './tasks';
@@ -101,10 +104,23 @@ export async function admitImportedOnce(
       );
       continue;
     }
+    const assignmentId = randomUUID().replaceAll('-', '').slice(0, 32);
+    const reservation = {
+      repositoryId: repository.id,
+      requestKey: `admit:${task.id}`,
+      taskId: task.id,
+      ticketId: task.upstreamTicketId ?? '',
+      assignmentId,
+      leaseId: account.lease.id,
+      fencingToken: account.lease.fencingToken,
+    };
     try {
+      await reserveExecution(pool, reservation);
       await bridge.admit(task.upstreamTicketId ?? '', {
         admission: { leaseId: account.lease.id, fencingToken: account.lease.fencingToken },
+        assignmentId,
       });
+      await claimExecution(pool, reservation);
       const updated = await pool.query<TaskRow>(
         `update task_links
             set state = 'queued', version = version + 1, updated_at = now()
@@ -135,11 +151,9 @@ export async function admitImportedOnce(
         );
         continue;
       }
-      // A 4xx refusal means no worker started; the slot can be released safely.
-      await releaseTaskLease(pool, repository.id, task.id, 'runtime refused admission', {
-        expectedLeaseId: account.lease.id,
-        proof: { source: 'admission_refused', error: bridgeErrorMessage(error) },
-      }).catch(() => undefined);
+      // After the reservation was sent, a 4xx/conflict may still have persisted
+      // the identity and started work. Keep the lease and the reservation for a
+      // same-identity check; never release a generation that may have landed.
       await pool.query(
         `update task_links
             set state = 'blocked', stop_evidence = $2::jsonb,

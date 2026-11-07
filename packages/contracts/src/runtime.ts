@@ -296,7 +296,12 @@ export const bridgeRetryInputSchema = z
 
 export type BridgeRetryInput = z.infer<typeof bridgeRetryInputSchema>;
 
-export const bridgeAdmitInputSchema = z.object({ admission: bridgeAdmissionSchema }).strict();
+export const bridgeAdmitInputSchema = z
+  .object({
+    admission: bridgeAdmissionSchema,
+    assignmentId: z.string().min(1).max(200).optional(),
+  })
+  .strict();
 
 export type BridgeAdmitInput = z.infer<typeof bridgeAdmitInputSchema>;
 
