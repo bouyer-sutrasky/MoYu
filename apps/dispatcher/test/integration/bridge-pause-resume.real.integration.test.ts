@@ -73,7 +73,7 @@ describe('live Bridge pause and resume over HTTP', () => {
     async () => {
       const conversationId = randomUUID();
       const triggerId = `m5b-pause-${randomUUID()}`;
-      const created = await bridge('/bridge/v1/triggers', {
+      const createdTrigger = await bridge('/bridge/v1/triggers', {
         method: 'POST',
         body: JSON.stringify({
           triggerId,
@@ -92,7 +92,7 @@ describe('live Bridge pause and resume over HTTP', () => {
           },
         }),
       });
-      expect(created.status).toBe(200);
+      expect(createdTrigger.status).toBe(200);
       const ticketId = await ticketIdFor(triggerId);
       created.push(ticketId);
       const before = await ticket(ticketId);
