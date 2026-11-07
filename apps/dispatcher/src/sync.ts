@@ -5,8 +5,8 @@ import { taskStateSchema, type ArtifactSummary } from '@moyu/contracts';
 import type { RuntimeBridgeClient, BridgeEvent } from '@moyu/runtime-client';
 
 import type { DispatcherLogger } from './logger';
-import type { RepositoryBinding } from './runtime';
-import { reconcileExecutionClaimOn } from './reservations';
+import { bridgeErrorMessage, type RepositoryBinding } from './runtime';
+import { claimExecution, reconcileExecutionClaimOn } from './reservations';
 import { appendEventSql } from './events-sql';
 import { endedState, stateFromSnapshot, TASK_COLUMNS, taskSummary, type TaskRow } from './tasks';
 import { pauseEvidenceProblem, pauseEvidenceProven } from './pause-evidence';
@@ -1049,6 +1049,99 @@ export async function applyEvent(
   }
 }
 
+/**
+ * Historical identity recovery: a queued/running task whose reservation is
+ * still reserved may predate identity fields on state events. Confirm the
+ * Bridge's authoritative snapshot (repository, Ticket, Assignment, state)
+ * before claiming; lease/fence are re-checked by claimExecution. An unclear
+ * snapshot leaves the reservation reserved and records why.
+ */
+export async function recoverReservedTasks(
+  pool: pg.Pool,
+  repository: RepositoryBinding,
+  bridge: RuntimeBridgeClient,
+  logger: DispatcherLogger,
+): Promise<void> {
+  const rows = await pool.query<{
+    id: string;
+    upstream_ticket_id: string | null;
+    assignment_id: string;
+    lease_id: string;
+    fencing_token: string;
+  }>(
+    `select t.id, t.upstream_ticket_id, r.assignment_id, r.lease_id, r.fencing_token
+       from task_links t
+       join execution_reservations r
+         on r.repository_id = t.repository_id and r.request_key = 'admit:' || t.id
+      where t.repository_id = $1 and t.state in ('queued', 'running') and r.state = 'reserved'`,
+    [repository.id],
+  );
+  for (const row of rows.rows) {
+    if (!row.upstream_ticket_id) continue;
+    let snapshot: Awaited<ReturnType<RuntimeBridgeClient['ticket']>>;
+    try {
+      snapshot = await bridge.ticket(row.upstream_ticket_id);
+    } catch (error) {
+      logger.warn(
+        {
+          event: 'admission.recovery_unavailable',
+          taskId: row.id,
+          error: bridgeErrorMessage(error),
+        },
+        'could not read the authoritative Bridge snapshot; keeping the reservation',
+      );
+      continue;
+    }
+    const repositoryName = snapshot.base?.repository;
+    if (
+      snapshot.ticketId !== row.upstream_ticket_id ||
+      snapshot.assignmentId !== row.assignment_id ||
+      repositoryName !== repository.fullName ||
+      (snapshot.state !== 'queued' && snapshot.state !== 'running')
+    ) {
+      await pool.query(
+        `update task_links set stop_evidence = $2::jsonb, version = version + 1, updated_at = now()
+          where id = $1`,
+        [row.id, JSON.stringify({ admissionRecovery: 'snapshot_mismatch' })],
+      );
+      continue;
+    }
+    try {
+      const claimed = await claimExecution(pool, {
+        repositoryId: repository.id,
+        requestKey: `admit:${row.id}`,
+        taskId: row.id,
+        ticketId: row.upstream_ticket_id,
+        assignmentId: row.assignment_id,
+        leaseId: row.lease_id,
+        fencingToken: String(row.fencing_token),
+      });
+      if (!claimed.claimed) {
+        logger.warn(
+          { event: 'admission.recovery_not_claimable', taskId: row.id },
+          'snapshot matched but the reservation was already claimed',
+        );
+      }
+    } catch (error) {
+      await pool.query(
+        `update task_links set stop_evidence = $2::jsonb, version = version + 1, updated_at = now()
+          where id = $1`,
+        [
+          row.id,
+          JSON.stringify({
+            admissionRecovery: 'generation_mismatch',
+            error: bridgeErrorMessage(error),
+          }),
+        ],
+      );
+      logger.warn(
+        { event: 'admission.recovery_refused', taskId: row.id, error: bridgeErrorMessage(error) },
+        'kept the reservation because the current generation did not match',
+      );
+    }
+  }
+}
+
 /** Pulls one page of Bridge events and applies them with the cursor in one transaction. */
 export async function syncOnce(
   pool: pg.Pool,
@@ -1066,6 +1159,7 @@ export async function syncOnce(
   );
   const cursor = BigInt(cursorResult.rows[0]?.cursor ?? '0');
   const page = await bridge.events(cursor, 100);
+  await recoverReservedTasks(pool, repository, bridge, logger);
   if (page.events.length === 0) {
     return false;
   }
