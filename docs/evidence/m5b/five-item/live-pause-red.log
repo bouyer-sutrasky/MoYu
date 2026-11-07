@@ -1,0 +1,31 @@
+
+ RUN  v3.2.7 /root/src/leases-resources-m5b-a59cb491b2e0/apps/dispatcher
+
+ ❯ test/integration/bridge-pause-resume.real.integration.test.ts (1 test | 1 failed) 31148ms
+   × live Bridge pause and resume over HTTP > pauses to stopped and resumes with a newer generation 31146ms
+     → ticket import timed out: null
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/integration/bridge-pause-resume.real.integration.test.ts > live Bridge pause and resume over HTTP > pauses to stopped and resumes with a newer generation
+Error: ticket import timed out: null
+ ❯ waitFor test/integration/bridge-pause-resume.real.integration.test.ts:32:9
+     30|     await new Promise(resolve => setTimeout(resolve, 250))
+     31|   }
+     32|   throw new Error(`${label} timed out: ${JSON.stringify(last)}`)
+       |         ^
+     33| }
+     34| 
+ ❯ test/integration/bridge-pause-resume.real.integration.test.ts:65:22
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed (1)
+   Start at  20:17:25
+   Duration  31.43s (transform 45ms, setup 0ms, collect 41ms, tests 31.15s, environment 0ms, prepare 77ms)
+
+undefined
+/root/src/leases-resources-m5b-a59cb491b2e0/apps/dispatcher:
+[ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL] Command failed with exit code 1: vitest run test/integration/bridge-pause-resume.real.integration.test.ts
