@@ -21,7 +21,7 @@ index 12b62a4..2600465 100644
  | `tests/bridge-branches.spec.ts` | The read-only branch list: the sorted 200 shape and `branches` capability, one page versus pagination, the ten-page `hasMore` cap, repository-scoped `commands.api` paths, a CLI failure as 503, malformed data as 502, and bearer auth |
  | `tests/process-tree.spec.ts` | The harness process tree used as stop evidence: a live child PID and its command, and its disappearance after exit |
 diff --git a/src/app/bridge.ts b/src/app/bridge.ts
-index 0b600f9..8f764e5 100644
+index 0b600f9..c1e2160 100644
 --- a/src/app/bridge.ts
 +++ b/src/app/bridge.ts
 @@ -52,7 +52,7 @@ const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost'])
@@ -214,7 +214,13 @@ index 0b600f9..8f764e5 100644
      if (!this.host.configured()) return json(res, 503, { error: 'The runtime is not ready' })
      const deployment = this.host.deployment
      if (request.executionSpec.repository !== deployment.repository) {
-@@ -1029,6 +1072,7 @@ export class Bridge {
+@@ -1024,11 +1067,13 @@ export class Bridge {
+       model: frozen.model ?? null,
+       base: frozen.base ?? null,
+       assignmentId: latestAssignment(ticket)?.id ?? null,
++      admission: ticket.admission ?? null,
+       report: latestReport(ticket) ?? null,
+       // M4 additions: the mode and plan revision, the human pause with its evidence, and the execution directory/name.
        mode: ticket.mode ?? 'execute',
        planRevision: ticket.planRevision ?? null,
        paused: ticket.paused ?? null,
@@ -1175,7 +1181,7 @@ index 0000000..891954d
 +  })
 +})
 diff --git a/tests/bridge.spec.ts b/tests/bridge.spec.ts
-index 36b75b5..005f450 100644
+index 36b75b5..0e4352a 100644
 --- a/tests/bridge.spec.ts
 +++ b/tests/bridge.spec.ts
 @@ -44,7 +44,7 @@ interface Harness {
@@ -1205,11 +1211,13 @@ index 36b75b5..005f450 100644
      for (const [operation, body] of Object.entries(bodies)) {
        expect(await call('POST', `/bridge/v1/tickets/missing/${operation}`, body)).toMatchObject({ status: 404 })
      }
-@@ -377,7 +377,7 @@ describe('GET /bridge/v1/tickets/:id', () => {
+@@ -376,8 +376,8 @@ describe('GET /bridge/v1/tickets/:id', () => {
+       ticketId: 't1', title: 'Fix t1', state: 'running', question: null, attentionId: null,
        model: { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash', reasoningEffort: 'high' },
        base: { repository: 'acme/widgets', branch: 'main', commit: 'abc123' },
-       assignmentId: 'as1', report: { state: 'progress', summary: 'working', at: '2026-11-03T12:00:04.000Z' },
+-      assignmentId: 'as1', report: { state: 'progress', summary: 'working', at: '2026-11-03T12:00:04.000Z' },
 -      mode: 'execute', planRevision: null, paused: null, execution: null,
++      assignmentId: 'as1', admission: null, report: { state: 'progress', summary: 'working', at: '2026-11-03T12:00:04.000Z' },
 +      mode: 'execute', planRevision: null, paused: null, admissionRequired: false, execution: null,
        pr: { number: 7, url: 'https://github.com/acme/widgets/pull/7' }, ended: null,
      } })

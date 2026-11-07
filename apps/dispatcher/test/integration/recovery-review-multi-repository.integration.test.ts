@@ -115,7 +115,13 @@ describe('execution reservation on real PostgreSQL', () => {
       ticket: async (id: string) => {
         seen.push(id);
         if (id !== 'recovery-32') throw new Error('controlled unavailable snapshot');
-        return { ticketId: id, assignmentId: 'assignment-32', state: 'queued', base: null };
+        return {
+          ticketId: id,
+          assignmentId: 'assignment-32',
+          state: 'queued',
+          base: null,
+          admission: { leaseId, fencingToken: token },
+        };
       },
     };
     const logger = { info: () => {}, warn: () => {}, error: () => {} };

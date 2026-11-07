@@ -84,6 +84,7 @@ describe('execution reservation on real PostgreSQL', () => {
         assignmentId: 'assignment-1',
         state: 'queued',
         base: null,
+        admission: { leaseId, fencingToken: token },
       }),
     };
     const logger = { info: () => {}, warn: () => {}, error: () => {} };

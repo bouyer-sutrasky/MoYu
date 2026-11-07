@@ -1111,6 +1111,8 @@ export async function recoverReservedTasks(
     if (
       snapshot.ticketId !== row.upstream_ticket_id ||
       snapshot.assignmentId !== row.assignment_id ||
+      snapshot.admission?.leaseId !== row.lease_id ||
+      String(snapshot.admission?.fencingToken) !== String(row.fencing_token) ||
       // GitHub-imported tickets have no frozen workspace spec, so the snapshot
       // base (and repository) is null; the connection already binds the repo.
       (repositoryName !== undefined &&

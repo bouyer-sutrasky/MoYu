@@ -85,7 +85,13 @@ describe('execution reservation on real PostgreSQL', () => {
       ticket: async () => {
         signalStarted();
         await barrier;
-        return { ticketId: 'ticket-1', assignmentId: 'assignment-1', state: 'queued', base: null };
+        return {
+          ticketId: 'ticket-1',
+          assignmentId: 'assignment-1',
+          state: 'queued',
+          base: null,
+          admission: { leaseId, fencingToken: token },
+        };
       },
     };
     const logger = { info: () => {}, warn: () => {}, error: () => {} };

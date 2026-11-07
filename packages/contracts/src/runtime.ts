@@ -225,6 +225,7 @@ export const bridgeTicketSnapshotSchema = z.object({
   paused: bridgeTicketPausedSchema.nullable().optional(),
   /** M5-B: a Source ticket is held until the platform admits it. */
   admissionRequired: z.boolean().optional(),
+  admission: bridgeAdmissionSchema.nullable().optional(),
   execution: bridgeTicketExecutionSchema.nullable().optional(),
 });
 
