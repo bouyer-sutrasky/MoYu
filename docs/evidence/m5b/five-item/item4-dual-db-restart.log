@@ -1,0 +1,171 @@
+# item4 dual-store restart (upstream Bridge SQLite + dispatcher PG)
+head=1d94d0a6322e727da173b985a30a32b3a4bc8d9b (pre-commit)
+
+old PIDs: dispatcher=2070910 bridge=397263
+new PIDs: dispatcher=2071461 bridge=2071068
+
+restart commands:
+kill -TERM $(cat /tmp/item4-dispatcher.pid); kill -TERM $(cat /tmp/m5b-old-bridge.pid)
+DSH_HOME=/root/.dsh-m5 MOYU_BRIDGE_HOST=127.0.0.1 MOYU_BRIDGE_PORT=3403 MOYU_BRIDGE_TOKEN=*** MOYU_PLATFORM_URL=http://127.0.0.1:4500 /usr/bin/dsh --profile m5b --no-open
+DATABASE_URL=postgres://moyu@127.0.0.1:55432/m5b_item4_dual BRIDGE_URL=http://127.0.0.1:3403 BRIDGE_TOKEN=*** BRIDGE_REPOSITORY=Bouyer12/m5a-beta-adf10ad9 node apps/dispatcher/dist/main.js
+
+GET /healthz after bridge restart: 200
+
+== pre ==
+{
+ "ticket": {
+  "id": "ce045290da163e6e6605b0ac88f6d98d",
+  "assignments": [
+   {
+    "id": "e141b5cc452c24e7f61c2597a6af2866",
+    "state": "ended",
+    "startedAt": "2026-11-07T12:57:55.653Z"
+   },
+   {
+    "id": "649e7f1b5cddfb382dca80c906506b3e",
+    "state": "ended",
+    "startedAt": "2026-11-07T13:06:17.390Z"
+   }
+  ],
+  "stopEvidence": {
+   "ticketId": "ce045290da163e6e6605b0ac88f6d98d",
+   "assignmentId": "649e7f1b5cddfb382dca80c906506b3e",
+   "operationId": "2e43f045-c816-4aba-b14e-3a54b7a3d764",
+   "sessionId": "worker-ce045290da163e6e6605b0ac88f6d98d",
+   "harnessPid": 397263,
+   "cgroup": "/moyu-supervisor/m5b-1793893520573",
+   "startedAt": "2026-11-07T13:06:32.581Z",
+   "stoppedAt": "2026-11-07T13:06:32.599Z",
+   "agentStatus": "idle",
+   "jobsBefore": [
+    {
+     "id": "bash-f7d03c8f714e4c16",
+     "name": "gh pr list --repo Bouyer12/m5a-beta-adf10ad9 --state all --head agent/fix-readme-heading-ce045290da16 --json number,title,state,headRefName,url 2>&1; echo '---'; gh api repos/Bouyer12/m5a-beta-adf10ad9/branches --jq '.[].name' 2>&1"
+    }
+   ],
+   "jobsAfter": [],
+   "subagentsAfter": 0,
+   "processesBefore": [
+    {
+     "pid": 2049187,
+     "ppid": 397263,
+     "command": "bash -c gh pr list --repo Bouyer12/m5a-beta-adf10ad9 --state all --head agent/fix-readme-heading-ce045290da16 --json number,title,state,headRefName,url 2>&1; ec"
+    },
+    {
+     "pid": 2049188,
+     "ppid": 2049187,
+     "command": "gh pr list --repo Bouyer12/m5a-beta-adf10ad9 --state all --head agent/fix-readme-heading-ce045290da16 --json number,title,state,headRefName,url"
+    }
+   ],
+   "processesAfter": [],
+   "lingeringPids": [],
+   "cancelledTurn": true
+  },
+  "admission": {
+   "leaseId": "lease-resume-202",
+   "fencingToken": "202"
+  }
+ }
+}
+{
+ "deliveries": [
+  {
+   "state": "delivered",
+   "attempt_count": 1,
+   "upstream_trigger_id": "workspace:item4",
+   "delivered_at": "2026-11-07T13:46:30.230Z"
+  }
+ ],
+ "leases": [
+  {
+   "id": "7aeb5a7d-5c2a-4aa4-a1d0-d1c3122f5412",
+   "state": "active",
+   "fencing_token": "101",
+   "holder_id": "item4-holder"
+  }
+ ]
+}
+
+== post ==
+{
+ "ticket": {
+  "id": "ce045290da163e6e6605b0ac88f6d98d",
+  "assignments": [
+   {
+    "id": "e141b5cc452c24e7f61c2597a6af2866",
+    "state": "ended",
+    "startedAt": "2026-11-07T12:57:55.653Z"
+   },
+   {
+    "id": "649e7f1b5cddfb382dca80c906506b3e",
+    "state": "ended",
+    "startedAt": "2026-11-07T13:06:17.390Z"
+   }
+  ],
+  "stopEvidence": {
+   "ticketId": "ce045290da163e6e6605b0ac88f6d98d",
+   "assignmentId": "649e7f1b5cddfb382dca80c906506b3e",
+   "operationId": "2e43f045-c816-4aba-b14e-3a54b7a3d764",
+   "sessionId": "worker-ce045290da163e6e6605b0ac88f6d98d",
+   "harnessPid": 397263,
+   "cgroup": "/moyu-supervisor/m5b-1793893520573",
+   "startedAt": "2026-11-07T13:06:32.581Z",
+   "stoppedAt": "2026-11-07T13:06:32.599Z",
+   "agentStatus": "idle",
+   "jobsBefore": [
+    {
+     "id": "bash-f7d03c8f714e4c16",
+     "name": "gh pr list --repo Bouyer12/m5a-beta-adf10ad9 --state all --head agent/fix-readme-heading-ce045290da16 --json number,title,state,headRefName,url 2>&1; echo '---'; gh api repos/Bouyer12/m5a-beta-adf10ad9/branches --jq '.[].name' 2>&1"
+    }
+   ],
+   "jobsAfter": [],
+   "subagentsAfter": 0,
+   "processesBefore": [
+    {
+     "pid": 2049187,
+     "ppid": 397263,
+     "command": "bash -c gh pr list --repo Bouyer12/m5a-beta-adf10ad9 --state all --head agent/fix-readme-heading-ce045290da16 --json number,title,state,headRefName,url 2>&1; ec"
+    },
+    {
+     "pid": 2049188,
+     "ppid": 2049187,
+     "command": "gh pr list --repo Bouyer12/m5a-beta-adf10ad9 --state all --head agent/fix-readme-heading-ce045290da16 --json number,title,state,headRefName,url"
+    }
+   ],
+   "processesAfter": [],
+   "lingeringPids": [],
+   "cancelledTurn": true
+  },
+  "admission": {
+   "leaseId": "lease-resume-202",
+   "fencingToken": "202"
+  }
+ }
+}
+{
+ "deliveries": [
+  {
+   "state": "delivered",
+   "attempt_count": 1,
+   "upstream_trigger_id": "workspace:item4",
+   "delivered_at": "2026-11-07T13:46:30.230Z"
+  }
+ ],
+ "leases": [
+  {
+   "id": "7aeb5a7d-5c2a-4aa4-a1d0-d1c3122f5412",
+   "state": "active",
+   "fencing_token": "101",
+   "holder_id": "item4-holder"
+  }
+ ]
+}
+
+== comparison ==
+ticket state stopped before/after: true
+assignments identical (e141…,649e…): true
+stopEvidence stoppedAt 2026-11-07T13:06:32.599Z identical: true
+admission lease-resume-202/202 identical: true
+deliveries state/attempt/trigger/delivered_at identical: true
+runtime lease 101 active holder item4-holder not renewed/changed: true
+old generation not revived: ticket remained stopped, no new assignment
