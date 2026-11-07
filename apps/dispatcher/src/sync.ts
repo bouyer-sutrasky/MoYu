@@ -1073,7 +1073,9 @@ export async function recoverReservedTasks(
        from task_links t
        join execution_reservations r
          on r.repository_id = t.repository_id and r.request_key = 'admit:' || t.id
-      where t.repository_id = $1 and t.state in ('queued', 'running') and r.state = 'reserved'`,
+      where t.repository_id = $1 and t.state in ('queued', 'running') and r.state = 'reserved'
+      order by t.updated_at
+      limit 32`,
     [repository.id],
   );
   for (const row of rows.rows) {
@@ -1104,8 +1106,10 @@ export async function recoverReservedTasks(
       (snapshot.state !== 'queued' && snapshot.state !== 'running')
     ) {
       await pool.query(
-        `update task_links set stop_evidence = $2::jsonb, version = version + 1, updated_at = now()
-          where id = $1`,
+        `update task_links
+            set stop_evidence = coalesce(stop_evidence, '{}'::jsonb) || $2::jsonb,
+                version = version + 1, updated_at = now()
+          where id = $1 and state in ('queued', 'running')`,
         [row.id, JSON.stringify({ admissionRecovery: 'snapshot_mismatch' })],
       );
       continue;

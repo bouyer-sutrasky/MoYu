@@ -76,3 +76,10 @@
 - event sync 在消费页前后执行 `recoverReservedTasks`：对 queued/running 且 reservation 仍 reserved 的旧任务，读取 Bridge `/bridge/v1/tickets/:id` 权威快照，核对 repository/Ticket/Assignment/state，再由 `claimExecution` 复核 lease/fence。
 - 快照缺失/不匹配时保留 reserved，并在 task stop_evidence 记录 `snapshot_mismatch`/`generation_mismatch`，不无证据 claim。
 - 仍待：真实旧 producer→新 producer 升级 + 丢响应 + dispatcher 重启整链与真实启动计数。
+
+## 恢复并发与预算（2026-11-07）
+
+- 恢复写入只更新仍为 queued/running 的任务，并合并 stop_evidence（`coalesce(...) ||`），不覆盖并发暂停证明；成功后只删除 admissionRecovery 键。
+- 单轮恢复最多扫描 32 条，避免 N×30s 串行快照阻塞事件消费。
+- 外部红测 race.test.ts（快照 barrier 期间写 stopped+pause marker）现为绿；positive.test.ts null-base 认领通过。
+- 仍待：完整 Bridge admission lease/fence 权威证明、真实两库/dispatcher 重启、真实子进程启动数。
