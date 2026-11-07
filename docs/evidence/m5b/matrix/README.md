@@ -44,8 +44,8 @@ supervisor 的凭据/env/日志/worktree 目录都搬到了 `/tmp/m5bmatrix`，�
 
 ## 被刻意改过的现场配置（复跑前必读）
 
-隔离栈必须在没网、没真 key 的情况下把 worker 回合跑起来，因此对 `/root/.dsh-m5` 做了这些
-**测试侧**改动（都不在仓库里，也不影响生产 3082）：
+隔离栈必须在没网、没真 key 的情况下把 worker 回合跑起来。这些改动都落在矩阵自己的暂存目录
+`/tmp/m5bmatrix`（不在仓库里，也不影响生产 3082）；共享的 `/root/.dsh-m5` 保持原样：
 
 1. 测试 fixture 只写**暂存副本**（`/tmp/m5bmatrix/dsh-home/profiles/m5b`），共享
    `profiles/m5b/cordis.patch.yml` 保持原样：`local-test` provider 增加 `reasoningEfforts`
@@ -53,12 +53,11 @@ supervisor 的凭据/env/日志/worktree 目录都搬到了 `/tmp/m5bmatrix`，�
    `agent-default-model` 改为 `local-test/local-test`；移除 `commandcode` provider，
    使 orchestrator 只能走 loopback provider（否则真实的 orchestrator 回合会调用外部模型，
    决策 `trigger_id` 与实际候选不匹配 → `decision_ignored`）。
-2. `/root/.dsh-m5/.credentials.yaml` 的 `refs` 增加 `LOCAL_TEST_API_KEY: local-test-dummy`
-   （现有 `COMMAND_CODE_API_KEY` 原样保留、未读取、未写日志）。
-3. `stack.sh up` 会把旧的 `state/m5b` 与 `sessions/--root-.dsh-m5-state-m5b--` 移到
-   `state/*.pre-matrix-*` 与 `session-archive/`；否则旧 orchestrator session 里持久化的
-   provider 选择和新的 profile 不一致（`NO_ADAPTER`），且把归档目录留在 `sessions/` 下会让
-   JSONL 会话存储判定为「corrupt session log」而整个 workspace 服务起不来。
+2. 暂存 home 自己的 `.credentials.yaml` 只有 `refs: LOCAL_TEST_API_KEY: local-test-dummy`
+   （0600，m5bmatrix 所有）；共享的 `/root/.dsh-m5/.credentials.yaml` 不被读取也不被修改。
+3. `stack.sh up` 每次重建暂存 home，因此不会有上一个 orchestrator session 里持久化的 provider
+   选择（那会导致 `NO_ADAPTER`）；归档旧会话时也把目录移出 `sessions/`，否则 JSONL 会话存储
+   会判定为「corrupt session log」而整个 workspace 服务起不来。
 
 恢复原状态：把 `profiles/m5b/cordis.patch.yml` 改回 `commandcode` 默认模型与 provider 段，
 删掉 `LOCAL_TEST_API_KEY`，把 `state/*.pre-matrix-*`、`session-archive/*` 移回原名。
