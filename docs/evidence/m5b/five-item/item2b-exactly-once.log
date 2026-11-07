@@ -1,0 +1,14 @@
+# item2b launch delivery count attempt
+head=6678109b7a8e0e20dcfe4da408dff642118d610a (pre-commit)
+db=/root/.dsh-m5/state/m5b/orchestrator.sqlite ticket=ce045290da163e6e6605b0ac88f6d98d
+
+SQL: select kind,count(*) n from effect group by kind
+raw: [{kind:'reply', n:2}]
+
+SQL: select count(*) n from effect where kind='launch'
+raw: [{n:0}]
+
+SQL (node:sqlite): select value from ticket where id=?
+assignments=[e141b5cc452c24e7f61c2597a6af2866, 649e7f1b5cddfb382dca80c906506b3e]
+
+verdict: 当前 Bridge SQLite 只持久化 reply effect，没有 launch/outbox 投递记录；无法从投递表统计 exactly-once。assignments 每个代次 1 条，但不能替代并发投递计数。
