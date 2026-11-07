@@ -110,6 +110,7 @@ describe('execution reservation on real PostgreSQL', () => {
           repository.id,
           `event-stale-${process.pid}`,
           'ticket-1',
+          'assignment-stale',
         ),
       ).toBe(false);
     } finally {
