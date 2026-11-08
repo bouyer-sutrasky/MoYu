@@ -410,6 +410,33 @@ describe('cgroup cold start and restart ownership', () => {
     expect(mountRoot.error).toContain('refusing');
   });
 
+  it('refuses to widen a shared systemd hierarchy it does not own', () => {
+    let parent: string;
+    try {
+      parent = mkdtempSync(join('/sys/fs/cgroup', 'moyu-shared-'));
+    } catch {
+      return;
+    }
+    try {
+      // A directory next to other units: enabling controllers here would change
+      // every service below it, so the root itself must be refused.
+      mkdirSync(join(parent, 'other.service'));
+      const setup = ensureCgroup(`shared-${process.pid}`, join(parent, 'instances'));
+      expect(setup.ok).toBe(false);
+      expect(setup.step).toBe('controllers');
+      expect(setup.path).toBeNull();
+      expect(setup.error).toContain('not delegated to this identity');
+    } finally {
+      removeCgroup(join(parent, 'instances'));
+      removeCgroup(join(parent, 'other.service'));
+      try {
+        removeCgroup(parent);
+      } catch {
+        // Best effort cleanup under the cgroup mount.
+      }
+    }
+  });
+
   it('treats a replaced cgroup object as unproven ownership', async () => {
     const cgroup = createCgroup(`replaced-${process.pid}-${Date.now()}`);
     if (!cgroup) return;

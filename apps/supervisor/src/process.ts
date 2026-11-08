@@ -404,6 +404,33 @@ export function ensureCgroup(profile: string, root: string = CGROUP_ROOT): Cgrou
         `${parent} does not offer ${notOffered.join('+')}; delegate ${REQUIRED_CONTROLLERS.join('+')} to the supervisor unit (systemd Delegate=yes)`,
       );
     }
+    // Enabling a controller on a level we do not own would change every cgroup
+    // below it, including other services. Only a level delegated to this
+    // identity may be widened: a non-root supervisor must own the directory, and
+    // a root process must not be looking at the shared systemd hierarchy.
+    const parentOwner = (() => {
+      try {
+        return statSync(parent).uid;
+      } catch {
+        return null;
+      }
+    })();
+    const identity = typeof process.getuid === 'function' ? process.getuid() : 0;
+    const sharedHierarchy = (() => {
+      if (identity !== 0) return false;
+      try {
+        return readdirSync(parent).some((entry) => /\.(service|scope|slice)$/.test(entry));
+      } catch {
+        return true;
+      }
+    })();
+    if (parentOwner !== identity || sharedHierarchy) {
+      return cgroupSetupFailure(
+        root,
+        'controllers',
+        `${parent} is not delegated to this identity (owner ${String(parentOwner)} vs ${identity}${sharedHierarchy ? ', shared systemd hierarchy' : ''}); point MOYU_CGROUP_ROOT at a directory inside the supervisor's own delegated unit cgroup`,
+      );
+    }
     const enabledAtParent = enableAt(parent, missing);
     if (!enabledAtParent.ok) {
       return cgroupSetupFailure(
