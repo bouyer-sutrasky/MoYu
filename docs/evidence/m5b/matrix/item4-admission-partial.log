@@ -143,3 +143,38 @@ supervisor 侧也记了对应事件：`{"event":"supervisor.fault","code":"oom_k
 矩阵 harness 把 supervisor 整个子树限在 **512M**，而两个仓库实例都挂在它下面，
 所以「两个实例同时跑」会先把 supervisor 子树压爆 —— 这解释了为什么 A/B 同时执行至今没出现。
 要让 A/B 真跑起来，需要把 supervisor 的 `MemoryMax` 提高（我已把它做成 `M5B_MATRIX_SUPERVISOR_MAX` 可覆盖）。
+
+## 追加（2026-11-08T10:14Z）：A 跑起来了、C 在排队，但 B 起不来（新卡点）
+
+把 supervisor 上限提到 5G（`M5B_MATRIX_SUPERVISOR_MAX=5G`，实例 2048、预算 6144），
+三个仓库各自的 profile 也都 stage 好了，实测：
+
+```
+t=0s
+   beta     task=pending_admission  instance=online    reason=listening
+   delta    task=pending_admission  instance=starting  reason=starting
+   epsilon  task=pending_admission  instance=sleeping  reason=capacity_wait  waiting=capacity   ← C 排队
+t=10s
+   beta     task=running            instance=online    reason=listening                        ← A 执行
+   delta    task=pending_admission  instance=fault     reason=instance_lost
+   epsilon  task=pending_admission  instance=fault     reason=instance_lost
+```
+
+supervisor：`{"code":"instance_lost","detail":"The runtime process exited unexpectedly"}`
+第二个实例的启动日志（`/tmp/m5bmatrix/instance-logs/m5b-a.log` 指向的 startup 日志）：
+
+```
+Error: HMR is disposed
+    at …/@deepseek-ai/dsh-hmr/lib/index.js:751:29
+```
+
+**根因**：附加 profile 的 runtime 与主实例共用同一个 `DSH_HOME`，HMR 监视器被先启动的实例持有，
+后启动的直接崩。所以「A/B 同时执行」在这个 harness 里还需要**每个实例独立的 DSH home**
+（或对非主实例关掉 HMR）。
+
+## 第 4 项当前状态（如实）
+| 子项 | 状态 |
+| --- | --- |
+| 1. A/B 执行、C 排队 | **部分**：A 执行 + C 排队（`capacity_wait / waiting=capacity`）已实测；B 因 `instance_lost`（HMR 冲突）起不来 |
+| 2. 真实成员级 `oom_kill` | **通过**（内核行 + `memory.events` + 被杀单元/存活单元） |
+| 3. 解除压力后的有界恢复 | **未开始** |
