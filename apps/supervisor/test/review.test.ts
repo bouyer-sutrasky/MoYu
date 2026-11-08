@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -129,6 +129,99 @@ describe('supervisor worktree diff', () => {
     const changes = await collectChanges({ directory, maxBytes: 4096, maxFiles: 10 });
     expect(changes.state).toBe('unavailable');
     expect(changes.reason).toContain('HEAD');
+  });
+});
+
+/**
+ * The task worktree is untrusted input. Its `.git` config and `.gitattributes`
+ * belong to the task's own repository, so neither may be able to run a program
+ * inside the supervisor, which holds the platform's instance state.
+ */
+describe('supervisor diff helper isolation', () => {
+  /** An executable that records every run by appending to `sentinel`. */
+  function helper(scratch: string, name: string, sentinel: string): string {
+    const path = join(scratch, name);
+    writeFileSync(
+      path,
+      `#!/bin/sh\nprintf 'ran' >> '${sentinel}'\ncat "$2" 2>/dev/null || true\nexit 0\n`,
+      { mode: 0o755 },
+    );
+    return path;
+  }
+
+  it('never runs an external diff command named by the task repository attributes', async () => {
+    const directory = repository();
+    const scratch = temporary('moyu-diff-helper');
+    const sentinel = join(scratch, 'helper-ran');
+    const command = helper(scratch, 'attribute-diff.sh', sentinel);
+    writeFileSync(join(directory, '.gitattributes'), 'changed.txt diff=m6a-helper\n');
+    git(directory, ['config', 'diff.m6a-helper.command', command]);
+    writeFileSync(join(directory, 'changed.txt'), 'alpha\nbeta\ngamma\n');
+
+    const changes = await collectChanges({ directory, maxBytes: 512 * 1024, maxFiles: 100 });
+
+    expect(existsSync(sentinel)).toBe(false);
+    const changed = changes.files.find((file) => file.path === 'changed.txt');
+    expect(changed?.status).toBe('modified');
+    expect(changed?.patch).toContain('+gamma');
+  });
+
+  it('never runs a textconv command named by the task repository attributes', async () => {
+    const directory = repository();
+    const scratch = temporary('moyu-diff-helper');
+    const sentinel = join(scratch, 'helper-ran');
+    const command = helper(scratch, 'textconv.sh', sentinel);
+    writeFileSync(join(directory, '.gitattributes'), 'changed.txt diff=m6a-helper\n');
+    git(directory, ['config', 'diff.m6a-helper.textconv', command]);
+    writeFileSync(join(directory, 'changed.txt'), 'alpha\nbeta\ngamma\n');
+
+    const changes = await collectChanges({ directory, maxBytes: 512 * 1024, maxFiles: 100 });
+
+    expect(existsSync(sentinel)).toBe(false);
+    expect(changes.files.find((file) => file.path === 'changed.txt')?.patch).toContain('+gamma');
+  });
+
+  it('ignores diff helpers inherited through the supervisor environment', async () => {
+    const directory = repository();
+    const scratch = temporary('moyu-diff-helper');
+    const sentinel = join(scratch, 'helper-ran');
+    const command = helper(scratch, 'inherited-diff.sh', sentinel);
+    writeFileSync(join(directory, 'changed.txt'), 'alpha\nbeta\ngamma\n');
+
+    const saved = {
+      GIT_EXTERNAL_DIFF: process.env.GIT_EXTERNAL_DIFF,
+      GIT_CONFIG_COUNT: process.env.GIT_CONFIG_COUNT,
+      GIT_CONFIG_KEY_0: process.env.GIT_CONFIG_KEY_0,
+      GIT_CONFIG_VALUE_0: process.env.GIT_CONFIG_VALUE_0,
+    };
+    process.env.GIT_EXTERNAL_DIFF = command;
+    process.env.GIT_CONFIG_COUNT = '1';
+    process.env.GIT_CONFIG_KEY_0 = 'diff.external';
+    process.env.GIT_CONFIG_VALUE_0 = command;
+    try {
+      const changes = await collectChanges({ directory, maxBytes: 512 * 1024, maxFiles: 100 });
+      expect(existsSync(sentinel)).toBe(false);
+      expect(changes.files.find((file) => file.path === 'changed.txt')?.patch).toContain('+gamma');
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
+  it('never runs a repository-configured fsmonitor program while reading status', async () => {
+    const directory = repository();
+    const scratch = temporary('moyu-diff-helper');
+    const sentinel = join(scratch, 'helper-ran');
+    const command = helper(scratch, 'fsmonitor.sh', sentinel);
+    git(directory, ['config', 'core.fsmonitor', command]);
+    writeFileSync(join(directory, 'changed.txt'), 'alpha\nbeta\ngamma\n');
+
+    const changes = await collectChanges({ directory, maxBytes: 512 * 1024, maxFiles: 100 });
+
+    expect(existsSync(sentinel)).toBe(false);
+    expect(changes.files.find((file) => file.path === 'changed.txt')?.status).toBe('modified');
   });
 });
 
