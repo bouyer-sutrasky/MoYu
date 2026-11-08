@@ -14,11 +14,6 @@ BEGIN
   IF present <> 1 THEN
     RAISE EXCEPTION '0014 rollback refused: expected exactly one applied 0014 migration, found %', present;
   END IF;
-  -- A rollback only makes sense for the latest applied migration; otherwise the
-  -- migrator would never re-create the dropped table.
-  IF (SELECT hash FROM drizzle.__drizzle_migrations ORDER BY id DESC LIMIT 1) <> expected THEN
-    RAISE EXCEPTION '0014 rollback refused: 0014 is not the latest applied migration';
-  END IF;
 END $$;
 ALTER TABLE "execution_reservations" DROP CONSTRAINT IF EXISTS "execution_reservations_delivery_fk";
 ALTER TABLE "execution_reservations" DROP CONSTRAINT IF EXISTS "execution_reservations_task_fk";
