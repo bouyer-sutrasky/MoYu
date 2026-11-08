@@ -102,8 +102,8 @@ attachments: z.boolean().optional(), // M6-A L113：trigger 可携带附件引�
 GET /api/internal/v1/messages/:messageId/attachments/:attachmentId
 Authorization: Bearer <实例机器令牌>
 200  application/octet-stream + content-length + x-moyu-sha256
-401  令牌形状/值不对
-404  附件不存在、不属于 :messageId、或该消息不在本令牌绑定仓库
+401  令牌缺失、未知或不属于该消息所在仓库（无法从令牌反查“它属于哪个仓库”，与 runtime-events 一致）
+404  附件不存在、不属于 :messageId、或该消息不在所绑定仓库
 409  附件仍为未发送草稿（message_id 为空）
 ```
 
