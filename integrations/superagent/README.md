@@ -56,8 +56,10 @@ node --test integrations/superagent/tests/verify-lock.test.mjs
 | `0010-projection-current-assignment.patch` | 新 Assignment 后不再用旧 ready report 挡住运行态 |
 | `0011-resume-does-not-reopen-closed-pr.patch` | resume/start 指示不重开已关闭未合并的 PR |
 | `0023-execution-admission.patch` | M5-B 执行租约 admission：trigger/start/retry 必须携带当前代次；GitHub Ticket 先 `pending_admission`，平台 `/admit` 后才创建 Assignment；`MOYU_REQUIRE_ADMISSION=1` 启用 |
+| `0024-pause-before-start.patch` | start 之前/期间的暂停必须落地：暂停先结束仍在 prepare 的启动（并清掉它留下的未准备好目录），停止证明改按本票自己的 Session/job/subagent/launch 判定、不再用整棵 harness 进程树；没有 Assignment 的暂停（`pending_admission`）也会结算；从「从未运行过」的暂停继续时允许 launch 重新准备工作目录 |
 
-构建与验证见 [`docs/M4-VERIFICATION.md`](../../docs/M4-VERIFICATION.md)。
+构建与验证见 [`docs/M4-VERIFICATION.md`](../../docs/M4-VERIFICATION.md)；`0024` 的红→绿证据见
+[`docs/evidence/m5b/pause-before-start.log`](../../docs/evidence/m5b/pause-before-start.log)。
 
 ## 约束
 
