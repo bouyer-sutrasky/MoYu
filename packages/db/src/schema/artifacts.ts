@@ -13,6 +13,7 @@ import { sql } from 'drizzle-orm';
 
 import { conversations } from './conversations';
 import { artifactType } from './enums';
+import { messages } from './messages';
 import { repositories } from './repositories';
 import { taskLinks } from './task-links';
 
@@ -31,6 +32,8 @@ export const artifacts = pgTable(
       onDelete: 'set null',
     }),
     taskId: uuid('task_id').references(() => taskLinks.id, { onDelete: 'set null' }),
+    /** The message an uploaded attachment was sent with; a review artifact has none. */
+    messageId: uuid('message_id').references(() => messages.id, { onDelete: 'set null' }),
     type: artifactType('type').notNull(),
     storageKey: text('storage_key'),
     mimeType: text('mime_type'),
@@ -42,6 +45,7 @@ export const artifacts = pgTable(
   (table) => [
     index('artifacts_task_idx').on(table.taskId),
     index('artifacts_conversation_idx').on(table.conversationId),
+    index('artifacts_message_idx').on(table.messageId),
     uniqueIndex('artifacts_storage_key_uq')
       .on(table.storageKey)
       .where(sql`${table.storageKey} is not null`),
