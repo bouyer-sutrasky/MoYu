@@ -1,0 +1,433 @@
+# P1-A 第一刀：collectChanges 不执行任务仓库配置的外部 diff helper — 2026-11-08T17:50+08:00
+
+依据：#56 复审 P1-A；`docs/M6A-REWORK-HANDOFF.md` §4 最小下一步（本轮读了 §1–§6，按 §4 执行，其余各节未动手）。
+分支：本地 `agent/review-isolation-m6a-fa8ec916012c` 指向 `origin/agent/attachments-review-panel-4bd4aae33eac`（沿用 PR #44）。
+基线：`53fbd73f565d870bc9b5f6486e2e288f35bac065`；`main = 1001c2544c68b8f4d906e330566f6fdb6ff0c795`。
+环境：`/opt/moyu-node24/bin`（Node v24.22.2、pnpm 11.7.0）、git 2.43.0、Linux；未改 `/root/src/upstream/*`，未重启 3082，未合并 PR。
+
+代码 head（本文件据其产出，其后一个 docs-only 提交入库）：
+$ git rev-parse HEAD
+dcc9f84bfd5f77cb088ff000315fb9c5578183a4
+
+$ git log --oneline 53fbd73..HEAD
+dcc9f84 fix(supervisor): keep review collection from running task-repository helpers
+d00b328 test(supervisor): prove the task repository can run diff helpers in review collection
+
+## 1. 红段：测试先落（HEAD = d00b328，生产代码未改）
+
+$ git rev-parse HEAD
+d00b328a148f14f87cbf2a3bd7605e62808ceacd
+$ git status --short
+$ cd apps/supervisor && /opt/moyu-node24/bin/pnpm exec vitest run test/review.test.ts
+
+ RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/supervisor
+
+ ❯ test/review.test.ts (13 tests | 4 failed) 743ms
+   ✓ supervisor review worktree resolution > finds the single directory whose name ends with the ticket id prefix 3ms
+   ✓ supervisor review worktree resolution > reports a missing instance profile as unavailable, never as an empty diff 1ms
+   ✓ supervisor review worktree resolution > refuses to guess when two directories match the same ticket id 1ms
+   ✓ supervisor worktree diff > reads a real git diff, including untracked, modified, deleted and renamed files 62ms
+   ✓ supervisor worktree diff > reports no files for a clean worktree instead of inventing changes 33ms
+   ✓ supervisor worktree diff > marks a non-repository directory as unavailable with the git error 7ms
+   × supervisor diff helper isolation > never runs an external diff command named by the task repository attributes 54ms
+     → expected true to be false // Object.is equality
+   × supervisor diff helper isolation > never runs a textconv command named by the task repository attributes 48ms
+     → expected true to be false // Object.is equality
+   × supervisor diff helper isolation > ignores diff helpers inherited through the supervisor environment 41ms
+     → expected true to be false // Object.is equality
+   × supervisor diff helper isolation > never runs a repository-configured fsmonitor program while reading status 44ms
+     → expected true to be false // Object.is equality
+   ✓ supervisor check runs > keeps the real exit code, timestamps and output tail of each command 118ms
+   ✓ supervisor check runs > terminates a hung command and records the timeout  326ms
+   ✓ review service > returns a cleaned state when the ticket worktree is gone 3ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/review.test.ts > supervisor diff helper isolation > never runs an external diff command named by the task repository attributes
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ test/review.test.ts:163:34
+    161|     const changes = await collectChanges({ directory, maxBytes: 512 * …
+    162| 
+    163|     expect(existsSync(sentinel)).toBe(false);
+       |                                  ^
+    164|     const changed = changes.files.find((file) => file.path === 'change…
+    165|     expect(changed?.status).toBe('modified');
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  test/review.test.ts > supervisor diff helper isolation > never runs a textconv command named by the task repository attributes
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ test/review.test.ts:180:34
+    178|     const changes = await collectChanges({ directory, maxBytes: 512 * …
+    179| 
+    180|     expect(existsSync(sentinel)).toBe(false);
+       |                                  ^
+    181|     expect(changes.files.find((file) => file.path === 'changed.txt')?.…
+    182|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  test/review.test.ts > supervisor diff helper isolation > ignores diff helpers inherited through the supervisor environment
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ test/review.test.ts:203:36
+    201|     try {
+    202|       const changes = await collectChanges({ directory, maxBytes: 512 …
+    203|       expect(existsSync(sentinel)).toBe(false);
+       |                                    ^
+    204|       expect(changes.files.find((file) => file.path === 'changed.txt')…
+    205|     } finally {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  test/review.test.ts > supervisor diff helper isolation > never runs a repository-configured fsmonitor program while reading status
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ test/review.test.ts:223:34
+    221|     const changes = await collectChanges({ directory, maxBytes: 512 * …
+    222| 
+    223|     expect(existsSync(sentinel)).toBe(false);
+       |                                  ^
+    224|     expect(changes.files.find((file) => file.path === 'changed.txt')?.…
+    225|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  4 failed | 9 passed (13)
+   Start at  17:46:20
+   Duration  1.25s (transform 143ms, setup 0ms, collect 255ms, tests 743ms, environment 0ms, prepare 79ms)
+
+exit code: 1
+
+判定（红）：4 条新测试失败 —— 真实 git 仓库里 `diff.<driver>.command`、`diff.<driver>.textconv`、
+继承的 `GIT_EXTERNAL_DIFF`/`GIT_CONFIG_*`、`core.fsmonitor` 四种 helper 的哨兵文件都被创建，
+即 `collectChanges` 在生产路径上执行了任务仓库配置的外部程序；原有 9 条测试仍通过。exit 1。
+
+## 2. 绿段：修复后（HEAD = dcc9f84）
+
+$ git rev-parse HEAD
+dcc9f84bfd5f77cb088ff000315fb9c5578183a4
+$ cd apps/supervisor && /opt/moyu-node24/bin/pnpm exec vitest run test/review.test.ts
+
+ RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/supervisor
+
+ ✓ test/review.test.ts (13 tests) 709ms
+   ✓ supervisor check runs > terminates a hung command and records the timeout  328ms
+
+ Test Files  1 passed (1)
+      Tests  13 passed (13)
+   Start at  17:48:26
+   Duration  1.27s (transform 152ms, setup 0ms, collect 270ms, tests 709ms, environment 0ms, prepare 81ms)
+
+exit code: 0
+
+$ git rev-parse HEAD
+dcc9f84bfd5f77cb088ff000315fb9c5578183a4
+$ cd apps/supervisor && /opt/moyu-node24/bin/pnpm test
+$ vitest run --exclude "test/integration/**"
+
+ RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/supervisor
+
+ ✓ test/review.test.ts (13 tests) 716ms
+   ✓ supervisor check runs > terminates a hung command and records the timeout  325ms
+ ✓ test/server-wake.test.ts (1 test) 89ms
+ ✓ test/config.test.ts (3 tests) 18ms
+ ✓ test/resources.test.ts (8 tests) 8ms
+ ✓ test/stop-proof.test.ts (4 tests) 2281ms
+   ✓ supervisor cgroup stop proof > serializes independent processes with the kernel lock  2138ms
+ ✓ test/provision-env.test.ts (1 test) 4ms
+ ✓ test/process.test.ts (21 tests) 6500ms
+   ✓ supervisor process evidence > never signals a reused root PID whose start time does not match  315ms
+   ✓ supervisor process evidence > does not signal a reused process group after the owned members exited  302ms
+   ✓ supervisor process evidence > does not report stopped when the timeout expires before the child exits  1784ms
+   ✓ supervisor process evidence > kills a child that ignores SIGTERM before reporting stopped  1661ms
+   ✓ supervisor process evidence > retains a newly started service regardless of its age  358ms
+   ✓ cgroup launcher only accepts a positive release > exits without executing when the parent dies before release  547ms
+
+ Test Files  7 passed (7)
+      Tests  51 passed (51)
+   Start at  17:49:30
+   Duration  6.97s (transform 489ms, setup 0ms, collect 1.03s, tests 9.62s, environment 1ms, prepare 523ms)
+
+exit code: 0
+
+$ cd apps/supervisor && /opt/moyu-node24/bin/pnpm --filter @moyu/supervisor typecheck
+$ tsc --noEmit
+exit code: 0
+
+$ /opt/moyu-node24/bin/pnpm check   # lint + format:check + typecheck + 全仓单测
+$ pnpm lint && pnpm format:check && pnpm typecheck && pnpm test
+$ eslint .
+
+/root/src/review-isolation-m6a-fa8ec916012c/apps/dispatcher/test/integration/dispatcher.integration.test.ts
+  716:7  warning  Unused eslint-disable directive (no problems were reported from 'no-console')
+
+✖ 1 problem (0 errors, 1 warning)
+  0 errors and 1 warning potentially fixable with the `--fix` option.
+
+$ prettier --check "**/*.{ts,tsx,mjs,cjs,json,yml,yaml,css,html}"
+Checking formatting...
+All matched files use Prettier code style!
+$ pnpm -r --if-present typecheck
+Scope: 8 of 9 workspace projects
+packages/contracts typecheck$ tsc --noEmit
+packages/db typecheck$ tsc --noEmit
+packages/theme typecheck$ tsc --noEmit
+packages/theme typecheck: Done
+packages/contracts typecheck: Done
+packages/db typecheck: Done
+apps/web typecheck$ tsc --noEmit
+packages/runtime-client typecheck$ tsc --noEmit
+packages/runtime-client typecheck: Done
+apps/web typecheck: Done
+apps/api typecheck$ tsc --noEmit
+apps/dispatcher typecheck$ tsc --noEmit
+apps/supervisor typecheck$ tsc --noEmit
+apps/supervisor typecheck: Done
+apps/dispatcher typecheck: Done
+apps/api typecheck: Done
+$ pnpm -r --if-present test && node --test scripts/m3/guard.test.mjs integrations/superagent/tests/verify-lock.test.mjs
+Scope: 8 of 9 workspace projects
+packages/contracts test$ vitest run
+packages/contracts test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/packages/contracts
+packages/contracts test:  ✓ test/contracts.test.ts (13 tests) 21ms
+packages/contracts test:  Test Files  1 passed (1)
+packages/contracts test:       Tests  13 passed (13)
+packages/contracts test:    Start at  17:48:54
+packages/contracts test:    Duration  502ms (transform 123ms, setup 0ms, collect 227ms, tests 21ms, environment 0ms, prepare 75ms)
+packages/contracts test: Done
+packages/runtime-client test$ vitest run
+packages/runtime-client test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/packages/runtime-client
+packages/runtime-client test:  ✓ test/credentials.test.ts (5 tests) 7ms
+packages/runtime-client test:  ✓ test/client.test.ts (8 tests) 30ms
+packages/runtime-client test:  Test Files  2 passed (2)
+packages/runtime-client test:       Tests  13 passed (13)
+packages/runtime-client test:    Start at  17:48:55
+packages/runtime-client test:    Duration  575ms (transform 201ms, setup 0ms, collect 371ms, tests 37ms, environment 0ms, prepare 153ms)
+packages/runtime-client test: Done
+apps/api test$ vitest run --exclude "test/integration/**"
+apps/dispatcher test$ vitest run --exclude "test/integration/**"
+apps/supervisor test$ vitest run --exclude "test/integration/**"
+apps/dispatcher test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/dispatcher
+apps/api test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/api
+apps/supervisor test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/supervisor
+apps/api test:  ✓ test/cursor.test.ts (6 tests) 26ms
+apps/dispatcher test:  ✓ test/config.test.ts (3 tests) 35ms
+apps/api test:  ✓ test/auth.test.ts (9 tests) 52ms
+apps/dispatcher test:  ✓ test/tasks.test.ts (2 tests) 5ms
+apps/dispatcher test:  Test Files  2 passed (2)
+apps/dispatcher test:       Tests  5 passed (5)
+apps/dispatcher test:    Start at  17:48:56
+apps/dispatcher test:    Duration  1.27s (transform 538ms, setup 0ms, collect 1.04s, tests 39ms, environment 7ms, prepare 453ms)
+apps/dispatcher test: Done
+apps/supervisor test:  ✓ test/review.test.ts (13 tests) 747ms
+apps/supervisor test:    ✓ supervisor check runs > terminates a hung command and records the timeout  324ms
+apps/supervisor test:  ✓ test/server-wake.test.ts (1 test) 89ms
+apps/api test:  ✓ test/health.test.ts (5 tests) 111ms
+apps/api test:  Test Files  3 passed (3)
+apps/api test:       Tests  20 passed (20)
+apps/api test:    Start at  17:48:56
+apps/api test:    Duration  2.91s (transform 833ms, setup 0ms, collect 2.69s, tests 189ms, environment 1ms, prepare 579ms)
+apps/api test: Done
+apps/supervisor test:  ✓ test/config.test.ts (3 tests) 18ms
+apps/supervisor test:  ✓ test/resources.test.ts (8 tests) 8ms
+apps/supervisor test:  ✓ test/stop-proof.test.ts (4 tests) 2447ms
+apps/supervisor test:    ✓ supervisor cgroup stop proof > serializes independent processes with the kernel lock  2186ms
+apps/supervisor test:  ✓ test/provision-env.test.ts (1 test) 4ms
+apps/supervisor test:  ✓ test/process.test.ts (21 tests) 6691ms
+apps/supervisor test:    ✓ supervisor process evidence > never signals a reused root PID whose start time does not match  350ms
+apps/supervisor test:    ✓ supervisor process evidence > does not signal a reused process group after the owned members exited  315ms
+apps/supervisor test:    ✓ supervisor process evidence > does not report stopped when the timeout expires before the child exits  1784ms
+apps/supervisor test:    ✓ supervisor process evidence > kills a child that ignores SIGTERM before reporting stopped  1666ms
+apps/supervisor test:    ✓ supervisor process evidence > retains a newly started service regardless of its age  360ms
+apps/supervisor test:    ✓ cgroup launcher only accepts a positive release > exits without executing when the parent dies before release  546ms
+apps/supervisor test:  Test Files  7 passed (7)
+apps/supervisor test:       Tests  51 passed (51)
+apps/supervisor test:    Start at  17:48:56
+apps/supervisor test:    Duration  7.88s (transform 942ms, setup 0ms, collect 2.15s, tests 10.00s, environment 1ms, prepare 910ms)
+apps/supervisor test: Done
+✔ verify-lock.sh gives the same result for plain, spaced, quoted and relative paths (5815.957621ms)
+✔ accepts a dedicated profile linked to the patched build (11.985392ms)
+✔ rejects the bootstrap home and profile (1.707027ms)
+✔ rejects an unpatched build and a wrong Bridge port (2.592397ms)
+✔ rejects an env file with broad permissions (1.359721ms)
+✔ rejects a target port that is already in use (12.058542ms)
+✔ rejects instance env keys that could override the validated home/profile (1.506845ms)
+✔ rejects an instance env pointing at the production API or a conflicting process env (2.417164ms)
+✔ rejects a symlinked state parent and leaves the other instance untouched (1.316991ms)
+✔ rejects state/<profile> linked to another profile in the same home (1.344437ms)
+✔ rejects sessions linked to another directory in the same home (1.316165ms)
+✔ rejects a cleanup target whose parent link stays inside the same home (1.236748ms)
+✔ rejects a profile containing path separators (0.993433ms)
+✔ the E2E script exits before any run directory for a bootstrap home or production API (807.593603ms)
+✔ refuses a runtime whose stateDir is not the expected isolated profile (0.63902ms)
+ℹ tests 15
+ℹ suites 0
+ℹ pass 15
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 5900.00135
+EXIT=0
+
+判定（绿）：4 条新测试全部通过，原有 9 条不变；supervisor 51 条通过；全仓 `pnpm check` exit 0。
+采集仍读到真实 patch（`+gamma` 仍出现在 patch 里，见 §3 末段）。
+
+## 3. 实际 argv / env：受保护读法与未保护读法的原始对照
+
+复现脚本原文见本节末；原始输出如下。
+
+repo: /tmp/tmp.TE49y9ToQb/repo
+git version: git version 2.43.0
+
+## unguarded reads (what collectChanges did before this change)
+--- git diff HEAD -- tracked.txt
+exit=0
+sentinel: ran-external
+sentinel: ran-fsmonitor
+--- git status --porcelain=v1
+exit=0
+sentinel: ran-fsmonitor
+
+## guarded reads (the argv review.ts now builds)
+--- git -c core.fsmonitor=false -c core.attributesFile=/dev/null diff --no-ext-diff --no-textconv HEAD -- tracked.txt
+exit=0
+sentinel: none
+--- git -c core.fsmonitor=false status --porcelain=v1
+exit=0
+sentinel: none
+
+## guarded read with an inherited GIT_EXTERNAL_DIFF and the minimal env review.ts passes
+exit=0
+sentinel: none
+
+## the guarded diff still prints the real patch
+diff --git a/tracked.txt b/tracked.txt
+index fbbee86..85c3040 100644
+--- a/tracked.txt
++++ b/tracked.txt
+@@ -1,2 +1,3 @@
+ alpha
+ beta
++gamma
+
+判定：未保护读法（修复前的 argv）确实运行了仓库配置的 helper（`diff.external` 与 `core.fsmonitor`）；
+修复后的 argv（`git -c core.fsmonitor=false -c core.attributesFile=/dev/null diff --no-ext-diff --no-textconv`）
+和最小环境（`env -i` 加 `GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1`）
+不再创建任何哨兵，且 patch 输出仍是真实内容。
+
+### 3.1 为什么不使用 `-c diff.external=`（交接 §4 曾提出）
+
+实测空值会被 git 当成空命令执行，diff 直接失败，因此改用文档化的 `--no-ext-diff`：
+
+$ git -c diff.external= diff -- f.txt
+error: cannot run : No such file or directory
+fatal: external diff died, stopping at f.txt
+exit code: 128
+
+### 3.2 复现脚本（`/tmp/p1a-argv-proof.sh`）
+
+```sh
+#!/bin/sh
+# Exact argv/env reproduction of what review.ts asks git to do.
+set -u
+root=$(mktemp -d); repo="$root/repo"; mkdir -p "$repo"; cd "$repo" || exit 1
+git init -q -b main
+git config user.email a@b.c
+git config user.name t
+printf 'alpha\nbeta\n' > tracked.txt
+git add tracked.txt
+git commit -qm init
+
+write_helper() { # path sentinel
+  printf '#!/bin/sh\nprintf ran >> %s\ncat "$2" 2>/dev/null || true\nexit 0\n' "'$2'" > "$1"
+  chmod +x "$1"
+}
+write_helper "$root/diff-external.sh" "$root/ran-external"
+write_helper "$root/textconv.sh" "$root/ran-textconv"
+write_helper "$root/fsmonitor.sh" "$root/ran-fsmonitor"
+
+git config diff.external "$root/diff-external.sh"
+git config diff.m6a.textconv "$root/textconv.sh"
+git config core.fsmonitor "$root/fsmonitor.sh"
+printf 'tracked.txt diff=m6a\n' > .gitattributes
+printf 'alpha\nbeta\ngamma\n' > tracked.txt
+
+report() { # label then command
+  label=$1; shift
+  rm -f "$root"/ran-*
+  echo "--- $label"
+  "$@" >/dev/null 2>&1
+  echo "exit=$?"
+  found=0
+  for f in "$root"/ran-*; do [ -e "$f" ] && { echo "sentinel: $(basename "$f")"; found=1; }; done
+  [ "$found" = 0 ] && echo "sentinel: none"
+}
+
+echo "repo: $repo"
+echo "git version: $(git --version)"
+echo
+echo "## unguarded reads (what collectChanges did before this change)"
+report "git diff HEAD -- tracked.txt" git diff HEAD -- tracked.txt
+report "git status --porcelain=v1" git status --porcelain=v1
+echo
+echo "## guarded reads (the argv review.ts now builds)"
+report "git -c core.fsmonitor=false -c core.attributesFile=/dev/null diff --no-ext-diff --no-textconv HEAD -- tracked.txt" \
+  git -c core.fsmonitor=false -c core.attributesFile=/dev/null diff --no-ext-diff --no-textconv HEAD -- tracked.txt
+report "git -c core.fsmonitor=false status --porcelain=v1" \
+  git -c core.fsmonitor=false status --porcelain=v1
+echo
+echo "## guarded read with an inherited GIT_EXTERNAL_DIFF and the minimal env review.ts passes"
+rm -f "$root"/ran-*
+env -i PATH="$PATH" TMPDIR=/tmp LANG=C LC_ALL=C \
+  GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ATTR_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
+  GIT_EXTERNAL_DIFF="$root/diff-external.sh" \
+  git -c core.fsmonitor=false -c core.attributesFile=/dev/null diff --no-ext-diff --no-textconv HEAD -- tracked.txt >/dev/null 2>&1
+echo "exit=$?"
+found=0
+for f in "$root"/ran-*; do [ -e "$f" ] && { echo "sentinel: $(basename "$f")"; found=1; }; done
+[ "$found" = 0 ] && echo "sentinel: none"
+echo
+echo "## the guarded diff still prints the real patch"
+git -c core.fsmonitor=false -c core.attributesFile=/dev/null diff --no-ext-diff --no-textconv HEAD -- tracked.txt
+rm -rf "$root"
+```
+
+## 4. 判定与边界
+
+- 生产路径：改动落在 `apps/supervisor/src/review.ts` 的 `collectChanges` / `git()` / `gitDiff()`，浏览器打开
+  未采集任务详情触发自动采集时走的就是这条路径（`WorkspaceShell.tsx` 的 review effect）。
+- 边界：本轮只做 P1-A 第一刀；`locateTicketWorktree` 真实路径解析、检查子进程最小环境 + 低权身份、
+  超时按进程组回收、并发门控竞态都**未动**（下一轮）。
+- 未验证：推送后的 GitHub CI（本轮结束时尚未触发）；A1–A8 整套证据未在本 head 重跑（按所有者口径随阶段收尾重跑）；
+  supervisor 依赖 cgroup v2，仅 Linux（与现有实现一致，非本改动引入）。
+- 复现：`cd apps/supervisor && /opt/moyu-node24/bin/pnpm exec vitest run test/review.test.ts`。
