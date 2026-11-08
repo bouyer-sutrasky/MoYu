@@ -57,6 +57,8 @@ export async function runCommand(
     timeoutMs: number;
     maxBytes?: number;
     env?: NodeJS.ProcessEnv;
+    /** Start the child as its own process-group leader, so a timeout can kill the tree. */
+    ownProcessGroup?: boolean;
   },
 ): Promise<CommandResult> {
   const maxBytes = options.maxBytes ?? 4 * 1024 * 1024;
@@ -65,13 +67,25 @@ export async function runCommand(
       cwd: options.cwd,
       env: options.env ?? process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: options.ownProcessGroup ?? false,
     });
     let stdout = '';
     let stderr = '';
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGKILL');
+      // A shell command leaves grandchildren behind; killing the group (the
+      // child is its leader) takes them too. The direct kill stays as a
+      // fallback for a group that has already gone.
+      if (options.ownProcessGroup && child.pid) {
+        try {
+          process.kill(-child.pid, 'SIGKILL');
+        } catch {
+          child.kill('SIGKILL');
+        }
+      } else {
+        child.kill('SIGKILL');
+      }
     }, options.timeoutMs);
     const collect = (chunk: Buffer, target: 'stdout' | 'stderr') => {
       const text = chunk.toString('utf8');
@@ -474,7 +488,36 @@ export async function collectChanges(input: {
 
 const OUTPUT_TAIL_BYTES = 8 * 1024;
 
-/** Runs the configured check commands in the ticket worktree, one by one. */
+/**
+ * The environment a check command gets. It is a whitelist, not the supervisor's
+ * own: tokens, database URLs and any `MOYU_*` value the supervisor was launched
+ * with must not reach code that a task repository can change. The keys kept are
+ * what a normal `pnpm`/`node` build needs to find its toolchain and write.
+ */
+const CHECK_ENV_KEYS = ['PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL'] as const;
+
+function checkEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of CHECK_ENV_KEYS) {
+    const value = source[key];
+    if (typeof value === 'string' && value.length > 0) env[key] = value;
+  }
+  env.LANG ??= 'C';
+  env.LC_ALL ??= 'C';
+  return env;
+}
+
+/**
+ * Runs the configured check commands in the ticket worktree, one by one.
+ *
+ * The child gets the check whitelist and owns its process group, so a timeout
+ * kills the whole tree and not just the shell. The identity is not switched:
+ * the supervisor unit runs as its own unprivileged user with
+ * `NoNewPrivileges=yes`, so it cannot change uid/gid. A dedicated check user
+ * needs a privileged launcher (its own systemd unit or socket), which is not
+ * part of this change; the environment and the working directory are the
+ * isolation this path applies.
+ */
 export async function runChecks(input: {
   directory: string;
   commands: readonly string[];
@@ -488,6 +531,8 @@ export async function runChecks(input: {
       cwd: input.directory,
       timeoutMs: input.timeoutMs,
       maxBytes: 4 * 1024 * 1024,
+      env: checkEnvironment(),
+      ownProcessGroup: true,
     });
     const finishedAt = new Date();
     const durationMs = Number((process.hrtime.bigint() - started) / 1_000_000n);
@@ -517,8 +562,11 @@ export async function runChecks(input: {
   return runs;
 }
 
-/** Serializes check runs per repository so two requests never run them together. */
-const checkRuns = new Map<string, Promise<ReviewCheckRun[]>>();
+/**
+ * A repository is reserved before any await, so two requests that arrive
+ * together cannot both pass the gate while the worktree is being resolved.
+ */
+const runningChecks = new Set<string>();
 
 export interface ReviewService {
   resolve(repositoryId: string, ticketId: string): Promise<ResolvedWorktree>;
@@ -568,40 +616,40 @@ export function createReviewService(input: {
       });
     },
     async checks(repositoryId, ticketId) {
-      const running = checkRuns.get(repositoryId);
-      if (running) {
+      if (runningChecks.has(repositoryId)) {
         throw Object.assign(new Error('该仓库已有检查正在运行，请等它结束'), { statusCode: 409 });
       }
-      const worktree = await resolve(repositoryId, ticketId);
-      if (worktree.state !== 'available' || !worktree.directory) {
-        throw Object.assign(new Error(worktree.reason ?? '执行目录不可用'), {
-          statusCode: 409,
-        });
-      }
-      const work = runChecks({
-        directory: worktree.directory,
-        commands: config.reviewCheckCommands,
-        timeoutMs: config.reviewCheckTimeoutMs,
-      }).finally(() => {
-        checkRuns.delete(repositoryId);
-      });
-      checkRuns.set(repositoryId, work);
-      const runs = await work;
-      logger.info(
-        {
-          event: 'review.checks_finished',
-          repositoryId,
-          ticketId,
+      runningChecks.add(repositoryId);
+      try {
+        const worktree = await resolve(repositoryId, ticketId);
+        if (worktree.state !== 'available' || !worktree.directory) {
+          throw Object.assign(new Error(worktree.reason ?? '执行目录不可用'), {
+            statusCode: 409,
+          });
+        }
+        const runs = await runChecks({
+          directory: worktree.directory,
           commands: config.reviewCheckCommands,
-          results: runs.map((run) => ({
-            command: run.command,
-            exitCode: run.exitCode,
-            passed: run.passed,
-          })),
-        },
-        'review checks finished',
-      );
-      return runs;
+          timeoutMs: config.reviewCheckTimeoutMs,
+        });
+        logger.info(
+          {
+            event: 'review.checks_finished',
+            repositoryId,
+            ticketId,
+            commands: config.reviewCheckCommands,
+            results: runs.map((run) => ({
+              command: run.command,
+              exitCode: run.exitCode,
+              passed: run.passed,
+            })),
+          },
+          'review checks finished',
+        );
+        return runs;
+      } finally {
+        runningChecks.delete(repositoryId);
+      }
     },
   };
 }
