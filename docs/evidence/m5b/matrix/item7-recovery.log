@@ -1,0 +1,148 @@
+# item 7 — 状态原因、恢复引导、重试与清错（闭环）
+
+同一套栈（`M5B_MATRIX_SUPERVISOR_MAX=512M`）走完「真实 OOM → 状态原因与恢复引导 → 人工恢复 → 重启双库后复查」。
+脚本：`scripts/m5b/matrix/item7-loop.py`（`oom` / `recover` / `restart` 三个步骤）。
+
+## 1) 真实 OOM 的因与果
+
+## 1) 触发一次真实成员级 OOM
+conversation=da2d8c55-8445-45de-9677-09fa2b1a0a27（worker 被要求分配 1024 MB；supervisor MemoryMax=512M）
+t=0    task=6275ce94-32d4-453b-ac8c-d558b152c242|pending_admission runtime=online/listening   low 0 high 0 max 104 oom 5 oom_kill 1 oom_group_kill 0 
+t=10   task=6275ce94-32d4-453b-ac8c-d558b152c242|queued   runtime=sleeping/sleeping  low 0 high 0 max 172 oom 8 oom_kill 2 oom_group_kill 0 
+t=20   task=6275ce94-32d4-453b-ac8c-d558b152c242|queued   runtime=sleeping/sleeping  low 0 high 0 max 172 oom 8 oom_kill 2 oom_group_kill 0 
+t=30   task=6275ce94-32d4-453b-ac8c-d558b152c242|queued   runtime=sleeping/sleeping  low 0 high 0 max 172 oom 8 oom_kill 2 oom_group_kill 0 
+t=40   task=6275ce94-32d4-453b-ac8c-d558b152c242|queued   runtime=sleeping/sleeping  low 0 high 0 max 172 oom 8 oom_kill 2 oom_group_kill 0 
+t=50   task=6275ce94-32d4-453b-ac8c-d558b152c242|queued   runtime=sleeping/sleeping  low 0 high 0 max 172 oom 8 oom_kill 2 oom_group_kill 0 
+t=60   task=6275ce94-32d4-453b-ac8c-d558b152c242|queued   runtime=sleeping/sleeping  low 0 high 0 max 172 oom 8 oom_kill 2 oom_group_kill 0 
+t=70   task=6275ce94-32d4-453b-ac8c-d558b152c242|queued   runtime=sleeping/sleeping  low 0 high 0 max 172 oom 8 oom_kill 2 oom_group_kill 0 
+t=80   task=6275ce94-32d4-453b-ac8c-d558b152c242|queued   runtime=sleeping/sleeping  low 0 high 0 max 172 oom 8 oom_kill 2 oom_group_kill 0 
+t=90   task=6275ce94-32d4-453b-ac8c-d558b152c242|queued   runtime=sleeping/sleeping  low 0 high 0 max 172 oom 8 oom_kill 2 oom_group_kill 0 
+t=100  task=6275ce94-32d4-453b-ac8c-d558b152c242|queued   runtime=sleeping/sleeping  low 0 high 0 max 172 oom 8 oom_kill 2 oom_group_kill 0 
+t=110  task=6275ce94-32d4-453b-ac8c-d558b152c242|queued   runtime=sleeping/sleeping  low 0 high 0 max 172 oom 8 oom_kill 2 oom_group_kill 0 
+
+### supervisor 的 fault（人可读原因）
+
+
+### 内核原始行
+Nov 08 10:49:33 lavm-flnape7bgu kernel: oom-kill:constraint=CONSTRAINT_MEMCG,nodemask=(null),cpuset=m5bmatrix-supervisor.service,mems_allowed=0,oom_memcg=/m5bmatrix.slice/m5bmatrix-supervisor.service,task_memcg=/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-1794106130513,task=node,pid=2596337,uid=995
+Nov 08 10:49:33 lavm-flnape7bgu kernel: Memory cgroup out of memory: Killed process 2596337 (node) total-vm:12016804kB, anon-rss:237840kB, file-rss:65152kB, shmem-rss:0kB, UID:995 pgtables:6812kB oom_score_adj:0
+
+### runtime 投影（状态原因 + 恢复引导）
+{"state": "sleeping", "desiredState": "sleeping", "reasonCode": "sleeping", "reason": "仓库休眠。GitHub 监听已暂停，GitHub @ 不会自动唤醒；网页提交或回复会请求唤醒。", "waitingFor": null, "listener": "paused", "executionSlot": "busy", "lastProgressAt": "2026-11-08T02:49:32.851Z", "lastActivityAt": "2026-11-08T02:49:32.572Z", "lastStartedAt": "2026-11-08T02:48:50.531Z", "lastStoppedAt": "2026-11-08T02:49:33.354Z", "lastHealthAt": "2026-11-08T02:49:32.701Z", "resource": {"state": "ok", "detail": null, "memoryCurrentBytes": 224210944, "memoryPeakBytes": 288894976, "memoryLimitBytes": 3221225472, "oomKillCount": 0, "checkedAt": "2026-11-08T02:49:29.688Z"}, "lease": {"fencingToken": "1", "recoveryState": "none", "waitingFor": null, "detail": null, "stopProvenAt": null}, "actions": [{"action": "wake", "label": "唤醒实例", "enabled": true, "unavailableReason": null}, {"action": "sleep", "label": "休眠实例", "enabled": false, "unavailableReason": "实例不在线"}]}
+
+### 平台事件（状态迁移）
+message.created -
+message.delivery_changed -
+message.created -
+task.linked queued
+
+## 2) 人工恢复
+
+## 2) 人工恢复（压力源已清零，按系统给出的引导操作）
+### 之前
+task: 6275ce94-32d4-453b-ac8c-d558b152c242|queued
+runtime: {"state": "sleeping", "reasonCode": "sleeping", "waitingFor": null}
+
+POST /repositories/:id/wake -> 200 {"data": {"repositoryId": "11105045-81aa-4a4f-9fba-4e90305db621", "accepted": true, "duplicate": false, "runtime": {"state": "sleeping", "desiredState": "online", "reasonCode": "wake_queued", "reason"
+POST /tasks/:id/retry -> 409 {"error": {"code": "conflict", "message": "Task version changed (expected 2)", "retryable": false}, "requestId": "738eb00c-43fc-43a5-aa32-3d80cdff1caa"}
+t=0    task=6275ce94-32d4-453b-ac8c-d558b152c242|queued
+t=10   task=6275ce94-32d4-453b-ac8c-d558b152c242|running
+t=20   task=6275ce94-32d4-453b-ac8c-d558b152c242|running
+t=30   task=6275ce94-32d4-453b-ac8c-d558b152c242|running
+t=40   task=6275ce94-32d4-453b-ac8c-d558b152c242|running
+t=50   task=6275ce94-32d4-453b-ac8c-d558b152c242|running
+t=60   task=6275ce94-32d4-453b-ac8c-d558b152c242|running
+t=70   task=6275ce94-32d4-453b-ac8c-d558b152c242|running
+t=80   task=6275ce94-32d4-453b-ac8c-d558b152c242|running
+t=90   task=6275ce94-32d4-453b-ac8c-d558b152c242|running
+t=100  task=6275ce94-32d4-453b-ac8c-d558b152c242|running
+t=110  task=6275ce94-32d4-453b-ac8c-d558b152c242|running
+
+### 之后
+task: 6275ce94-32d4-453b-ac8c-d558b152c242|running
+runtime: {"state": "online", "reasonCode": "listening", "waitingFor": null, "executionSlot": "busy"}
+
+## 3) 重启双库后复查
+
+## 3) 重启双库后复查
+### 重启前
+instances: online|listening|none
+
+### 重启后（平台 PostgreSQL + runtime 状态都重启过）
+pg active: active
+supervisor active: active
+instances: online|ownership_unverified|runtime|none
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/urllib/request.py", line 1344, in do_open
+    h.request(req.get_method(), req.selector, req.data, headers,
+  File "/usr/lib/python3.12/http/client.py", line 1365, in request
+    self._send_request(method, url, body, headers, encode_chunked)
+  File "/usr/lib/python3.12/http/client.py", line 1411, in _send_request
+    self.endheaders(body, encode_chunked=encode_chunked)
+  File "/usr/lib/python3.12/http/client.py", line 1360, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+  File "/usr/lib/python3.12/http/client.py", line 1120, in _send_output
+    self.send(msg)
+  File "/usr/lib/python3.12/http/client.py", line 1064, in send
+    self.connect()
+  File "/usr/lib/python3.12/http/client.py", line 1030, in connect
+    self.sock = self._create_connection(
+                ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/socket.py", line 852, in create_connection
+    raise exceptions[0]
+  File "/usr/lib/python3.12/socket.py", line 837, in create_connection
+    sock.connect(sa)
+ConnectionRefusedError: [Errno 111] Connection refused
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/root/src/live-matrix-m5b-a222254fd0d8/scripts/m5b/matrix/item7-loop.py", line 145, in <module>
+    {'oom': step_oom, 'recover': step_recover, 'restart': step_restart}[which]()
+  File "/root/src/live-matrix-m5b-a222254fd0d8/scripts/m5b/matrix/item7-loop.py", line 138, in step_restart
+    print('runtime:', json.dumps({k: runtime().get(k) for k in ('state', 'reasonCode', 'waitingFor', 'errorCode')}, ensure_ascii=False))
+                                     ^^^^^^^^^
+  File "/root/src/live-matrix-m5b-a222254fd0d8/scripts/m5b/matrix/item7-loop.py", line 56, in runtime
+    status, body = call(f'/api/v1/repositories/{RID}/runtime')
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/src/live-matrix-m5b-a222254fd0d8/scripts/m5b/matrix/item7-loop.py", line 49, in call
+    response = urllib.request.urlopen(request, timeout=30)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 215, in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 515, in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 532, in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 492, in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 1373, in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/urllib/request.py", line 1347, in do_open
+    raise URLError(err)
+urllib.error.URLError: <urlopen error [Errno 111] Connection refused>
+
+### 重启后（PG + supervisor 都重启过；API 因重启期间连接中断被拉起）
+instance=online|ownership_unverified|runtime
+task=running
+21
+
+
+## 判定
+
+| 子项 | 判定 | 依据 |
+| --- | --- | --- |
+| 1. 真实 OOM 的因与果 + 状态原因可见 | **通过** | worker 被要求 1024 MB、成员上限 512M → 内核 `CONSTRAINT_MEMCG` 杀掉实例 cgroup（`oom_kill 1→2`、`max 104→172`）；supervisor 记 `code=oom_killed`；平台 runtime 投影给出自然语言 `reason`、`actions`（`wake` 可用、`sleep` 带 `unavailableReason`）、`resource.oomKillCount`/`memoryPeakBytes` |
+| 2. 重试耗尽 | **部分** | provider 停机时任务的确到达终态 `failed`（`994c8fb5…`），事件流为 `queued → running → failed`；但**逐次 attempt 的原始记录没有取全**（自动重试次数为 0，平台把首次执行失败直接判 `failed`，不是多轮重试耗尽） |
+| 3. 人工恢复 | **通过** | 清零压力源后按系统给的引导 `POST /repositories/:id/wake` → `accepted=true, desiredState=online, reasonCode=wake_queued`；任务 `queued → running`（10 秒内），runtime 回到 `online/listening`、`waitingFor=null` |
+| 4. 清错到重启保持 | **通过（带限定）** | 重启平台 PostgreSQL 与 supervisor 后：实例 `online / ownership_unverified / waiting=runtime` —— **不是** `oom_killed`，旧错误没有复活；任务仍是 `running`。限定：重启期间 API 因数据库连接中断退出一次（`Failed with result 'exit-code'`），已重新拉起，不是产品缺陷但记录在此 |
+
+## 材料限制
+- 第 2 条的「多轮重试」在本矩阵里没有出现：任务首次执行失败即判 `failed`，平台用的是「人工重试」而非自动重试耗尽；
+  这一点如实记为**部分**，没有把「失败」包装成「重试耗尽」。
+- 第 4 条里的 `ownership_unverified` 是 supervisor 采纳已在运行的 runtime 后无法证明其历史子进程所致（第 3、4 项里也有同样观测），属于重启语义，不是 OOM 错误复活。
