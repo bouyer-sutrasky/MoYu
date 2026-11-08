@@ -732,7 +732,26 @@ export class InstanceManager {
           }
           // Not serving: a proof-based stop is attempted instead of freezing the
           // row. Foreign members are never signalled, and the row only leaves
-          // `stopping` when the boundary itself is empty.
+          // `stopping` when the boundary itself is empty. An unreadable boundary
+          // is not retried every tick: a stop cannot prove anything there, and a
+          // repeated full-timeout attempt would starve the other rows.
+          if (snapshot.cgroup === 'unreadable') {
+            await this.store.updateInstance(row.repositoryId, {
+              state: 'stopping',
+              desiredState: current.desiredState,
+              pid: row.pid,
+              ownership: this.ownershipFrom(row.pid, snapshot, stored),
+              reasonCode: 'stop_failed',
+              reasonDetail:
+                'Process ownership is unverified: the saved cgroup boundary cannot be read, so capacity remains occupied until it is restored or cleared by the owner',
+              waitingFor: 'process_exit',
+              errorCode: 'stop_failed',
+              errorDetail: 'unreadable cgroup boundary',
+            });
+            await this.store.syncRepositoryStatus(row.repositoryId, 'stopping');
+            await this.store.recordProgress(row.repositoryId);
+            continue;
+          }
           const stopped = await this.stopInstance(row, 'ownership_stop', 'process_exit');
           if (stopped && (row.state === 'starting' || row.state === 'online')) {
             await this.failInstance(
