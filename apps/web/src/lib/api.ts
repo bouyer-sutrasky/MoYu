@@ -1,5 +1,6 @@
 import {
   apiSuccessResponseSchema,
+  attachmentUploadDataSchema,
   authMeDataSchema,
   authStateDataSchema,
   bootstrapExchangeDataSchema,
@@ -22,6 +23,8 @@ import {
   revokeSessionDataSchema,
   sessionListDataSchema,
   taskCommandDataSchema,
+  taskReviewDataSchema,
+  type AttachmentUploadData,
   type AuthMeData,
   type AuthStateData,
   type BootstrapExchangeData,
@@ -46,6 +49,7 @@ import {
   type StartTaskInput,
   type TaskCommandData,
   type TaskCommandInput,
+  type TaskReviewData,
 } from '@moyu/contracts';
 import type { z } from 'zod';
 
@@ -119,6 +123,43 @@ export interface VerifyRegistrationResult {
 export interface VerifyLoginResult {
   me: AuthMeData;
   expiresAt: string;
+}
+
+/**
+ * Multipart upload. The shared JSON request helper cannot carry a file, so this
+ * path repeats the envelope handling and keeps credentials same-origin.
+ */
+async function uploadRequest<T>(path: string, file: File, schema: z.ZodType<T>): Promise<T> {
+  const form = new FormData();
+  form.append('file', file, file.name);
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { accept: 'application/json' },
+    body: form,
+  });
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+  if (!response.ok) {
+    const envelope = payload as {
+      error?: { code?: string; message?: string; retryable?: boolean };
+    } | null;
+    throw new ApiClientError(
+      response.status,
+      envelope?.error?.code ?? 'internal_error',
+      envelope?.error?.message ?? `Upload failed with HTTP ${response.status}`,
+      envelope?.error?.retryable ?? false,
+    );
+  }
+  const parsed = apiSuccessResponseSchema(schema).safeParse(payload);
+  if (!parsed.success) {
+    throw new ApiClientError(502, 'invalid_response', '服务端响应不符合共享契约');
+  }
+  return parsed.data.data as T;
 }
 
 export const api = {
@@ -269,6 +310,30 @@ export const api = {
       `/api/v1/conversations/${encodeURIComponent(id)}/messages`,
       createMessageDataSchema,
       { method: 'POST', body: input },
+    );
+  },
+  uploadAttachment(conversationId: string, file: File): Promise<AttachmentUploadData> {
+    return uploadRequest(
+      `/api/v1/conversations/${encodeURIComponent(conversationId)}/attachments`,
+      file,
+      attachmentUploadDataSchema,
+    );
+  },
+  taskReview(taskId: string): Promise<TaskReviewData> {
+    return request(`/api/v1/tasks/${encodeURIComponent(taskId)}/review`, taskReviewDataSchema);
+  },
+  refreshTaskReview(taskId: string): Promise<TaskReviewData> {
+    return request(
+      `/api/v1/tasks/${encodeURIComponent(taskId)}/review/changes`,
+      taskReviewDataSchema,
+      { method: 'POST', body: {} },
+    );
+  },
+  runTaskChecks(taskId: string): Promise<TaskReviewData> {
+    return request(
+      `/api/v1/tasks/${encodeURIComponent(taskId)}/review/checks`,
+      taskReviewDataSchema,
+      { method: 'POST', body: {} },
     );
   },
   taskCommand(

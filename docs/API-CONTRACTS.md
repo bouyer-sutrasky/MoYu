@@ -67,10 +67,16 @@ M2 实际 Cookie：https origin 使用 `__Host-moyu_session` 与 `__Host-moyu_bo
 | POST /api/v1/tasks/:id/stop | **M4 已实现**：`{expectedVersion,clientCommandId}`；幂等进入 `stopping`，经 Bridge `pause`，有停止证据后才变 `stopped`；不是上游终态 stop |
 | POST /api/v1/tasks/:id/resume | **M4 已实现**：`{expectedVersion,clientCommandId}`；只允许 `stopped`，dispatcher 重新取得仓库租约并核验现场后调用 Bridge `resume` |
 | POST /api/v1/tasks/:id/retry | **M4 已实现**：失败/受阻重试，经 Bridge `retry`，与人工停止的 resume 分开 |
-| GET /api/v1/tasks/:id/artifacts | **M3 已实现 PR 引用**：Bridge 投影的 `pull_request` 产物；diff/检查结果留待后续阶段 |
+| GET /api/v1/tasks/:id/artifacts | **M3 已实现 PR 引用**：Bridge 投影的 `pull_request` 产物 |
+| GET /api/v1/tasks/:id/review | **M6-A 已实现**：读取已持久化的 `diff` / `check_report` 产物，返回变更（文件、增删行、逐文件 patch）、检查运行（命令、exit code、时间戳、输出末尾）、提交（完整 SHA、分支、提交说明）与 PR 号 + 状态；未采集时返回 `state:'unavailable'` 与原因，不用推断值 |
+| POST /api/v1/tasks/:id/review/changes | **M6-A 已实现**：经宿主 supervisor 读取任务 worktree 的真实 `git status` / `git diff`（含未跟踪文件）与 HEAD，一并查询 GitHub PR 状态，写入 `diff` 产物后返回同一投影；worktree 已清理返回 `state:'cleaned'` |
+| POST /api/v1/tasks/:id/review/checks | **M6-A 已实现**：经宿主 supervisor 在任务 worktree 运行配置的检查命令（默认 `pnpm check`），记录每个命令的 exit code、起止时间、耗时与输出末尾，写入 `check_report` 产物 |
+| 宿主 supervisor review | **M6-A 已实现**：`POST /control/v1/instances/:repositoryId/review/{worktree,changes,checks}`，请求只带 `ticketId`；目录由 supervisor 自己的 `WORKTREE_ROOT`/profile 解析，命令来自 supervisor 配置，浏览器与 API 都不传路径或命令 |
 | GitHub 汇入 | **M4 已实现**：Bridge `ticket.imported` 事件按 `(repository, source='github', external_id)` 建立/复用 Work conversation，并按 `(repository, upstream_ticket_id)` 绑定唯一 task；重复事件不重复建单 |
-| POST /api/v1/conversations/:id/attachments | multipart；限制大小/type，返回attachmentId，不自动执行 |
-| GET /api/v1/attachments/:id | **M2 已实现**鉴权下载，安全Content-Disposition与MIME，不内联执行上传HTML；上传属于 M3/M6 |
+| POST /api/v1/conversations/:id/attachments | **M6-A 已实现**：multipart 单文件字段 `file`；单文件 ≤10 MiB，只接受图片（PNG/JPEG/WebP/GIF）与文本类（txt/log/md/json/yaml/csv/源码等）；超限 413、类型不符 422、空文件 422、未登录 401、他人会话 404，且拒绝时不落库也不落盘；返回 `{attachment}`，含 `id`、文件名、MIME、字节数、sha256 与下载地址，不自动执行 |
+| GET /api/v1/attachments/:id | **M2 已实现、M6-A 收紧**：鉴权下载；`Content-Disposition: attachment`、`nosniff`、`CSP sandbox`，HTML/SVG 以 `application/octet-stream` 下发，不内联执行 |
+| POST /api/v1/conversations/:id/messages `attachmentIds` | **M6-A 已实现**：引用本会话尚未发送的附件，最多 20 个、总量 ≤25 MiB；跨会话或已发送的 id 返回 422 且整条消息不落库；消息与附件在同一事务内绑定，消息列表与详情返回 `attachments` |
+| 附件与执行器 | **M6-A 明确未传**：上游 Source 的 Trigger 没有附件字段，平台不把附件内容塞进消息正文，也不伪造已投递；附件保存在平台存储并随消息展示，投递到 runtime 属于后续单（需要上游 Bridge 补丁与能力协商） |
 
 建会话返回pending直到任务接单；task_links在接单后填upstreamTicketId，不能把Trigger stored视为Ticket已创建。conversation创建时锁仓库/分支选择，正式执行前解析并记录baseCommit；为避免讨论期间分支移动，执行同一已记录快照或显式要求刷新计划，禁止悄悄换起点。
 

@@ -1,3 +1,5 @@
+import type { ReviewChanges, ReviewCheckRun } from '@moyu/contracts';
+
 import type { ApiConfig } from '../config';
 
 export interface SupervisorInstance {
@@ -34,6 +36,23 @@ export interface SupervisorClient {
     manual: boolean,
   ): Promise<{ accepted: boolean; duplicate: boolean; instance: SupervisorInstance }>;
   touch(repositoryId: string): Promise<SupervisorInstance>;
+  reviewChanges(repositoryId: string, ticketId: string): Promise<SupervisorChanges>;
+  reviewChecks(
+    repositoryId: string,
+    ticketId: string,
+  ): Promise<{ worktree: SupervisorWorktree; runs: ReviewCheckRun[] }>;
+}
+
+/** Host-side worktree inspection payload, as the supervisor reports it. */
+export interface SupervisorWorktree {
+  state: 'available' | 'cleaned' | 'unavailable';
+  directory: string | null;
+  reason: string | null;
+  profile: string | null;
+}
+
+export interface SupervisorChanges extends Omit<ReviewChanges, 'collectedAt'> {
+  directory: string | null;
 }
 
 /**
@@ -91,5 +110,15 @@ export function createSupervisorClient(config: ApiConfig): SupervisorClient | nu
         [200, 409],
       ),
     touch: (repositoryId) => request(`/control/v1/instances/${repositoryId}/touch`, 'POST', {}),
+    reviewChanges: (repositoryId, ticketId) =>
+      request(`/control/v1/instances/${repositoryId}/review/changes`, 'POST', { ticketId }),
+    reviewChecks: (repositoryId, ticketId) =>
+      request(
+        `/control/v1/instances/${repositoryId}/review/checks`,
+        'POST',
+        { ticketId },
+        // A check run is long by nature; the supervisor bounds each command.
+        960_000,
+      ),
   };
 }

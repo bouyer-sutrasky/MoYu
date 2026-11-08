@@ -2232,3 +2232,264 @@
   font: var(--dsw-font-xxxs-11);
   line-height: 1.5;
 }
+
+/* Composer attachments: selection chips shown before send. */
+.composerAttachments {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 2px 6px;
+}
+
+.composerFileInput {
+  display: none;
+}
+
+.attachmentChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  padding: 2px 4px 2px 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-label-primary);
+  font: var(--dsw-font-xxxs-11);
+}
+
+.attachmentSize {
+  color: var(--dsw-alias-label-caption);
+  font: var(--dsw-font-xxxs-11);
+}
+
+.attachmentRemove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dsw-alias-label-caption);
+}
+
+.attachmentRemove:hover {
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-label-primary);
+}
+
+/* Message attachments: download links, never inline content. */
+.messageAttachments {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.messageAttachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  font: var(--dsw-font-xxxs-11);
+  text-decoration: none;
+}
+
+.messageAttachment:hover {
+  border-color: var(--dsw-alias-link);
+}
+
+.messageAttachmentName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.messageAttachmentSize {
+  flex: none;
+  color: var(--dsw-alias-label-caption);
+}
+
+/* Review panel: changes, checks and delivery. */
+.reviewSummary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font: var(--dsw-font-xs-strong-13);
+}
+
+.reviewCounts {
+  display: inline-flex;
+  gap: 6px;
+  color: var(--dsw-alias-label-caption);
+  font: var(--dsw-font-xxxs-11);
+  font-variant-numeric: tabular-nums;
+}
+
+.reviewCounts [data-kind='add'] {
+  color: var(--dsw-alias-state-success-primary, #2f9e44);
+}
+
+.reviewCounts [data-kind='del'] {
+  color: var(--dsw-alias-state-error-primary, #e03131);
+}
+
+.reviewMeta {
+  margin: 2px 0 0;
+  color: var(--dsw-alias-label-caption);
+  font: var(--dsw-font-xxxs-11);
+}
+
+.reviewProblem {
+  margin: 6px 0 0;
+  color: var(--dsw-alias-state-error-primary, #e03131);
+  font: var(--dsw-font-xxxs-11);
+  overflow-wrap: anywhere;
+}
+
+.reviewNotice {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-module-platform);
+  font: var(--dsw-font-xxxs-11);
+}
+
+.reviewNotice[data-state='cleaned'] {
+  border-color: color-mix(in srgb, var(--dsw-alias-state-warn-tertiary) 70%, transparent);
+}
+
+.reviewNotice p {
+  margin: 2px 0 0;
+  color: var(--dsw-alias-label-caption);
+}
+
+.reviewFileList,
+.reviewCheckList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reviewFile,
+.reviewCheck {
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.reviewFile > summary,
+.reviewCheck > details > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.reviewFile > summary::-webkit-details-marker,
+.reviewCheck > details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.reviewFileStatus {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-label-caption);
+  font: var(--dsw-font-xxxs-11);
+}
+
+.reviewFileStatus[data-status='added'],
+.reviewFileStatus[data-status='untracked'] {
+  color: var(--dsw-alias-state-success-primary, #2f9e44);
+}
+
+.reviewFileStatus[data-status='deleted'] {
+  color: var(--dsw-alias-state-error-primary, #e03131);
+}
+
+.reviewFilePath,
+.reviewCommand {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dsw-alias-label-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reviewPatch {
+  max-height: 320px;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-label-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.reviewCheckState {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 999px;
+  font: var(--dsw-font-xxxs-11);
+}
+
+.reviewCheckState[data-passed='true'] {
+  background: color-mix(in srgb, var(--dsw-alias-state-success-tertiary, #d3f9d8) 70%, transparent);
+  color: var(--dsw-alias-state-success-primary, #2f9e44);
+}
+
+.reviewCheckState[data-passed='false'] {
+  background: color-mix(in srgb, var(--dsw-alias-state-error-tertiary, #ffe3e3) 70%, transparent);
+  color: var(--dsw-alias-state-error-primary, #e03131);
+}
+
+.reviewStateTag {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-label-caption);
+  font: var(--dsw-font-xxxs-11);
+}
+
+.reviewStateTag[data-state='merged'] {
+  color: var(--dsw-alias-state-success-primary, #2f9e44);
+}
+
+.reviewStateTag[data-state='closed'] {
+  color: var(--dsw-alias-state-error-primary, #e03131);
+}
+
+.detailCommitFull {
+  display: block;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}

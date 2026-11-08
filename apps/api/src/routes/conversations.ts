@@ -17,7 +17,9 @@ import {
   messageListQuerySchema,
   modelListDataSchema,
   uuidSchema,
+  type AttachmentSummary,
   type ConversationSummary,
+  type Message,
   type MessageListQuery,
   type ModelOption,
 } from '@moyu/contracts';
@@ -50,6 +52,7 @@ import { appendEvent, type DatabaseTransaction } from '../events/append';
 import { eventToWorkspaceEvent } from '../events/format';
 import type { AppEventBus } from '../events/bus';
 import { decodeCursorValue, encodeCursorValue } from '../lib/cursor';
+import { attachToMessage, attachmentsByMessage } from '../domain/attachments';
 import { ApiProblem } from '../lib/errors';
 import { parseInput, sendData } from '../lib/http';
 import { isUniqueViolation, postgresError } from '../lib/pg';
@@ -186,6 +189,19 @@ async function assertReplyTargetBelongsToConversation(
 }
 
 /**
+ * A single message with its delivery and attachments, used by the idempotent
+ * replay paths that return an already stored row.
+ */
+async function storedMessage(
+  database: Database,
+  row: MessageRow,
+  delivery: Delivery | null,
+): Promise<Message> {
+  const attachments = (await attachmentsByMessage(database, [row.id])).get(row.id) ?? [];
+  return toMessage(row, delivery, attachments);
+}
+
+/**
  * Renders the database timestamp with its full microsecond precision. The API
  * cursor must carry the exact boundary PostgreSQL compares against; a `Date`
  * would silently truncate to milliseconds and break ties inside one millisecond.
@@ -205,6 +221,7 @@ function messageCursor(conversationId: string, timestamp: string, id: string): s
 interface MessagePage {
   messages: MessageRow[];
   deliveriesById: Map<string, Delivery>;
+  attachmentsById: Map<string, AttachmentSummary[]>;
   nextCursor: string | null;
   newerCursor: string | null;
   hasMore: boolean;
@@ -275,11 +292,16 @@ async function loadMessages(
       deliveriesById.set(row.message.id, row.delivery);
     }
   }
+  const attachmentsById = await attachmentsByMessage(
+    database,
+    page.map((row) => row.message.id),
+  );
   const oldest = page[0] ?? null;
   const newest = page[page.length - 1] ?? null;
   return {
     messages: page.map((row) => row.message),
     deliveriesById,
+    attachmentsById,
     nextCursor:
       !newer && hasExtra && oldest
         ? messageCursor(conversationId, oldest.cursorTimestamp, oldest.message.id)
@@ -368,7 +390,12 @@ async function sendExistingConversation(
 async function insertInbound(
   transaction: DatabaseTransaction,
   conversation: typeof conversations.$inferSelect,
-  input: { clientMessageId: string; text: string; replyToMessageId?: string | null },
+  input: {
+    clientMessageId: string;
+    text: string;
+    replyToMessageId?: string | null;
+    attachmentIds?: string[];
+  },
 ): Promise<{ message: MessageRow; delivery: Delivery; event: unknown }> {
   const [message] = await transaction
     .insert(messages)
@@ -383,6 +410,7 @@ async function insertInbound(
     })
     .returning();
   if (!message) throw new Error('message insert returned no row');
+  await attachToMessage(transaction, conversation.id, message.id, input.attachmentIds ?? []);
   const [delivery] = await transaction
     .insert(deliveries)
     .values({ messageId: message.id, upstreamTriggerId: `workspace:${message.id}` })
@@ -642,7 +670,11 @@ export function registerConversationRoutes(
         request,
         messageListDataSchema.parse({
           messages: page.messages.map((row) =>
-            toMessage(row, page.deliveriesById.get(row.id) ?? null),
+            toMessage(
+              row,
+              page.deliveriesById.get(row.id) ?? null,
+              page.attachmentsById.get(row.id) ?? [],
+            ),
           ),
           nextCursor: page.nextCursor,
           newerCursor: page.newerCursor,
@@ -681,11 +713,14 @@ export function registerConversationRoutes(
       if (!row) {
         throw ApiProblem.notFound('Message not found');
       }
+      const attachments = (await attachmentsByMessage(database, [row.message.id])).get(
+        row.message.id,
+      );
       return sendData(
         reply,
         request,
         messageDetailDataSchema.parse({
-          message: toMessage(row.message, row.delivery ?? null),
+          message: toMessage(row.message, row.delivery ?? null, attachments ?? []),
         }),
       );
     },
@@ -778,7 +813,11 @@ export function registerConversationRoutes(
                 reply,
                 request,
                 createMessageDataSchema.parse({
-                  message: toMessage(existing.message, existing.delivery ?? null),
+                  message: await storedMessage(
+                    database,
+                    existing.message,
+                    existing.delivery ?? null,
+                  ),
                   duplicate: true,
                 }),
                 200,
@@ -1010,7 +1049,7 @@ export function registerConversationRoutes(
                 reply,
                 request,
                 createMessageDataSchema.parse({
-                  message: toMessage(merged.message, merged.delivery),
+                  message: await storedMessage(database, merged.message, merged.delivery),
                   duplicate: replayed,
                 }),
                 replayed ? 200 : 202,
@@ -1072,6 +1111,7 @@ export function registerConversationRoutes(
           if (!message) {
             throw new Error('message insert returned no row');
           }
+          await attachToMessage(transaction, target.id, message.id, input.attachmentIds ?? []);
           const upstreamTriggerId = `workspace:${message.id}`;
           const [delivery] = await transaction
             .insert(deliveries)
@@ -1130,7 +1170,7 @@ export function registerConversationRoutes(
           reply,
           request,
           createMessageDataSchema.parse({
-            message: toMessage(existing.message, existing.delivery ?? null),
+            message: await storedMessage(database, existing.message, existing.delivery ?? null),
             duplicate: true,
           }),
           200,
@@ -1152,7 +1192,7 @@ export function registerConversationRoutes(
         reply,
         request,
         createMessageDataSchema.parse({
-          message: toMessage(created.message, created.delivery),
+          message: await storedMessage(database, created.message, created.delivery),
           duplicate: false,
         }),
         202,

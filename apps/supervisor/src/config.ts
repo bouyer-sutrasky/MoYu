@@ -50,6 +50,31 @@ const environmentSchema = z.object({
     .regex(/^[A-Za-z0-9-]+$/)
     .default('m5'),
   MAX_ONLINE: z.coerce.number().int().min(1).max(8).default(2),
+  /** Review inspection: bounded worktree diff and the fixed check commands. */
+  REVIEW_DIFF_MAX_BYTES: z.coerce
+    .number()
+    .int()
+    .min(4096)
+    .max(8 * 1024 * 1024)
+    .default(512 * 1024),
+  REVIEW_MAX_FILES: z.coerce.number().int().min(1).max(5000).default(400),
+  REVIEW_CHECK_COMMANDS: z
+    .string()
+    .default('["pnpm check"]')
+    .refine((value) => {
+      try {
+        const parsed: unknown = JSON.parse(value);
+        return (
+          Array.isArray(parsed) &&
+          parsed.length > 0 &&
+          parsed.every((item) => typeof item === 'string' && item.trim().length > 0)
+        );
+      } catch {
+        return false;
+      }
+    }, 'must be a non-empty JSON array of command strings'),
+  REVIEW_CHECK_TIMEOUT_MS: z.coerce.number().int().min(1000).max(3_600_000).default(900_000),
+
   /** Aggregate memory policy, in MiB unless noted. These are one system-wide budget. */
   MEMORY_TARGET_MB: z.coerce.number().int().min(256).default(4096),
   MEMORY_BUDGET_MB: z.coerce.number().int().min(512).default(6144),
@@ -129,6 +154,10 @@ export interface SupervisorConfig {
   githubAllowedUsers: string[];
   githubAccount: string;
   githubCommitEmail: string;
+  reviewDiffMaxBytes: number;
+  reviewMaxFiles: number;
+  reviewCheckCommands: string[];
+  reviewCheckTimeoutMs: number;
 }
 
 export function loadSupervisorConfig(
@@ -202,6 +231,10 @@ export function loadSupervisorConfig(
     tickIntervalMs: data.TICK_INTERVAL_MS,
     startTimeoutMs: data.START_TIMEOUT_MS,
     stopTimeoutMs: data.STOP_TIMEOUT_MS,
+    reviewDiffMaxBytes: data.REVIEW_DIFF_MAX_BYTES,
+    reviewMaxFiles: data.REVIEW_MAX_FILES,
+    reviewCheckCommands: JSON.parse(data.REVIEW_CHECK_COMMANDS) as string[],
+    reviewCheckTimeoutMs: data.REVIEW_CHECK_TIMEOUT_MS,
     executorModel: data.EXECUTOR_MODEL,
     ...(data.EXECUTOR_REASONING_EFFORT
       ? { executorReasoningEffort: data.EXECUTOR_REASONING_EFFORT }

@@ -38,6 +38,10 @@ export class ApiProblem extends Error {
     return new ApiProblem(409, 'conflict', message, { retryable });
   }
 
+  static payloadTooLarge(message: string): ApiProblem {
+    return new ApiProblem(413, 'payload_too_large', message);
+  }
+
   static invalid(message: string): ApiProblem {
     return new ApiProblem(422, 'invalid_request', message);
   }

@@ -1,9 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 
-import type { ConversationSummary, CreateMessageData, RepositorySummary } from '@moyu/contracts';
+import {
+  attachmentLimits,
+  type ConversationSummary,
+  type CreateMessageData,
+  type RepositorySummary,
+} from '@moyu/contracts';
 
 import { Icon } from '../components/Icon';
-import { ApiClientError } from '../lib/api';
+import { api, ApiClientError } from '../lib/api';
 import {
   consumeDraftNotice,
   draftForSend,
@@ -38,6 +43,7 @@ interface ComposerProps {
     conversationId: string,
     text: string,
     clientMessageId: string,
+    attachmentIds: string[],
   ) => Promise<CreateMessageData>;
 }
 
@@ -56,7 +62,11 @@ export function Composer({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [storageWarning, setStorageWarning] = useState<string | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const draftRef = useRef<Draft | null>(null);
   const conversationIdRef = useRef<string | null>(conversation?.id ?? null);
   const repositoryIdRef = useRef<string | null>(repository?.id ?? null);
@@ -268,11 +278,85 @@ export function Composer({
     setNotice('已恢复合并来源的未确认发送；再次发送会复用其原标识核对结果。');
   }
 
+  const ATTACHMENT_ACCEPT = [
+    'image/png',
+    'image/jpeg',
+    'image/webp',
+    'image/gif',
+    '.txt',
+    '.log',
+    '.md',
+    '.json',
+    '.yml',
+    '.yaml',
+    '.csv',
+    '.ts',
+    '.tsx',
+    '.js',
+    '.mjs',
+    '.cjs',
+    '.css',
+    '.html',
+    '.sql',
+    '.toml',
+    '.ini',
+    '.conf',
+    '.sh',
+    '.py',
+    '.go',
+    '.rs',
+    '.java',
+  ].join(',');
+
+  function addFiles(selected: FileList | null): void {
+    if (!selected || selected.length === 0) {
+      return;
+    }
+    const next = [...files];
+    const problems: string[] = [];
+    for (const file of Array.from(selected)) {
+      if (next.length >= attachmentLimits.maxFilesPerMessage) {
+        problems.push(`最多 ${attachmentLimits.maxFilesPerMessage} 个附件`);
+        break;
+      }
+      if (file.size > attachmentLimits.maxFileBytes) {
+        problems.push(
+          `${file.name} 超过 ${Math.floor(attachmentLimits.maxFileBytes / (1024 * 1024))} MiB`,
+        );
+        continue;
+      }
+      if (file.size === 0) {
+        problems.push(`${file.name} 是空文件`);
+        continue;
+      }
+      if (next.some((item) => item.name === file.name && item.size === file.size)) {
+        continue;
+      }
+      next.push(file);
+    }
+    setFiles(next);
+    setAttachmentError(problems.length > 0 ? problems.join('；') : null);
+    if (fileRef.current) {
+      fileRef.current.value = '';
+    }
+  }
+
+  function removeFile(index: number): void {
+    setFiles((current) => current.filter((_, position) => position !== index));
+    setAttachmentError(null);
+  }
+
+  function formatFileSize(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+  }
+
   async function submit(): Promise<void> {
     const trimmed = text.trim();
     const conversationId = conversationIdRef.current;
     const repositoryId = repositoryIdRef.current;
-    if (!trimmed || !conversationId || !repositoryId || disabled) {
+    if (!trimmed || !conversationId || !repositoryId || disabled || uploading) {
       return;
     }
     // Per-conversation request identity, not a single global flag: a late
@@ -303,12 +387,33 @@ export function Composer({
       setStorageWarning('浏览器无法保存本地草稿；当前输入仍保留在本页面，发送不受影响。');
     }
 
+    const attachmentIds: string[] = [];
+    if (files.length > 0) {
+      setUploading(true);
+      setAttachmentError(null);
+      try {
+        for (const file of files) {
+          const uploaded = await api.uploadAttachment(conversationId, file);
+          attachmentIds.push(uploaded.attachment.id);
+        }
+      } catch (caught) {
+        setUploading(false);
+        setAttachmentError(`附件上传失败：${describeApiError(caught)}`);
+        return;
+      }
+      setUploading(false);
+    }
+
     const token = ++sendSequenceRef.current;
     addSending(conversationId, token);
     setError(null);
     setNotice(null);
     try {
-      const result = await onSend(conversationId, trimmed, clientMessageId);
+      const result = await onSend(conversationId, trimmed, clientMessageId, attachmentIds);
+      if (conversationIdRef.current === conversationId) {
+        setFiles([]);
+        setAttachmentError(null);
+      }
       const targetConversationId = result.message.conversationId;
       if (targetConversationId !== conversationId) {
         // The API merged this Web conversation into an imported GitHub one.
@@ -421,6 +526,51 @@ export function Composer({
             }
           }}
         />
+        <div className={styles.composerAttachments}>
+          <input
+            ref={fileRef}
+            className={styles.composerFileInput}
+            type="file"
+            multiple
+            accept={ATTACHMENT_ACCEPT}
+            onChange={(event) => addFiles(event.target.files)}
+            aria-label="选择附件"
+          />
+          <button
+            type="button"
+            className={styles.textButton}
+            onClick={() => fileRef.current?.click()}
+            disabled={disabled || uploading || files.length >= attachmentLimits.maxFilesPerMessage}
+            title="添加截图、日志或文本文件"
+          >
+            <Icon name="plus" size={13} /> 附件
+          </button>
+          {files.map((file, index) => (
+            <span className={styles.attachmentChip} key={`${file.name}-${file.size}-${index}`}>
+              {file.name}
+              <span className={styles.attachmentSize}>{formatFileSize(file.size)}</span>
+              <button
+                type="button"
+                className={styles.attachmentRemove}
+                onClick={() => removeFile(index)}
+                disabled={uploading}
+                aria-label={`移除附件 ${file.name}`}
+              >
+                <Icon name="x" size={12} />
+              </button>
+            </span>
+          ))}
+          {uploading ? (
+            <span className={styles.attachmentSize}>正在上传…</span>
+          ) : files.length > 0 ? (
+            <span className={styles.attachmentSize}>发送时上传</span>
+          ) : null}
+        </div>
+        {attachmentError ? (
+          <p className={styles.composerStatus} data-kind="error" role="alert">
+            {attachmentError}
+          </p>
+        ) : null}
         {error ? (
           <p className={styles.composerStatus} data-kind="error" role="alert">
             {error}

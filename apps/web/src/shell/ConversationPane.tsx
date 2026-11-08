@@ -94,6 +94,31 @@ function MessageItem({ message }: { message: Message }) {
           {inbound ? <DeliveryBadge message={message} /> : null}
         </header>
         <p className={styles.messageBody}>{message.body}</p>
+        {message.attachments.length > 0 ? (
+          <ul className={styles.messageAttachments} aria-label="附件">
+            {message.attachments.map((attachment) => (
+              <li key={attachment.id}>
+                <a
+                  className={styles.messageAttachment}
+                  href={attachment.downloadUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-kind={attachment.kind}
+                >
+                  <Icon name="file" size={13} />
+                  <span className={styles.messageAttachmentName}>{attachment.filename}</span>
+                  <span className={styles.messageAttachmentSize}>
+                    {attachment.sizeBytes < 1024
+                      ? `${attachment.sizeBytes} B`
+                      : attachment.sizeBytes < 1024 * 1024
+                        ? `${(attachment.sizeBytes / 1024).toFixed(1)} KiB`
+                        : `${(attachment.sizeBytes / (1024 * 1024)).toFixed(1)} MiB`}
+                  </span>
+                </a>
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </article>
     </div>
   );
