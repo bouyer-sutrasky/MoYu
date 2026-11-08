@@ -32,6 +32,11 @@ node scripts/m5b/matrix/live.mjs new-task --text "..."   # 建会话 + 发消息
 node scripts/m5b/matrix/live.mjs pause|resume|retry --task <id>
 node scripts/m5b/matrix/live.mjs snapshot --task <id>
 node scripts/m5b/matrix/live.mjs ticket --ticket <id>
+
+# 双入口顺序与副作用去重（第 1 项补验，见 DUAL-ENTRANCE.md）
+node scripts/m5b/matrix/dual-entrance.mjs setup
+node scripts/m5b/matrix/dual-entrance.mjs facts --order web-first --issue <n> --conversation <id> --task <id>
+node scripts/m5b/matrix/dual-entrance.mjs check --order web-first --issue <n> --conversation <id> --task <id> --phase after-import --wait 600
 ```
 
 ## 非 root 运行身份

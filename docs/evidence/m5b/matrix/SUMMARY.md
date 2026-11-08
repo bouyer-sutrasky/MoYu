@@ -31,6 +31,14 @@
 `blocked`、`resume` 被拒、租约不放」变为「`stoppedAt` 落地、`stopped`、租约 `released`、`resume` 接受」，
 c3 未回退。本节只是交叉引用，**不改变**本矩阵「七项里只有第 2 项完整」的结论，也不能据此说 M5-B 通过。
 
+## 第 1 项 e：双入口顺序与副作用去重（#40，尚未取证）
+
+第 1 项此前的现场证据只覆盖 GitHub 触发进入平台与 Web 追加送达。「Web 先创建、GitHub 后触发
+同一工作」的真实去重仍缺。场景、命令与断言已写入 [DUAL-ENTRANCE.md](DUAL-ENTRANCE.md)，
+对应工具 `scripts/m5b/matrix/dual-entrance.mjs`；同一语义的 CI 断言在 dispatcher 的
+`operations.integration.test.ts`。现场取证排在 #36 的隔离 harness 之后，**本目录仍无该项的通过
+证据**，本条也不改变上面七项的判定。
+
 ## 顺带修正（已在本轮落地）
 
 - `item3-fence-observability.log` 末尾把 409 `admissionStale` 误写成 422 —— 已改为

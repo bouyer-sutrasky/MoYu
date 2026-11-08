@@ -1547,6 +1547,147 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
     expect(tasks.rows[0]?.count).toBe(1);
   }, 30_000);
 
+  it('claims a Web-first task for a later GitHub mention and parks the extra runtime ticket', async () => {
+    const fixture = await seed({ state: 'running', source: 'web' });
+    const fullName = fixture.repository.fullName;
+    const issue = `https://github.com/${fullName}/issues/77`;
+    // The Web-first conversation already names the exact requirement and its worker
+    // is running; that is the "same work" the later GitHub mention refers to.
+    await testDatabase.pool.query(
+      `insert into messages (conversation_id, direction, kind, body)
+       values ($1, 'inbound', 'user', $2)`,
+      [fixture.conversationId, `Please fix ${issue}`],
+    );
+    const mention = (seq: number, ticketId: string): BridgeEvent => ({
+      seq,
+      id: `ticket-imported:${ticketId}`,
+      type: 'ticket.imported',
+      at: '2026-11-04T05:00:00.000Z',
+      data: {
+        ticketId,
+        source: 'github',
+        externalId: 'github:77',
+        number: 77,
+        isPr: false,
+        url: issue,
+        title: 'Fix the Web-first requirement',
+        state: 'running',
+        triggerId: `github-comment:77:${ticketId}`,
+        text: 'Please fix this too',
+        base: { branch: 'main', commit: 'b'.repeat(40) },
+        at: '2026-11-04T05:00:00.000Z',
+      },
+    });
+    const logger = createConsoleLogger('test');
+
+    fakeBridge.events = [mention(1, 'github-ticket-late-77')];
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+
+    // One conversation, one task, one runtime ticket: the mention claims the
+    // Web-first conversation instead of opening a second execution of the work.
+    const conversations = await testDatabase.pool.query(
+      `select id, source, external_key as "externalKey", external_url as "externalUrl"
+         from conversations where repository_id = $1`,
+      [fixture.repository.id],
+    );
+    expect(conversations.rows).toEqual([
+      {
+        id: fixture.conversationId,
+        source: 'github',
+        externalKey: 'github:77',
+        externalUrl: issue,
+      },
+    ]);
+    const tasks = await testDatabase.pool.query(
+      `select id, upstream_ticket_id as "ticketId", state, runtime_lease_id as "leaseId"
+         from task_links where repository_id = $1`,
+      [fixture.repository.id],
+    );
+    expect(tasks.rows).toEqual([
+      { id: fixture.taskId, ticketId: fixture.ticketId, state: 'running', leaseId: null },
+    ]);
+
+    // The extra runtime Ticket is only a durable pause request and a notice; it is
+    // never adopted as a second platform task, launched or admitted.
+    const duplicates = await testDatabase.pool.query(
+      `select ticket_id as "ticketId", task_id as "taskId", state
+         from duplicate_tickets where repository_id = $1`,
+      [fixture.repository.id],
+    );
+    expect(duplicates.rows).toEqual([
+      { ticketId: 'github-ticket-late-77', taskId: fixture.taskId, state: 'pending' },
+    ]);
+    const notice = await testDatabase.pool.query(
+      `select body from messages where conversation_id = $1 and kind = 'notice'`,
+      [fixture.conversationId],
+    );
+    expect(notice.rows).toHaveLength(1);
+    expect(notice.rows[0]?.body).toContain('not executed separately');
+    const operations = await testDatabase.pool.query(
+      `select count(*)::int as count from task_operations where repository_id = $1`,
+      [fixture.repository.id],
+    );
+    expect(operations.rows[0]?.count).toBe(0);
+
+    // The durable pause is the only action taken on the extra Ticket.
+    const callsBefore = fakeBridge.calls.length;
+    await duplicatesOnce(testDatabase.pool, config, fixture.repository, client, logger);
+    expect(fakeBridge.calls.slice(callsBefore).filter((call) => call.kind === 'pause')).toEqual([
+      expect.objectContaining({ ticketId: 'github-ticket-late-77' }),
+    ]);
+    expect(
+      (
+        await testDatabase.pool.query(
+          `select state from duplicate_tickets where repository_id = $1`,
+          [fixture.repository.id],
+        )
+      ).rows,
+    ).toEqual([{ state: 'paused' }]);
+    expect(await readTask(fixture.taskId)).toMatchObject({ state: 'running' });
+
+    // A redelivered import event and a second mention for the same requirement do
+    // not add a conversation, a task or an execution; each extra Ticket is parked
+    // exactly once.
+    const replay = await testDatabase.pool.connect();
+    try {
+      await replay.query('begin');
+      await applyEvent(replay, fixture.repository, mention(2, 'github-ticket-late-77'), logger);
+      await applyEvent(replay, fixture.repository, mention(3, 'github-ticket-late-78'), logger);
+      await replay.query('commit');
+    } finally {
+      replay.release();
+    }
+    const afterReplay = await testDatabase.pool.query(
+      `select (select count(*)::int from conversations where repository_id = $1) as conversations,
+              (select count(*)::int from task_links where repository_id = $1) as tasks,
+              (select count(*)::int from messages
+                where conversation_id = $2 and kind = 'notice') as notices`,
+      [fixture.repository.id, fixture.conversationId],
+    );
+    expect(afterReplay.rows[0]).toEqual({ conversations: 1, tasks: 1, notices: 2 });
+    const callsAfterReplay = fakeBridge.calls.length;
+    await duplicatesOnce(testDatabase.pool, config, fixture.repository, client, logger);
+    expect(
+      (
+        await testDatabase.pool.query(
+          `select ticket_id as "ticketId", state from duplicate_tickets
+            where repository_id = $1 order by ticket_id`,
+          [fixture.repository.id],
+        )
+      ).rows,
+    ).toEqual([
+      { ticketId: 'github-ticket-late-77', state: 'paused' },
+      { ticketId: 'github-ticket-late-78', state: 'paused' },
+    ]);
+    expect(
+      fakeBridge.calls
+        .slice(callsAfterReplay)
+        .filter((call) => call.kind === 'pause')
+        .map((call) => call.ticketId),
+    ).toEqual(['github-ticket-late-78']);
+    expect(afterReplay.rows[0]?.tasks).toBe(1);
+  }, 30_000);
+
   it('returns the duplicate ticket id and persists a pause even when the first pause fails', async () => {
     const fixture = await seed({ state: 'running', source: 'github', externalKey: 'github:42' });
     const event: BridgeEvent = {
