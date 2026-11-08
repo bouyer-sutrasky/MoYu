@@ -56,9 +56,17 @@ recovered / adopted / released / stale_receipt_rejected。回执写入前必须�
 
 生产/隔离测试服务使用 systemd slice `moyu-m5b.slice`，`MemoryHigh=6G`、
 `MemoryMax=8G`。平台 API、dispatcher、supervisor、隔离 PostgreSQL 与全部实例 cgroup 都在
-该 slice 内；supervisor 的 `MOYU_CGROUP_ROOT` 指向 slice 内的
-`moyu-m5b.slice/moyu-supervisor`，因此实例是其子 cgroup，而不是宿主根下的旁路树。
+该 slice 内；实例 cgroup 是 supervisor 所在单元 cgroup 的子目录
+（`<unit cgroup>/instances/<profile>-<timestamp>`），不是宿主根下的旁路树。
 详见 [`deploy/systemd/README.md`](../deploy/systemd/README.md)。
+
+委托由 supervisor 自己完成，不依赖人工预建：`ensureCgroup` 会建根目录、在根上启用
+`+memory +pids`、必要时再向上一层（单元 cgroup）请求控制器，然后检查子组的
+`memory.current`/`memory.max`/`pids.current` 是否真的存在。任一步失败都返回具体步骤与
+OS 错误的 `cgroup_unavailable`，不会启动一个没有计量的实例。前提是单元 cgroup 里没有
+自己的进程（`Delegate=yes` + `DelegateSubgroup=payload`），否则内核以 `EBUSY` 拒绝下发，
+supervisor 报出的错误会直接指出这一点。每代次同时记录 cgroup 路径与 **inode**：重启后
+inode 不符即视为路径被复用、旧边界已消失，不会拿旧记录冒充同一对象。
 
 supervisor 同时读取该 slice 的 `memory.max`：若 slice 上限高于
 `MEMORY_HARD_LIMIT_MB`（默认 8192），拒绝新准入而不是假装 8 GB 边界成立；若 slice 当前
