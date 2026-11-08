@@ -537,9 +537,9 @@ export async function settleIgnoredAdmissionOn(
        (select count(*)::int from task_operations op
          where op.task_id = $1 and op.state in ('queued', 'running')) as operations,
        (select count(*)::int from execution_reservations r
-         where r.task_id = $1 and r.lease_id = $2 and r.state = 'claimed') as claimed,
+         where r.lease_id = $2 and r.state = 'claimed') as claimed,
        (select count(*)::int from execution_reservations r
-         where r.task_id = $1 and r.lease_id = $2 and r.state = 'reserved') as reserved,
+         where r.lease_id = $2 and r.state = 'reserved') as reserved,
        (select count(*)::int from deliveries d
          where d.runtime_lease_id = $2 and d.state in ('pending', 'delivering')) as deliveries,
        (select count(*)::int from task_links t
@@ -590,8 +590,8 @@ export async function settleIgnoredAdmissionOn(
     await client.query(
       `update execution_reservations
           set state = 'abandoned', updated_at = now()
-        where task_id = $1 and lease_id = $2 and state = 'reserved'`,
-      [generation.taskId, generation.leaseId],
+        where lease_id = $1 and state = 'reserved'`,
+      [generation.leaseId],
     );
   }
   await client.query(

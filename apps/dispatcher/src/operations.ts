@@ -821,7 +821,7 @@ export async function maintainLeases(
         )
         and not exists (
           select 1 from execution_reservations r
-           where r.task_id = t.id and r.lease_id = l.id and r.state = 'claimed'
+           where r.lease_id = l.id and r.state = 'claimed'
         )
         and not exists (
           select 1 from deliveries d
