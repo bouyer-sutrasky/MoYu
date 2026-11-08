@@ -1,0 +1,1135 @@
+# M5-B 未接纳任务归还执行租约 — 红→绿与现场记录
+
+日期：2026-11-08。基线 `main` = `1001c2544c68b8f4d906e330566f6fdb6ff0c795`（已含 #34 / PR #46 的暂停修复）。
+实现提交：`8e415bdab63556da8f03461abfc4672eb83234b7`。本文件是其后单独的证据提交。
+被测工作树：`/root/src/rejected-lease-f2ccd7bff18e`，最终 head 与工作树状态见 PR。
+
+环境边界：集成回归使用独立 PostgreSQL 16 `127.0.0.1:55432`；现场使用
+`m5bmatrix.slice` 内的独立 PostgreSQL 16 `55433`、真实 Bridge `3403`、真实
+dispatcher/api/supervisor 与受管 runtime。生产库、3082 bootstrap、4300 线上 API 未触碰。
+本文件只记录实际执行过的命令、原始输出片段、退出码与判定；未执行项在 §6 明写。
+
+## 1. 结论
+
+- 修复前：真实未接纳回执到达后任务变 `not_accepted`，但 `runtime_leases` 仍为
+  `active|task:<id>`；后续同仓投递得到 `refused=held` / `waitingFor=execution_slot`。
+- 修复后：同一份真实回执在关闭 admission 的同一事务里结清该任务当前代次的租约与预留，
+  任务 `runtime_lease_id = null`，租约 `released`，后续任务实际取得新代次并启动 worker。
+- 旧代次回执不会释放新代次；真实进程仍活或证据未知时保留租约并写入恢复原因。
+- 回放/重复回执只被消费一次；两个调度者同争一个仓库时，每个任务仍只有一次实际投递，
+  另一个调度者只记录 `lease_wait`。
+- 未改 UI，因此没有 before/after 截图；本单不是 UI 改动。
+
+## 2. 被测制品
+
+| 对象 | 标识 |
+| --- | --- |
+| 平台基线 | `main` = `1001c2544c68b8f4d906e330566f6fdb6ff0c795` |
+| dispatcher 构建产物 | `apps/dispatcher/dist/main.js` sha256 `de575bfb533bf100fb080562fa09d1cff0dfa5fac91b5cdb14d3d37655effc42`（本提交重新构建同值） |
+| 隔离 runtime | `/root/src/upstream/pause-start-build1`，`lib/index.js` sha256 `fbe3684edde59f7c41c88e2b4dbd4aebb7c19a66f87b27ac099a540e3edfd0cd`（0001–0024，与 main 的 `0024-pause-before-start` 一致） |
+| profile | 从 `/root/.dsh-m5/profiles/m5b` 暂存到 `/tmp/m5bmatrix/dsh-home`，再链接 runtime 构建 |
+
+## 3. 真实 PostgreSQL 集成回归：红 → 绿
+
+回归文件：`apps/dispatcher/test/integration/operations.integration.test.ts`。新增 6 条，
+其中 5 条在修复前会红，1 条（保守占位）在修复前也绿，作为不回归的守卫。
+
+### 3.1 修复前（红）
+
+```bash
+# 仅将生产源码 stash，保留新测试
+$ git stash push -- apps/dispatcher/src
+$ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
+    corepack pnpm --filter @moyu/dispatcher exec vitest run \
+    test/integration/operations.integration.test.ts \
+    -t "settles the unstarted generation|late ignored receipt|records why when the ignored admission|settles once when two dispatchers|maintenance settles an unaccepted|maintenance keeps an unaccepted"
+```
+
+```text
+   × M4 task operations, reconciliation and GitHub import on real PostgreSQL > settles the unstarted generation when an ignored decision closes its admission 73ms
+   × M4 task operations, reconciliation and GitHub import on real PostgreSQL > leaves a newer generation alone when a late ignored receipt names the old one 28ms
+   × M4 task operations, reconciliation and GitHub import on real PostgreSQL > settles once when two dispatchers process the same ignored receipt together 18ms
+   × M4 task operations, reconciliation and GitHub import on real PostgreSQL > keeps the generation and records why when the ignored admission has a runtime ticket 24ms
+   × M4 task operations, reconciliation and GitHub import on real PostgreSQL > maintenance settles an unaccepted admission that never created a runtime ticket 14ms
+   ✓ M4 task operations, reconciliation and GitHub import on real PostgreSQL > maintenance keeps an unaccepted admission whose runtime ticket may have executed 12ms
+ FAIL  test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > settles the unstarted generation when an ignored decision closes its admission
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/5]⎯
+ FAIL  test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > leaves a newer generation alone when a late ignored receipt names the old one
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/5]⎯
+ FAIL  test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > settles once when two dispatchers process the same ignored receipt together
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/5]⎯
+ FAIL  test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > keeps the generation and records why when the ignored admission has a runtime ticket
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/5]⎯
+ FAIL  test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > maintenance settles an unaccepted admission that never created a runtime ticket
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/5]⎯
+
+--- 失败断言（节选；完整日志由同一命令重跑得到） ---
+
+
+
+ Test Files  1 failed (1)
+      Tests  5 failed | 1 passed | 35 skipped (41)
+```
+
+判定：修复前 5 条红、1 条绿，退出码 1。红的原因就是缺陷本身：任务已 `not_accepted`
+但 `runtimeLeaseId` 仍非空、租约仍 `active`；迟到回执还能把已进入新代次的任务关掉。
+
+### 3.2 修复后（绿）
+
+```bash
+$ git stash pop
+$ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
+    corepack pnpm --filter @moyu/dispatcher exec vitest run \
+    test/integration/operations.integration.test.ts
+```
+
+```text
+
+ Test Files  1 passed (1)
+      Tests  41 passed (41)
+exit=0
+```
+
+判定：41/41 通过，退出码 0。新增用例覆盖：
+
+1. 未接纳回执原子结清当前代次的 `execution_reservations`（`reserved → abandoned`）与
+   `runtime_leases`（`active → released`），任务绑定清空，下一次同仓获取拿到新代次；
+2. 迟到回执命名旧代次时不关闭新代次任务、不释放新租约；
+3. 两个并发事务处理同一回执只产生一次 `released` 事件；
+4. 已有 runtime Ticket 的未接纳任务保留租约并写 `blocked/execution_stop_proof` 原因；
+5. maintenance 释放修复前遗留的、无 runtime Ticket 的 `not_accepted` 行；
+6. maintenance 不释放可能已执行的任务。
+
+### 3.3 全量检查
+
+```bash
+$ corepack pnpm check
+```
+
+```text
+$ eslint .
+  716:7  warning  Unused eslint-disable directive (no problems were reported from 'no-console')
+$ prettier --check "**/*.{ts,tsx,mjs,cjs,json,yml,yaml,css,html}"
+packages/contracts typecheck$ tsc --noEmit
+packages/db typecheck$ tsc --noEmit
+packages/theme typecheck$ tsc --noEmit
+apps/web typecheck$ tsc --noEmit
+packages/runtime-client typecheck$ tsc --noEmit
+apps/api typecheck$ tsc --noEmit
+apps/dispatcher typecheck$ tsc --noEmit
+apps/supervisor typecheck$ tsc --noEmit
+$ pnpm -r --if-present test && node --test scripts/m3/guard.test.mjs integrations/superagent/tests/verify-lock.test.mjs
+packages/contracts test:  Test Files  1 passed (1)
+packages/contracts test:       Tests  13 passed (13)
+packages/runtime-client test:  Test Files  2 passed (2)
+packages/runtime-client test:       Tests  13 passed (13)
+apps/dispatcher test:  Test Files  2 passed (2)
+apps/dispatcher test:       Tests  5 passed (5)
+apps/api test:  Test Files  3 passed (3)
+apps/api test:       Tests  20 passed (20)
+apps/supervisor test:  Test Files  6 passed (6)
+apps/supervisor test:       Tests  38 passed (38)
+✔ verify-lock.sh gives the same result for plain, spaced, quoted and relative paths (5971.599868ms)
+ℹ pass 15
+ℹ fail 0
+```
+
+```bash
+$ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres corepack pnpm test:integration
+```
+
+```text
+$ pnpm --filter @moyu/db test:integration && pnpm --filter @moyu/api test:integration && pnpm --filter @moyu/dispatcher test:integration
+$ vitest run test/integration
+
+ RUN  v3.2.7 /root/src/rejected-lease-f2ccd7bff18e/packages/db
+
+ ✓ test/integration/integrity.integration.test.ts (9 tests) 1136ms
+ ✓ test/integration/rollback-0005.integration.test.ts (3 tests) 1593ms
+   ✓ 0005 rollback script on real PostgreSQL > rolls back M4 DDL with the correct hash, keeps business rows, and re-applies the migration  633ms
+   ✓ 0005 rollback script on real PostgreSQL > rejects a wrong hash without changing the schema or data  514ms
+   ✓ 0005 rollback script on real PostgreSQL > rejects a missing hash and keeps the M4 schema  433ms
+ ✓ test/integration/rollback.integration.test.ts (5 tests) 2572ms
+   ✓ 0004 rollback script on real PostgreSQL > rolls back with the correct hash, keeps business data and re-applies the constraints  628ms
+   ✓ 0004 rollback script on real PostgreSQL > rejects a wrong hash and keeps the schema, migration history and data  496ms
+   ✓ 0004 rollback script on real PostgreSQL > rejects a missing hash and keeps the schema and migration history  438ms
+   ✓ 0004 rollback script on real PostgreSQL > rejects a hash whose migration record is no longer the latest applied row  423ms
+   ✓ 0004 rollback script on real PostgreSQL > rolls back all DDL when a later statement in the same transaction fails  577ms
+ ✓ test/integration/messages.integration.test.ts (4 tests) 658ms
+ ✓ test/integration/migrations.integration.test.ts (6 tests) 596ms
+ ✓ test/integration/rollback-0008.integration.test.ts (3 tests) 2076ms
+   ✓ 0008 rollback script on real PostgreSQL > deletes exactly the 0008 ledger row and restores immediate FKs, then re-applies deferred FKs  547ms
+   ✓ 0008 rollback script on real PostgreSQL > moves a reply graph between conversations after re-apply, proving deferred checking  515ms
+   ✓ 0008 rollback script on real PostgreSQL > refuses wrong, missing and non-latest hashes without changing schema or ledger  998ms
+ ✓ test/integration/rollback-0006.integration.test.ts (2 tests) 1134ms
+   ✓ 0006 rollback script on real PostgreSQL > drops the durable duplicate queue and re-applies it  629ms
+   ✓ 0006 rollback script on real PostgreSQL > rejects a missing or wrong hash and keeps the table  489ms
+ ✓ test/integration/rollback-0013.integration.test.ts (1 test) 1023ms
+   ✓ 0013 rollback script on real PostgreSQL > removes the lease/resource schema and re-applies it  1020ms
+ ✓ test/integration/rollback-0012.integration.test.ts (1 test) 789ms
+   ✓ 0012 rollback script on real PostgreSQL > removes the allocation indexes and re-applies them  786ms
+ ✓ test/integration/rollback-0009.integration.test.ts (2 tests) 1598ms
+   ✓ 0009 rollback script on real PostgreSQL > drops repository_preferences and the keyset index, then re-applies both  654ms
+   ✓ 0009 rollback script on real PostgreSQL > refuses wrong, missing and non-latest hashes without changing schema or ledger  941ms
+ ✓ test/integration/rollback-0014.integration.test.ts (2 tests) 794ms
+   ✓ 0014 rollback script on real PostgreSQL > refuses a second rollback instead of silently deleting nothing  409ms
+   ✓ 0014 rollback script on real PostgreSQL > removes the reservation schema and re-applies it  382ms
+
+ Test Files  11 passed (11)
+      Tests  38 passed (38)
+   Start at  13:31:41
+   Duration  9.65s (transform 361ms, setup 0ms, collect 8.53s, tests 13.97s, environment 2ms, prepare 902ms)
+
+$ vitest run test/integration
+
+ RUN  v3.2.7 /root/src/rejected-lease-f2ccd7bff18e/apps/api
+
+ ✓ test/integration/preferences.integration.test.ts (11 tests) 980ms
+ ✓ test/integration/conversation-merge.integration.test.ts (8 tests) 990ms
+ ✓ test/integration/pagination.integration.test.ts (10 tests) 1199ms
+ ✓ test/integration/login-revocation-race.integration.test.ts (3 tests) 953ms
+ ✓ test/integration/loop.integration.test.ts (11 tests) 940ms
+ ✓ test/integration/tasks.integration.test.ts (7 tests) 958ms
+ ✓ test/integration/auth.integration.test.ts (7 tests) 787ms
+ ✓ test/integration/repositories.integration.test.ts (5 tests) 803ms
+ ✓ test/integration/sse-replay-boundary.integration.test.ts (1 test) 1716ms
+   ✓ SSE replay across the 500-event page boundary on real PostgreSQL > replays 501 persisted events, persists 502 at the page boundary, and resumes from the database cursor  1132ms
+ ✓ test/integration/credentials.integration.test.ts (2 tests) 662ms
+ ✓ test/integration/sse.integration.test.ts (1 test) 768ms
+
+ Test Files  11 passed (11)
+      Tests  66 passed (66)
+   Start at  13:31:52
+   Duration  9.47s (transform 793ms, setup 0ms, collect 13.68s, tests 10.76s, environment 2ms, prepare 893ms)
+
+$ vitest run test/integration
+
+ RUN  v3.2.7 /root/src/rejected-lease-f2ccd7bff18e/apps/dispatcher
+
+stdout | test/integration/multi-repo.integration.test.ts > multi-repository dispatcher isolation on real PostgreSQL > delivers each message only to its own repository Bridge with its own token
+{"level":"info","time":"2026-11-08T05:32:05.119Z","service":"moyu-dispatcher","event":"dispatcher.ready","nodeEnv":"test","msg":"dispatcher connected to PostgreSQL"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > sends a pause, then shows stopped only after the runtime supplies stop evidence
+{"level":"info","time":"2026-11-08T05:32:05.133Z","service":"test","event":"operation.sent","operationId":"1ecbe38a-65c1-4bf6-a5a2-7bd09d40ee68","taskId":"826beec6-20c9-42a2-9460-390b88124a9a","kind":"pause","runtimeState":"queued","leaseId":null,"fencingToken":null,"msg":"runtime accepted the task operation"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > sends a pause, then shows stopped only after the runtime supplies stop evidence
+{"level":"info","time":"2026-11-08T05:32:05.153Z","service":"test","event":"operation.settled","operationId":"1ecbe38a-65c1-4bf6-a5a2-7bd09d40ee68","taskId":"826beec6-20c9-42a2-9460-390b88124a9a","kind":"pause","state":"succeeded","taskState":"stopped","msg":"task operation settled"}
+
+stdout | test/integration/dispatcher.integration.test.ts > dispatcher delivery and Bridge event catch-up on real PostgreSQL > retries a transient delivery with the same trigger id
+{"level":"warn","time":"2026-11-08T05:32:05.168Z","service":"test","event":"delivery.retry","messageId":"04f432d2-300e-46e0-b803-67dca6da9341","attempt":1,"delayMs":1000,"error":"retry","msg":"delivery failed; the same trigger will be retried"}
+
+stdout | test/integration/multi-repo.integration.test.ts > multi-repository dispatcher isolation on real PostgreSQL > delivers each message only to its own repository Bridge with its own token
+{"level":"info","time":"2026-11-08T05:32:05.166Z","service":"moyu-dispatcher","event":"dispatcher.repository","repository":"Bouyer12/m5a-alpha","admissionSupported":true,"msg":"dispatching for repository runtime"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > does not report stopped when the runtime refuses or fails the pause
+{"level":"info","time":"2026-11-08T05:32:05.174Z","service":"test","event":"operation.sent","operationId":"77198e69-b541-4e81-9241-cd2d7ba5ae71","taskId":"7f89b182-d9a0-4c7b-bbe5-5186305da688","kind":"pause","runtimeState":"queued","leaseId":null,"fencingToken":null,"msg":"runtime accepted the task operation"}
+
+stdout | test/integration/multi-repo.integration.test.ts > multi-repository dispatcher isolation on real PostgreSQL > delivers each message only to its own repository Bridge with its own token
+{"level":"info","time":"2026-11-08T05:32:05.181Z","service":"moyu-dispatcher","event":"dispatcher.repository","repository":"Bouyer12/m5a-beta","admissionSupported":true,"msg":"dispatching for repository runtime"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > does not report stopped when the runtime refuses or fails the pause
+{"level":"info","time":"2026-11-08T05:32:05.197Z","service":"test","event":"operation.settled","operationId":"77198e69-b541-4e81-9241-cd2d7ba5ae71","taskId":"7f89b182-d9a0-4c7b-bbe5-5186305da688","kind":"pause","state":"failed","taskState":"blocked","msg":"task operation settled"}
+
+stdout | test/integration/dispatcher.integration.test.ts > dispatcher delivery and Bridge event catch-up on real PostgreSQL > retries a transient delivery with the same trigger id
+{"level":"info","time":"2026-11-08T05:32:05.220Z","service":"test","event":"delivery.delivered","messageId":"04f432d2-300e-46e0-b803-67dca6da9341","conversationId":"ec66a4bd-be5f-4a19-bc5d-b4dd78832f31","result":"duplicate","attempt":2,"msg":"runtime accepted the trigger"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > keeps the execution slot when a pause has no proven stop and blocks a second executor
+{"level":"info","time":"2026-11-08T05:32:05.241Z","service":"test","event":"operation.sent","operationId":"bfcfdb7f-f302-469b-a665-84c38bbaa001","taskId":"df201c9b-c4b4-4f30-9497-8b3839fd3784","kind":"pause","runtimeState":"queued","leaseId":null,"fencingToken":null,"msg":"runtime accepted the task operation"}
+
+stdout | test/integration/multi-repo.integration.test.ts > multi-repository dispatcher isolation on real PostgreSQL > delivers each message only to its own repository Bridge with its own token
+{"level":"info","time":"2026-11-08T05:32:05.260Z","service":"moyu-dispatcher","event":"delivery.delivered","messageId":"f7ff627d-05d0-4b82-8cf9-682d8a9a7c54","conversationId":"c42b52cb-dfae-4de0-b195-30cadedab9c7","result":"stored","attempt":1,"msg":"runtime accepted the trigger"}
+
+stdout | test/integration/multi-repo.integration.test.ts > multi-repository dispatcher isolation on real PostgreSQL > delivers each message only to its own repository Bridge with its own token
+{"level":"info","time":"2026-11-08T05:32:05.265Z","service":"moyu-dispatcher","event":"delivery.delivered","messageId":"526743a0-d5ea-4665-aa96-4e089868bdcf","conversationId":"2dc8857f-3983-4585-8c8b-e6707558f32b","result":"stored","attempt":1,"msg":"runtime accepted the trigger"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > keeps the execution slot when a pause has no proven stop and blocks a second executor
+{"level":"info","time":"2026-11-08T05:32:05.266Z","service":"test","event":"operation.settled","operationId":"bfcfdb7f-f302-469b-a665-84c38bbaa001","taskId":"df201c9b-c4b4-4f30-9497-8b3839fd3784","kind":"pause","state":"succeeded","taskState":"blocked","msg":"task operation settled"}
+
+stdout | test/integration/dispatcher.integration.test.ts > dispatcher delivery and Bridge event catch-up on real PostgreSQL > marks a filtered Trigger failed instead of delivered or read and creates no ticket
+{"level":"warn","time":"2026-11-08T05:32:05.317Z","service":"test","event":"delivery.filtered","messageId":"b7680ed2-43f6-4821-8640-bac3591ca266","conversationId":"7fb481b7-f53f-4b7b-a54f-23ec1cfdbd6d","msg":"runtime filtered the trigger"}
+
+stdout | test/integration/multi-repo.integration.test.ts > multi-repository dispatcher isolation on real PostgreSQL > delivers each message only to its own repository Bridge with its own token
+{"level":"info","time":"2026-11-08T05:32:05.319Z","service":"moyu-dispatcher","event":"dispatcher.stopped","msg":"dispatcher stopped"}
+
+stdout | test/integration/multi-repo.integration.test.ts > multi-repository dispatcher isolation on real PostgreSQL > stops a repository loop once the supervisor marks it sleeping
+{"level":"info","time":"2026-11-08T05:32:05.339Z","service":"moyu-dispatcher","event":"dispatcher.ready","nodeEnv":"test","msg":"dispatcher connected to PostgreSQL"}
+
+stderr | test/integration/dispatcher.integration.test.ts > dispatcher delivery and Bridge event catch-up on real PostgreSQL > refuses to deliver an execution trigger when the runtime lacks admission capability
+{"level":"error","time":"2026-11-08T05:32:05.343Z","service":"test","event":"delivery.failed","messageId":"e2c61075-8319-4cc8-98d5-964954e11cb0","error":"runtime_admission_unsupported: refusing to execute on a runtime without admission support","msg":"delivery was rejected permanently"}
+
+stdout | test/integration/multi-repo.integration.test.ts > multi-repository dispatcher isolation on real PostgreSQL > stops a repository loop once the supervisor marks it sleeping
+{"level":"info","time":"2026-11-08T05:32:05.344Z","service":"moyu-dispatcher","event":"dispatcher.repository","repository":"Bouyer12/m5a-beta","admissionSupported":true,"msg":"dispatching for repository runtime"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > does not show stopped when a succeeded pause has no stop evidence
+{"level":"info","time":"2026-11-08T05:32:05.361Z","service":"test","event":"operation.sent","operationId":"0e53c0c6-fc0c-42e9-8eae-a3b3c923fd06","taskId":"1244dfb8-51bc-4a91-92c1-610fa0c5c523","kind":"pause","runtimeState":"queued","leaseId":null,"fencingToken":null,"msg":"runtime accepted the task operation"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > does not show stopped when a succeeded pause has no stop evidence
+{"level":"info","time":"2026-11-08T05:32:05.369Z","service":"test","event":"operation.settled","operationId":"0e53c0c6-fc0c-42e9-8eae-a3b3c923fd06","taskId":"1244dfb8-51bc-4a91-92c1-610fa0c5c523","kind":"pause","state":"succeeded","taskState":"blocked","msg":"task operation settled"}
+
+stdout | test/integration/dispatcher.integration.test.ts > dispatcher delivery and Bridge event catch-up on real PostgreSQL > reuses the persisted assignment identity when admission is replayed
+{"level":"info","time":"2026-11-08T05:32:05.376Z","service":"test","event":"admission.started","taskId":"79c92c9f-02af-4f56-a44f-e5ba13bb8ca8","leaseId":"7b4683a5-6f55-4f25-b61a-91694f779a92","fencingToken":"4","msg":"admitted a pending GitHub ticket under the repository execution lease"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > starts a discussion into execution without creating a new task
+{"level":"info","time":"2026-11-08T05:32:05.383Z","service":"test","event":"operation.sent","operationId":"edda158f-fce0-42f3-aaf5-2bfa03dfb6e1","taskId":"cccd2b3f-948d-4084-b100-dffce382c192","kind":"start","runtimeState":"queued","leaseId":"cc7d7269-7da8-415b-846d-235b42453ac8","fencingToken":"2","msg":"runtime accepted the task operation"}
+
+stdout | test/integration/dispatcher.integration.test.ts > dispatcher delivery and Bridge event catch-up on real PostgreSQL > reuses the persisted assignment identity when admission is replayed
+{"level":"info","time":"2026-11-08T05:32:05.390Z","service":"test","event":"admission.started","taskId":"79c92c9f-02af-4f56-a44f-e5ba13bb8ca8","leaseId":"7b4683a5-6f55-4f25-b61a-91694f779a92","fencingToken":"4","msg":"admitted a pending GitHub ticket under the repository execution lease"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > starts a discussion into execution without creating a new task
+{"level":"info","time":"2026-11-08T05:32:05.390Z","service":"test","event":"operation.settled","operationId":"edda158f-fce0-42f3-aaf5-2bfa03dfb6e1","taskId":"cccd2b3f-948d-4084-b100-dffce382c192","kind":"start","state":"succeeded","taskState":"queued","msg":"task operation settled"}
+
+stdout | test/integration/dispatcher.integration.test.ts > dispatcher delivery and Bridge event catch-up on real PostgreSQL > binds the complete execution identity before a cold GitHub admission starts
+{"level":"info","time":"2026-11-08T05:32:05.411Z","service":"test","event":"admission.started","taskId":"b9aba140-3f14-46e5-bed5-a368f16e6d2a","leaseId":"23815617-7da8-4197-8bc2-140eb9cc55cd","fencingToken":"5","msg":"admitted a pending GitHub ticket under the repository execution lease"}
+
+stderr | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > blocks a resume the runtime refuses because the worktree is missing
+{"level":"error","time":"2026-11-08T05:32:05.416Z","service":"test","event":"operation.failed","operationId":"ea25a421-26db-42f9-bb5e-6a94f01641ef","error":"The preserved worktree is missing","msg":"task operation was refused permanently"}
+
+stdout | test/integration/dispatcher.integration.test.ts > dispatcher delivery and Bridge event catch-up on real PostgreSQL > binds the complete execution identity before a cold GitHub admission starts
+[cold-admission-red] ownership= {}
+
+stderr | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > does not accept a snapshot stopped state when its pause evidence is incomplete
+{"level":"error","time":"2026-11-08T05:32:05.437Z","service":"test","event":"operation.failed","operationId":"69b555cf-dc76-4cbb-ad34-f82398921d34","error":"refused","msg":"task operation was refused permanently"}
+
+stdout | test/integration/dispatcher.integration.test.ts > dispatcher delivery and Bridge event catch-up on real PostgreSQL > sends the lease admission with an admitted runtime and starts a pending GitHub ticket once
+{"level":"info","time":"2026-11-08T05:32:05.451Z","service":"test","event":"delivery.delivered","messageId":"bf38cdba-2e37-46fd-88ae-eccf204c9c57","conversationId":"c4dca7b4-2eee-43c1-9f24-465008151122","result":"stored","attempt":1,"msg":"runtime accepted the trigger"}
+
+stderr | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > marks a task closed_unmerged when the runtime refuses to resume a closed PR
+{"level":"error","time":"2026-11-08T05:32:05.459Z","service":"test","event":"operation.failed","operationId":"439e92db-bfc5-4802-a341-a8cd4a71f7cd","error":"The pull request was closed unmerged","msg":"task operation was refused permanently"}
+
+stdout | test/integration/dispatcher.integration.test.ts > dispatcher delivery and Bridge event catch-up on real PostgreSQL > sends the lease admission with an admitted runtime and starts a pending GitHub ticket once
+{"level":"info","time":"2026-11-08T05:32:05.465Z","service":"test","event":"admission.started","taskId":"0612aa8b-39ea-4bfd-bef9-ea51eebd08e2","leaseId":"cdf2fd65-a186-4600-99dc-3e7fd524d334","fencingToken":"6","msg":"admitted a pending GitHub ticket under the repository execution lease"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > re-acquires a runtime lease and verifies the preserved worktree before resume
+{"level":"info","time":"2026-11-08T05:32:05.473Z","service":"test","event":"operation.sent","operationId":"ccd51d45-e5cf-4cc5-8269-43254f5f592a","taskId":"15abefb0-6214-4b6b-b5f7-6e73d2f45803","kind":"resume","runtimeState":"queued","leaseId":"802c651a-2172-40e8-980e-4fa204e67d7b","fencingToken":"6","msg":"runtime accepted the task operation"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > re-acquires a runtime lease and verifies the preserved worktree before resume
+{"level":"info","time":"2026-11-08T05:32:05.478Z","service":"test","event":"operation.settled","operationId":"ccd51d45-e5cf-4cc5-8269-43254f5f592a","taskId":"15abefb0-6214-4b6b-b5f7-6e73d2f45803","kind":"resume","state":"succeeded","taskState":"queued","msg":"task operation settled"}
+
+stdout | test/integration/dispatcher.integration.test.ts > dispatcher delivery and Bridge event catch-up on real PostgreSQL > keeps a launch pending while another execution owns the repository lease
+{"level":"warn","time":"2026-11-08T05:32:05.488Z","service":"test","event":"delivery.lease_wait","messageId":"257ca3b2-730e-4159-9c5c-42ffb9994517","refused":"held","waitingFor":"execution_slot","msg":"delivery waits for the repository execution lease"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > keeps a resume queued when a different task holds the repository lease
+{"level":"info","time":"2026-11-08T05:32:05.515Z","service":"test","event":"operation.sent","operationId":"b59637b6-e421-46d5-a246-8d850cd51107","taskId":"bfe34d35-f8c6-4eea-b66d-d7de2e2ff4b4","kind":"pause","runtimeState":"queued","leaseId":null,"fencingToken":null,"msg":"runtime accepted the task operation"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > imports a GitHub ticket into one Work conversation and does not duplicate a replay
+{"level":"info","time":"2026-11-08T05:32:05.532Z","service":"test","event":"bridge.ticket_imported","bridgeEvent":"ticket-imported:github-ticket-42","ticketId":"github-ticket-42","externalId":"github:42","isPr":true,"number":42,"msg":"imported a GitHub-origin ticket into Work"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > closes only the pending admission tied to an ignored decision
+{"level":"info","time":"2026-11-08T05:32:05.580Z","service":"test","event":"bridge.decision_ignored","decisionId":"decision-ticket-2762947-19-1794115925563","taskId":"a91222fb-e215-410f-9012-2231c7ed2f65","conversationId":"547197ee-4420-439d-97df-893f8a1692ec","messageId":"92f0263c-e6cd-4dfb-9fa2-a112cb913907","leaseId":null,"leaseSettled":null,"leaseDetail":null,"msg":"closed the ignored admission; its execution generation stays occupied unless released"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > settles the unstarted generation when an ignored decision closes its admission
+{"level":"info","time":"2026-11-08T05:32:05.607Z","service":"test","event":"bridge.decision_ignored","decisionId":"decision-ba3f4f12-7184-471e-ae59-26dc2c5e6b06","taskId":"ba3f4f12-7184-471e-ae59-26dc2c5e6b06","conversationId":"6459ee1a-780b-46a3-a9da-234c67a9451e","messageId":"6697a9bb-4070-45dc-9fe2-276ced1902c5","leaseId":"fe46e59c-95c3-45a8-ac6d-0d16dafc3b46","leaseSettled":true,"leaseDetail":"settled the generation that never executed","msg":"closed the ignored admission and released its unstarted execution generation"}
+
+ ✓ test/integration/dispatcher.integration.test.ts (11 tests) 1031ms
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > leaves a newer generation alone when a late ignored receipt names the old one
+{"level":"info","time":"2026-11-08T05:32:05.633Z","service":"test","event":"bridge.decision_ignored_stale","decisionId":"decision-db6cf438-cb52-4e54-ac23-6ae63a4261eb","taskId":"db6cf438-cb52-4e54-ac23-6ae63a4261eb","conversationId":"e8e3d8d2-588a-4bee-93f0-68d6756e1a69","taskLeaseId":"e8bf5d10-7053-425f-9f59-8561fa24ade1","ignoredLeaseIds":["dd9a1da3-7c4a-4b22-8ae1-6caf3b4be58d"],"msg":"left the admission open: the ignored receipt names another execution generation"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > settles once when two dispatchers process the same ignored receipt together
+{"level":"info","time":"2026-11-08T05:32:05.649Z","service":"test","event":"bridge.decision_ignored","decisionId":"decision-ea1e69c2-db4b-4d74-b458-bb4e4fc4045a","taskId":"ea1e69c2-db4b-4d74-b458-bb4e4fc4045a","conversationId":"268d3824-8ac8-4863-8eab-a2e473359feb","messageId":"32100a21-f170-49ec-ac97-92f2c12656e4","leaseId":"4f6424c5-6441-4e86-bf9a-9f96e7663fb3","leaseSettled":true,"leaseDetail":"settled the generation that never executed","msg":"closed the ignored admission and released its unstarted execution generation"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > keeps the generation and records why when the ignored admission has a runtime ticket
+{"level":"info","time":"2026-11-08T05:32:05.675Z","service":"test","event":"bridge.decision_ignored","decisionId":"decision-0c5454bc-369a-4d7f-95f2-1774c193a65b","taskId":"0c5454bc-369a-4d7f-95f2-1774c193a65b","conversationId":"9ddf293f-a58e-49bf-a036-05703caf7531","messageId":"f4ad89a2-dcd8-4a26-abdb-fbaeb9787ceb","leaseId":"69e666be-2479-43a6-b3a3-e9146dc97a5b","leaseSettled":false,"leaseDetail":"The runtime ticket bound to this admission cannot be proven not to have executed","msg":"closed the ignored admission; its execution generation stays occupied unless released"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > maintenance settles an unaccepted admission that never created a runtime ticket
+{"level":"info","time":"2026-11-08T05:32:05.690Z","service":"test","event":"lease.ignored_admission_settled","repositoryId":"f7e71f08-3f48-4294-9c43-174d385a5637","taskId":"0f8bc2bc-35ed-4f6a-9acc-9d63f51ca87e","leaseId":"610ecbbc-2ef7-432a-afce-c6abf62d3b2e","msg":"released an execution generation left behind by an unaccepted admission"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > resolves a merged conversation alias before closing the ignored admission
+{"level":"info","time":"2026-11-08T05:32:05.717Z","service":"test","event":"bridge.decision_ignored","decisionId":"decision-ticket-2762947-27-1794115925705","taskId":"b2abff94-ae3f-4eda-a665-75c7139d5887","conversationId":"9f0c19d2-8136-4cd1-8107-ade7f7b90292","messageId":"1cb6ec41-a960-4e19-907c-af4955bd7ce0","leaseId":null,"leaseSettled":null,"leaseDetail":null,"msg":"closed the ignored admission; its execution generation stays occupied unless released"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > does not let an import notice block the ignored admission
+{"level":"warn","time":"2026-11-08T05:32:05.729Z","service":"test","event":"bridge.import_duplicate","bridgeEvent":"ticket-imported:ticket-2762947-28-1794115925718:duplicate","ticketId":"second-ticket-ticket-2762947-28-1794115925718","existingTicketId":"ticket-2762947-28-1794115925718","taskId":"e0a90995-7466-4a41-b396-f8f22f1968fa","msg":"ignored a duplicate GitHub ticket for an active Work task"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > does not let an import notice block the ignored admission
+{"level":"info","time":"2026-11-08T05:32:05.730Z","service":"test","event":"bridge.import_duplicate_queued","bridgeEvent":"ticket-imported:ticket-2762947-28-1794115925718:duplicate","ticketId":"second-ticket-ticket-2762947-28-1794115925718","msg":"queued a duplicate runtime ticket for a durable pause"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > does not let an import notice block the ignored admission
+{"level":"info","time":"2026-11-08T05:32:05.734Z","service":"test","event":"bridge.decision_ignored","decisionId":"decision-ticket-2762947-28-1794115925718","taskId":"e0a90995-7466-4a41-b396-f8f22f1968fa","conversationId":"5ed882be-bcf8-4af0-b8ea-00afe387e99a","messageId":"4b19787c-2b4d-407c-9b52-14894387b221","leaseId":null,"leaseSettled":null,"leaseDetail":null,"msg":"closed the ignored admission; its execution generation stays occupied unless released"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > closes a batched ignore decision covering every pending message
+{"level":"info","time":"2026-11-08T05:32:05.749Z","service":"test","event":"bridge.decision_ignored","decisionId":"decision-ticket-2762947-29-1794115925736","taskId":"cf2a2c68-ad60-4f46-a5f1-a1a4cc525e17","conversationId":"b017ab5a-1564-42be-a128-8982f252fc90","messageId":"41afcd93-f4e5-40ae-8f19-3b10e61027d9","leaseId":null,"leaseSettled":null,"leaseDetail":null,"msg":"closed the ignored admission; its execution generation stays occupied unless released"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > keeps a batch pending when an uncovered newer input exists
+{"level":"info","time":"2026-11-08T05:32:05.771Z","service":"test","event":"bridge.decision_ignored","decisionId":"decision-ticket-2762947-30-1794115925751","taskId":"7086676e-a28c-4d24-bb87-62ee1cd675d1","conversationId":"b105e1d7-2891-4fb1-aed6-12a4bbee46e9","messageId":"e86c3eaa-abbe-4a38-a208-6dab988d75da","leaseId":null,"leaseSettled":null,"leaseDetail":null,"msg":"closed the ignored admission; its execution generation stays occupied unless released"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > closes its own admission while that message delivery is still delivering
+{"level":"info","time":"2026-11-08T05:32:05.784Z","service":"test","event":"bridge.decision_ignored","decisionId":"decision-ticket-2762947-31-1794115925774","taskId":"81805fe4-f098-4d95-9920-1b512b0696e1","conversationId":"3b3dc1af-5058-4a5e-afcc-55da2b425e6e","messageId":"fc16ba5f-7f7f-48f8-acc6-622be8ef2fcb","leaseId":null,"leaseSettled":null,"leaseDetail":null,"msg":"closed the ignored admission; its execution generation stays occupied unless released"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > rejects a later API acceptance after an ignored decision commits first
+{"level":"info","time":"2026-11-08T05:32:05.915Z","service":"test","event":"bridge.decision_ignored","decisionId":"decision-ticket-2762947-33-1794115925907","taskId":"0baf554d-51b0-4caf-b4ff-8d8cd30f8bd6","conversationId":"d865aa00-db5a-4388-b3d7-56f8c687bf3a","messageId":"8dba1e97-29fc-4f06-9d55-e9e17438307b","leaseId":null,"leaseSettled":null,"leaseDetail":null,"msg":"closed the ignored admission; its execution generation stays occupied unless released"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > keeps one task when the same requirement arrives with a different GitHub ticket
+{"level":"warn","time":"2026-11-08T05:32:06.043Z","service":"test","event":"bridge.import_duplicate","bridgeEvent":"ticket-imported:github-ticket-99","ticketId":"github-ticket-99","existingTicketId":"ticket-2762947-35-1794115926035","taskId":"c1a57c1d-a58b-496c-86d0-092d0034d5d5","msg":"ignored a duplicate GitHub ticket for an active Work task"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > keeps one task when the same requirement arrives with a different GitHub ticket
+{"level":"info","time":"2026-11-08T05:32:06.044Z","service":"test","event":"bridge.import_duplicate_queued","bridgeEvent":"ticket-imported:github-ticket-99","ticketId":"github-ticket-99","msg":"queued a duplicate runtime ticket for a durable pause"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > does not claim a Web conversation for a different issue number
+{"level":"info","time":"2026-11-08T05:32:06.072Z","service":"test","event":"bridge.ticket_imported","bridgeEvent":"ticket-imported:github-ticket-issue-1","ticketId":"github-ticket-issue-1","externalId":"github:1","isPr":false,"number":1,"msg":"imported a GitHub-origin ticket into Work"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > claims a Web conversation that already contains the GitHub requirement URL
+{"level":"warn","time":"2026-11-08T05:32:06.089Z","service":"test","event":"bridge.import_duplicate","bridgeEvent":"ticket-imported:github-ticket-web-42","ticketId":"github-ticket-web-42","existingTicketId":"ticket-2762947-37-1794115926075","taskId":"8dd790ab-13eb-42f4-9c01-8aed2acd2f84","msg":"ignored a duplicate GitHub ticket for an active Work task"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > claims a Web conversation that already contains the GitHub requirement URL
+{"level":"info","time":"2026-11-08T05:32:06.089Z","service":"test","event":"bridge.import_duplicate_queued","bridgeEvent":"ticket-imported:github-ticket-web-42","ticketId":"github-ticket-web-42","msg":"queued a duplicate runtime ticket for a durable pause"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > returns the duplicate ticket id and persists a pause even when the first pause fails
+{"level":"warn","time":"2026-11-08T05:32:06.097Z","service":"test","event":"bridge.import_duplicate","bridgeEvent":"ticket-imported:github-ticket-dup","ticketId":"github-ticket-dup","existingTicketId":"ticket-2762947-38-1794115926092","taskId":"3666545a-98b2-4031-88e5-8e4e4fbcd561","msg":"ignored a duplicate GitHub ticket for an active Work task"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > returns the duplicate ticket id and persists a pause even when the first pause fails
+{"level":"warn","time":"2026-11-08T05:32:06.103Z","service":"test","event":"bridge.import_duplicate","bridgeEvent":"ticket-imported:github-ticket-dup","ticketId":"github-ticket-dup","existingTicketId":"ticket-2762947-38-1794115926092","taskId":"3666545a-98b2-4031-88e5-8e4e4fbcd561","msg":"ignored a duplicate GitHub ticket for an active Work task"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > returns the duplicate ticket id and persists a pause even when the first pause fails
+{"level":"info","time":"2026-11-08T05:32:06.103Z","service":"test","event":"bridge.import_duplicate_queued","bridgeEvent":"ticket-imported:github-ticket-dup","ticketId":"github-ticket-dup","msg":"queued a duplicate runtime ticket for a durable pause"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > returns the duplicate ticket id and persists a pause even when the first pause fails
+{"level":"info","time":"2026-11-08T05:32:06.114Z","service":"test","event":"duplicate.paused","ticketId":"github-ticket-dup","msg":"duplicate runtime ticket paused"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > recovers a duplicate pause left in flight by a restart
+{"level":"info","time":"2026-11-08T05:32:06.125Z","service":"test","event":"duplicate.paused","ticketId":"github-ticket-restart","msg":"duplicate runtime ticket paused"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > reconciles a running task from a paused snapshot and blocks one the runtime cannot confirm
+{"level":"info","time":"2026-11-08T05:32:06.172Z","service":"test","event":"reconcile.task","taskId":"b46328c7-1336-4a90-9a1a-72e8d663b639","previous":"running","state":"stopped","contradictory":false,"msg":"reconciled a task with its runtime ticket"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > reconciles a running task from a paused snapshot and blocks one the runtime cannot confirm
+{"level":"info","time":"2026-11-08T05:32:06.180Z","service":"test","event":"reconcile.task","taskId":"9ba7fe33-a8c4-4652-9825-60f7f96d803e","previous":"running","state":"blocked","contradictory":false,"msg":"reconciled a task with its runtime ticket"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > reconciles a running task from a paused snapshot and blocks one the runtime cannot confirm
+{"level":"warn","time":"2026-11-08T05:32:06.184Z","service":"test","event":"reconcile.unconfirmed","taskId":"6ec14dfa-cff9-47bd-ad16-21c19958e981","error":"ticket not found","msg":"the runtime could not confirm this task; it is blocked instead of guessed"}
+
+ ✓ test/integration/operations.integration.test.ts (41 tests) 1631ms
+stdout | test/integration/multi-repo.integration.test.ts > multi-repository dispatcher isolation on real PostgreSQL > stops a repository loop once the supervisor marks it sleeping
+{"level":"info","time":"2026-11-08T05:32:06.536Z","service":"moyu-dispatcher","event":"dispatcher.stopped","msg":"dispatcher stopped"}
+
+ ✓ test/integration/multi-repo.integration.test.ts (2 tests) 2013ms
+   ✓ multi-repository dispatcher isolation on real PostgreSQL > stops a repository loop once the supervisor marks it sleeping  1214ms
+stdout | test/integration/leases.integration.test.ts > repository execution lease on real PostgreSQL > adopts an expired lease only when the runtime confirms the same generation running
+{"level":"info","time":"2026-11-08T05:32:07.131Z","service":"test","event":"lease.adopted","repositoryId":"02574395-ef05-44b4-a7fc-3bb9afe4e05a","leaseId":"be86abb5-1b35-416b-9ea0-3fac94cd0941","runtimeState":"running","msg":"adopted the still-running execution under its existing fencing generation"}
+
+stdout | test/integration/leases.integration.test.ts > repository execution lease on real PostgreSQL > refuses a replacement until the old execution is proven stopped, then fences a new generation
+{"level":"info","time":"2026-11-08T05:32:07.195Z","service":"test","event":"lease.adopted","repositoryId":"02574395-ef05-44b4-a7fc-3bb9afe4e05a","leaseId":"7dd6cb2c-b3f5-4893-aa10-d24605af749c","runtimeState":"running","msg":"adopted the still-running execution under its existing fencing generation"}
+
+ ✓ test/integration/leases.integration.test.ts (8 tests) 633ms
+stdout | test/integration/recovery-review-multi-repository.integration.test.ts > execution reservation on real PostgreSQL > review recovery does not let another repository reset the scan
+REVIEW_SHARED_CURSOR {"calls":34,"otherSeen":true,"targetSeen":true,"state":"claimed"}
+
+ ✓ test/integration/recovery-review-multi-repository.integration.test.ts (1 test) 737ms
+stdout | test/integration/recovery-race.integration.test.ts > execution reservation on real PostgreSQL > review recovery overwrites pause evidence after the snapshot wait
+REVIEW_PAUSE_EVIDENCE_AFTER_RECOVERY {"state":"stopped","stop_evidence":{"marker":"pause-evidence-written-during-snapshot","status":"proven"}}
+
+ ✓ test/integration/recovery-race.integration.test.ts (4 tests) 587ms
+stdout | test/integration/recovery-review-ordered-fairness.integration.test.ts > execution reservation on real PostgreSQL > review recovery eventually reaches row 33 after earlier snapshot failures
+REVIEW_STARVATION {"calls":33,"targetState":"claimed"}
+
+ ✓ test/integration/recovery-review-ordered-fairness.integration.test.ts (1 test) 702ms
+ ✓ test/integration/reservations.integration.test.ts (3 tests) 656ms
+stdout | test/integration/delivery-exactly-once.integration.test.ts > delivery exactly-once on real PostgreSQL > keeps one delivery row and one effective delivery across 5 concurrent rounds
+DELIVERY_ROUNDS [{"round":1,"messageId":"62657ae0-257a-4c36-a0bd-756bdaac3e6a","rows":1,"delivered":1,"attempts":0,"triggerIds":["workspace:62657ae0-257a-4c36-a0bd-756bdaac3e6a"]},{"round":2,"messageId":"49d09343-85fa-411d-8e27-b8efddb03390","rows":1,"delivered":1,"attempts":0,"triggerIds":["workspace:49d09343-85fa-411d-8e27-b8efddb03390"]},{"round":3,"messageId":"efbc2527-6586-42f4-9a36-f349e1ba7260","rows":1,"delivered":1,"attempts":0,"triggerIds":["workspace:efbc2527-6586-42f4-9a36-f349e1ba7260"]},{"round":4,"messageId":"aa060697-8cde-4adc-9b96-f9dec618f88e","rows":1,"delivered":1,"attempts":0,"triggerIds":["workspace:aa060697-8cde-4adc-9b96-f9dec618f88e"]},{"round":5,"messageId":"06933fb6-1939-4288-849b-07c61b316ee6","rows":1,"delivered":1,"attempts":0,"triggerIds":["workspace:06933fb6-1939-4288-849b-07c61b316ee6"]}]
+
+ ✓ test/integration/delivery-exactly-once.integration.test.ts (1 test) 571ms
+ ✓ test/integration/expired-reservation-projection.integration.test.ts (3 tests) 481ms
+stdout | test/integration/recovery-review-catch.integration.test.ts > execution reservation on real PostgreSQL > review recovery preserves pause evidence when claim fails after the snapshot wait
+REVIEW_PAUSE_EVIDENCE_AFTER_RECOVERY {"state":"stopped","stop_evidence":{"marker":"pause-evidence-written-during-snapshot","status":"proven"}}
+
+ ✓ test/integration/recovery-projection-branches.integration.test.ts (3 tests) 523ms
+ ✓ test/integration/recovery-review-catch.integration.test.ts (1 test) 504ms
+stdout | test/integration/recovery-positive.integration.test.ts > execution reservation on real PostgreSQL > review recovery accepts a null-base GitHub snapshot on real PostgreSQL
+REVIEW_NULL_BASE_CLAIM claimed
+
+ ✓ test/integration/recovery-positive.integration.test.ts (4 tests) 519ms
+stdout | test/integration/recovery-review-repeat-catch.integration.test.ts > execution reservation on real PostgreSQL > review recovery does not rewrite identical claim failure
+REVIEW_REPEAT_CLAIM_FAILURE {"before":{"version":1,"stop_evidence":{"admissionRecovery":"generation_mismatch","admissionRecoveryError":"execution claim requires the current active lease generation for this repository"}},"after":{"version":1,"stop_evidence":{"admissionRecovery":"generation_mismatch","admissionRecoveryError":"execution claim requires the current active lease generation for this repository"}}}
+
+stdout | test/integration/recovery-review-clear.integration.test.ts > execution reservation on real PostgreSQL > review recovery clears its stale error after a successful claim
+REVIEW_SUCCESS_EVIDENCE {"stop_evidence":{"marker":"keep-proof","status":"proven"}}
+
+ ✓ test/integration/recovery-review-repeat-catch.integration.test.ts (1 test) 528ms
+ ✓ test/integration/recovery-review-clear.integration.test.ts (1 test) 512ms
+ ↓ test/integration/bridge-pause-resume.real.integration.test.ts (1 test | 1 skipped)
+stdout | test/integration/recovery-review-idempotent.integration.test.ts > execution reservation on real PostgreSQL > review recovery repeated identical mismatch is idempotent
+REVIEW_REPEATED_MISMATCH {"before":{"version":1,"stop_evidence":{"admissionRecovery":"snapshot_mismatch"}},"after":{"version":1,"stop_evidence":{"admissionRecovery":"snapshot_mismatch"}}}
+
+ ✓ test/integration/recovery-review-idempotent.integration.test.ts (1 test) 414ms
+
+ Test Files  16 passed | 1 skipped (17)
+      Tests  86 passed | 1 skipped (87)
+   Start at  13:32:03
+   Duration  10.59s (transform 751ms, setup 0ms, collect 14.24s, tests 12.04s, environment 3ms, prepare 1.28s)
+
+
+```
+
+判定：`pnpm check` 退出码 0；全量集成退出码 0。dispatcher 集成从 85 增加到 86
+（新增 6 条，其中 1 条在旧代码即绿），其余套件无回退。
+
+## 4. 真实 PG + Bridge 现场
+
+### 4.1 启动隔离栈
+
+```bash
+$ M5B_MATRIX_ROOT=/root/src/rejected-lease-f2ccd7bff18e \
+  M5B_MATRIX_UPSTREAM_BUILD=/root/src/upstream/pause-start-build1 \
+  bash scripts/m5b/matrix/stack.sh up
+```
+
+```text
+  stop m5bmatrix-provider.service
+  stop m5bmatrix-supervisor.service
+  stop m5bmatrix-dispatcher.service
+  stop m5bmatrix-api.service
+  memory.max=8589934592
+  memory.high=6442450944
+host_mem_available_kb=14402228
+== starting the isolated PostgreSQL inside the slice
+== starting the loopback test provider
+Running as unit: m5bmatrix-provider.service; invocation ID: f942bc83c663463f9c4347e99623a0f7
+== staging the runtime profile m5b (webserver port 3404) into a matrix-owned harness home
+profile=/tmp/m5bmatrix/dsh-home/profiles/m5b -> /root/src/upstream/pause-start-build1
+Running as unit: m5bmatrix-supervisor.service; invocation ID: 2dc89c439b1c4aa9a7605e8b9c5cc5b5
+$ runuser -u m5bmatrix -- /bin/sh -c echo '+memory +pids' > '/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/cgroup.subtree_control' &&      mkdir -p '/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances' &&      echo '+memory +pids' > '/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/cgroup.subtree_control'
+supervisor_cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service owner=m5bmatrix:m5bmatrix
+managed_cgroup_root=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances controllers=memory pids
+Running as unit: m5bmatrix-api.service; invocation ID: 260c0d04444f4499a30df2edac6e8d24
+instance row:
+online|online|2745244|3404|3403|m5b|listening
+$ sha256sum apps/dispatcher/dist/main.js
+de575bfb533bf100fb080562fa09d1cff0dfa5fac91b5cdb14d3d37655effc42  apps/dispatcher/dist/main.js
+Running as unit: m5bmatrix-dispatcher.service; invocation ID: 5af48ad87e894c2e985097957b8c5774
+== stack is up
+  memory.max=8589934592
+  memory.high=6442450944
+host_mem_available_kb=13957716
+  m5bmatrix-provider.service               active pid=2745101 cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-provider.service
+  m5bmatrix-supervisor.service             active pid=2745163 cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service
+  m5bmatrix-dispatcher.service             active pid=2745451 cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-dispatcher.service
+  m5bmatrix-api.service                    active pid=2745196 cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-api.service
+```
+
+### 4.2 真实未接纳回执：租约当场归还
+
+`scripts/m5b/local-provider.mjs` 增加一个只影响隔离 fixture 的 route 文件开关；
+写入 `ignore` 后，真实 runtime 的 `orchestrator_route` 记录 `decision.ignored`。
+
+```bash
+$ node scripts/m5b/rejected-lease-live.mjs ignore
+```
+
+```json
+{
+  "phase": "ignore",
+  "routeFile": "/tmp/m5bmatrix/provider-route.txt",
+  "conversationId": "4e796646-1733-48e1-81a7-707614767fdd",
+  "taskId": "5dabd5f9-cf4d-496d-ac87-7c5cd30fcaf4",
+  "messageId": "message-18fa61ff-8ff0-42ff-9a19-bf13fd705766",
+  "triggerId": "workspace:14bb357e-2a27-4710-a12c-77e5fe70a3db",
+  "messageStatus": 202,
+  "task": {
+    "id": "5dabd5f9-cf4d-496d-ac87-7c5cd30fcaf4",
+    "conversationId": "4e796646-1733-48e1-81a7-707614767fdd",
+    "state": "not_accepted",
+    "upstreamTicketId": null,
+    "runtimeLeaseId": null,
+    "version": 1,
+    "stopEvidence": {
+      "leaseSettlement": {
+        "kind": "admission_ignored",
+        "taskId": "5dabd5f9-cf4d-496d-ac87-7c5cd30fcaf4",
+        "decisionId": "43fa304e1b33ab4a959f417932d6f088",
+        "messageIds": [
+          "14bb357e-2a27-4710-a12c-77e5fe70a3db"
+        ],
+        "noRuntimeTicket": true
+      }
+    }
+  },
+  "lease": {
+    "id": "3f181de8-235a-4141-b520-53c98b25fd04",
+    "holderId": "task:5dabd5f9-cf4d-496d-ac87-7c5cd30fcaf4",
+    "state": "released",
+    "fencingToken": "1",
+    "recoveryState": "none",
+    "recoveryReason": null,
+    "waitingFor": null,
+    "stopProof": {
+      "kind": "admission_ignored",
+      "taskId": "5dabd5f9-cf4d-496d-ac87-7c5cd30fcaf4",
+      "decisionId": "43fa304e1b33ab4a959f417932d6f088",
+      "messageIds": [
+        "14bb357e-2a27-4710-a12c-77e5fe70a3db"
+      ],
+      "noRuntimeTicket": true
+    },
+    "acquiredAt": "2026-11-08T05:20:44.437Z",
+    "releasedAt": "2026-11-08T05:20:47.868Z"
+  },
+  "leaseEvents": [
+    {
+      "type": "acquired",
+      "fencingToken": "1",
+      "detail": {
+        "reason": "message reply",
+        "holderId": "task:5dabd5f9-cf4d-496d-ac87-7c5cd30fcaf4"
+      },
+      "createdAt": "2026-11-08T05:20:44.437Z"
+    },
+    {
+      "type": "released",
+      "fencingToken": "1",
+      "detail": {
+        "proof": {
+          "kind": "admission_ignored",
+          "taskId": "5dabd5f9-cf4d-496d-ac87-7c5cd30fcaf4",
+          "decisionId": "43fa304e1b33ab4a959f417932d6f088",
+          "messageIds": [
+            "14bb357e-2a27-4710-a12c-77e5fe70a3db"
+          ],
+          "noRuntimeTicket": true
+        },
+        "reason": "the runtime ignored this admission; no Ticket or Assignment was created"
+      },
+      "createdAt": "2026-11-08T05:20:47.868Z"
+    }
+  ],
+  "deliveries": [
+    {
+      "state": "delivered",
+      "runtimeLeaseId": "3f181de8-235a-4141-b520-53c98b25fd04",
+      "fencingToken": "1",
+      "upstreamTriggerId": "workspace:14bb357e-2a27-4710-a12c-77e5fe70a3db"
+    }
+  ],
+  "bridge": {
+    "decisionIgnored": [
+      {
+        "seq": 1,
+        "id": "decision-ignored:43fa304e1b33ab4a959f417932d6f088:4e796646-1733-48e1-81a7-707614767fdd"
+      }
+    ],
+    "ticketLinked": 0
+  }
+}
+```
+
+判定：Bridge 事件只有一条 `decision.ignored`、`ticket.linked = 0`；任务
+`not_accepted`、`runtime_lease_id = null`；租约 `released`，`stop_proof.kind =
+admission_ignored`，`runtime_lease_events` 记录 `released` 与 ignored decision id。
+修复前同样的现场是租约保持 `active` 直到 TTL。
+
+### 4.3 后续同仓任务实际启动
+
+切回 accept 后创建第二个任务；它是同一仓库、同一真实 Bridge 的下一次投递。
+
+```bash
+$ node scripts/m5b/rejected-lease-live.mjs accept
+```
+
+```json
+{
+  "phase": "accept",
+  "routeFile": "/tmp/m5bmatrix/provider-route.txt",
+  "conversationId": "c5fdb769-0197-4aa0-bab4-5227b586f692",
+  "taskId": "09faeabd-b91c-4cd1-9a0f-a9edaf51e748",
+  "messageId": "message-b23a8dd8-9410-49d3-80f6-19dcc6231a0c",
+  "triggerId": "workspace:437d824d-9ba7-4559-b412-becfb3f3ba52",
+  "messageStatus": 202,
+  "task": {
+    "id": "09faeabd-b91c-4cd1-9a0f-a9edaf51e748",
+    "conversationId": "c5fdb769-0197-4aa0-bab4-5227b586f692",
+    "state": "queued",
+    "upstreamTicketId": "57b86d6101964615f90abb0e0492d488",
+    "runtimeLeaseId": "8fded517-e8e6-4b5b-a4ae-ad1fe59ce9eb",
+    "version": 2,
+    "stopEvidence": {}
+  },
+  "lease": {
+    "id": "8fded517-e8e6-4b5b-a4ae-ad1fe59ce9eb",
+    "holderId": "task:09faeabd-b91c-4cd1-9a0f-a9edaf51e748",
+    "state": "active",
+    "fencingToken": "2",
+    "recoveryState": "none",
+    "recoveryReason": null,
+    "waitingFor": null,
+    "stopProof": {},
+    "acquiredAt": "2026-11-08T05:21:01.866Z",
+    "releasedAt": null
+  },
+  "leaseEvents": [
+    {
+      "type": "acquired",
+      "fencingToken": "2",
+      "detail": {
+        "reason": "message reply",
+        "holderId": "task:09faeabd-b91c-4cd1-9a0f-a9edaf51e748"
+      },
+      "createdAt": "2026-11-08T05:21:01.866Z"
+    }
+  ],
+  "deliveries": [
+    {
+      "state": "delivered",
+      "runtimeLeaseId": "8fded517-e8e6-4b5b-a4ae-ad1fe59ce9eb",
+      "fencingToken": "2",
+      "upstreamTriggerId": "workspace:437d824d-9ba7-4559-b412-becfb3f3ba52"
+    }
+  ],
+  "ticket": {
+    "ticketId": "57b86d6101964615f90abb0e0492d488",
+    "state": "queued",
+    "assignmentId": "cae5bd88d5dbf648c9aef5785cfd0a5d",
+    "report": null,
+    "ended": null
+  },
+  "bridgeEventIds": [
+    "2:ticket-linked:57b86d6101964615f90abb0e0492d488"
+  ],
+  "bridgeEventIdCount": 1,
+  "provider": {
+    "route": 1,
+    "report": 0,
+    "routeResponses": [
+      {
+        "at": "2026-11-08T05:21:04.213Z",
+        "response": {
+          "id": "chatcmpl-local-3",
+          "tools": [
+            "bash",
+            "job_kill",
+            "job_list",
+            "job_output",
+            "orchestrator_eval",
+            "orchestrator_eval_decide",
+            "orchestrator_eval_read",
+            "orchestrator_policy_sync",
+            "orchestrator_prompts_save",
+            "orchestrator_read",
+            "orchestrator_reply",
+            "orchestrator_route",
+            "orchestrator_settings_save",
+            "orchestrator_thread_unsubscribe",
+            "orchestrator_ticket_note",
+            "orchestrator_ticket_request_status",
+            "orchestrator_ticket_retry",
+            "orchestrator_trigger_requeue",
+            "read",
+            "read_image",
+            "skill"
+          ],
+          "sawRouteResult": false,
+          "choice": {
+            "finish": "tool_calls",
+            "tool": "orchestrator_route",
+            "arguments": "{\"decisions\":[{\"kind\":\"accept\",\"trigger_id\":\"workspace:437d824d-9ba7-4559-b412-becfb3f3ba52\",\"title\":\"Fix README probe line\",\"worktree_name\":\"fix-readme-probe\",\"acknowledgement\":\"On it: updating the README probe line.\"}]}"
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
+判定：新任务取得 `fencingToken = 2` 的新代次，`upstream_ticket_id` 已绑定，
+Bridge ticket 有 `assignmentId`、`admission.leaseId` 与新代次一致，`provider.route = 1`；
+随后该任务进入 `running` 且 worker 真正提交了 `progress` 报告（见 4.5 的 ticket 快照）。
+修复前这一步会得到 `lease_wait/held`。
+
+### 4.4 游标回放：迟到/重复回执
+
+把 `runtime_cursors` 回退到未接纳回执之前，让 dispatcher 重新消费同一事件。
+
+```bash
+$ node scripts/m5b/rejected-lease-live.mjs replay
+```
+
+```json
+{
+  "phase": "replay",
+  "replayed": {
+    "seq": 1,
+    "id": "decision-ignored:43fa304e1b33ab4a959f417932d6f088:4e796646-1733-48e1-81a7-707614767fdd"
+  },
+  "cursorBefore": "3",
+  "before": {
+    "ignored": {
+      "task": {
+        "id": "5dabd5f9-cf4d-496d-ac87-7c5cd30fcaf4",
+        "conversationId": "4e796646-1733-48e1-81a7-707614767fdd",
+        "state": "not_accepted",
+        "upstreamTicketId": null,
+        "runtimeLeaseId": null,
+        "version": 1,
+        "stopEvidence": {
+          "leaseSettlement": {
+            "kind": "admission_ignored",
+            "taskId": "5dabd5f9-cf4d-496d-ac87-7c5cd30fcaf4",
+            "decisionId": "43fa304e1b33ab4a959f417932d6f088",
+            "messageIds": [
+              "14bb357e-2a27-4710-a12c-77e5fe70a3db"
+            ],
+            "noRuntimeTicket": true
+          }
+        }
+      },
+      "lease": {
+        "id": "3f181de8-235a-4141-b520-53c98b25fd04",
+        "holderId": "task:5dabd5f9-cf4d-496d-ac87-7c5cd30fcaf4",
+        "state": "released",
+        "fencingToken": "1",
+        "recoveryState": "none",
+        "recoveryReason": null,
+        "waitingFor": null,
+        "stopProof": {
+          "kind": "admission_ignored",
+          "taskId": "5dabd5f9-cf4d-496d-ac87-7c5cd30fcaf4",
+          "decisionId": "43fa304e1b33ab4a959f417932d6f088",
+          "messageIds": [
+            "14bb357e-2a27-4710-a12c-77e5fe70a3db"
+          ],
+          "noRuntimeTicket": true
+        },
+        "acquiredAt": "2026-11-08T05:20:44.437Z",
+        "releasedAt": "2026-11-08T05:20:47.868Z"
+      }
+    },
+    "followUp": {
+      "task": {
+        "id": "09faeabd-b91c-4cd1-9a0f-a9edaf51e748",
+        "conversationId": "c5fdb769-0197-4aa0-bab4-5227b586f692",
+        "state": "running",
+        "upstreamTicketId": "57b86d6101964615f90abb0e0492d488",
+        "runtimeLeaseId": "8fded517-e8e6-4b5b-a4ae-ad1fe59ce9eb",
+        "version": 3,
+        "stopEvidence": {}
+      },
+      "lease": {
+        "id": "8fded517-e8e6-4b5b-a4ae-ad1fe59ce9eb",
+        "holderId": "task:09faeabd-b91c-4cd1-9a0f-a9edaf51e748",
+        "state": "active",
+        "fencingToken": "2",
+        "recoveryState": "none",
+        "recoveryReason": null,
+        "waitingFor": null,
+        "stopProof": {},
+        "acquiredAt": "2026-11-08T05:21:01.866Z",
+        "releasedAt": null
+      }
+    },
+    "releaseEvents": [
+      {
+        "count": 1
+      }
+    ]
+  },
+  "after": {
+    "cursor": 3,
+    "ignored": {
+      "task": {
+        "id": "5dabd5f9-cf4d-496d-ac87-7c5cd30fcaf4",
+        "conversationId": "4e796646-1733-48e1-81a7-707614767fdd",
+        "state": "not_accepted",
+        "upstreamTicketId": null,
+        "runtimeLeaseId": null,
+        "version": 1,
+        "stopEvidence": {
+          "leaseSettlement": {
+            "kind": "admission_ignored",
+            "taskId": "5dabd5f9-cf4d-496d-ac87-7c5cd30fcaf4",
+            "decisionId": "43fa304e1b33ab4a959f417932d6f088",
+            "messageIds": [
+              "14bb357e-2a27-4710-a12c-77e5fe70a3db"
+            ],
+            "noRuntimeTicket": true
+          }
+        }
+      },
+      "lease": {
+        "id": "3f181de8-235a-4141-b520-53c98b25fd04",
+        "holderId": "task:5dabd5f9-cf4d-496d-ac87-7c5cd30fcaf4",
+        "state": "released",
+        "fencingToken": "1",
+        "recoveryState": "none",
+        "recoveryReason": null,
+        "waitingFor": null,
+        "stopProof": {
+          "kind": "admission_ignored",
+          "taskId": "5dabd5f9-cf4d-496d-ac87-7c5cd30fcaf4",
+          "decisionId": "43fa304e1b33ab4a959f417932d6f088",
+          "messageIds": [
+            "14bb357e-2a27-4710-a12c-77e5fe70a3db"
+          ],
+          "noRuntimeTicket": true
+        },
+        "acquiredAt": "2026-11-08T05:20:44.437Z",
+        "releasedAt": "2026-11-08T05:20:47.868Z"
+      }
+    },
+    "followUp": {
+      "task": {
+        "id": "09faeabd-b91c-4cd1-9a0f-a9edaf51e748",
+        "conversationId": "c5fdb769-0197-4aa0-bab4-5227b586f692",
+        "state": "running",
+        "upstreamTicketId": "57b86d6101964615f90abb0e0492d488",
+        "runtimeLeaseId": "8fded517-e8e6-4b5b-a4ae-ad1fe59ce9eb",
+        "version": 3,
+        "stopEvidence": {}
+      },
+      "lease": {
+        "id": "8fded517-e8e6-4b5b-a4ae-ad1fe59ce9eb",
+        "holderId": "task:09faeabd-b91c-4cd1-9a0f-a9edaf51e748",
+        "state": "active",
+        "fencingToken": "2",
+        "recoveryState": "none",
+        "recoveryReason": null,
+        "waitingFor": null,
+        "stopProof": {},
+        "acquiredAt": "2026-11-08T05:21:01.866Z",
+        "releasedAt": null
+      }
+    },
+    "releaseEvents": [
+      {
+        "count": 1
+      }
+    ],
+    "dedupe": [
+      {
+        "count": 1
+      }
+    ]
+  }
+}
+```
+
+判定：回放前后两个任务、两条租约、`released` 事件数完全一致；`events` 表按
+`source_event_id` 去重计数为 1，没有第二次释放或第二次建单。
+
+### 4.5 两个调度者并发
+
+```bash
+$ systemd-run --unit=m5bmatrix-dispatcher2.service --slice=m5bmatrix.slice \
+    --uid=m5bmatrix --gid=m5bmatrix --property=MemoryMax=512M --property=MemorySwapMax=0 \
+    --setenv=NODE_ENV=test --setenv=LOG_LEVEL=info \
+    --setenv=DATABASE_URL=postgres://moyu@127.0.0.1:55433/m5b_matrix \
+    --setenv=RUNTIME_CREDENTIALS_DIR=/tmp/m5bmatrix/credentials \
+    --setenv=RECONCILE_ON_START=false \
+    --working-directory=/root/src/rejected-lease-f2ccd7bff18e \
+    /usr/bin/node apps/dispatcher/dist/main.js
+```
+
+在两个调度者都在线时创建 5 个任务（2 个 accept 请求、3 个 ignore；其中一个 accept 请求在租约
+被占时先 `pending_admission`，释放后由真实回执结清），按 journal 与数据库计数：
+
+```text
+m5bmatrix-dispatcher
+  delivered=1
+  lease_wait=0
+m5bmatrix-dispatcher2
+  delivered=4
+  lease_wait=9
+```
+
+```text
+## git
+1001c2544c68b8f4d906e330566f6fdb6ff0c795
+ M apps/dispatcher/src/leases.ts
+ M apps/dispatcher/src/operations.ts
+ M apps/dispatcher/src/sync.ts
+ M apps/dispatcher/test/integration/operations.integration.test.ts
+ M scripts/m5b/local-provider.mjs
+ M scripts/m5b/matrix/stack.sh
+?? scripts/m5b/rejected-lease-live.mjs
+## dispatcher artifact
+de575bfb533bf100fb080562fa09d1cff0dfa5fac91b5cdb14d3d37655effc42  apps/dispatcher/dist/main.js
+## runtime artifact
+fbe3684edde59f7c41c88e2b4dbd4aebb7c19a66f87b27ac099a540e3edfd0cd  /root/src/upstream/pause-start-build1/lib/index.js
+## tasks
+                  id                  |    state     |        upstream_ticket_id        | runtime_lease_id 
+--------------------------------------+--------------+----------------------------------+------------------
+ 5dabd5f9-cf4d-496d-ac87-7c5cd30fcaf4 | not_accepted |                                  | 
+ 09faeabd-b91c-4cd1-9a0f-a9edaf51e748 | stopped      | 57b86d6101964615f90abb0e0492d488 | 
+ 1e7ec5cc-7029-475e-beb9-b8201ee15639 | stopped      | 4796209112eed66fbc4c8c180937a751 | 
+ cda1f86b-955c-4c0e-91b4-bd3587c72e55 | not_accepted |                                  | 
+ a667bb90-0c60-4698-b44d-7732094bdc7c | not_accepted |                                  | 
+ f69c771b-c11c-451b-b8d8-994e8967bd03 | not_accepted |                                  | 
+ 50872a64-8805-4e69-b0e6-944c4fe0c60c | not_accepted |                                  | 
+(7 rows)
+
+## leases
+                  id                  |                 holder_id                 |  state   | fencing_token 
+--------------------------------------+-------------------------------------------+----------+---------------
+ 3f181de8-235a-4141-b520-53c98b25fd04 | task:5dabd5f9-cf4d-496d-ac87-7c5cd30fcaf4 | released |             1
+ 8fded517-e8e6-4b5b-a4ae-ad1fe59ce9eb | task:09faeabd-b91c-4cd1-9a0f-a9edaf51e748 | released |             2
+ 889efb42-bf1a-4f23-9ffe-3024ccccbb01 | task:1e7ec5cc-7029-475e-beb9-b8201ee15639 | released |             3
+ 859868e5-53fb-4b9f-812d-68e96bc25bfb | task:cda1f86b-955c-4c0e-91b4-bd3587c72e55 | released |             4
+ d58306ec-df5b-427d-96b2-0a48d9a5c372 | task:a667bb90-0c60-4698-b44d-7732094bdc7c | released |             5
+ a3dd2ba7-3b3c-4a67-bbca-735f398e480c | task:f69c771b-c11c-451b-b8d8-994e8967bd03 | released |             6
+ c06e2a8e-b877-4c1c-9b92-7c1a6830d060 | task:50872a64-8805-4e69-b0e6-944c4fe0c60c | released |             7
+(7 rows)
+
+## release events
+               lease_id               |   type   |    proof_kind     
+--------------------------------------+----------+-------------------
+ 3f181de8-235a-4141-b520-53c98b25fd04 | released | admission_ignored
+ 8fded517-e8e6-4b5b-a4ae-ad1fe59ce9eb | released | 
+ 889efb42-bf1a-4f23-9ffe-3024ccccbb01 | released | 
+ 859868e5-53fb-4b9f-812d-68e96bc25bfb | released | admission_ignored
+ d58306ec-df5b-427d-96b2-0a48d9a5c372 | released | admission_ignored
+ a3dd2ba7-3b3c-4a67-bbca-735f398e480c | released | admission_ignored
+ c06e2a8e-b877-4c1c-9b92-7c1a6830d060 | released | admission_ignored
+(7 rows)
+
+## follow-up ticket
+{
+    "ticketId": "57b86d6101964615f90abb0e0492d488",
+    "title": "Fix README probe line",
+    "state": "stopped",
+    "question": null,
+    "attentionId": null,
+    "model": {
+        "provider": "local-test",
+        "model": "local-test"
+    },
+    "base": {
+        "repository": "Bouyer12/m5a-beta-adf10ad9",
+        "branch": "main",
+        "commit": "4f4639ceb87693cc00e3c87e8cfa168074141ce0"
+    },
+    "assignmentId": "cae5bd88d5dbf648c9aef5785cfd0a5d",
+    "admission": {
+        "leaseId": "8fded517-e8e6-4b5b-a4ae-ad1fe59ce9eb",
+        "fencingToken": "2"
+    },
+    "report": {
+        "state": "waiting",
+        "summary": "Deterministic local provider response.",
+        "at": "2026-11-08T05:23:30.107Z"
+    },
+    "mode": "execute",
+    "planRevision": null,
+    "paused": {
+        "at": "2026-11-08T05:24:06.516Z",
+        "by": "human",
+        "operationId": "db57c061-1dad-4706-a9fc-be011e0c6e54",
+        "stoppedAt": "2026-11-08T05:24:06.538Z",
+        "evidence": {
+            "ticketId": "57b86d6101964615f90abb0e0492d488",
+            "assignmentId": "cae5bd88d5dbf648c9aef5785cfd0a5d",
+            "operationId": "db57c061-1dad-4706-a9fc-be011e0c6e54",
+            "sessionId": "worker-57b86d6101964615f90abb0e0492d488",
+            "harnessPid": 2745244,
+            "cgroup": "/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-1794115173299",
+            "startedAt": "2026-11-08T05:24:06.518Z",
+            "stoppedAt": "2026-11-08T05:24:06.532Z",
+            "agentStatus": "idle",
+            "jobsBefore": [],
+            "jobsAfter": [],
+            "subagentsAfter": 0,
+            "processesBefore": [],
+            "processesAfter": [],
+            "launch": "none",
+            "cancelledTurn": false
+        }
+    },
+    "admissionRequired": false,
+    "execution": {
+        "name": "fix-readme-probe-57b86d610196",
+        "directory": "/tmp/m5bmatrix/worktrees/m5b/fix-readme-probe-57b86d610196",
+        "assignment": ""
+    },
+    "ended": null
+}
+## second accepted ticket
+{
+    "ticketId": "4796209112eed66fbc4c8c180937a751",
+    "title": "Fix README probe line",
+    "state": "stopped",
+    "question": null,
+    "attentionId": null,
+    "model": {
+        "provider": "local-test",
+        "model": "local-test"
+    },
+    "base": {
+        "repository": "Bouyer12/m5a-beta-adf10ad9",
+        "branch": "main",
+        "commit": "4f4639ceb87693cc00e3c87e8cfa168074141ce0"
+    },
+    "assignmentId": "5ad3be3cc846a0dc38683c452a5b8a90",
+    "admission": {
+        "leaseId": "889efb42-bf1a-4f23-9ffe-3024ccccbb01",
+        "fencingToken": "3"
+    },
+    "report": {
+        "state": "waiting",
+        "summary": "Deterministic local provider response.",
+        "at": "2026-11-08T05:25:12.406Z"
+    },
+    "mode": "execute",
+    "planRevision": null,
+    "paused": {
+        "at": "2026-11-08T05:26:12.738Z",
+        "by": "human",
+        "operationId": "a45ac696-b8dd-485c-bd67-0ddab882bb3e",
+        "stoppedAt": "2026-11-08T05:26:12.760Z",
+        "evidence": {
+            "ticketId": "4796209112eed66fbc4c8c180937a751",
+            "assignmentId": "5ad3be3cc846a0dc38683c452a5b8a90",
+            "operationId": "a45ac696-b8dd-485c-bd67-0ddab882bb3e",
+            "sessionId": "worker-4796209112eed66fbc4c8c180937a751",
+            "harnessPid": 2745244,
+            "cgroup": "/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-1794115173299",
+            "startedAt": "2026-11-08T05:26:12.741Z",
+            "stoppedAt": "2026-11-08T05:26:12.753Z",
+            "agentStatus": "idle",
+            "jobsBefore": [],
+            "jobsAfter": [],
+            "subagentsAfter": 0,
+            "processesBefore": [],
+            "processesAfter": [],
+            "launch": "none",
+            "cancelledTurn": false
+        }
+    },
+    "admissionRequired": false,
+    "execution": {
+        "name": "fix-readme-probe-4796209112ee",
+        "directory": "/tmp/m5bmatrix/worktrees/m5b/fix-readme-probe-4796209112ee",
+        "assignment": ""
+    },
+    "ended": null
+}
+## dispatcher counts
+m5bmatrix-dispatcher
+  delivered=1
+  lease_wait=0
+m5bmatrix-dispatcher2
+  delivered=4
+  lease_wait=9
+
+```
+
+判定：两个调度者合计 `delivered = 5`，与 5 次真实投递一一对应；另一个调度者记录 9 次
+`delivery.lease_wait`，没有第二次实际投递。数据库里每个 message 只有 1 条 delivery、
+每个任务最多 1 条租约；`fencing_token` 从 1 单调到 7。两个 accept 任务各有真实
+`assignmentId` 与 worker 报告；pause 后 `stoppedAt` 落地且租约归还。
+
+## 5. 旧代次与保守占位
+
+- 旧代次：§3.2 的第 2 条（迟到回执）与第 3 条（并发回执）在真实 PostgreSQL 上通过；
+  实现按 `deliveries.runtime_lease_id` 与任务当前 `runtime_lease_id` 比对，不匹配就
+  不关闭、不释放。
+- 保守占位：§3.2 的第 4 条证明任务已有 runtime Ticket 时租约保持 `active`，并写
+  `recovery_state = blocked`、`waiting_for = execution_stop_proof`、可读原因；
+  maintenance 也不释放该行（第 6 条）。
+- 预留：结清时同一事务把 `reserved` 的 `execution_reservations` 置为 `abandoned`；
+  已 `claimed` 的预留视为可能已执行，走保守分支。
+
+## 6. 边界与未验证项
+
+1. 现场没有构造“真实回执在任务已切到新代次之后才到达”的完整序列：dispatcher 的
+   `runtime_cursors` 按 seq 串行消费，正常不会出现该顺序；该竞态用真实 PostgreSQL +
+   多事务回归覆盖（§3.2 第 2、3 条），不是现场观测。
+2. 现场没有构造“任务已有 runtime Ticket 但未接纳”的真实样本；保守占位用真实
+   PostgreSQL 回归覆盖（§3.2 第 4、6 条）。
+3. 本次未改 UI，无 before/after 截图；任务状态投影沿用既有 `not_accepted`。
+4. 未改 schema，无迁移。回滚为 revert 本提交；已释放的租约行保留审计记录，不需要回写。
+5. 生产迁移、正式发布、真实设备 Passkey、3082 bootstrap 变更/重启均未涉及；隔离栈
+   已 `stack.sh down`，`55433/3851/4491/4510/3403/3404` 均无监听。
