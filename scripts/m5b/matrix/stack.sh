@@ -201,6 +201,20 @@ start_provider() {
     || fail "local provider did not answer"
 }
 
+# One profile per repository instance: the supervisor's repository_instances has a
+# unique constraint on profile, so a second repository cannot reuse the first one's
+# profile. Extras take <profile>-b, <profile>-c, ... in the order given.
+matrix_extra_profiles() {
+  local extra=${M5B_MATRIX_EXTRA_REPOS:-} pair index=0 letters=abcdefgh
+  [[ -z $extra ]] && return 0
+  local IFS=','
+  for pair in $extra; do
+    echo "${M5B_MATRIX_PROFILE}-${letters:$index:1}"
+    index=$((index + 1))
+  done
+  unset IFS
+}
+
 write_instances_config() {
   # M5B_MATRIX_EXTRA_REPOS ("owner/name:bridgePort" pairs, comma separated) lets a
   # matrix item start with several repositories. They must be configured before the
@@ -209,14 +223,16 @@ write_instances_config() {
   # unverified and admission waiting on `runtime`.
   local extra=${M5B_MATRIX_EXTRA_REPOS:-}
   local entries="    { \"repository\": \"$M5B_MATRIX_REPOSITORY\", \"profile\": \"$M5B_MATRIX_PROFILE\", \"dshPort\": 3404, \"bridgePort\": 3403 }"
-  local pair repo bridge
+  local pair repo bridge index=0 profile
   if [[ -n $extra ]]; then
     local IFS=','
     for pair in $extra; do
       repo=${pair%%:*}
       bridge=${pair##*:}
+      profile=$(matrix_extra_profiles | sed -n "$((index + 1))p")
+      index=$((index + 1))
       entries+=",$(printf '\n    { \"repository\": \"%s\", \"profile\": \"%s\", \"dshPort\": %s, \"bridgePort\": %s }' \
-        "$repo" "$M5B_MATRIX_PROFILE" "$((bridge + 1))" "$bridge")"
+        "$repo" "$profile" "$((bridge + 1))" "$bridge")"
     done
     unset IFS
   fi
@@ -234,8 +250,9 @@ JSON
 }
 
 stage_dsh_home() {
-  note "staging the runtime profile into a matrix-owned harness home"
-  local dst="$M5B_MATRIX_DSH_HOME/profiles/$M5B_MATRIX_PROFILE"
+  local staged=${1:-$M5B_MATRIX_PROFILE}
+  note "staging the runtime profile $staged into a matrix-owned harness home"
+  local dst="$M5B_MATRIX_DSH_HOME/profiles/$staged"
   mkdir -p "$dst/node_modules" "$M5B_MATRIX_DSH_HOME/state" "$M5B_MATRIX_DSH_HOME/sessions"
   for file in package.json cordis.patch.yml cordis.yml; do
     [[ -f $M5B_MATRIX_PROFILE_SOURCE/$file ]] && cp "$M5B_MATRIX_PROFILE_SOURCE/$file" "$dst/$file"
@@ -243,7 +260,7 @@ stage_dsh_home() {
   ln -sfn "$M5B_MATRIX_UPSTREAM_BUILD" "$dst/node_modules/dsh-superagent"
   # The staged profile must point its state at this harness home; the supervisor
   # verifies that exact path before it reports the instance online.
-  sed -i "s#^    stateDir: .*#    stateDir: $M5B_MATRIX_DSH_HOME/state/$M5B_MATRIX_PROFILE#" \
+  sed -i "s#^    stateDir: .*#    stateDir: $M5B_MATRIX_DSH_HOME/state/$staged#" \
     "$dst/cordis.patch.yml"
   grep -n "stateDir:" "$dst/cordis.patch.yml"
   # The isolated matrix runs on the loopback provider only. This fixture is
@@ -309,7 +326,7 @@ start_supervisor() {
   m5b_run systemd-run --unit="${SUP_UNIT%.service}" --slice="$SLICE" \
     --uid="$M5B_MATRIX_USER" --gid="$M5B_MATRIX_GROUP" \
     --property=Delegate=yes --property=DelegateSubgroup=payload \
-    --property=MemoryMax=512M --property=MemorySwapMax=0 \
+    --property=MemoryMax="${M5B_MATRIX_SUPERVISOR_MAX:-512M}" --property=MemorySwapMax=0 \
     --setenv=MOYU_CGROUP_ROOT="$M5B_MATRIX_SUPERVISOR_CGROUP/instances" \
     --setenv=NODE_ENV=production \
     --setenv=LOG_LEVEL=info \
@@ -514,6 +531,10 @@ case ${1:-} in
     start_provider
     write_instances_config
     stage_dsh_home
+    local extra_profile
+    for extra_profile in $(matrix_extra_profiles); do
+      stage_dsh_home "$extra_profile"
+    done
     archive_runtime_state
     start_supervisor
     start_api

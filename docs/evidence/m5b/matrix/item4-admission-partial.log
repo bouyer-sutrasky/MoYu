@@ -97,3 +97,49 @@ supervisor 的原始错误（`supervisor.fault`）：
 - 下一步明确：给 `m5a-delta-adf10ad9` / `m5a-epsilon-adf10ad9` 各 stage 一份 profile（`m5b-b` / `m5b-c`），
   instances.json 用各自的 profile，再按同一脚本重跑。这是 harness 的改动，动的是 `scripts/m5b/matrix/`，不改上游。
 - 第 2 条（成员级 OOM）、第 3 条（有界恢复）仍未开始 —— 它们不依赖多仓库，可以在单仓库栈上直接做。
+
+## 追加（2026-11-08T10:11Z）：**成员级 OOM 拿到了**（第 2 条完成）
+
+三仓库同时来任务、每个仓库用独立 profile（`m5b` / `m5b-a` / `m5b-b`），实测到：
+
+```
+t=0s
+   beta     task=pending_admission  instance=online    reason=listening
+   delta    task=pending_admission  instance=starting  reason=starting
+   epsilon  task=pending_admission  instance=sleeping  reason=capacity_wait  waiting=capacity   ← C 排队
+t=10s
+   beta     task=queued             instance=sleeping  reason=sleeping
+   delta    task=pending_admission  instance=fault     reason=oom_killed
+   epsilon  task=pending_admission  instance=starting
+```
+
+内核原始行（`dmesg`/journal，两次）：
+
+```
+oom-kill:constraint=CONSTRAINT_MEMCG, oom_memcg=/m5bmatrix.slice/m5bmatrix-supervisor.service,
+  task_memcg=/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-1794103827882, task=node, pid=2571401
+Memory cgroup out of memory: Killed process 2571401 (node) total-vm:12054748kB, anon-rss:279524kB
+oom-kill:constraint=CONSTRAINT_MEMCG, oom_memcg=/m5bmatrix.slice/m5bmatrix-supervisor.service,
+  task_memcg=/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-a-1794103856722, task=node, pid=2571837
+Memory cgroup out of memory: Killed process 2571837 (node) total-vm:1303972kB, anon-rss:207360kB
+```
+
+`memory.events`：`max 103 / oom 4 / oom_kill 2 / oom_group_kill 0`
+（切片根本没有被压满：`current=407 MB`、`peak=691 MB`、`max=8 GiB`）
+
+**这是成员级、不是切片级**：被杀的是 supervisor 自己子树下的**两个实例运行时**
+（`instances/m5b-…`、`instances/m5b-a-…`），触发条件是被杀者的祖先 cgroup
+`m5bmatrix-supervisor.service` 的 `MemoryMax=512M`。同一时刻其他成员全部存活：
+
+```
+api=active(50 MB) pg=active(43 MB) provider=active(12 MB) dispatcher=active(26 MB) supervisor=active(250 MB)
+```
+
+supervisor 侧也记了对应事件：`{"event":"supervisor.fault","code":"oom_killed","detail":"The instance cgroup recorde…"}`。
+
+**第 2 条判定：通过。** 成员级 OOM 有内核原始行、有 `memory.events` 增量、点名了被杀单元与存活单元。
+
+## 由此得到的结构事实（对第 1、3 条很关键）
+矩阵 harness 把 supervisor 整个子树限在 **512M**，而两个仓库实例都挂在它下面，
+所以「两个实例同时跑」会先把 supervisor 子树压爆 —— 这解释了为什么 A/B 同时执行至今没出现。
+要让 A/B 真跑起来，需要把 supervisor 的 `MemoryMax` 提高（我已把它做成 `M5B_MATRIX_SUPERVISOR_MAX` 可覆盖）。
