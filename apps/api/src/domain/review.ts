@@ -162,7 +162,7 @@ export async function pullRequestState(
         '--repo',
         repository.fullName,
         '--json',
-        'number,url,state,merged,headRefOid,baseRefName,updatedAt',
+        'number,url,state,headRefOid,baseRefName,updatedAt,closedAt,mergedAt',
       ],
       { timeout: 15_000, maxBuffer: 256 * 1024 },
     );
@@ -170,13 +170,15 @@ export async function pullRequestState(
       number?: number;
       url?: string;
       state?: string;
-      merged?: boolean;
       headRefOid?: string;
       baseRefName?: string;
       updatedAt?: string;
+      mergedAt?: string | null;
     };
+    // `gh` reports MERGED for a merged PR; a closed-but-unmerged one stays
+    // CLOSED with no mergedAt. Both are shown as what GitHub says.
     const state =
-      parsed.merged === true || parsed.state === 'MERGED'
+      parsed.state === 'MERGED' || parsed.mergedAt
         ? 'merged'
         : parsed.state === 'CLOSED'
           ? 'closed'
