@@ -25,8 +25,8 @@ SLICE=$M5B_MATRIX_SLICE_PATH
 PG_URL=$M5B_MATRIX_PG_URL
 LIVE="node $M5B_MATRIX_ROOT/scripts/m5b/matrix/live.mjs"
 FILL_UNIT=m5bmatrix-stress-fill.service
-MEM_FILE="$RUN/worker-mem.txt"
-ALLOC_FILE="$RUN/provider-alloc.txt"
+MEM_FILE="$M5B_MATRIX_TMP/worker-mem.txt"
+ALLOC_FILE="$M5B_MATRIX_TMP/provider-alloc.txt"
 FILL_MB=${M5B_MATRIX_FILL_MB:-6500}
 
 cg_line() {

@@ -16,8 +16,8 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$HERE/lib.sh"
 
 RUN=$M5B_MATRIX_RUN
-REPORT_FILE="$RUN/worker-report.json"
-SLEEP_FILE="$RUN/worker-sleep.txt"
+REPORT_FILE="$M5B_MATRIX_TMP/worker-report.json"
+SLEEP_FILE="$M5B_MATRIX_TMP/worker-sleep.txt"
 INSTANCE_ROOT=$M5B_MATRIX_CGROUP_ROOT
 
 fail() {

@@ -15,8 +15,8 @@ source "$HERE/lib.sh"
 
 STATE=${1:-paused}
 RUN=$M5B_MATRIX_RUN
-REPORT_FILE="$RUN/worker-report.json"
-SUP_TOKEN=$(tr -d '\n' <"$RUN/supervisor-token")
+REPORT_FILE="$M5B_MATRIX_TMP/worker-report.json"
+SUP_TOKEN=$(m5b_protected_read supervisor-token)
 LIVE="node $M5B_MATRIX_ROOT/scripts/m5b/matrix/live.mjs"
 
 fail() {
@@ -66,19 +66,19 @@ echo
 case "$STATE" in
   paused)
     # Quiescent: the ticket is stopped, so the restart itself must not emit events.
-    echo 600000 >"$RUN/worker-delay.txt"
+    echo 600000 >"$M5B_MATRIX_TMP/worker-delay.txt"
     printf '%s\n' '{"state":"progress","summary":"Working on the lifecycle probe."}' >"$REPORT_FILE"
     ;;
   running)
     # Between steps: the worker's report is `waiting` while its assignment still
     # runs, so the ticket is `running` but the turn is not mid-command.
-    echo 0 >"$RUN/worker-delay.txt"
+    echo 0 >"$M5B_MATRIX_TMP/worker-delay.txt"
     printf '%s\n' '{"state":"progress","summary":"Lifecycle probe is running."}' >"$REPORT_FILE"
     ;;
   running-live)
     # Mid-turn: the model request stays in flight, so the host restart interrupts a
     # live turn (no child process) and the recovery path decides what happens.
-    echo 600000 >"$RUN/worker-delay.txt"
+    echo 600000 >"$M5B_MATRIX_TMP/worker-delay.txt"
     printf '%s\n' '{"state":"progress","summary":"Lifecycle probe is mid-turn."}' >"$REPORT_FILE"
     ;;
   waiting_input)
@@ -94,11 +94,11 @@ esac
 # The provider runs as the matrix identity, so it must be able to read the
 # fixtures this script writes.
 chown "$M5B_MATRIX_USER:$M5B_MATRIX_GROUP" "$REPORT_FILE" \
-  "$RUN/worker-delay.txt" "$RUN/worker-sleep.txt" 2>/dev/null || true
-chmod 0640 "$REPORT_FILE" "$RUN/worker-delay.txt" "$RUN/worker-sleep.txt" 2>/dev/null || true
+  "$M5B_MATRIX_TMP/worker-delay.txt" "$M5B_MATRIX_TMP/worker-sleep.txt" 2>/dev/null || true
+chmod 0640 "$REPORT_FILE" "$M5B_MATRIX_TMP/worker-delay.txt" "$M5B_MATRIX_TMP/worker-sleep.txt" 2>/dev/null || true
 echo "## worker report fixture"
 cat "$REPORT_FILE"
-echo "turn_delay_ms=$(cat "$RUN/worker-delay.txt")"
+echo "turn_delay_ms=$(cat "$M5B_MATRIX_TMP/worker-delay.txt")"
 echo
 
 echo "## create and drive the ticket through the real owner API"
