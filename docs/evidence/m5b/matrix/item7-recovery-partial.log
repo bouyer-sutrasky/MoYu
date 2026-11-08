@@ -1,0 +1,63 @@
+# item 7 — 状态原因、恢复引导、重试与清错（本轮实测到的部分，未完成）
+
+## 1) 真实 OOM 的因与果 —— 已实测
+
+**因**：把 provider fixture 的 worker 内存设成 1024 MB（`LOCAL_MATRIX worker-mem.txt`），
+而实例所在的 `m5bmatrix-supervisor.service` 只有 `MemoryMax=512M` —— 执行回合内存需求超过成员上限。
+
+**果**（原始读数）：
+
+```
+t=0    task=pending_admission  instance=online|listening    events: max 0    oom 0 oom_kill 0
+t=10   task=queued             instance=sleeping|sleeping    events: max 104  oom 5 oom_kill 1
+```
+
+supervisor 的 fault 事件（人可读的原因）：
+
+```json
+{"event":"supervisor.fault","code":"oom_killed",
+ "detail":"The instance cgroup recorded an OOM kill; the runtime process exited"}
+```
+
+- **被杀单元**：`/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/…` 下的实例运行时
+  （`task_memcg=…/instances/m5b-…`，`constraint=CONSTRAINT_MEMCG`）。
+- **存活单元**：同一时刻 `m5bmatrix-api` / `pg` / `dispatcher` / `supervisor` 均 `active`（第 4 项里有同一时刻的读数）。
+- **任务侧**：任务从 `pending_admission` 变成 `queued`（执行没完成，等实例再起来）。
+
+**原因在 UI/状态上能不能看到**：能。平台 `GET /api/v1/repositories/:id/runtime` 给出人可读字段与可执行动作：
+
+```json
+{"state":"sleeping","reasonCode":"sleeping",
+ "reason":"仓库休眠。GitHub 监听已暂停，GitHub @ 不会自动唤醒；网页提交或回复会请求唤醒。",
+ "executionSlot":"busy",
+ "resource":{"memoryCurrentBytes":223723520,"memoryPeakBytes":289107968,
+             "memoryLimitBytes":3221225472,"oomKillCount":0},
+ "actions":[{"action":"wake","label":"唤醒实例","enabled":false,"unavailableReason":"实例已在线"},
+            {"action":"sleep","label":"休眠实例","enabled":false,"unavailableReason":"有任务正在执行；完成后或等待人工时才能休眠"}]}
+```
+
+要点：`reason` 是自然语言、`actions` 带 `label` 与 `unavailableReason`（即**恢复引导**），
+`resource.oomKillCount` / `memoryPeakBytes` 把 OOM 事实暴露到状态里。
+
+## 2) 重试耗尽 —— 部分
+
+停掉 provider（执行必然失败）后新建任务，任务确实到了终态：
+
+```
+3994eb03-…|pending_admission|2026-11-08 10:45:48+08
+994c8fb5-…|failed           |2026-11-08 10:46:20+08      ← 终态 failed
+```
+
+**未完成的部分**：每次 attempt 的原始记录还没取出来 —— `task_operations` 计数为 0，
+`deliveries`/`events` 的列名与我预期不同（`attempts`、`kind` 都不存在），需要先看 schema 再取。
+
+## 3) 人工恢复 —— 未完成
+`retry` 没跑成：provider 单元被 `systemctl stop` 之后连单元都找不到了
+（`Unit m5bmatrix-provider.service not found`），恢复动作因此没有执行。
+
+## 4) 旧错误清除到重启保持 —— 未完成
+需要在人工恢复成功之后才谈重启双库。
+
+## 结论
+第 7 项**未通过**，本轮只完成了第 1 条（OOM 的因与果 + 状态原因 + 恢复引导可见）。
+第 2 条部分（终态 failed 已观测，逐次 attempt 记录未取），第 3、4 条未开始。
