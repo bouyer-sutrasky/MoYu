@@ -131,6 +131,10 @@
   向**上一层**（单元 cgroup）请求一次 → 检查子组真的有 `memory.current`/`memory.max`/
   `pids.current`。任一步失败返回 `cgroup_unavailable` 的具体步骤与 OS 错误，绝不 spawn
   一个未计量的实例。`/sys/fs/cgroup` 根与挂载点之外的路径被直接拒绝。
+- **只在自己被委托的层级下发控制器**：需要向上一层请求控制器时，只有该层属于本进程身份
+  （非 root 时由 systemd 委托 chown）才会写；root 身份下若该层仍含 `.service`/`.scope`/
+  `.slice` 子组（共享 systemd 层级）则拒绝，错误里点名目录并指向委托单元 cgroup，绝不改写
+  宿主其他服务的控制器。
 - **逐代次对象身份**：每代次记录 `cgroup` 路径 + `cgroupInode`。重启后 inode 不符即视为
   对象已被替换，按“边界消失/被替换”处理，而不是拿旧路径冒充同一对象。
 - **边界证明**：停止只在“可读且递归为空”或“边界对象已不存在且本代次无存活成员”时
