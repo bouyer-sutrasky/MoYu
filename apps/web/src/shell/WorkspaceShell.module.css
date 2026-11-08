@@ -1378,8 +1378,9 @@
 .messageBody {
   margin: 0;
   overflow-wrap: anywhere;
-  white-space: pre-wrap;
   color: var(--dsw-alias-label-primary);
+  min-width: 0;
+  max-width: 100%;
   font: var(--dsw-font-s-14);
   line-height: 1.65;
 }

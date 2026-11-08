@@ -12,6 +12,8 @@ import {
   shortCommit,
   taskStateLabel,
 } from '../lib/format';
+import { MarkdownMessage } from './markdown';
+import './markdown.css';
 import { NewTaskPanel } from './NewTaskPanel';
 import styles from './WorkspaceShell.module.css';
 
@@ -93,7 +95,9 @@ function MessageItem({ message }: { message: Message }) {
           <time dateTime={message.createdAt}>{formatMessageTime(message.createdAt)}</time>
           {inbound ? <DeliveryBadge message={message} /> : null}
         </header>
-        <p className={styles.messageBody}>{message.body}</p>
+        <div className={styles.messageBody} data-message-body="">
+          <MarkdownMessage source={message.body} />
+        </div>
         {message.attachments.length > 0 ? (
           <ul className={styles.messageAttachments} aria-label="附件">
             {message.attachments.map((attachment) => (
