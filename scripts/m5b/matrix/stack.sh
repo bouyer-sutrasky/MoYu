@@ -158,6 +158,18 @@ migrate_and_seed() {
   token_hash=$(printf '%s' "$session_token" | sha256sum | cut -d' ' -f1)
   m5b_sql "insert into sessions (owner_id, token_hash, expires_at)
            values ('$owner_id', '$token_hash', now() + interval '10 days')" >/dev/null
+  # Extra repositories for items that need several at once (M5B_MATRIX_EXTRA_REPOS).
+  local extra=${M5B_MATRIX_EXTRA_REPOS:-} pair name
+  if [[ -n $extra ]]; then
+    local IFS=','
+    for pair in $extra; do
+      name=${pair%%:*}
+      m5b_sql "insert into repositories (owner_id, full_name, default_branch, status)
+               select id, '$name', 'main', 'active' from owners limit 1" >/dev/null
+      echo "extra repository=$name"
+    done
+    unset IFS
+  fi
   printf 'export M5B_OWNER_ID=%s\nexport M5B_REPOSITORY_ID=%s\nexport M5B_SESSION_TOKEN=%s\n' \
     "$owner_id" "$repo_id" "$session_token" >"$RUN/seed.env"
   echo "owner=$owner_id repository=$repo_id"
@@ -190,10 +202,28 @@ start_provider() {
 }
 
 write_instances_config() {
+  # M5B_MATRIX_EXTRA_REPOS ("owner/name:bridgePort" pairs, comma separated) lets a
+  # matrix item start with several repositories. They must be configured before the
+  # supervisor boots: a supervisor restarted underneath a live runtime adopts it and
+  # can no longer prove its descendants, which leaves the instance serving but
+  # unverified and admission waiting on `runtime`.
+  local extra=${M5B_MATRIX_EXTRA_REPOS:-}
+  local entries="    { \"repository\": \"$M5B_MATRIX_REPOSITORY\", \"profile\": \"$M5B_MATRIX_PROFILE\", \"dshPort\": 3404, \"bridgePort\": 3403 }"
+  local pair repo bridge
+  if [[ -n $extra ]]; then
+    local IFS=','
+    for pair in $extra; do
+      repo=${pair%%:*}
+      bridge=${pair##*:}
+      entries+=",$(printf '\n    { \"repository\": \"%s\", \"profile\": \"%s\", \"dshPort\": %s, \"bridgePort\": %s }' \
+        "$repo" "$M5B_MATRIX_PROFILE" "$((bridge + 1))" "$bridge")"
+    done
+    unset IFS
+  fi
   cat >"$INSTANCES_JSON" <<JSON
 {
   "instances": [
-    { "repository": "$M5B_MATRIX_REPOSITORY", "profile": "$M5B_MATRIX_PROFILE", "dshPort": 3404, "bridgePort": 3403 }
+$entries
   ],
   "portRange": { "start": 3411, "end": 3499 }
 }
@@ -301,10 +331,10 @@ start_supervisor() {
     --setenv=TICK_INTERVAL_MS=1000 \
     --setenv=RESOURCE_SAMPLE_INTERVAL_MS=5000 \
     --setenv=MEMORY_TARGET_MB=4096 \
-    --setenv=MEMORY_BUDGET_MB=6144 \
+    --setenv=MEMORY_BUDGET_MB="${M5B_MATRIX_MEMORY_BUDGET_MB:-6144}" \
     --setenv=MEMORY_HARD_LIMIT_MB="${M5B_MATRIX_BUDGET_MB}" \
-    --setenv=INSTANCE_MEMORY_MAX_MB=3072 \
-    --setenv=INSTANCE_MEMORY_HIGH_MB=2560 \
+    --setenv=INSTANCE_MEMORY_MAX_MB="${M5B_MATRIX_INSTANCE_MAX_MB:-3072}" \
+    --setenv=INSTANCE_MEMORY_HIGH_MB="${M5B_MATRIX_INSTANCE_HIGH_MB:-2560}" \
     --setenv=GITHUB_CLI=/root/.local/bin/gh-agent \
     --setenv=EXECUTOR_MODEL=local-test/local-test \
     --working-directory="$M5B_MATRIX_ROOT" \

@@ -68,3 +68,32 @@ Bouyer12/m5a-epsilon-adf10ad9 task=pending_admission  instance=sleeping  reason=
 ## 仍未开始
 - 成员级 OOM（dmesg/journal 原始行 + `memory.events`，说明杀了哪个单元、其他成员是否存活）。
 - 解除压力后的有界恢复（C 按序被调起、容量回收、旧错误清除）。
+
+## 追加（2026-11-08T10:08Z）：多仓库卡在 profile 唯一约束上，找到了确切原因
+
+按「预算要装得下两个实例」调整后（`MEMORY_BUDGET_MB=6144`、`INSTANCE_MEMORY_MAX_MB=2048`，
+instances.json 预置三个仓库，且先 `GET /api/v1/repositories` 让平台 upsert 出实例行），
+两个新增仓库的实例没有起来，而是直接进了 fault：
+
+```
+Bouyer12/m5a-beta-adf10ad9    task=pending_admission  instance=online  reason=listening
+Bouyer12/m5a-delta-adf10ad9   task=pending_admission  instance=fault   reason=prepare_failed
+Bouyer12/m5a-epsilon-adf10ad9 task=pending_admission  instance=fault   reason=prepare_failed
+```
+
+supervisor 的原始错误（`supervisor.fault`）：
+
+```
+{"code":"prepare_failed","detail":"duplicate key value violates unique constraint \"repository_instances_profile_uq\""}
+```
+
+**根因**：`repository_instances` 上有 profile 唯一约束，而我给三个实例都写了同一个 `profile: "m5b"`。
+也就是「一个 profile 只能对应一个仓库实例」——多仓库要我给每个仓库**预置各自的 profile**
+（并各自 stage 一份 DSH home），这是当前矩阵 harness 还不具备的能力，不是我写个仓库行就能绕过的。
+
+## 结论
+- 第 1 条「A/B 执行、C 排队」：**未验证**。排队侧已经能观测（早前 R 轮里 `resource_wait / waiting_for=memory` 是真实读数），
+  但「两个同时执行」这半边被 profile 唯一约束挡住。
+- 下一步明确：给 `m5a-delta-adf10ad9` / `m5a-epsilon-adf10ad9` 各 stage 一份 profile（`m5b-b` / `m5b-c`），
+  instances.json 用各自的 profile，再按同一脚本重跑。这是 harness 的改动，动的是 `scripts/m5b/matrix/`，不改上游。
+- 第 2 条（成员级 OOM）、第 3 条（有界恢复）仍未开始 —— 它们不依赖多仓库，可以在单仓库栈上直接做。
