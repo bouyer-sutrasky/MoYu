@@ -68,11 +68,8 @@ async function openDialog() {
 try {
   // 1 + 2 + 4 + 5: completed task, explicit inheritance, confirmation gate, cross-repository choice.
   await openConversation(SEED.tasks.completed.title);
-  check(
-    'completed-shows-action',
-    (await page.locator('[data-testid="new-task-from-task"]').count()) === 1,
-    { count: 1 },
-  );
+  const actionCount = await page.locator('[data-testid="new-task-from-task"]').count();
+  check('completed-shows-action', actionCount === 1, { count: actionCount });
   const before = createdResponses.length;
   const sourceBox = await openDialog();
   const sourceText = await sourceBox.textContent();
