@@ -1,0 +1,53 @@
+# Web→GitHub 补测（source 指回平台仓库后）
+recorded=2026-11-08T08:43:15+08:00
+
+## 1) settings before/after（source:github 与 deployment.repository）
+before.source:github.repository = Bouyer12/m5a-beta-adf10ad9  revision 1
+before.environment? deployment = null
+after.source:github.repository  = Bouyer12/m5a-beta-adf10ad9  revision 1
+
+## 2) 运行中的票，Web 侧追加消息 —— 通过
+
+```
+## runtime ticket before
+{"state":"running","assignmentId":"d339bc5aea01b0309a3c87958f8ce908","report":null,"delivery":null}
+
+## Web 消息（真实 API POST /api/v1/conversations/<id>/messages）
+{"status": 202, "body": {"data": {"message": {"id": "92224b5a-ca7a-4a49-96c3-5ad18a4ed720", …}}}}
+
+## dispatcher（不再有 delivery.failed / permanently）
+{"event":"delivery.delivered","messageId":"92224b5a-ca7a-4a49-96c3-5ad18a4ed720",
+ "conversationId":"5e3b57df-…","result":"stored","attempt":1,"msg":"runtime accepted the trigger"}
+
+## 到达 runtime 的证据
+trigger  workspace:92224b5a-ca7a-4a49-96c3-5ad18a4ed720  source=workspace
+         at=2026-11-08T00:43:41.506Z  channel=workspace
+ticket   inputs 末尾新增 ('trigger', '2026-11-08T00:43:42.398Z')，undelivered=[]
+```
+
+断言全部满足：没有 `delivery.failed … permanently`；Bridge 侧 `result:"stored"`（dispatcher 记 attempt 1 成功）；
+票据收到了新的 trigger 输入（`inputs` 增加、`undelivered` 为空）——**消息真的到了 runtime**。
+
+## 3) Web→GitHub 这条方向的实际行为：**设计上不回写 GitHub**
+
+runtime 的续写触发器在 `targetTrigger` 里固定携带 **workspace 通道**（产物 `lib/index.js` 的 `targetTrigger`）：
+
+```js
+const channel = { source: "workspace", thread: `workspace:${request.conversationId}`,
+                  address: { conversationId: request.conversationId, … } };
+```
+
+所以一条 Web 追加消息的回执/提问/答复都投递到 **Web 会话**，不会写到 GitHub 的 issue/PR 上 —— 这是设计语义，
+不是缺失。观测也一致：本次 outbox 只有一条 `ack:workspace:aee1eca1…`（对应**第一条** Web 消息，channel 是
+`workspace:<conversationId>`），追加那条没有任何外发写入。
+
+整条链路里唯一写回 GitHub 的，是 **GitHub trigger 自己那条通道**上的接受回执
+（`ack:91be173c…` → `github:1`，见上一段）。
+
+## 判定
+
+| 项 | 结果 | 依据 |
+| --- | --- | --- |
+| Web 追加消息到达运行中的票 | **通过** | `result:"stored"`（attempt 1，无 failed）；ticket `inputs` 新增 trigger 记录、`undelivered` 空 |
+| Web→GitHub 是否回写 | **设计内不回写** | `targetTrigger` 固定用 workspace channel；outbox 无任何 github 通道的外发；唯一 GitHub 写入来自 GitHub trigger 自己的回执 |
+| 子项总判定 | **通过**（语义为「Web 消息在 Web 上答复；GitHub 侧只收回执」） | 上述两项 + 上一段的 GitHub→Web 完整链路 |
