@@ -906,6 +906,16 @@ export function registerConversationRoutes(
                     'This GitHub requirement has ended; create a linked task or resume it explicitly',
                   );
                 }
+                // The source conversation becomes a hidden alias, so every
+                // conversation-scoped artifact (including the caller's unsent
+                // uploads) follows the message graph into the target. This runs
+                // before the binding below, so attachToMessage validates the
+                // ids against the target once they moved, and an id that never
+                // belonged to the source still refuses the whole send.
+                await transaction
+                  .update(artifacts)
+                  .set({ conversationId: targetConversion.id })
+                  .where(eq(artifacts.conversationId, source.id));
                 const created = await insertInbound(transaction, targetConversion, input);
                 if (!source.mergedIntoConversationId) {
                   // A supplementary message may have committed while this merge
