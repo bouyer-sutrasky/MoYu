@@ -1,0 +1,91 @@
+# item 5 — awaiting_review attempt: the state was NOT reachable with a live worker fixture
+command: source /tmp/m5bmatrix/state.env && bash scripts/m5b/matrix/item5-restart.sh awaiting_review
+
+# item 5 — restart reconciliation in state: awaiting_review
+recorded=2026-11-08T01:20:24+08:00
+head=f2ba6e91e66c964171b6ed9568bc942f5588ede3
+dispatcher_artifact=0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6 (211968 bytes)
+slice=0 procs directly in slice
+
+## worker report fixture
+{"state":"ready","summary":"Lifecycle probe ready for review."}
+
+## create and drive the ticket through the real owner API
+{
+  "conversationId": "916757e3-374d-483b-ada0-f85fae765346",
+  "taskId": "5fa02297-6f72-4501-baba-ba4d6b4dcf49",
+  "state": "pending_admission",
+  "messageStatus": 202,
+  "clientRequestId": "item5-awaiting_review-1794072024"
+}
+
+## wait for the runtime to accept the task
+ticket=550bc69053c027f9b89551dcccc5e288 task_state=queued
+
+## wait for the target runtime state
+platform task state: completed  (waited for awaiting_review)
+
+## snapshot before the restart
+{
+  "status": 200,
+  "body": {
+    "ticketId": "550bc69053c027f9b89551dcccc5e288",
+    "title": "Fix README probe line",
+    "state": "completed",
+    "question": null,
+    "attentionId": null,
+    "model": {
+      "provider": "local-test",
+      "model": "local-test"
+    },
+    "base": {
+      "repository": "Bouyer12/m5a-beta-adf10ad9",
+      "branch": "main",
+      "commit": "4f4639ceb87693cc00e3c87e8cfa168074141ce0"
+    },
+    "assignmentId": "fb4bbd4b0e9fa740053dc2b0dbb1e965",
+    "admission": {
+      "leaseId": "9c01cad8-3a40-4611-b018-e8f68ebf0d50",
+      "fencingToken": "4"
+    },
+    "report": {
+      "state": "ready",
+      "summary": "Lifecycle probe ready for review.",
+      "at": "2026-11-07T17:20:36.117Z"
+    },
+    "mode": "execute",
+    "planRevision": null,
+    "paused": null,
+    "admissionRequired": false,
+    "execution": {
+      "name": "fix-readme-probe-550bc69053c0",
+      "directory": "/root/.dsh-m5/worktrees/m5b/fix-readme-probe-550bc69053c0",
+      "assignment": ""
+    },
+    "ended": {
+      "at": "2026-11-07T17:20:36.117Z",
+      "by": "executor",
+      "outcome": "completed"
+    }
+  }
+}
+task|completed|4|550bc69053c027f9b89551dcccc5e288|-|-
+delivery|1|delivered
+bridge_pid_before=2222631 dispatcher_pid_before=2222839
+
+## restart both stores
+$ kill -TERM <runtime pid> (abrupt restart while the turn waits on the model)
+old bridge pid alive after stop: 0
+$ supervisor wake (fresh runtime process)
+{"data":{"accepted":true,"duplicate":false,"instance":{"repositoryId":"1e154e3d-c103-4e56-b18d-e5a2547a4ea9","fullName":"Bouyer12/m5a-beta-adf10ad9","defaultBranch":"main","state":"sleeping","desiredState":"online","reasonCode":"wake_queued","reasonDetail":null,"waitingFor":"capacity","queuePriority
+
+## 判定（未通过，如实记录）
+
+`awaiting_review` **没有取到**：worker 用 `orchestrator_report` 报 `state=ready` 后，
+runtime 立即把票 `ended`（`by=executor`、`outcome=completed`），投影函数中
+`if (ticket.ended) ... return "completed"` 先于 `report.state === "ready" → "awaiting_review"` 生效，
+所以平台任务停在 `completed`。本日志里后续的重启与比对照常执行，但被测票不是 `awaiting_review`，
+**不能**当作该项通过。
+
+要闭合这一项需要产品或 fixture 层面的决定（例如：ready 后不自动结票、或提供一个仍处于
+`awaiting_review` 的真实 PR 票），不属于本单项取证能自行改动的范围。

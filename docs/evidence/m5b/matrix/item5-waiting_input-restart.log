@@ -1,0 +1,154 @@
+# item 5 — full restart while the ticket waits for input (attention set)
+command: source /tmp/m5bmatrix/state.env && bash scripts/m5b/matrix/item5-restart.sh waiting_input
+
+# item 5 — restart reconciliation in state: waiting_input
+recorded=2026-11-08T01:19:34+08:00
+head=f2ba6e91e66c964171b6ed9568bc942f5588ede3
+dispatcher_artifact=0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6 (211968 bytes)
+slice=0 procs directly in slice
+
+## worker report fixture
+{"state":"progress","summary":"Need a decision before continuing.","human_action":"Which branch should the probe use?"}
+
+## create and drive the ticket through the real owner API
+{
+  "conversationId": "f14ca1a1-70a6-4993-b7da-09204a9cf94a",
+  "taskId": "ddd54cb8-1794-4d2b-ab76-16d6fcb751b4",
+  "state": "pending_admission",
+  "messageStatus": 202,
+  "clientRequestId": "item5-waiting_input-1794071974"
+}
+
+## wait for the runtime to accept the task
+ticket=b7a97e67c25700dfc18aa1c734277600 task_state=queued
+
+## wait for the target runtime state
+platform task state: waiting_input  (waited for waiting_input)
+
+## snapshot before the restart
+{
+  "status": 200,
+  "body": {
+    "ticketId": "b7a97e67c25700dfc18aa1c734277600",
+    "title": "Fix README probe line",
+    "state": "waiting_input",
+    "question": "Which branch should the probe use?",
+    "attentionId": "6374fcd8f0d6126c841afd7bee361ce3",
+    "model": {
+      "provider": "local-test",
+      "model": "local-test"
+    },
+    "base": {
+      "repository": "Bouyer12/m5a-beta-adf10ad9",
+      "branch": "main",
+      "commit": "4f4639ceb87693cc00e3c87e8cfa168074141ce0"
+    },
+    "assignmentId": "ff5cc1d3783190ffa854486c37052729",
+    "admission": {
+      "leaseId": "3000a717-a16d-423e-8de5-9c280cd0ec4a",
+      "fencingToken": "3"
+    },
+    "report": {
+      "state": "progress",
+      "summary": "Need a decision before continuing.",
+      "at": "2026-11-07T17:19:42.569Z"
+    },
+    "mode": "execute",
+    "planRevision": null,
+    "paused": null,
+    "admissionRequired": false,
+    "execution": {
+      "name": "fix-readme-probe-b7a97e67c257",
+      "directory": "/root/.dsh-m5/worktrees/m5b/fix-readme-probe-b7a97e67c257",
+      "assignment": ""
+    },
+    "ended": null
+  }
+}
+task|waiting_input|4|b7a97e67c25700dfc18aa1c734277600|-|-
+delivery|1|delivered
+bridge_pid_before=2220585 dispatcher_pid_before=2220768
+
+## restart both stores
+$ kill -TERM <runtime pid> (abrupt restart while the turn waits on the model)
+old bridge pid alive after stop: 0
+$ supervisor wake (fresh runtime process)
+{"data":{"accepted":true,"duplicate":false,"instance":{"repositoryId":"1e154e3d-c103-4e56-b18d-e5a2547a4ea9","fullName":"Bouyer12/m5a-beta-adf10ad9","defaultBranch":"main","state":"sleeping","desiredState":"online","reasonCode":"wake_queued","reasonDetail":null,"waitingFor":"capacity","queuePriority
+bridge_pid_after=2222631
+$ systemctl restart dispatcher
+dispatcher_pid_after=2222839
+bridge restarted: yes
+dispatcher restarted: yes
+
+## restart reconciliation lines from the dispatcher
+Nov 08 01:19:57 lavm-flnape7bgu node[2222839]: {"level":"info","time":"2026-11-07T17:19:57.291Z","service":"moyu-dispatcher","event":"dispatcher.ready","nodeEnv":"test","msg":"dispatcher connected to PostgreSQL"}
+Nov 08 01:19:57 lavm-flnape7bgu node[2222839]: {"level":"info","time":"2026-11-07T17:19:57.354Z","service":"moyu-dispatcher","event":"reconcile.task","taskId":"8b340003-56a8-4301-a11d-0a58201e9c8e","previous":"waiting_input","state":"waiting_input","contradictory":false,"msg":"reconciled a task with its runtime ticket"}
+Nov 08 01:19:57 lavm-flnape7bgu node[2222839]: {"level":"info","time":"2026-11-07T17:19:57.358Z","service":"moyu-dispatcher","event":"reconcile.task","taskId":"ddd54cb8-1794-4d2b-ab76-16d6fcb751b4","previous":"waiting_input","state":"waiting_input","contradictory":false,"msg":"reconciled a task with its runtime ticket"}
+
+## snapshot after the restart
+{
+  "status": 200,
+  "body": {
+    "ticketId": "b7a97e67c25700dfc18aa1c734277600",
+    "title": "Fix README probe line",
+    "state": "waiting_input",
+    "question": "Which branch should the probe use?",
+    "attentionId": "6374fcd8f0d6126c841afd7bee361ce3",
+    "model": {
+      "provider": "local-test",
+      "model": "local-test"
+    },
+    "base": {
+      "repository": "Bouyer12/m5a-beta-adf10ad9",
+      "branch": "main",
+      "commit": "4f4639ceb87693cc00e3c87e8cfa168074141ce0"
+    },
+    "assignmentId": "c5c956f8c354acff4ea247df24b6ea85",
+    "admission": {
+      "leaseId": "3000a717-a16d-423e-8de5-9c280cd0ec4a",
+      "fencingToken": "3"
+    },
+    "report": {
+      "state": "progress",
+      "summary": "Need a decision before continuing.",
+      "at": "2026-11-07T17:19:42.569Z"
+    },
+    "mode": "execute",
+    "planRevision": null,
+    "paused": null,
+    "admissionRequired": false,
+    "execution": {
+      "name": "fix-readme-probe-b7a97e67c257",
+      "directory": "/root/.dsh-m5/worktrees/m5b/fix-readme-probe-b7a97e67c257",
+      "assignment": ""
+    },
+    "ended": null
+  }
+}
+task|waiting_input|4|b7a97e67c25700dfc18aa1c734277600|-|-
+
+## field-by-field comparison
+field                                            before                                 after
+assignmentId                                     ff5cc1d3783190ffa854486c37052729       c5c956f8c354acff4ea247df24b6ea85
+
+compared_fields=24 differing=1 material_differences=1
+verdict: DIFFERS
+
+## 判定
+
+状态保住了，但有一处字段变化必须如实记：重启前后 `state=waiting_input`、`question`、
+`attention`、`report`、`admission`、`base`、`model`、`execution.directory` 一致，
+**`assignmentId` 变了**（`ff5cc1d3...` → `c5c956f8...`）。原因：本场景的 worker 回合是在模型请求
+在途时被 `kill -TERM` 打断的（`supervisor sleep` 在 worker 持有后台任务时**正确拒绝**，
+返回 `sleep_refused`：「The runtime still owns 1 background process」），重启后 runtime 把被中断的
+回合当作丢失并重新下发 assignment。注意力/问题没有丢，但「同一条等待中的 assignment 跨重启保持」
+在本 fixture 下不成立；这是被观测到的行为，不判定为通过。
+
+字段数 24 少于 paused 的 43，因为本快照没有 `paused` 对象（未暂停）。
+
+## 判据窄化后的结论（所有者 2026-11-07T19:12Z 裁决）
+
+所有者的裁决：该缺陷成立但本轮不改代码（上游补丁 0024 另单跟踪），M5-B 该子项的验收判据窄化为
+「重启后 `state` / `question` / `attention` / 报告 / admission / 执行目录保持；`assignmentId` 允许被上游重发，
+并记录 `verdict: DIFFERS` 与原因」。按此判据，本次运行**通过**：上面已逐项给出保持的字段，
+`assignmentId` 变化与原因（被中断的回合按 `assignments.ts` 的 `interrupted()` 重发）也已记录。

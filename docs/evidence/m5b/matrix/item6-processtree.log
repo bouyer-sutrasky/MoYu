@@ -1,0 +1,103 @@
+# item 6a — 全树遍历与停后空树（子进程与孤儿残留）
+
+原始输出如下（`recorded=` 即该次运行）。取法：递归遍历 `m5bmatrix.slice` 下的**每一个子组**
+（`find … -type d`），逐个读 `cgroup.procs`，再对每个 pid 读 `/proc/<pid>/cmdline` 与 uid。
+之所以必须递归：切片根自己的 `cgroup.procs` 是 **0**，进程都在子组里（本文件第一段就给了这个事实）。
+`paused.evidence` 在本文件里一次都没有被当作进程表使用。
+
+# item 6a — the runtime's whole process tree, and the empty tree after stopping it
+recorded=2026-11-08T04:25:34+08:00
+artifact=0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6
+
+## the slice root owns no process itself (why a one-level look is wrong)
+$ cat /sys/fs/cgroup/m5bmatrix.slice/cgroup.procs | wc -l
+0
+$ find /sys/fs/cgroup/m5bmatrix.slice -mindepth 1 -type d | wc -l
+9
+
+## the whole tree, recursively
+$ find /sys/fs/cgroup/m5bmatrix.slice -mindepth 1 -type d | sort   # then: cat <g>/cgroup.procs, /proc/<pid>/cmdline
+-- m5bmatrix-anchor.service  (1 process(es))
+   2351652  995    /bin/sleep 86400 
+-- m5bmatrix-api.service  (1 process(es))
+   2351889  995    /usr/bin/node apps/api/dist/server.js 
+-- m5bmatrix-dispatcher.service  (1 process(es))
+   2352143  995    /usr/bin/node apps/dispatcher/dist/main.js 
+-- m5bmatrix-pg.service  (10 process(es))
+   2351676  111    /usr/lib/postgresql/16/bin/postgres -D /tmp/m5bmatrix/pgdata -p 55433 -k /tmp -c listen_
+   2351679  111    postgres: checkpointer                                                                  
+   2351680  111    postgres: background writer                                                             
+   2351684  111    postgres: walwriter                                                                     
+   2351685  111    postgres: autovacuum launcher                                                           
+   2351686  111    postgres: logical replication launcher                                                  
+   2356444  111    postgres: moyu m5b_matrix 127.0.0.1(59952) idle                                         
+   2356718  111    postgres: moyu m5b_matrix 127.0.0.1(45902) idle                                         
+   2356720  111    postgres: moyu m5b_matrix 127.0.0.1(45918) idle                                         
+   2362343  111    postgres: moyu m5b_matrix 127.0.0.1(55320) idle                                         
+-- m5bmatrix-provider.service  (1 process(es))
+   2351787  995    /usr/bin/node scripts/m5b/local-provider.mjs 
+-- m5bmatrix-supervisor.service/instances/m5b-1794082891480  (4 process(es))
+   2356443  995    node /usr/bin/dsh --profile m5b --no-open 
+   2356899  995    sh -c sleep 900 & sleep 900 & wait 
+   2356900  995    sleep 900 
+   2356901  995    sleep 900 
+-- m5bmatrix-supervisor.service/payload  (1 process(es))
+   2351856  995    /usr/bin/node apps/supervisor/dist/main.js 
+
+## stopping the supervisor alone does not stop the runtime
+$ systemctl stop m5bmatrix-supervisor.service
+supervisor_active=inactive
+processes_still_in_the_instance_cgroup=0
+bridge_healthz_after_supervisor_stop=not answering
+port_3403_bound=0
+
+## kill the delegated subtree with cgroup.kill
+$ echo 1 > /sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/cgroup.kill   # subgroups first, then the root
+find: ‘/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances’: No such file or directory
+/tmp/tree_manual.sh: line 40: /sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/cgroup.kill: No such file or directory
+
+## the tree again, after the stop
+$ find /sys/fs/cgroup/m5bmatrix.slice -mindepth 1 -type d | sort   # then: cat <g>/cgroup.procs, /proc/<pid>/cmdline
+-- m5bmatrix-anchor.service  (1 process(es))
+   2351652  995    /bin/sleep 86400 
+-- m5bmatrix-api.service  (1 process(es))
+   2351889  995    /usr/bin/node apps/api/dist/server.js 
+-- m5bmatrix-dispatcher.service  (1 process(es))
+   2352143  995    /usr/bin/node apps/dispatcher/dist/main.js 
+-- m5bmatrix-pg.service  (9 process(es))
+   2351676  111    /usr/lib/postgresql/16/bin/postgres -D /tmp/m5bmatrix/pgdata -p 55433 -k /tmp -c listen_
+   2351679  111    postgres: checkpointer                                                                  
+   2351680  111    postgres: background writer                                                             
+   2351684  111    postgres: walwriter                                                                     
+   2351685  111    postgres: autovacuum launcher                                                           
+   2351686  111    postgres: logical replication launcher                                                  
+   2356718  111    postgres: moyu m5b_matrix 127.0.0.1(45902) idle                                         
+   2356720  111    postgres: moyu m5b_matrix 127.0.0.1(45918) idle                                         
+   2362343  111    postgres: moyu m5b_matrix 127.0.0.1(55320) idle                                         
+-- m5bmatrix-provider.service  (1 process(es))
+   2351787  995    /usr/bin/node scripts/m5b/local-provider.mjs 
+
+## survivors and ports
+processes_under_the_runtime_cgroup_after_stop=0
+sleep_survivors_in_slice=0
+bridge_healthz_after_kill=not answering
+port_3403_bound=0
+port_3404_bound=0
+
+## 判定
+
+**通过（全树遍历 + 停后空树）。** 原始表在上一段，逐条对应要求：
+
+| 要求 | 结果 |
+| --- | --- |
+| 全树遍历，不只一级子进程 | 9 个子组全扫；抓到了 runtime 的**全部四层**：`node /usr/bin/dsh`（2356443）→ `sh -c sleep 900 & sleep 900 & wait`（2356899）→ 两个 `sleep 900`（2356900/2356901），都在 `m5bmatrix-supervisor.service/instances/m5b-1794082891480` 里；PostgreSQL 的 10 个进程（含 4 个会话后端）也都在表里 |
+| 每个进程的 pid + 完整 cmdline + 所属 cgroup | 表里三列齐全（cmdline 截到 88 字符以适配行宽，完整 cmdline 可用同一命令重取） |
+| 切片根不持有进程 | `wc -l < m5bmatrix.slice/cgroup.procs` = **0**，所以一层看必然漏 |
+| 停后子树为空 | 停 supervisor 后：`processes_still_in_the_instance_cgroup=0`、`sleep_survivors_in_slice=0`、`bridge_healthz=not answering`、`port_3403_bound=0`、`port_3404_bound=0`；再遍历，`instances/` 整个目录都已随单元消失 |
+| 不用 `paused.evidence` 代替进程表 | 全程未使用该字段 |
+
+**一处必须更正的旧结论**：我之前记录过「停 supervisor 不会停 runtime（端口仍占、下次启动 `port_in_use`）」。
+这次在同一套单元上，`systemctl stop` **确实**把整个子树带走了（systemd 默认 `KillMode=control-group`，
+连同 `Delegate=yes` 委托出去的 `payload`/`instances` 子组一起杀）。所以那条旧行为在当前配置下**没有复现**；
+停后空树这件事本身仍然成立，只是机制是「单元停止连带清空 cgroup」，而不是我先前以为的「runtime 会残留」。
+用 `cgroup.kill` 手动清子树这条路径这次没机会演示（子组已经不在了），如实记录为未演示。

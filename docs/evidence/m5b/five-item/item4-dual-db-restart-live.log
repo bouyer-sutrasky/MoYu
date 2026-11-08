@@ -125,3 +125,29 @@ Both stores were restarted (bridge 2107062 -> 2114387, dispatcher 2112165 -> 211
 ticket/assignment/admission/base/model/worktree and PG task/delivery/lease link are identical
 field by field, the sync cursor advanced 100 -> 102 on post-restart traffic, and an expired
 lease cannot be renewed or re-acquired without a stop proof. Item 4 accepted.
+
+Correction (M5-B matrix pass): the red/green pair above is a **filtered** vitest run, and the
+filter condition was not written down. It is `-t "expired lease"`:
+
+```bash
+TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55433/postgres \
+  corepack pnpm --filter @moyu/dispatcher exec vitest run \
+  test/integration/leases.integration.test.ts -t "expired lease" --reporter=verbose
+```
+
+Re-running that exact filter on the matrix baseline (`f2ba6e91`) selects the two tests named in
+this log and skips the rest of the file; the file has since gained two more `expired lease` tests
+(adopt with a different/no admission), so the current selection is 4 passed / 4 skipped:
+
+```text
+ ✓ does not renew an expired lease on an active task and requires a stop proof 23ms
+ ✓ adopts an expired lease only when the runtime confirms the same generation running 14ms
+ ✓ does not adopt an expired lease when the runtime reports a different admission 14ms
+ ✓ does not adopt an expired lease when the runtime reports no admission 13ms
+ Test Files  1 passed (1)
+      Tests  4 passed | 4 skipped (8)
+```
+
+The recorded red run ("Tests 1 failed | 5 skipped (6)") and green run ("Tests 2 passed | 4 skipped
+(6)") match the same filter at that head, when the file held 6 tests. A whole-file run would have
+executed every test in `leases.integration.test.ts`, which the recorded counts rule out.

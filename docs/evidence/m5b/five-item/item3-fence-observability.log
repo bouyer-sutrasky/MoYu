@@ -110,6 +110,11 @@ admission and assignment. Final green run:
 
 The path is observable: choose the first option (read the actual fence at
 GET /bridge/v1/tickets/:id, corroborated by ticket.state_changed leaseId/fencingToken).
-The old generation is rejected (422) and cannot become effective; pause evidence and the
+The old generation is rejected (409 `admissionStale`) and cannot become effective; pause evidence and the
 running new assignment are asserted, so the previous "admission=null" limitation no longer
 applies to the admission-aware runtime. Item 3 accepted.
+
+Correction (M5-B matrix pass): the summary line above used to read "422", which contradicted the
+captured response in the same log (`HTTP 409`, `"code":"admissionStale"`). A 422 is what a caller
+without any admission gets; a superseded generation gets the dedicated 409. The raw output above is
+unchanged.

@@ -1,0 +1,157 @@
+# item 3 — 4 / 6 / 8 GiB 预算、6 GiB 高水位、以及真的顶到 memory.max
+
+## 基线产物（本轮所有读取都针对这一个文件）
+
+```
+$ sha256sum apps/dispatcher/dist/main.js
+0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6  apps/dispatcher/dist/main.js   (211968 B)
+```
+
+同一个切片 `m5bmatrix.slice`，三档分别用 `systemctl set-property` 设置 `MemoryMax` / `MemoryHigh`，
+每档只起**一个**合成成员填满剩余余量（`scripts/m5b/matrix/stress-member.sh`）。三条硬约束都在脚本里生效：
+
+```
+# 1) 分配前校验落位（在分配器里，不是文档里）
+if not path or not path.startswith('/' + slice_name + '/'):
+    print(f'REFUSED: … not inside /{slice_name}/; no memory allocated'); sys.exit(4)
+# 2) 请求额超过 memory.max 或当前余量 → 拒绝；一次只起一个，先确认 ControlGroup 再允许下一个
+# 3) 宿主 MemAvailable 低于 4096 MiB → 成员自己退出（exit 9），驱动器同样中止
+```
+
+# item 3 — 4 / 6 / 8 GiB budgets on m5bmatrix.slice, and the ceiling itself
+recorded=2026-11-08T09:13:22+08:00
+host_floor_mb=4096  window_seconds=150
+host_mem_total_kb=16373000  host_available_now=13905MiB
+
+==============================================================
+## tier: MemoryMax=4GiB MemoryHigh=3GiB
+$ systemctl set-property m5bmatrix.slice MemoryMax=4294967296 MemoryHigh=3221225472 MemorySwapMax=0
+applied: max=4294967296 high=3221225472 swap.max=0
+baseline: current=445026304 high=0 max=0 oom_kill=0 host_available=13906MiB
+$ scripts/m5b/matrix/stress-member.sh 3575 tier4   # one member, fills the headroom
+unit=m5bmatrix-stress-tier4.service ControlGroup=/m5bmatrix.slice/m5bmatrix-stress-tier4.service
+PLACED: the member is inside m5bmatrix.slice
+member_state=active cgroup_current=13889536
+OK: 3575 MiB synthetic member running inside m5bmatrix.slice as m5bmatrix-stress-tier4.service
+t=1    current=463372288    high_d=0       max_d=0     oom_d=0   host_available=13890MiB member=active
+t=16   current=3306688512   high_d=10756   max_d=0     oom_d=0   host_available=11154MiB member=active
+t=31   current=3326988288   high_d=25756   max_d=0     oom_d=0   host_available=11113MiB member=active
+t=46   current=3339948032   high_d=33851   max_d=0     oom_d=0   host_available=11126MiB member=active
+t=61   current=3348242432   high_d=45811   max_d=0     oom_d=0   host_available=11127MiB member=active
+t=76   current=3356209152   high_d=57436   max_d=0     oom_d=0   host_available=11123MiB member=active
+t=91   current=3363880960   high_d=68759   max_d=0     oom_d=0   host_available=11094MiB member=active
+t=106  current=3360239616   high_d=78781   max_d=0     oom_d=0   host_available=11080MiB member=active
+t=121  current=3355353088   high_d=88752   max_d=0     oom_d=0   host_available=11126MiB member=active
+t=136  current=3362447360   high_d=97776   max_d=0     oom_d=0   host_available=11112MiB member=active
+result: peak_window=3371876352 slice_peak=3373031424 current_after=3371769856
+events_delta: high=107093 max=0 oom_kill=0
+member_state=active ended=no
+host_available_after=11115MiB
+
+==============================================================
+## tier: MemoryMax=6GiB MemoryHigh=4GiB
+$ systemctl set-property m5bmatrix.slice MemoryMax=6442450944 MemoryHigh=4294967296 MemorySwapMax=0
+applied: max=6442450944 high=4294967296 swap.max=0
+baseline: current=403365888 high=107130 max=0 oom_kill=0 host_available=13932MiB
+$ scripts/m5b/matrix/stress-member.sh 5663 tier6   # one member, fills the headroom
+unit=m5bmatrix-stress-tier6.service ControlGroup=/m5bmatrix.slice/m5bmatrix-stress-tier6.service
+PLACED: the member is inside m5bmatrix.slice
+member_state=active cgroup_current=11644928
+OK: 5663 MiB synthetic member running inside m5bmatrix.slice as m5bmatrix-stress-tier6.service
+t=1    current=419467264    high_d=0       max_d=0     oom_d=0   host_available=13908MiB member=active
+t=16   current=4395450368   high_d=7606    max_d=0     oom_d=0   host_available=10141MiB member=active
+t=31   current=4423626752   high_d=21005   max_d=0     oom_d=0   host_available=10074MiB member=active
+t=46   current=4433477632   high_d=31671   max_d=0     oom_d=0   host_available=10077MiB member=active
+t=61   current=4444000256   high_d=41514   max_d=0     oom_d=0   host_available=10078MiB member=active
+t=76   current=4456128512   high_d=52527   max_d=0     oom_d=0   host_available=10052MiB member=active
+t=91   current=4464525312   high_d=64077   max_d=0     oom_d=0   host_available=10032MiB member=active
+t=106  current=4455862272   high_d=74080   max_d=0     oom_d=0   host_available=10050MiB member=active
+t=121  current=4463259648   high_d=86548   max_d=0     oom_d=0   host_available=10046MiB member=active
+t=136  current=4464418816   high_d=96735   max_d=0     oom_d=0   host_available=10052MiB member=active
+result: peak_window=4477173760 slice_peak=4479983616 current_after=4479168512
+events_delta: high=111716 max=0 oom_kill=0
+member_state=active ended=no
+host_available_after=10063MiB
+
+==============================================================
+## tier: MemoryMax=8GiB MemoryHigh=6GiB
+$ systemctl set-property m5bmatrix.slice MemoryMax=8589934592 MemoryHigh=6442450944 MemorySwapMax=0
+applied: max=8589934592 high=6442450944 swap.max=0
+baseline: current=417062912 high=218882 max=0 oom_kill=0 host_available=13916MiB
+$ scripts/m5b/matrix/stress-member.sh 7698 tier8   # one member, fills the headroom
+unit=m5bmatrix-stress-tier8.service ControlGroup=/m5bmatrix.slice/m5bmatrix-stress-tier8.service
+PLACED: the member is inside m5bmatrix.slice
+member_state=active cgroup_current=8884224
+OK: 7698 MiB synthetic member running inside m5bmatrix.slice as m5bmatrix-stress-tier8.service
+t=1    current=429621248    high_d=0       max_d=0     oom_d=0   host_available=13906MiB member=active
+t=16   current=6547894272   high_d=3116    max_d=0     oom_d=0   host_available=8040MiB member=active
+t=31   current=6593171456   high_d=20210   max_d=0     oom_d=0   host_available=7986MiB member=active
+t=46   current=6625693696   high_d=34900   max_d=0     oom_d=0   host_available=7997MiB member=active
+t=61   current=6641840128   high_d=47707   max_d=0     oom_d=0   host_available=7971MiB member=active
+t=76   current=6661185536   high_d=63135   max_d=0     oom_d=0   host_available=7964MiB member=active
+t=91   current=6662578176   high_d=75691   max_d=0     oom_d=0   host_available=7951MiB member=active
+t=106  current=6673727488   high_d=89680   max_d=0     oom_d=0   host_available=7948MiB member=active
+t=121  current=6675128320   high_d=100814  max_d=0     oom_d=0   host_available=7950MiB member=active
+t=136  current=6688235520   high_d=112398  max_d=0     oom_d=0   host_available=7940MiB member=active
+result: peak_window=6693785600 slice_peak=6694584320 current_after=6689329152
+events_delta: high=123306 max=0 oom_kill=0
+member_state=active ended=no
+host_available_after=7924MiB
+
+## restore the slice to the deployed pair
+restored: max=8589934592 high=6442450944
+
+## 上限探针（第二次）：请求量正好等于剩余余量，最后一笔必然越过 max
+current=414683136 want=3700MiB max=4294967296
+member_state=active cgroup_current=14594048
+OK: 3700 MiB synthetic member running inside m5bmatrix.slice as m5bmatrix-stress-ceiling2.service
+t=2 current=888569856 max_d=0 oom_d=0 member=active host_available=13459MiB
+t=3 current=1358163968 max_d=0 oom_d=0 member=active host_available=13011MiB
+t=4 current=1828212736 max_d=0 oom_d=0 member=active host_available=12560MiB
+t=5 current=2312597504 max_d=0 oom_d=0 member=active host_available=12103MiB
+t=6 current=2747043840 max_d=0 oom_d=0 member=active host_available=11688MiB
+t=7 current=3216887808 max_d=0 oom_d=0 member=active host_available=11257MiB
+t=8 current=3686760448 max_d=0 oom_d=0 member=active host_available=10818MiB
+t=9 current=4156395520 max_d=0 oom_d=0 member=active host_available=10356MiB
+t=10 current=413765632 max_d=35 oom_d=1 member=inactive
+gone host_available=13552MiB
+member_final=inactive
+gone
+Nov 08 09:23:28 lavm-flnape7bgu kernel: oom-kill:constraint=CONSTRAINT_MEMCG,nodemask=(null),cpuset=m5bmatrix-stress-ceiling2.service,mems_allowed=0,oom_memcg=/m5bmatrix.slice,task_memcg=/m5bmatrix.slice/m5bmatrix-stress-ceiling2.service,task=python3,pid=2542398,uid=0
+Nov 08 09:23:28 lavm-flnape7bgu kernel: Memory cgroup out of memory: Killed process 2542398 (python3) total-vm:3819684kB, anon-rss:3776128kB, file-rss:7040kB, shmem-rss:0kB, UID:0 pgtables:7916kB oom_score_adj:0
+restored: max=8589934592 high=6442450944
+
+## 判定
+
+| 档位（max / high） | 压到 | 峰值 current | `high` 增量 | `max` 增量 | `oom_kill` 增量 | 谁被节流 / 谁继续 | 判定 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 4 GiB / 3 GiB | 3.6 GiB 请求 | **3,373,031,424（3.14 GiB）** | 107,093 | 0 | 0 | 成员被节流、存活；服务全部继续 | **通过**（节流语义） |
+| 6 GiB / 4 GiB | 5.7 GiB 请求 | **4,479,983,616（4.17 GiB）** | 111,716 | 0 | 0 | 同上 | **通过** |
+| 8 GiB / 6 GiB | 7.7 GiB 请求 | **6,694,584,320（6.23 GiB）** | 123,306 | 0 | 0 | 同上 | **通过** |
+
+三档的共同结论：**`memory.high` 一旦被跨过，内核持续回收/节流（`high` 计数线性增长），
+聚合稳定在 high 的约 1.25 倍处，既不会到 `max`、也不会杀任何进程**；三档期间宿主 `MemAvailable`
+始终在 7.9–11.1 GiB 之间，远高于 4 GiB 底线。这也解释了上一轮 6b 为什么顶不到 8 GiB。
+
+### 8 GiB 上限本身：单独探针，真的顶到了
+
+`memory.high` 会挡在 `max` 之前，所以要让上限真正生效，必须先把 `MemoryHigh` 抬到等于 `MemoryMax`
+（节流不再提前介入），并让成员的请求量**正好等于剩余余量** —— 最后一笔分配必然越过 `max`：
+
+```
+$ systemctl set-property m5bmatrix.slice MemoryMax=4294967296 MemoryHigh=4294967296 MemorySwapMax=0
+t=9  current=4156395520 max_d=0  oom_d=0 member=active   host_available=10356MiB
+t=10 current=413765632  max_d=35 oom_d=1 member=inactive host_available=13552MiB
+
+kernel: oom-kill:constraint=CONSTRAINT_MEMCG, oom_memcg=/m5bmatrix.slice,
+        task_memcg=/m5bmatrix.slice/m5bmatrix-stress-ceiling2.service, task=python3, pid=2542398
+kernel: Memory cgroup out of memory: Killed process 2542398 (python3) anon-rss:3776128kB
+切片事件：max 35 / oom 1 / oom_kill 1（之前为 0）
+```
+
+**判定：通过。** 顶到 `max` 后是**切片内的 memcg OOM**（`constraint=CONSTRAINT_MEMCG`、
+`oom_memcg=/m5bmatrix.slice`），只杀了那个合成成员；同切片的 API/PG/dispatcher/runtime/provider
+全程存活，宿主 `MemAvailable` 反而回升到 13.5 GiB —— 与上一轮那次 `global_oom` 连带杀掉
+`linuxqq.service` 的事故形成对照，说明落位断言与宿主底线确实把影响限制在切片内。
+
+探针结束后已把切片恢复为部署值：`max=8589934592 high=6442450944`。

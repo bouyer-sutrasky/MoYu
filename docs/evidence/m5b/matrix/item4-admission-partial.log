@@ -1,0 +1,188 @@
+# item 4 — A/B 执行、C 排队：本轮实测到的部分（未完成）
+
+## 基线产物（本轮所有读取都针对这一个文件）
+
+```
+$ sha256sum apps/dispatcher/dist/main.js
+0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6  apps/dispatcher/dist/main.js   (211968 B)
+```
+
+recorded=2026-11-08T09:48:10+08:00
+
+## 三个仓库（真实 Web API 建会话，成功）
+created Bouyer12/m5a-beta-adf10ad9    conversation=2f94ad6d-b05e-4082-85d2-9e2bb78f43cb
+created Bouyer12/m5a-delta-adf10ad9   conversation=00ecc82b-dd98-47ec-8658-4b7ecc848961
+created Bouyer12/m5a-epsilon-adf10ad9 conversation=42d9b76b-499d-42c4-a7b0-ce40d511bc36
+
+## 结果：三个任务全部 pending_admission，没有出现 A/B 执行、C 排队
+pending_admission|3
+
+## 为什么没出现（实测到的卡点，不是猜测）
+`repository_instances` 里只有最初那一个仓库有实例：
+
+  Bouyer12/m5a-beta-adf10ad9 | online | pid=2553782 | 3404 | 3403
+
+新增的两个仓库虽然写进了 `repositories`（status=active）和 `instances.json`
+（dshPort 3421/3431、bridgePort 3420/3430），但 supervisor 重启后**没有为它们创建实例**，
+日志里只有 beta 仓库的 `supervisor.instance_prepared / instance_spawned`。
+没有实例 → 平台侧准入拿不到该仓库的执行租约 → 三个任务都停在 `pending_admission`。
+
+## 因此
+- 第 1 条（A/B 执行、C 排队）**未验证**：需要先弄清「给一个新仓库分配实例」的路径
+  （instances.json 是否需要在 supervisor 启动前存在、是否需要平台侧的 provisioning 调用、
+  或 supervisor 是否只认平台下发的仓库列表）。
+- 第 2 条（成员级 OOM）与第 3 条（解除压力后的有界恢复）**未开始**。
+
+## 追加：实例行的来源找到了，准入的「按内存排队」也观测到了
+
+上一段说「新增仓库没有实例」。这一轮查清了实例行是怎么来的：
+
+```
+apps/api/src/domain/instances.ts
+async function loadInstance(...) {           // projectRuntime 会调用它
+  const [created] = await database.insert(repositoryInstances).values({ … }).onConflictDoNothing()
+  …
+}
+```
+也就是**仓库的 runtime 实例行是平台在读取仓库时按需 upsert 出来的**（`projectRuntime`），
+我先前只写了 `repositories` 行、没有触发这个 upsert，所以一直没有实例。
+用真实 API 读一次仓库列表就补齐了三行：
+
+```
+$ GET /api/v1/repositories
+API sees 3 repositories
+Bouyer12/m5a-beta-adf10ad9     online
+Bouyer12/m5a-delta-adf10ad9    sleeping
+Bouyer12/m5a-epsilon-adf10ad9  sleeping
+```
+
+随后为三个仓库同时建任务（真实 Web API，三条都建成），再采样：
+
+```
+Bouyer12/m5a-beta-adf10ad9    task=pending_admission  instance=online    reason=ownership_unverified  waiting=runtime
+Bouyer12/m5a-delta-adf10ad9   task=pending_admission  instance=sleeping  reason=resource_wait         waiting=memory
+Bouyer12/m5a-epsilon-adf10ad9 task=pending_admission  instance=sleeping  reason=resource_wait         waiting=memory
+```
+
+**这说明准入确实是按资源排队的**：同时来三个仓库的任务时，只有第一个拿到了（已 online 的）runtime，
+另外两个被判定 `resource_wait / waiting_for=memory`、停在 sleeping —— 也就是「后来的排队」，
+方向与要求的 A/B 执行、C 排队一致。
+
+但**还不算完成**：这一轮里 **A 自己也没真正执行起来**（它仍是 `pending_admission`，`waiting=runtime`，
+而不是 running），所以「A/B 执行、C 排队」这个具体形态只观测到一半（排队的一半），
+另一半（两个真的在跑）没做到。下一步要先弄清 `ownership_unverified` 这个原因码为什么会卡住
+已 online 的实例、以及准入给每个实例预留多少内存（决定两个实例能否同时在线）。
+
+## 仍未开始
+- 成员级 OOM（dmesg/journal 原始行 + `memory.events`，说明杀了哪个单元、其他成员是否存活）。
+- 解除压力后的有界恢复（C 按序被调起、容量回收、旧错误清除）。
+
+## 追加（2026-11-08T10:08Z）：多仓库卡在 profile 唯一约束上，找到了确切原因
+
+按「预算要装得下两个实例」调整后（`MEMORY_BUDGET_MB=6144`、`INSTANCE_MEMORY_MAX_MB=2048`，
+instances.json 预置三个仓库，且先 `GET /api/v1/repositories` 让平台 upsert 出实例行），
+两个新增仓库的实例没有起来，而是直接进了 fault：
+
+```
+Bouyer12/m5a-beta-adf10ad9    task=pending_admission  instance=online  reason=listening
+Bouyer12/m5a-delta-adf10ad9   task=pending_admission  instance=fault   reason=prepare_failed
+Bouyer12/m5a-epsilon-adf10ad9 task=pending_admission  instance=fault   reason=prepare_failed
+```
+
+supervisor 的原始错误（`supervisor.fault`）：
+
+```
+{"code":"prepare_failed","detail":"duplicate key value violates unique constraint \"repository_instances_profile_uq\""}
+```
+
+**根因**：`repository_instances` 上有 profile 唯一约束，而我给三个实例都写了同一个 `profile: "m5b"`。
+也就是「一个 profile 只能对应一个仓库实例」——多仓库要我给每个仓库**预置各自的 profile**
+（并各自 stage 一份 DSH home），这是当前矩阵 harness 还不具备的能力，不是我写个仓库行就能绕过的。
+
+## 结论
+- 第 1 条「A/B 执行、C 排队」：**未验证**。排队侧已经能观测（早前 R 轮里 `resource_wait / waiting_for=memory` 是真实读数），
+  但「两个同时执行」这半边被 profile 唯一约束挡住。
+- 下一步明确：给 `m5a-delta-adf10ad9` / `m5a-epsilon-adf10ad9` 各 stage 一份 profile（`m5b-b` / `m5b-c`），
+  instances.json 用各自的 profile，再按同一脚本重跑。这是 harness 的改动，动的是 `scripts/m5b/matrix/`，不改上游。
+- 第 2 条（成员级 OOM）、第 3 条（有界恢复）仍未开始 —— 它们不依赖多仓库，可以在单仓库栈上直接做。
+
+## 追加（2026-11-08T10:11Z）：**成员级 OOM 拿到了**（第 2 条完成）
+
+三仓库同时来任务、每个仓库用独立 profile（`m5b` / `m5b-a` / `m5b-b`），实测到：
+
+```
+t=0s
+   beta     task=pending_admission  instance=online    reason=listening
+   delta    task=pending_admission  instance=starting  reason=starting
+   epsilon  task=pending_admission  instance=sleeping  reason=capacity_wait  waiting=capacity   ← C 排队
+t=10s
+   beta     task=queued             instance=sleeping  reason=sleeping
+   delta    task=pending_admission  instance=fault     reason=oom_killed
+   epsilon  task=pending_admission  instance=starting
+```
+
+内核原始行（`dmesg`/journal，两次）：
+
+```
+oom-kill:constraint=CONSTRAINT_MEMCG, oom_memcg=/m5bmatrix.slice/m5bmatrix-supervisor.service,
+  task_memcg=/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-1794103827882, task=node, pid=2571401
+Memory cgroup out of memory: Killed process 2571401 (node) total-vm:12054748kB, anon-rss:279524kB
+oom-kill:constraint=CONSTRAINT_MEMCG, oom_memcg=/m5bmatrix.slice/m5bmatrix-supervisor.service,
+  task_memcg=/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-a-1794103856722, task=node, pid=2571837
+Memory cgroup out of memory: Killed process 2571837 (node) total-vm:1303972kB, anon-rss:207360kB
+```
+
+`memory.events`：`max 103 / oom 4 / oom_kill 2 / oom_group_kill 0`
+（切片根本没有被压满：`current=407 MB`、`peak=691 MB`、`max=8 GiB`）
+
+**这是成员级、不是切片级**：被杀的是 supervisor 自己子树下的**两个实例运行时**
+（`instances/m5b-…`、`instances/m5b-a-…`），触发条件是被杀者的祖先 cgroup
+`m5bmatrix-supervisor.service` 的 `MemoryMax=512M`。同一时刻其他成员全部存活：
+
+```
+api=active(50 MB) pg=active(43 MB) provider=active(12 MB) dispatcher=active(26 MB) supervisor=active(250 MB)
+```
+
+supervisor 侧也记了对应事件：`{"event":"supervisor.fault","code":"oom_killed","detail":"The instance cgroup recorde…"}`。
+
+**第 2 条判定：通过。** 成员级 OOM 有内核原始行、有 `memory.events` 增量、点名了被杀单元与存活单元。
+
+## 由此得到的结构事实（对第 1、3 条很关键）
+矩阵 harness 把 supervisor 整个子树限在 **512M**，而两个仓库实例都挂在它下面，
+所以「两个实例同时跑」会先把 supervisor 子树压爆 —— 这解释了为什么 A/B 同时执行至今没出现。
+要让 A/B 真跑起来，需要把 supervisor 的 `MemoryMax` 提高（我已把它做成 `M5B_MATRIX_SUPERVISOR_MAX` 可覆盖）。
+
+## 追加（2026-11-08T10:14Z）：A 跑起来了、C 在排队，但 B 起不来（新卡点）
+
+把 supervisor 上限提到 5G（`M5B_MATRIX_SUPERVISOR_MAX=5G`，实例 2048、预算 6144），
+三个仓库各自的 profile 也都 stage 好了，实测：
+
+```
+t=0s
+   beta     task=pending_admission  instance=online    reason=listening
+   delta    task=pending_admission  instance=starting  reason=starting
+   epsilon  task=pending_admission  instance=sleeping  reason=capacity_wait  waiting=capacity   ← C 排队
+t=10s
+   beta     task=running            instance=online    reason=listening                        ← A 执行
+   delta    task=pending_admission  instance=fault     reason=instance_lost
+   epsilon  task=pending_admission  instance=fault     reason=instance_lost
+```
+
+supervisor：`{"code":"instance_lost","detail":"The runtime process exited unexpectedly"}`
+第二个实例的启动日志（`/tmp/m5bmatrix/instance-logs/m5b-a.log` 指向的 startup 日志）：
+
+```
+Error: HMR is disposed
+    at …/@deepseek-ai/dsh-hmr/lib/index.js:751:29
+```
+
+**根因**：附加 profile 的 runtime 与主实例共用同一个 `DSH_HOME`，HMR 监视器被先启动的实例持有，
+后启动的直接崩。所以「A/B 同时执行」在这个 harness 里还需要**每个实例独立的 DSH home**
+（或对非主实例关掉 HMR）。
+
+## 第 4 项当前状态（如实）
+| 子项 | 状态 |
+| --- | --- |
+| 1. A/B 执行、C 排队 | **部分**：A 执行 + C 排队（`capacity_wait / waiting=capacity`）已实测；B 因 `instance_lost`（HMR 冲突）起不来 |
+| 2. 真实成员级 `oom_kill` | **通过**（内核行 + `memory.events` + 被杀单元/存活单元） |
+| 3. 解除压力后的有界恢复 | **未开始** |

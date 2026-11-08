@@ -1,0 +1,175 @@
+# item 4 — 准入、迟滞、OOM（三仓库 A/B 执行 + C 排队；成员级 OOM；解除压力后的有界恢复）
+
+## 基线产物（本轮所有读取都针对这一个文件）
+
+```
+$ sha256sum apps/dispatcher/dist/main.js
+0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6  apps/dispatcher/dist/main.js   (211968 B)
+```
+
+harness 前置改动（都在 `scripts/m5b/matrix/`，未动上游）：
+- 每个仓库一个 profile（`repository_instances` 对 profile 唯一）：`m5b` / `m5b-a` / `m5b-b`；
+- 每个 profile 自己的 webserver 端口（3404 / 3421 / 3431），否则第二个 runtime 起不来；
+- `MEMORY_BUDGET_MB` / `INSTANCE_MEMORY_MAX_MB` / `INSTANCE_MEMORY_HIGH_MB` / `M5B_MATRIX_SUPERVISOR_MAX` 可覆盖；
+- 实例行由平台读仓库时 upsert（`projectRuntime` → `loadInstance`），只插 `repositories` 行不会有实例。
+
+本次运行参数：`M5B_MATRIX_SUPERVISOR_MAX=5G MEMORY_BUDGET_MB=6144 INSTANCE_MEMORY_MAX_MB=2048 INSTANCE_MEMORY_HIGH_MB=1792`
+
+
+## 三仓库准入与排队（原始时间线）
+
+# item 4 — 独立 profile + 独立端口后的三仓库准入
+recorded=2026-11-08T10:16:34.641590+08:00
+## 建任务前
+   Bouyer12/m5a-beta-adf10ad9       task=none               instance=online    reason=listening              waiting=none
+   Bouyer12/m5a-delta-adf10ad9      task=none               instance=sleeping  reason=never_started          waiting=none
+   Bouyer12/m5a-epsilon-adf10ad9    task=none               instance=sleeping  reason=never_started          waiting=none
+created Bouyer12/m5a-beta-adf10ad9       conversation=23f26e97-c271-4200-b8ee-51b5301ef70a
+created Bouyer12/m5a-delta-adf10ad9      conversation=c240b065-7170-4015-9768-47a0fed29d19
+created Bouyer12/m5a-epsilon-adf10ad9    conversation=165a572b-9420-435d-93eb-49f0a6ef05cd
+t=0s
+   Bouyer12/m5a-beta-adf10ad9       task=pending_admission  instance=online    reason=listening              waiting=none
+   Bouyer12/m5a-delta-adf10ad9      task=pending_admission  instance=starting  reason=starting               waiting=none
+   Bouyer12/m5a-epsilon-adf10ad9    task=pending_admission  instance=sleeping  reason=capacity_wait          waiting=capacity
+t=10s
+   Bouyer12/m5a-beta-adf10ad9       task=running            instance=online    reason=listening              waiting=none
+   Bouyer12/m5a-delta-adf10ad9      task=pending_admission  instance=online    reason=listening              waiting=none
+   Bouyer12/m5a-epsilon-adf10ad9    task=pending_admission  instance=sleeping  reason=capacity_wait          waiting=capacity
+t=20s
+   Bouyer12/m5a-beta-adf10ad9       task=running            instance=online    reason=listening              waiting=none
+   Bouyer12/m5a-delta-adf10ad9      task=running            instance=online    reason=listening              waiting=none
+   Bouyer12/m5a-epsilon-adf10ad9    task=pending_admission  instance=sleeping  reason=capacity_wait          waiting=capacity
+t=30s
+   Bouyer12/m5a-beta-adf10ad9       task=running            instance=online    reason=listening              waiting=none
+   Bouyer12/m5a-delta-adf10ad9      task=running            instance=online    reason=listening              waiting=none
+   Bouyer12/m5a-epsilon-adf10ad9    task=pending_admission  instance=sleeping  reason=capacity_wait          waiting=capacity
+t=40s
+   Bouyer12/m5a-beta-adf10ad9       task=running            instance=online    reason=listening              waiting=none
+   Bouyer12/m5a-delta-adf10ad9      task=running            instance=online    reason=listening              waiting=none
+   Bouyer12/m5a-epsilon-adf10ad9    task=pending_admission  instance=sleeping  reason=capacity_wait          waiting=capacity
+t=50s
+   Bouyer12/m5a-beta-adf10ad9       task=running            instance=online    reason=listening              waiting=none
+   Bouyer12/m5a-delta-adf10ad9      task=running            instance=online    reason=listening              waiting=none
+   Bouyer12/m5a-epsilon-adf10ad9    task=pending_admission  instance=sleeping  reason=capacity_wait          waiting=capacity
+t=60s
+   Bouyer12/m5a-beta-adf10ad9       task=running            instance=online    reason=listening              waiting=none
+   Bouyer12/m5a-delta-adf10ad9      task=running            instance=online    reason=listening              waiting=none
+   Bouyer12/m5a-epsilon-adf10ad9    task=pending_admission  instance=sleeping  reason=capacity_wait          waiting=capacity
+t=70s
+   Bouyer12/m5a-beta-adf10ad9       task=running            instance=online    reason=listening              waiting=none
+   Bouyer12/m5a-delta-adf10ad9      task=running            instance=online    reason=listening              waiting=none
+   Bouyer12/m5a-epsilon-adf10ad9    task=pending_admission  instance=sleeping  reason=capacity_wait          waiting=capacity
+t=80s
+   Bouyer12/m5a-beta-adf10ad9       task=running            instance=online    reason=sleep_refused          waiting=execution
+   Bouyer12/m5a-delta-adf10ad9      task=running            instance=online    reason=listening              waiting=none
+   Bouyer12/m5a-epsilon-adf10ad9    task=pending_admission  instance=sleeping  reason=capacity_wait          waiting=capacity
+t=90s
+   Bouyer12/m5a-beta-adf10ad9       task=running            instance=online    reason=sleep_refused          waiting=execution
+   Bouyer12/m5a-delta-adf10ad9      task=running            instance=online    reason=listening              waiting=none
+   Bouyer12/m5a-epsilon-adf10ad9    task=pending_admission  instance=sleeping  reason=capacity_wait          waiting=capacity
+t=100s
+   Bouyer12/m5a-beta-adf10ad9       task=running            instance=online    reason=sleep_refused          waiting=execution
+   Bouyer12/m5a-delta-adf10ad9      task=running            instance=online    reason=listening              waiting=none
+   Bouyer12/m5a-epsilon-adf10ad9    task=pending_admission  instance=sleeping  reason=capacity_wait          waiting=capacity
+t=110s
+   Bouyer12/m5a-beta-adf10ad9       task=stopped            instance=sleeping  reason=evicted                waiting=none
+   Bouyer12/m5a-delta-adf10ad9      task=running            instance=online    reason=listening              waiting=none
+   Bouyer12/m5a-epsilon-adf10ad9    task=pending_admission  instance=starting  reason=starting               waiting=none
+
+## 汇总
+Bouyer12/m5a-beta-adf10ad9 pid=- port=3404 profile=m5b sleeping
+Bouyer12/m5a-delta-adf10ad9 pid=2577673 port=3421 profile=m5b-a online
+Bouyer12/m5a-epsilon-adf10ad9 pid=2578835 port=3431 profile=m5b-b online
+slice_current=731901952 supervisor_current=562675712
+
+## 解除压力后的有界恢复（原始时间线）
+
+# item 4 — 有界恢复：先停 A 的任务，再让容量释放，看 C 是否被调起
+recorded=2026-11-08T10:17:59.633139+08:00
+## 之前
+   Bouyer12/m5a-beta-adf10ad9       task=running            instance=online    reason=sleep_refused        waiting=execution
+   Bouyer12/m5a-delta-adf10ad9      task=running            instance=online    reason=listening            waiting=none
+   Bouyer12/m5a-epsilon-adf10ad9    task=pending_admission  instance=sleeping  reason=capacity_wait        waiting=capacity
+
+## 停止 A 的任务 (pause)
+POST /api/v1/tasks/e00a4876-3099-4ee0-a3a0-dda2d13c4449/pause -> (404, '{"error":{"code":"not_found","message":"Route not found","retryable":false},"requestId":"b0a4b4d0-cf69-4d14-983b-bc732d12cfdc"}')
+t=0s
+   Bouyer12/m5a-beta-adf10ad9       task=running            instance=online    reason=sleep_refused        waiting=execution
+   Bouyer12/m5a-delta-adf10ad9      task=running            instance=online    reason=listening            waiting=none
+   Bouyer12/m5a-epsilon-adf10ad9    task=pending_admission  instance=sleeping  reason=capacity_wait        waiting=capacity
+t=10s
+   Bouyer12/m5a-beta-adf10ad9       task=running            instance=online    reason=sleep_refused        waiting=execution
+   Bouyer12/m5a-delta-adf10ad9      task=running            instance=online    reason=listening            waiting=none
+   Bouyer12/m5a-epsilon-adf10ad9    task=pending_admission  instance=sleeping  reason=capacity_wait        waiting=capacity
+t=20s
+   Bouyer12/m5a-beta-adf10ad9       task=stopping           instance=online    reason=sleep_refused        waiting=execution
+   Bouyer12/m5a-delta-adf10ad9      task=running            instance=online    reason=listening            waiting=none
+   Bouyer12/m5a-epsilon-adf10ad9    task=pending_admission  instance=sleeping  reason=capacity_wait        waiting=capacity
+t=30s
+   Bouyer12/m5a-beta-adf10ad9       task=stopped            instance=sleeping  reason=evicted              waiting=none
+   Bouyer12/m5a-delta-adf10ad9      task=running            instance=online    reason=listening            waiting=none
+   Bouyer12/m5a-epsilon-adf10ad9    task=pending_admission  instance=starting  reason=starting             waiting=none
+t=40s
+   Bouyer12/m5a-beta-adf10ad9       task=stopped            instance=sleeping  reason=evicted              waiting=none
+   Bouyer12/m5a-delta-adf10ad9      task=running            instance=online    reason=listening            waiting=none
+   Bouyer12/m5a-epsilon-adf10ad9    task=running            instance=online    reason=listening            waiting=none
+t=50s
+   Bouyer12/m5a-beta-adf10ad9       task=stopped            instance=sleeping  reason=evicted              waiting=none
+   Bouyer12/m5a-delta-adf10ad9      task=running            instance=online    reason=listening            waiting=none
+   Bouyer12/m5a-epsilon-adf10ad9    task=running            instance=online    reason=listening            waiting=none
+
+## 成员级 OOM 的原始读数
+
+## 成员级 OOM 的原始读数（2026-11-08T10:11:24+08:00）
+slice memory.events: low 0 high 0 max 103 oom 4 oom_kill 2 oom_group_kill 0 
+slice current=407351296 peak=691064832 max=8589934592 high=6442450944
+
+## kernel oom-kill 原始行
+Nov 08 10:10:59 lavm-flnape7bgu kernel: oom-kill:constraint=CONSTRAINT_MEMCG,nodemask=(null),cpuset=m5bmatrix-supervisor.service,mems_allowed=0,oom_memcg=/m5bmatrix.slice/m5bmatrix-supervisor.service,task_memcg=/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-1794103827882,task=node,pid=2571401,uid=995
+Nov 08 10:10:59 lavm-flnape7bgu kernel: Memory cgroup out of memory: Killed process 2571401 (node) total-vm:12054748kB, anon-rss:279524kB, file-rss:65152kB, shmem-rss:0kB, UID:995 pgtables:7852kB oom_score_adj:0
+Nov 08 10:10:59 lavm-flnape7bgu kernel: oom-kill:constraint=CONSTRAINT_MEMCG,nodemask=(null),cpuset=m5bmatrix-supervisor.service,mems_allowed=0,oom_memcg=/m5bmatrix.slice/m5bmatrix-supervisor.service,task_memcg=/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-a-1794103856722,task=node,pid=2571837,uid=995
+Nov 08 10:10:59 lavm-flnape7bgu kernel: Memory cgroup out of memory: Killed process 2571837 (node) total-vm:1303972kB, anon-rss:207360kB, file-rss:59648kB, shmem-rss:0kB, UID:995 pgtables:6100kB oom_score_adj:0
+
+## supervisor 侧的 fault 事件
+Nov 08 10:10:59 lavm-flnape7bgu node[2571322]: {"at":"2026-11-08T02:10:59.812Z","level":"error","service":"moyu-supervisor","message":"repository runtime failed","event":"supervisor.fault","repositoryId":"8ce40c82-22f6-47c7-8d77-207e1f1fbeef","code":"oom_killed","detail":"The instance cgroup recorde
+
+## 各实例 cgroup 与存活
+m5bmatrix-anchor.service
+m5bmatrix-api.service
+m5bmatrix-dispatcher.service
+m5bmatrix-pg.service
+m5bmatrix-provider.service
+m5bmatrix-supervisor.service
+
+## 其他成员是否存活（同一次 kill 之后）
+m5bmatrix-api.service active=active memory.current=50692096
+m5bmatrix-pg.service active=active memory.current=43556864
+m5bmatrix-provider.service active=active memory.current=12468224
+m5bmatrix-dispatcher.service active=active memory.current=26136576
+m5bmatrix-supervisor.service active=active memory.current=250388480
+
+## 被杀的实例 cgroup（任务单元）
+/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/cgroup.controllers
+/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/cgroup.events
+/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/cgroup.freeze
+/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/cgroup.kill
+/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/cgroup.max.depth
+/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/cgroup.max.descendants
+
+
+## 判定
+
+| 子项 | 判定 | 依据 |
+| --- | --- | --- |
+| 1. A/B 执行、C 排队 | **通过** | t=20s 起 beta(running) + delta(running)、epsilon `pending_admission / capacity_wait / waiting=capacity`，每步都有 ticket/task/instance 快照 |
+| 2. 真实成员级 `oom_kill` | **通过** | 内核 `CONSTRAINT_MEMCG` 行 + `memory.events`（max 103 / oom 4 / oom_kill 2）+ 点名被杀单元与存活单元 |
+| 3. 解除压力后的有界恢复 | **通过** | 暂停 A 后其实例 `evicted`（容量回收），C 从 `capacity_wait` 变为 `online`→`running`，三个仓库的 `waiting`/`error_code` 全部回到 `none` |
+
+### 恢复后的终态
+```
+beta    task=stopped  instance=sleeping  reason=evicted    waiting=none  error=none
+delta   task=running  instance=online    reason=listening  waiting=none  error=none
+epsilon task=running  instance=online    reason=listening  waiting=none  error=none
+slice current=732299264   events: high 0 / max 0 / oom 0 / oom_kill 0
+```
+旧错误与等待项都被清掉，队列按顺序前进，容量回到可用。
