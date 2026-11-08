@@ -69,6 +69,8 @@ async function startBridge(): Promise<FakeBridge> {
           readOnlyDiscussion: true,
           start: true,
           admission: true,
+          // This fake declares the full M6-A capability set, attachments included.
+          attachments: true,
         },
         source: { kind: 'workspace', enabled: true },
       });

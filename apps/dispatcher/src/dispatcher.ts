@@ -74,9 +74,14 @@ async function runRepositoryWorker(
   }
 
   let admissionSupported = false;
+  let attachmentsSupported = false;
   try {
     const capabilities = await bridge.capabilities();
     admissionSupported = capabilities.capabilities.admission === true;
+    // L113: absent means unsupported. An old Bridge's strict trigger schema
+    // rejects unknown keys with a non-retryable 400, so this stays false until
+    // the runtime explicitly declares the capability.
+    attachmentsSupported = capabilities.capabilities.attachments === true;
   } catch (error) {
     logger.warn(
       {
@@ -88,7 +93,12 @@ async function runRepositoryWorker(
     );
   }
   logger.info(
-    { event: 'dispatcher.repository', repository: repository.fullName, admissionSupported },
+    {
+      event: 'dispatcher.repository',
+      repository: repository.fullName,
+      admissionSupported,
+      attachmentsSupported,
+    },
     'dispatching for repository runtime',
   );
 
@@ -109,7 +119,15 @@ async function runRepositoryWorker(
 
   await Promise.allSettled([
     runLoop('delivery', config.deliveryIntervalMs, signal, logger, () =>
-      deliverOnce(pool, config, repository, bridge, logger, admissionSupported),
+      deliverOnce(
+        pool,
+        config,
+        repository,
+        bridge,
+        logger,
+        admissionSupported,
+        attachmentsSupported,
+      ),
     ),
     runLoop('event_sync', config.eventSyncIntervalMs, signal, logger, () =>
       syncOnce(pool, repository, bridge, logger),

@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { mkdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { and, eq, inArray, isNull } from 'drizzle-orm';
+import type { FastifyReply } from 'fastify';
 
 import {
   attachmentKindFor,
@@ -115,6 +117,43 @@ export async function storeUpload(
 
 export async function removeStoredUpload(config: ApiConfig, storageKey: string): Promise<void> {
   await rm(resolveStoragePath(config, storageKey), { force: true }).catch(() => undefined);
+}
+
+/**
+ * Streams one stored attachment back as a download. The owner-facing route and
+ * the machine download route share this implementation, so the bytes always
+ * come from the verified storage root, are always served as an attachment
+ * (never inline) and are never cached.
+ */
+export async function sendStoredAttachment(
+  reply: FastifyReply,
+  config: ApiConfig,
+  artifact: Artifact,
+  options: { contentType: string; headers?: Record<string, string> },
+): Promise<FastifyReply> {
+  if (!artifact.storageKey) {
+    throw ApiProblem.notFound('Attachment not found');
+  }
+  const file = await verifiedStorageFile(config, artifact.storageKey);
+  const metadata = (artifact.metadata ?? {}) as AttachmentMetadata;
+  const filename = safeUploadFilename(
+    typeof metadata.filename === 'string' ? metadata.filename : path.basename(file.path),
+  );
+  reply
+    .header('content-type', options.contentType)
+    .header('content-length', String(file.size))
+    // RFC 5987 filename so a non-ASCII name survives, with a safe ASCII fallback.
+    .header(
+      'content-disposition',
+      `attachment; filename="${filename.replace(/[^\x20-\x7e]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+    )
+    .header('x-content-type-options', 'nosniff')
+    .header('cache-control', 'private, no-store')
+    .header('content-security-policy', "default-src 'none'; sandbox");
+  for (const [name, value] of Object.entries(options.headers ?? {})) {
+    reply.header(name, value);
+  }
+  return reply.send(createReadStream(file.path));
 }
 
 interface AttachmentMetadata {

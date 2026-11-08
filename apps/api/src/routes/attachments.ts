@@ -1,6 +1,3 @@
-import { createReadStream } from 'node:fs';
-import path from 'node:path';
-
 import { and, eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 
@@ -22,9 +19,9 @@ import {
   ownedConversation,
   removeStoredUpload,
   safeUploadFilename,
+  sendStoredAttachment,
   storeUpload,
   toAttachmentSummary,
-  verifiedStorageFile,
 } from '../domain/attachments';
 import { ApiProblem } from '../lib/errors';
 import { parseInput, sendData } from '../lib/http';
@@ -185,23 +182,9 @@ export function registerAttachmentRoutes(
       throw ApiProblem.unavailable('Attachment storage is not configured');
     }
 
-    const file = await verifiedStorageFile(config, row.artifact.storageKey);
-    const metadata = (row.artifact.metadata ?? {}) as { filename?: unknown };
-    const filename = safeUploadFilename(
-      typeof metadata.filename === 'string' ? metadata.filename : path.basename(file.path),
-    );
-    reply
-      .header('content-type', safeMimeType(row.artifact.mimeType))
-      .header('content-length', String(file.size))
-      // RFC 5987 filename so a non-ASCII name survives, with a safe ASCII fallback.
-      .header(
-        'content-disposition',
-        `attachment; filename="${filename.replace(/[^\x20-\x7e]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
-      )
-      .header('x-content-type-options', 'nosniff')
-      .header('cache-control', 'private, no-store')
-      .header('content-security-policy', "default-src 'none'; sandbox");
-    return reply.send(createReadStream(file.path));
+    return sendStoredAttachment(reply, config, row.artifact, {
+      contentType: safeMimeType(row.artifact.mimeType),
+    });
   });
 
   /** Draft attachments of a conversation that were uploaded but not yet sent. */

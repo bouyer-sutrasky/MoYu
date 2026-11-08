@@ -1,8 +1,14 @@
 import { and, eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 
-import { runtimeEventDataSchema, runtimeEventInputSchema, type TaskSummary } from '@moyu/contracts';
 import {
+  runtimeEventDataSchema,
+  runtimeEventInputSchema,
+  uuidSchema,
+  type TaskSummary,
+} from '@moyu/contracts';
+import {
+  artifacts,
   conversations,
   messages,
   repositories,
@@ -13,6 +19,7 @@ import {
 
 import type { Authenticate } from '../auth/guards';
 import type { ApiConfig } from '../config';
+import { sendStoredAttachment } from '../domain/attachments';
 import { toTaskSummary } from '../domain/serialize';
 import { appendEvent } from '../events/append';
 import { eventToWorkspaceEvent } from '../events/format';
@@ -218,6 +225,82 @@ export function registerRuntimeRoutes(
           }),
         );
       }
+    },
+  );
+
+  /**
+   * M6-A L113: the repository runtime fetches the bytes of one sent attachment
+   * with its machine token. The token is verified against the repository that
+   * owns the message's conversation, and the artifact must be bound to that
+   * exact message, so a runtime can never read another repository's files or
+   * enumerate attachments by id alone. The response always carries
+   * `application/octet-stream` and the stored digest, never an inline type.
+   */
+  app.get(
+    '/api/internal/v1/messages/:messageId/attachments/:attachmentId',
+    { preHandler: machineAuthenticate },
+    async (request, reply) => {
+      const params = request.params as { messageId?: string; attachmentId?: string };
+      const messageId = parseInput(uuidSchema, params.messageId);
+      const attachmentId = parseInput(uuidSchema, params.attachmentId);
+
+      const [message] = await database
+        .select()
+        .from(messages)
+        .where(eq(messages.id, messageId))
+        .limit(1);
+      if (!message) {
+        throw ApiProblem.notFound('Message not found');
+      }
+      const [conversation] = await database
+        .select()
+        .from(conversations)
+        .where(eq(conversations.id, message.conversationId))
+        .limit(1);
+      if (!conversation) {
+        throw ApiProblem.notFound('Message not found');
+      }
+      const [repository] = await database
+        .select()
+        .from(repositories)
+        .where(eq(repositories.id, conversation.repositoryId))
+        .limit(1);
+      if (!repository || !verifyCallbackToken(config, repository, request.machineToken ?? '')) {
+        throw ApiProblem.unauthorized('Machine token is not valid for this repository');
+      }
+
+      const [artifact] = await database
+        .select()
+        .from(artifacts)
+        .where(
+          and(
+            eq(artifacts.id, attachmentId),
+            eq(artifacts.type, 'attachment'),
+            eq(artifacts.repositoryId, conversation.repositoryId),
+          ),
+        )
+        .limit(1);
+      if (!artifact) {
+        throw ApiProblem.notFound('Attachment not found');
+      }
+      // An upload that was never sent is not downloadable through a message
+      // path; the runtime would otherwise fetch a draft the owner never sent.
+      if (!artifact.messageId) {
+        throw ApiProblem.conflict('Attachment has not been sent with a message yet');
+      }
+      // A sent attachment is only reachable through its own message; a missing
+      // digest cannot be verified by the runtime, so it is not served either.
+      if (artifact.messageId !== messageId || !artifact.sha256) {
+        throw ApiProblem.notFound('Attachment not found');
+      }
+      if (!config.artifactStorageDir) {
+        throw ApiProblem.unavailable('Attachment storage is not configured');
+      }
+
+      return sendStoredAttachment(reply, config, artifact, {
+        contentType: 'application/octet-stream',
+        headers: { 'x-moyu-sha256': artifact.sha256 },
+      });
     },
   );
 }
