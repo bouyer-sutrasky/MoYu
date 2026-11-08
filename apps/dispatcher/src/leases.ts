@@ -98,7 +98,8 @@ function toLease(row: LeaseRow): ExecutionLease {
   };
 }
 
-async function appendLeaseEvent(
+/** Appends one row to the lease ledger; the caller owns the transaction. */
+export async function appendLeaseEvent(
   database: pg.Pool | pg.PoolClient,
   input: {
     leaseId: string | null;

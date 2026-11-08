@@ -6,7 +6,11 @@ import type { RuntimeBridgeClient, BridgeEvent } from '@moyu/runtime-client';
 
 import type { DispatcherLogger } from './logger';
 import { bridgeErrorMessage, type RepositoryBinding } from './runtime';
-import { claimExecution, reconcileExecutionClaimOn } from './reservations';
+import {
+  claimExecution,
+  reconcileExecutionClaimOn,
+  supersedeReservationAssignmentOn,
+} from './reservations';
 import { appendEventSql } from './events-sql';
 import { endedState, stateFromSnapshot, TASK_COLUMNS, taskSummary, type TaskRow } from './tasks';
 import { pauseEvidenceProblem, pauseEvidenceProven } from './pause-evidence';
@@ -199,6 +203,22 @@ async function applyTaskEvent(
         activeLease !== undefined &&
         activeLease.id === leaseId &&
         String(activeLease.fencing_token) === fencingToken;
+      // The runtime re-issues an Assignment under the same lease when a host
+      // restart interrupted its turn: the Ticket, lease and token still name the
+      // same execution, so the reservation follows the live Assignment and the
+      // replaced one stays on the lease ledger. A generation that is not the
+      // current one is never adopted; it keeps the mismatch below.
+      if (currentGeneration) {
+        await supersedeReservationAssignmentOn(client, {
+          repositoryId: repository.id,
+          requestKey: `admit:${existing.id}`,
+          ticketId,
+          assignmentId,
+          leaseId,
+          fencingToken,
+          sourceEventId: event.id,
+        });
+      }
       const reservation = await client.query<{
         assignment_id: string;
         lease_id: string;
