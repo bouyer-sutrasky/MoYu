@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -80,6 +80,98 @@ describe('supervisor review worktree resolution', () => {
     const result = locateTicketWorktree({ worktreeRoot: root, profile, ticketId });
     expect(result.state).toBe('unavailable');
     expect(result.directory).toBeNull();
+  });
+});
+
+/**
+ * `worktreeRoot/<profile>` is the boundary the supervisor configured. A
+ * directory the task created cannot redirect it outside that boundary, and a
+ * refusal must not have read anything beyond it in the first place.
+ */
+describe('supervisor worktree boundary', () => {
+  const ticketId = 'abcdef0123456789abcdef0123456789';
+  const name = `mp-fix-${ticketId.slice(0, 12)}`;
+
+  function ticketRoot(profile: string): string {
+    const root = temporary('moyu-worktrees');
+    mkdirSync(join(root, profile), { recursive: true });
+    return root;
+  }
+
+  /** A directory outside the worktree root, with a sentinel and a fake worktree. */
+  function outside(): string {
+    const directory = temporary('moyu-outside');
+    writeFileSync(join(directory, 'outside-sentinel.txt'), 'top secret\n');
+    mkdirSync(join(directory, '.git'));
+    return directory;
+  }
+
+  function expectRefused(result: ReturnType<typeof locateTicketWorktree>): void {
+    expect(result.state).toBe('unavailable');
+    expect(result.directory).toBeNull();
+    expect(result.reason).toContain('边界');
+    // The refusal must not have read the outside directory: neither the
+    // sentinel name nor its content may surface in the result.
+    expect(JSON.stringify(result)).not.toContain('outside-sentinel');
+    expect(JSON.stringify(result)).not.toContain('top secret');
+  }
+
+  it('refuses a ticket directory symlinked outside the worktree root', () => {
+    const root = ticketRoot('probe1');
+    const secret = outside();
+    symlinkSync(secret, join(root, 'probe1', name), 'dir');
+
+    const result = locateTicketWorktree({ worktreeRoot: root, profile: 'probe1', ticketId });
+
+    expectRefused(result);
+    expect(result.reason).toContain(name);
+  });
+
+  it('refuses a profile directory symlinked outside the worktree root', () => {
+    const root = temporary('moyu-worktrees');
+    const secret = outside();
+    mkdirSync(join(secret, name, '.git'), { recursive: true });
+    symlinkSync(secret, join(root, 'probe1'), 'dir');
+
+    const result = locateTicketWorktree({ worktreeRoot: root, profile: 'probe1', ticketId });
+
+    expectRefused(result);
+  });
+
+  it('refuses a profile path that climbs out of the worktree root with ..', () => {
+    const secret = outside();
+    mkdirSync(join(secret, name, '.git'), { recursive: true });
+    const root = temporary('moyu-worktrees');
+    const profile = `../${basename(secret)}`;
+
+    const result = locateTicketWorktree({ worktreeRoot: root, profile, ticketId });
+
+    expectRefused(result);
+  });
+
+  it('refuses a symlink chain that reaches outside the worktree root', () => {
+    const root = ticketRoot('probe1');
+    const secret = outside();
+    const links = temporary('moyu-links');
+    symlinkSync(secret, join(links, 'second'), 'dir');
+    symlinkSync(join(links, 'second'), join(links, 'first'), 'dir');
+    symlinkSync(join(links, 'first'), join(root, 'probe1', name), 'dir');
+
+    const result = locateTicketWorktree({ worktreeRoot: root, profile: 'probe1', ticketId });
+
+    expectRefused(result);
+  });
+
+  it('still locates a real directory inside the worktree root', () => {
+    const root = ticketRoot('probe1');
+    const directory = join(root, 'probe1', name);
+    mkdirSync(join(directory, '.git'), { recursive: true });
+
+    const result = locateTicketWorktree({ worktreeRoot: root, profile: 'probe1', ticketId });
+
+    expect(result.state).toBe('available');
+    expect(result.directory).toBe(directory);
+    expect(result.reason).toBeNull();
   });
 });
 
