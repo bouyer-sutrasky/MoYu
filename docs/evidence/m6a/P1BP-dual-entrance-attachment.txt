@@ -1,0 +1,315 @@
+# P1-B'：带附件的双入口合并（源 Web 会话 → 已导入 GitHub 会话）
+
+依据：#56 复审 P1-B'（`apps/api/src/routes/conversations.ts` 合并事务、`apps/api/src/domain/attachments.ts` 绑定校验）；动作键 `M6A-REWORK-ISS57-P1BP`。
+分支：本地 `agent/review-isolation-m6a-fa8ec916012c` 指向 `origin/agent/attachments-review-panel-4bd4aae33eac`（沿用 PR #44）。
+基线：`71f56290009d0e7c78cb4db2675f4c87cfe65de4`（P1-B 验收通过时的 head）。
+环境：隔离 PostgreSQL `127.0.0.1:55432`、Node v24.22.2；`TEST_DATABASE_ADMIN_URL` 指向该隔离实例，测试用真实数据库，没有 mock。
+未改 `/root/src/upstream/*`，未重启 3082，未合并 PR。
+
+代码 head（本文件据其产出，其后一个 docs-only 提交入库）：
+$ git rev-parse HEAD
+83a8f3b2d6fd3b9793656fb3d7615a5bf712c8f2
+
+$ git log --oneline 71f5629..HEAD
+83a8f3b fix(api): move conversation artifacts into the target before a merge binds attachments
+9240298 test(api): reproduce the 422 when a first Web message carries an attachment into a merge
+
+## 1. 红段：先落测试（HEAD = 9240298，合并事务未改）
+
+Web 会话上传有效文本附件（201），带同一附件向已导入的 GitHub 会话发首条消息（文本里含 Issue URL）→ 当前 422：
+
+$ cd apps/api && TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
+    pnpm exec vitest run test/integration/dual-entrance-attachment.integration.test.ts
+$ git rev-parse HEAD
+92402986a64bb9e4ec98e61d4af49a9f9ad891cf
+$ git status --short
+
+$ cd apps/api && TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm exec vitest run test/integration/dual-entrance-attachment.integration.test.ts
+
+ RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/api
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > moves the attachment into the target conversation in the same transaction
+merge response: 422 {"error":{"code":"invalid_request","message":"attachmentIds 必须是本会话尚未发送的附件","retryable":false},"requestId":"68a0902a-7579-4dfc-a3ab-df3de2f2d142"}
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > still refuses an attachment that belongs to another owner
+foreign response: 422 {"error":{"code":"invalid_request","message":"attachmentIds 必须是本会话尚未发送的附件","retryable":false},"requestId":"08afd876-ecbb-429d-9779-f65af131c8e9"}
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > rolls the whole merge back when one attachment cannot be sent
+rollback before: {"messages":1,"attachments":[{"id":"1d5912da-f171-423c-899d-4c50321c61ef","conversationId":"ab0efb90-e63d-41cd-938b-7345b0f48120","messageId":"39b201a6-60af-49e2-80d1-e1e781537ee6","sha256":"57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16"},{"id":"0a29d48f-25fa-4edc-b548-e52fe8ec1f4a","conversationId":"ab0efb90-e63d-41cd-938b-7345b0f48120","messageId":null,"sha256":"57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16"}]}
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > rolls the whole merge back when one attachment cannot be sent
+rollback response: 422 {"error":{"code":"invalid_request","message":"attachmentIds 必须是本会话尚未发送的附件","retryable":false},"requestId":"e97d3230-0805-4ebb-b200-f67663b161fd"}
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > rolls the whole merge back when one attachment cannot be sent
+rollback after: {"messages":1,"attachments":[{"id":"1d5912da-f171-423c-899d-4c50321c61ef","conversationId":"ab0efb90-e63d-41cd-938b-7345b0f48120","messageId":"39b201a6-60af-49e2-80d1-e1e781537ee6","sha256":"57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16"},{"id":"0a29d48f-25fa-4edc-b548-e52fe8ec1f4a","conversationId":"ab0efb90-e63d-41cd-938b-7345b0f48120","messageId":null,"sha256":"57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16"}]}
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > replays the same clientMessageId without moving the attachment twice
+merge response: 422 {"error":{"code":"invalid_request","message":"attachmentIds 必须是本会话尚未发送的附件","retryable":false},"requestId":"a0488d3b-55b4-4951-aa1c-a3bcef00f53d"}
+
+ ❯ test/integration/dual-entrance-attachment.integration.test.ts (4 tests | 2 failed) 684ms
+   × P1-B prime: an attachment-bearing first Web message merges into the imported Issue > moves the attachment into the target conversation in the same transaction 66ms
+     → expected 422 to be 202 // Object.is equality
+   ✓ P1-B prime: an attachment-bearing first Web message merges into the imported Issue > still refuses an attachment that belongs to another owner 25ms
+   ✓ P1-B prime: an attachment-bearing first Web message merges into the imported Issue > rolls the whole merge back when one attachment cannot be sent 46ms
+   × P1-B prime: an attachment-bearing first Web message merges into the imported Issue > replays the same clientMessageId without moving the attachment twice 24ms
+     → expected 422 to be 202 // Object.is equality
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > moves the attachment into the target conversation in the same transaction
+AssertionError: expected 422 to be 202 // Object.is equality
+
+- Expected
++ Received
+
+- 202
++ 422
+
+ ❯ test/integration/dual-entrance-attachment.integration.test.ts:261:33
+    259|     });
+    260|     console.log('merge response:', response.statusCode, JSON.stringify…
+    261|     expect(response.statusCode).toBe(202);
+       |                                 ^
+    262|     const body = response.json() as {
+    263|       data: { message: { id: string; conversationId: string } };
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > replays the same clientMessageId without moving the attachment twice
+AssertionError: expected 422 to be 202 // Object.is equality
+
+- Expected
++ Received
+
+- 202
++ 422
+
+ ❯ test/integration/dual-entrance-attachment.integration.test.ts:398:30
+    396|     const first = await send(webConversationId, payload);
+    397|     console.log('merge response:', first.statusCode, JSON.stringify(fi…
+    398|     expect(first.statusCode).toBe(202);
+       |                              ^
+    399|     const firstBody = first.json() as { data: { message: { id: string …
+    400|     const attachmentsAfterFirst = await attachmentRowsByIds([attachmen…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 2 passed (4)
+   Start at  23:22:21
+   Duration  2.47s (transform 458ms, setup 0ms, collect 1.53s, tests 684ms, environment 0ms, prepare 77ms)
+
+exit code: 1
+
+修复前整套 API 集成测试（同一 head，真实 PG）：
+```
+ Test Files  1 failed | 13 passed (14)
+      Tests  2 failed | 84 passed (86)
+[ELIFECYCLE] Command failed with exit code 1.
+EXIT=1
+```
+
+判定（红）：合并响应原文是
+`422 {"error":{"code":"invalid_request","message":"attachmentIds 必须是本会话尚未发送的附件"}}`；
+4 条新测试里 2 条失败（成功合并、重试幂等），跨所有者拒绝与回滚两条通过；exit 1。
+
+## 2. 绿段：修复后（HEAD = 83a8f3b）
+
+$ cd apps/api && TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
+    pnpm exec vitest run test/integration/dual-entrance-attachment.integration.test.ts
+$ git rev-parse HEAD
+83a8f3b2d6fd3b9793656fb3d7615a5bf712c8f2
+$ git status --short
+
+$ cd apps/api && TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm exec vitest run test/integration/dual-entrance-attachment.integration.test.ts
+
+ RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/api
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > moves the attachment into the target conversation in the same transaction
+merge response: 202 {"data":{"message":{"id":"10f5e472-6357-4481-aa04-7507cb7200be","conversationId":"4875f41d-4c1b-458a-82b2-27b6c36413ef","direction":"inbound","kind":"user","clientMessageId":"p1bp-merge-984823df-2abd-452d-8496-1abcf865bbb2","body":"Same requirement: https://github.com/Bouyer12/p1bp-merge-test/issues/1","replyToMessageId":null,"source":"web","createdAt":"2026-11-08T15:24:41.506Z","delivery":{"state":"stored","attemptCount":0,"lastError":null,"deliveredAt":null,"handedToWorkerAt":null,"readAt":null},"attachments":[{"id":"661001e8-936e-4b9a-ad8d-a96eaddeaf34","conversationId":"4875f41d-4c1b-458a-82b2-27b6c36413ef","taskId":null,"messageId":"10f5e472-6357-4481-aa04-7507cb7200be","filename":"p1bp.txt","mimeType":"text/plain","sizeBytes":40,"sha256":"57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16","kind":"text","createdAt":"2026-11-08T15:24:41.483Z","downloadUrl":"/api/v1/attachments/661001e8-936e-4b9a-ad8d-a96eaddeaf34"}]},"duplicate":false},"requestId":"6c204bb0-d1dc-4837-ab55-7c9f9a14a516"}
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > moves the attachment into the target conversation in the same transaction
+download: 200 sha256= 57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16 expected= 57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > still refuses an attachment that belongs to another owner
+foreign response: 422 {"error":{"code":"invalid_request","message":"attachmentIds 必须是本会话尚未发送的附件","retryable":false},"requestId":"90cd98e0-aadc-4f58-8edd-85f4d9d2e40b"}
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > rolls the whole merge back when one attachment cannot be sent
+rollback before: {"messages":2,"attachments":[{"id":"523e6ad4-a899-4720-8859-3ae864a458b0","conversationId":"02e51ad7-fa39-425d-974b-ed1493c848fb","messageId":"03609ea0-0cee-4cc0-a783-69a44367cf70","sha256":"57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16"},{"id":"f0bb3fce-aab8-4925-adaf-235ffe89672a","conversationId":"02e51ad7-fa39-425d-974b-ed1493c848fb","messageId":null,"sha256":"57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16"}]}
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > rolls the whole merge back when one attachment cannot be sent
+rollback response: 422 {"error":{"code":"invalid_request","message":"attachmentIds 必须是本会话尚未发送的附件","retryable":false},"requestId":"4f570440-f8a4-4627-bd66-4cf4d0729654"}
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > rolls the whole merge back when one attachment cannot be sent
+rollback after: {"messages":2,"attachments":[{"id":"523e6ad4-a899-4720-8859-3ae864a458b0","conversationId":"02e51ad7-fa39-425d-974b-ed1493c848fb","messageId":"03609ea0-0cee-4cc0-a783-69a44367cf70","sha256":"57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16"},{"id":"f0bb3fce-aab8-4925-adaf-235ffe89672a","conversationId":"02e51ad7-fa39-425d-974b-ed1493c848fb","messageId":null,"sha256":"57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16"}]}
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > replays the same clientMessageId without moving the attachment twice
+merge response: 202 {"data":{"message":{"id":"ca93d1ca-aea8-46b2-9385-153599817fae","conversationId":"4875f41d-4c1b-458a-82b2-27b6c36413ef","direction":"inbound","kind":"user","clientMessageId":"p1bp-retry-9209daa7-cc75-404d-8ff7-acb3be703695","body":"Same requirement: https://github.com/Bouyer12/p1bp-merge-test/issues/1","replyToMessageId":null,"source":"web","createdAt":"2026-11-08T15:24:41.631Z","delivery":{"state":"stored","attemptCount":0,"lastError":null,"deliveredAt":null,"handedToWorkerAt":null,"readAt":null},"attachments":[{"id":"75b6aab5-6394-4224-bc4c-5bcdf338f809","conversationId":"4875f41d-4c1b-458a-82b2-27b6c36413ef","taskId":null,"messageId":"ca93d1ca-aea8-46b2-9385-153599817fae","filename":"retry.txt","mimeType":"text/plain","sizeBytes":40,"sha256":"57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16","kind":"text","createdAt":"2026-11-08T15:24:41.621Z","downloadUrl":"/api/v1/attachments/75b6aab5-6394-4224-bc4c-5bcdf338f809"}]},"duplicate":false},"requestId":"76e01905-0746-448f-b555-02771fda534f"}
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > replays the same clientMessageId without moving the attachment twice
+retry response: 200 {"data":{"message":{"id":"ca93d1ca-aea8-46b2-9385-153599817fae","conversationId":"4875f41d-4c1b-458a-82b2-27b6c36413ef","direction":"inbound","kind":"user","clientMessageId":"p1bp-retry-9209daa7-cc75-404d-8ff7-acb3be703695","body":"Same requirement: https://github.com/Bouyer12/p1bp-merge-test/issues/1","replyToMessageId":null,"source":"web","createdAt":"2026-11-08T15:24:41.631Z","delivery":{"state":"stored","attemptCount":0,"lastError":null,"deliveredAt":null,"handedToWorkerAt":null,"readAt":null},"attachments":[{"id":"75b6aab5-6394-4224-bc4c-5bcdf338f809","conversationId":"4875f41d-4c1b-458a-82b2-27b6c36413ef","taskId":null,"messageId":"ca93d1ca-aea8-46b2-9385-153599817fae","filename":"retry.txt","mimeType":"text/plain","sizeBytes":40,"sha256":"57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16","kind":"text","createdAt":"2026-11-08T15:24:41.621Z","downloadUrl":"/api/v1/attachments/75b6aab5-6394-4224-bc4c-5bcdf338f809"}]},"duplicate":true},"requestId":"cd60878e-64de-495c-8bf3-f6df599c39ab"}
+
+ ✓ test/integration/dual-entrance-attachment.integration.test.ts (4 tests) 727ms
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  23:24:39
+   Duration  2.58s (transform 469ms, setup 0ms, collect 1.56s, tests 727ms, environment 0ms, prepare 86ms)
+
+exit code: 0
+
+修复后整套真实 PG 集成测试（db + api + dispatcher）：
+```
+ Test Files  12 passed (12)
+      Tests  40 passed (40)
+ Test Files  14 passed (14)
+      Tests  86 passed (86)
+ Test Files  16 passed | 1 skipped (17)
+      Tests  80 passed | 1 skipped (81)
+EXIT=0
+```
+
+$ /opt/moyu-node24/bin/pnpm check   # lint + format:check + typecheck + 全仓单测
+$ pnpm lint && pnpm format:check && pnpm typecheck && pnpm test
+$ eslint .
+
+/root/src/review-isolation-m6a-fa8ec916012c/apps/dispatcher/test/integration/dispatcher.integration.test.ts
+  716:7  warning  Unused eslint-disable directive (no problems were reported from 'no-console')
+
+✖ 1 problem (0 errors, 1 warning)
+  0 errors and 1 warning potentially fixable with the `--fix` option.
+
+$ prettier --check "**/*.{ts,tsx,mjs,cjs,json,yml,yaml,css,html}"
+Checking formatting...
+All matched files use Prettier code style!
+$ pnpm -r --if-present typecheck
+Scope: 8 of 9 workspace projects
+packages/contracts typecheck$ tsc --noEmit
+packages/db typecheck$ tsc --noEmit
+packages/theme typecheck$ tsc --noEmit
+packages/theme typecheck: Done
+packages/contracts typecheck: Done
+packages/db typecheck: Done
+apps/web typecheck$ tsc --noEmit
+packages/runtime-client typecheck$ tsc --noEmit
+packages/runtime-client typecheck: Done
+apps/web typecheck: Done
+apps/api typecheck$ tsc --noEmit
+apps/dispatcher typecheck$ tsc --noEmit
+apps/supervisor typecheck$ tsc --noEmit
+apps/supervisor typecheck: Done
+apps/dispatcher typecheck: Done
+apps/api typecheck: Done
+$ pnpm -r --if-present test && node --test scripts/m3/guard.test.mjs integrations/superagent/tests/verify-lock.test.mjs
+Scope: 8 of 9 workspace projects
+packages/contracts test$ vitest run
+packages/contracts test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/packages/contracts
+packages/contracts test:  ✓ test/contracts.test.ts (13 tests) 21ms
+packages/contracts test:  Test Files  1 passed (1)
+packages/contracts test:       Tests  13 passed (13)
+packages/contracts test:    Start at  23:24:07
+packages/contracts test:    Duration  505ms (transform 125ms, setup 0ms, collect 231ms, tests 21ms, environment 0ms, prepare 78ms)
+packages/contracts test: Done
+packages/runtime-client test$ vitest run
+packages/runtime-client test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/packages/runtime-client
+packages/runtime-client test:  ✓ test/credentials.test.ts (5 tests) 7ms
+packages/runtime-client test:  ✓ test/client.test.ts (8 tests) 27ms
+packages/runtime-client test:  Test Files  2 passed (2)
+packages/runtime-client test:       Tests  13 passed (13)
+packages/runtime-client test:    Start at  23:24:08
+packages/runtime-client test:    Duration  547ms (transform 190ms, setup 0ms, collect 350ms, tests 34ms, environment 0ms, prepare 153ms)
+packages/runtime-client test: Done
+apps/api test$ vitest run --exclude "test/integration/**"
+apps/dispatcher test$ vitest run --exclude "test/integration/**"
+apps/supervisor test$ vitest run --exclude "test/integration/**"
+apps/api test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/api
+apps/supervisor test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/supervisor
+apps/dispatcher test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/dispatcher
+apps/api test:  ✓ test/cursor.test.ts (6 tests) 32ms
+apps/dispatcher test:  ✓ test/config.test.ts (3 tests) 13ms
+apps/api test:  ✓ test/auth.test.ts (9 tests) 32ms
+apps/dispatcher test:  ✓ test/tasks.test.ts (2 tests) 11ms
+apps/dispatcher test:  Test Files  2 passed (2)
+apps/dispatcher test:       Tests  5 passed (5)
+apps/dispatcher test:    Start at  23:24:09
+apps/dispatcher test:    Duration  1.33s (transform 446ms, setup 0ms, collect 958ms, tests 24ms, environment 1ms, prepare 363ms)
+apps/dispatcher test: Done
+apps/api test:  ✓ test/health.test.ts (5 tests) 108ms
+apps/api test:  Test Files  3 passed (3)
+apps/api test:       Tests  20 passed (20)
+apps/api test:    Start at  23:24:09
+apps/api test:    Duration  2.79s (transform 819ms, setup 0ms, collect 2.59s, tests 172ms, environment 1ms, prepare 673ms)
+apps/api test: Done
+apps/supervisor test:  ✓ test/review.test.ts (21 tests) 1832ms
+apps/supervisor test:    ✓ supervisor check runs > terminates a hung command and records the timeout  325ms
+apps/supervisor test:    ✓ supervisor check runs > kills a timed-out check command's whole process group  728ms
+apps/supervisor test:    ✓ review service > rejects a second check for the same repository instead of running two  310ms
+apps/supervisor test:  ✓ test/stop-proof.test.ts (4 tests) 2507ms
+apps/supervisor test:    ✓ supervisor cgroup stop proof > serializes independent processes with the kernel lock  2176ms
+apps/supervisor test:  ✓ test/config.test.ts (3 tests) 19ms
+apps/supervisor test:  ✓ test/server-wake.test.ts (1 test) 97ms
+apps/supervisor test:  ✓ test/resources.test.ts (8 tests) 8ms
+apps/supervisor test:  ✓ test/provision-env.test.ts (1 test) 4ms
+apps/supervisor test:  ✓ test/process.test.ts (21 tests) 6700ms
+apps/supervisor test:    ✓ supervisor process evidence > never signals a reused root PID whose start time does not match  345ms
+apps/supervisor test:    ✓ supervisor process evidence > does not signal a reused process group after the owned members exited  310ms
+apps/supervisor test:    ✓ supervisor process evidence > does not report stopped when the timeout expires before the child exits  1791ms
+apps/supervisor test:    ✓ supervisor process evidence > kills a child that ignores SIGTERM before reporting stopped  1665ms
+apps/supervisor test:    ✓ supervisor process evidence > retains a newly started service regardless of its age  358ms
+apps/supervisor test:    ✓ cgroup launcher only accepts a positive release > exits without executing when the parent dies before release  548ms
+apps/supervisor test:  Test Files  7 passed (7)
+apps/supervisor test:       Tests  59 passed (59)
+apps/supervisor test:    Start at  23:24:09
+apps/supervisor test:    Duration  7.81s (transform 870ms, setup 0ms, collect 2.01s, tests 11.17s, environment 1ms, prepare 877ms)
+apps/supervisor test: Done
+✔ verify-lock.sh gives the same result for plain, spaced, quoted and relative paths (6070.694479ms)
+✔ accepts a dedicated profile linked to the patched build (14.618727ms)
+✔ rejects the bootstrap home and profile (2.518985ms)
+✔ rejects an unpatched build and a wrong Bridge port (3.697544ms)
+✔ rejects an env file with broad permissions (1.869905ms)
+✔ rejects a target port that is already in use (13.851123ms)
+✔ rejects instance env keys that could override the validated home/profile (2.188376ms)
+✔ rejects an instance env pointing at the production API or a conflicting process env (3.300743ms)
+✔ rejects a symlinked state parent and leaves the other instance untouched (1.873718ms)
+✔ rejects state/<profile> linked to another profile in the same home (1.760282ms)
+✔ rejects sessions linked to another directory in the same home (1.759032ms)
+✔ rejects a cleanup target whose parent link stays inside the same home (1.655192ms)
+✔ rejects a profile containing path separators (1.445784ms)
+✔ the E2E script exits before any run directory for a bootstrap home or production API (785.906245ms)
+✔ refuses a runtime whose stateDir is not the expected isolated profile (0.66451ms)
+ℹ tests 15
+ℹ suites 0
+ℹ pass 15
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 6153.808358
+EXIT=0
+
+判定（绿）：4 条新测试全过，exit 0；整套集成测试 exit 0（API 14 个文件 / 86 条全过，包含新的 4 条）；
+`pnpm check` exit 0。
+
+## 3. 四条绿标准逐条核对
+
+| # | 要求 | 原始证据 |
+| --- | --- | --- |
+| 1 | 合并路径在同一事务内移动合法附件与消息引用，发送成功且能从目标会话下载、sha256 逐字节一致 | 绿段 `merge response: 202`：附件行 `conversationId` 已是目标会话，`messageId` 是新消息；`download: 200 sha256= 57eee9cd… expected= 57eee9cd…` |
+| 2 | 归属校验不放松：非本所有者/非本源附件仍拒 | 绿段 `foreign response: 422`，响应原文 `attachmentIds 必须是本会话尚未发送的附件`；源会话未合并、消息与附件行数不变 |
+| 3 | 失败回滚：附件与消息都不留半成品（事务前后行数） | 绿段 `rollback before/after` 两行完全相同：`messages=2`、两条附件仍在源会话（一条已绑定、一条未绑定）；合并请求本身 422 |
+| 4 | 重入/重试：同一 clientMessageId 不重复建消息、不重复移动附件 | 绿段先 `202 duplicate:false`、再 `200 duplicate:true`，两次 `message.id` 相同、附件行仍只有 1 条 |
+
+实现：`apps/api/src/routes/conversations.ts` 的合并事务里，在 `insertInbound(target)` 之前把
+`artifacts.conversationId = source.id` 的行整体改到目标会话；随后 `attachToMessage` 仍按目标会话 +
+`message_id IS NULL` 校验，所以不属于源会话的 id 仍会整体拒绝，事务回滚同时撤销移动与消息。`attachments.ts`
+的校验没有放松。源会话变成隐藏别名后，其 conversation 作用域内的产物（附件、review 产物）都随消息图迁移。
+
+测试：`apps/api/test/integration/dual-entrance-attachment.integration.test.ts`（4 条）：
+合并移动 + 下载对照、跨所有者拒绝、回滚行数、同 clientMessageId 重放。
+
+## 4. 边界与未验证
+
+- 本条只改产品代码两处路径（合并事务 + 新集成测试），未动 Web/runner/supervisor 逻辑。
+- 未跑完整 A1–A8（会重写既有证据与截图）；本轮只跑真实 PG 集成套件与 `pnpm check`。
+- 未验证：推送后的 GitHub CI（本轮结束时尚未触发）。
