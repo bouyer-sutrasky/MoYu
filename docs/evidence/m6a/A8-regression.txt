@@ -1,34 +1,35 @@
-# A8 回归 — 2026-11-08T12:32:54+08:00
+# A8 回归 — 2026-11-08T14:21:23+08:00
+$ git rev-parse HEAD
+9576e64ce6bc887ceb387db5fbfe34e5549914c6
+$ git -C /tmp/m6a-run/worktrees/probe1/m6a-review-t_m6a_9576e6 rev-parse HEAD
+9576e64ce6bc887ceb387db5fbfe34e5549914c6
+环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-run/artifacts，supervisor http://127.0.0.1:4690
 
-before = main@d02f07f1483e0c85a13c1dfe24d03d855a72d0a1（/tmp/m6a/before）；after = 本分支最终 head（406784368a17783c3158e738c70536c162889213）
-两条命令都在同一隔离 PostgreSQL（127.0.0.1:55432）上用 Node 24.22.2 / pnpm 11.7.0 执行。
-
-## 1. pnpm check（lint + format + typecheck + 单元测试），两边都 exit 0
-| 套件 | before | after |
-| --- | --- | --- |
-| apps/api | 20 | 20 |
-| apps/dispatcher | 5 | 5 |
-| apps/supervisor | 38 | 47 |
-| node --test (guard/verify-lock) | 15 | 15 |
-| packages/contracts | 13 | 13 |
-| packages/runtime-client | 13 | 13 |
-
-before: `exit 0`，after: `exit 0`（原始日志见本文件末尾摘录）。
+## 1. pnpm check（lint + format + typecheck + 单元测试）
+exit=0
+packages/contracts test:  Test Files  1 passed (1)
+packages/contracts test:       Tests  13 passed (13)
+packages/runtime-client test:  Test Files  2 passed (2)
+packages/runtime-client test:       Tests  13 passed (13)
+apps/dispatcher test:  Test Files  2 passed (2)
+apps/dispatcher test:       Tests  5 passed (5)
+apps/api test:  Test Files  3 passed (3)
+apps/api test:       Tests  20 passed (20)
+apps/supervisor test:  Test Files  7 passed (7)
+apps/supervisor test:       Tests  47 passed (47)
+ℹ tests 15
+ℹ pass 15
+ℹ fail 0
 
 ## 2. 真实 PostgreSQL 集成测试
-| 套件 | before | after |
-| --- | --- | --- |
-before run: [('11', '38'), ('11', '66'), ('16', '80')]
-after run : [('12', '41'), ('13', '82'), ('16', '80')]
+exit=0
+ Test Files  12 passed (12)
+      Tests  40 passed (40)
+ Test Files  13 passed (13)
+      Tests  82 passed (82)
+ Test Files  16 passed | 1 skipped (17)
+      Tests  80 passed | 1 skipped (81)
 
-对应顺序为 db / api / dispatcher：
-- before：db 11 文件 38 测试、api 11 文件 66 测试、dispatcher 16 文件 80 测试（+1 skipped）
-- after ：db 12 文件 41 测试（+0015 回滚 2 条、0014 回滚 +1）、api 13 文件 82 测试（+附件 11、review 5）、dispatcher 不变
-- 既有「附件下载」「任务详情」「会话」测试均保留并通过；唯一差异是 0015 让迁移计数从 15 变 16、
-  0014 回滚脚本新增「必须是最后一条已应用迁移」的守卫（其测试随之改为先回滚 0015 再回滚 0014）。
-
-## 3. 已知波动（如实记录）
-- before 那次 `pnpm test:integration` 的进程退出码为 1：原因是测试数据库被 DROP 时某个连接池
-  仍持有连接，Vitest 报 1 个 unhandled error（"terminating connection due to administrator command"）；
-  所有测试文件与测试本身都通过（11/38、11/66、16/80+1 skipped）。after 那次同命令 exit 0。
-- 该波动与本分支改动无关，未通过重试或跳过测试掩盖。
+## 3. 既有测试未回退
+- before 的对照条数由 `M6A_BEFORE_CHECK_LOG`/`M6A_BEFORE_INTEGRATION_LOG` 提供时并列；本脚本只跑 after。
+- 新增测试：附件集成 11 条、review 集成 5 条、supervisor review 9 条、迁移回滚 2 条。

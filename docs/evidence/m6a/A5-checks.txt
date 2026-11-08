@@ -1,28 +1,25 @@
-# A5 检查面板 — 2026-11-08T12:20:56+08:00
-
-真实验收命令：supervisor 在任务 worktree（/tmp/m6a/worktrees/probe1/m6a-review-t_m6a_4bd4aa）中执行配置的 `pnpm check`。
-同一任务、同一 worktree，按「通过 → 故意改坏类型 → 恢复」三次运行。
+# A5 检查面板 — 2026-11-08T14:19:01+08:00
+$ git rev-parse HEAD
+9576e64ce6bc887ceb387db5fbfe34e5549914c6
+$ git -C /tmp/m6a-run/worktrees/probe1/m6a-review-t_m6a_9576e6 rev-parse HEAD
+9576e64ce6bc887ceb387db5fbfe34e5549914c6
+环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-run/artifacts，supervisor http://127.0.0.1:4690
 
 ## 1. 第一次运行：通过
-state: available | collectedAt: 2026-11-08T04:15:09.614Z
+HTTP 200
+state: available | collectedAt: 2026-11-08T06:19:01.396Z
 command     : pnpm check
-exitCode    : 0
-passed      : True
-startedAt   : 2026-11-08T04:15:09.619Z
-finishedAt  : 2026-11-08T04:16:02.108Z
-durationMs  : 52488
-timedOut    : False
+exitCode    : 0 | passed: true | timedOut: false
+startedAt   : 2026-11-08T06:19:01.400Z | finishedAt: 2026-11-08T06:19:48.688Z | ms: 47287
 summary     : 通过
-output (末尾 22 行):
-✔ rejects instance env keys that could override the validated home/profile (1.476297ms)
-✔ rejects an instance env pointing at the production API or a conflicting process env (2.346276ms)
-✔ rejects a symlinked state parent and leaves the other instance untouched (1.336411ms)
-✔ rejects state/<profile> linked to another profile in the same home (1.416668ms)
-✔ rejects sessions linked to another directory in the same home (1.328459ms)
-✔ rejects a cleanup target whose parent link stays inside the same home (1.240402ms)
-✔ rejects a profile containing path separators (1.003568ms)
-✔ the E2E script exits before any run directory for a bootstrap home or production API (801.111524ms)
-✔ refuses a runtime whose stateDir is not the expected isolated profile (0.60852ms)
+output (末尾 20 行):
+✔ rejects a symlinked state parent and leaves the other instance untouched (1.396014ms)
+✔ rejects state/<profile> linked to another profile in the same home (1.484775ms)
+✔ rejects sessions linked to another directory in the same home (1.382246ms)
+✔ rejects a cleanup target whose parent link stays inside the same home (1.245371ms)
+✔ rejects a profile containing path separators (1.029907ms)
+✔ the E2E script exits before any run directory for a bootstrap home or production API (780.399462ms)
+✔ refuses a runtime whose stateDir is not the expected isolated profile (0.632691ms)
 ℹ tests 15
 ℹ suites 0
 ℹ pass 15
@@ -30,7 +27,7 @@ output (末尾 22 行):
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 6017.171705
+ℹ duration_ms 6110.985801
 $ pnpm lint && pnpm format:check && pnpm typecheck && pnpm test
 $ eslint .
 $ prettier --check "**/*.{ts,tsx,mjs,cjs,json,yml,yaml,css,html}"
@@ -38,18 +35,13 @@ $ pnpm -r --if-present typecheck
 $ pnpm -r --if-present test && node --test scripts/m3/guard.test.mjs integrations/superagent/tests/verify-lock.test.mjs
 
 ## 2. 故意改坏一个类型后运行：失败
-state: available | collectedAt: 2026-11-08T04:16:08.985Z
+HTTP 200
+state: available | collectedAt: 2026-11-08T06:19:48.767Z
 command     : pnpm check
-exitCode    : 2
-passed      : False
-startedAt   : 2026-11-08T04:16:08.989Z
-finishedAt  : 2026-11-08T04:16:38.204Z
-durationMs  : 29215
-timedOut    : False
+exitCode    : 2 | passed: false | timedOut: false
+startedAt   : 2026-11-08T06:19:48.771Z | finishedAt: 2026-11-08T06:20:17.790Z | ms: 29018
 summary     : 失败（exit 2）
-output (末尾 22 行):
-packages/contracts typecheck: Done
-packages/db typecheck: Done
+output (末尾 20 行):
 apps/web typecheck$ tsc --noEmit
 packages/runtime-client typecheck$ tsc --noEmit
 packages/runtime-client typecheck: Done
@@ -61,7 +53,7 @@ apps/supervisor typecheck: Done
 apps/dispatcher typecheck: Done
 apps/api typecheck: src/m6a-broken.ts(1,14): error TS2322: Type 'string' is not assignable to type 'number'.
 apps/api typecheck: Failed
-/tmp/m6a/worktrees/probe1/m6a-review-t_m6a_4bd4aa/apps/api:
+/tmp/m6a-run/worktrees/probe1/m6a-review-t_m6a_9576e6/apps/api:
 [ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL] @moyu/api@0.1.0 typecheck: `tsc --noEmit`
 Exit status 2
 [ELIFECYCLE] Command failed with exit code 2.
@@ -71,26 +63,23 @@ $ eslint .
 $ prettier --check "**/*.{ts,tsx,mjs,cjs,json,yml,yaml,css,html}"
 $ pnpm -r --if-present typecheck
 
+   面板失败状态截图：
+failing check visible in the panel: yes
 ## 3. 恢复文件后再次运行：通过
-state: available | collectedAt: 2026-11-08T04:19:45.530Z
+HTTP 200
+state: available | collectedAt: 2026-11-08T06:20:24.007Z
 command     : pnpm check
-exitCode    : 0
-passed      : True
-startedAt   : 2026-11-08T04:19:45.534Z
-finishedAt  : 2026-11-08T04:20:31.973Z
-durationMs  : 46439
-timedOut    : False
+exitCode    : 0 | passed: true | timedOut: false
+startedAt   : 2026-11-08T06:20:24.011Z | finishedAt: 2026-11-08T06:21:12.036Z | ms: 48024
 summary     : 通过
-output (末尾 22 行):
-✔ rejects instance env keys that could override the validated home/profile (1.539552ms)
-✔ rejects an instance env pointing at the production API or a conflicting process env (2.387683ms)
-✔ rejects a symlinked state parent and leaves the other instance untouched (1.354882ms)
-✔ rejects state/<profile> linked to another profile in the same home (1.315395ms)
-✔ rejects sessions linked to another directory in the same home (1.370482ms)
-✔ rejects a cleanup target whose parent link stays inside the same home (1.224046ms)
-✔ rejects a profile containing path separators (1.002233ms)
-✔ the E2E script exits before any run directory for a bootstrap home or production API (812.608878ms)
-✔ refuses a runtime whose stateDir is not the expected isolated profile (0.614181ms)
+output (末尾 20 行):
+✔ rejects a symlinked state parent and leaves the other instance untouched (1.359604ms)
+✔ rejects state/<profile> linked to another profile in the same home (1.380207ms)
+✔ rejects sessions linked to another directory in the same home (1.344363ms)
+✔ rejects a cleanup target whose parent link stays inside the same home (1.243865ms)
+✔ rejects a profile containing path separators (1.04238ms)
+✔ the E2E script exits before any run directory for a bootstrap home or production API (808.609437ms)
+✔ refuses a runtime whose stateDir is not the expected isolated profile (0.659845ms)
 ℹ tests 15
 ℹ suites 0
 ℹ pass 15
@@ -98,17 +87,13 @@ output (末尾 22 行):
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 6026.551902
+ℹ duration_ms 6079.390025
 $ pnpm lint && pnpm format:check && pnpm typecheck && pnpm test
 $ eslint .
 $ prettier --check "**/*.{ts,tsx,mjs,cjs,json,yml,yaml,css,html}"
 $ pnpm -r --if-present typecheck
 $ pnpm -r --if-present test && node --test scripts/m3/guard.test.mjs integrations/superagent/tests/verify-lock.test.mjs
 
-## 面板截图（同一任务）
-- 失败状态：docs/evidence/m6a/after-desktop-light-checks-failed.png（面板显示「失败 / pnpm check / exit 2」）
+## 面板截图
+- 失败状态：docs/evidence/m6a/after-desktop-light-checks-failed.png
 - 通过状态：docs/evidence/m6a/after-desktop-light-review-panel.png
-
-## 判定
-- 命令、exit code、起止时间、耗时、输出末尾都来自真实运行；失败在面板可见（截图 + 原始输出）。
-- 第一次运行曾把「未格式化的脚本」与「未定义 Node 全局」两处真实问题暴露为失败，修复后才通过（非人为摆拍）。

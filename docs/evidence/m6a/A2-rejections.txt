@@ -1,53 +1,43 @@
-# A2 上传拒绝面 — 2026-11-08T12:06:20+08:00
-隔离 API http://127.0.0.1:4620，DB moyu_m6a
+# A2 上传拒绝面 — 2026-11-08T14:18:35+08:00
+$ git rev-parse HEAD
+9576e64ce6bc887ceb387db5fbfe34e5549914c6
+$ git -C /tmp/m6a-run/worktrees/probe1/m6a-review-t_m6a_9576e6 rev-parse HEAD
+9576e64ce6bc887ceb387db5fbfe34e5549914c6
+环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-run/artifacts，supervisor http://127.0.0.1:4690
 
-## 1. 超大小上限（10 MiB + 1 KiB）→ 4xx 且不落库
-$ psql -c "select count(*) from artifacts where type='attachment'"   # 前后行数
- before rows=3
-
-$ curl -s -o /tmp/m6a/resp-huge.json -w "%{http_code}" -b "moyu_session=<session>" -F "file=@/tmp/m6a/huge.txt;type=text/plain" http://127.0.0.1:4620/api/v1/conversations/fb6287ee-28c7-4300-bcb7-051c8f11edce/attachments
+## 1. 超大小上限（10 MiB + 1 KiB）→ 4xx，不落库也不落盘
+before: rows=3 files=6 bytes=318
 HTTP 413
-{"error":{"code":"payload_too_large","message":"单个附件不能超过 10 MiB","retryable":false},"requestId":"5ff76730-4f69-437f-8140-069a70bd03c6"}
- after rows=3
+{"error":{"code":"payload_too_large","message":"单个附件不能超过 10 MiB","retryable":false},"requestId":"ce13a3b8-2f79-4bf6-8cbb-4c643cef3a95"}
+after : rows=3 files=6 bytes=318
 
-判定：413 payload_too_large；落库行数不变
-
-## 2. 非法 MIME/类型 → 4xx 且不落库
- before rows=3
-
-$ curl ... -F "file=@/tmp/m6a/setup.exe;type=application/x-msdownload"
+## 2. 非法 MIME/类型 → 4xx，不落库也不落盘
+before: rows=3 files=6 bytes=318
 HTTP 422
-{"error":{"code":"invalid_request","message":"不支持的文件类型；只接受图片（PNG/JPEG/WebP/GIF）与文本类文件（txt/log/md/json/yaml/csv/源码等）","retryable":false},"requestId":"9be2b5a0-f386-4e35-bc2b-b2605917e714"}
- after rows=3
-
+{"error":{"code":"invalid_request","message":"不支持的文件类型；只接受图片（PNG/JPEG/WebP/GIF）与文本类文件（txt/log/md/json/yaml/csv/源码等）","retryable":false},"requestId":"b3eb2cab-22d2-408c-9f6f-6fb8ba5caf31"}
+after : rows=3 files=6 bytes=318
 
 ## 3. 未登录 → 401
-$ curl -s -o /dev/null -w "%{http_code}" -F "file=@/tmp/m6a/upload.txt;type=text/plain" http://127.0.0.1:4620/api/v1/conversations/fb6287ee-28c7-4300-bcb7-051c8f11edce/attachments
 HTTP 401
-{"error":{"code":"unauthorized","message":"Authentication required","retryable":false},"requestId":"95e34f3e-164d-41d9-98d5-e64a54f469c7"}
+{"error":{"code":"unauthorized","message":"Authentication required","retryable":false},"requestId":"02100fd8-8ee9-4c01-97b2-9c2dcfec1944"}
 
 ## 4. 另一个用户向本会话上传 → 404
-$ curl ... -b "moyu_session=<other-owner-session>" -F file ... http://127.0.0.1:4620/api/v1/conversations/fb6287ee-28c7-4300-bcb7-051c8f11edce/attachments
 HTTP 404
-{"error":{"code":"not_found","message":"Conversation not found","retryable":false},"requestId":"23be020c-d976-4e8a-ac44-cd9f72ff04c7"}
+{"error":{"code":"not_found","message":"Conversation not found","retryable":false},"requestId":"9bdb45ad-10f8-4d80-9254-ab5e5f4bd9b3"}
 
 ## 5. 另一个用户读取本会话的 attachmentId → 404
-$ curl -s -o /dev/null -w "%{http_code}" -b "moyu_session=<other-owner-session>" http://127.0.0.1:4620/api/v1/attachments/4258b11b-e4e7-40c6-b254-e63d50d38131
 HTTP 404
-{"error":{"code":"not_found","message":"Attachment not found","retryable":false},"requestId":"1a78ddb3-7232-4cd0-b8b3-a2079285ae83"}
+{"error":{"code":"not_found","message":"Attachment not found","retryable":false},"requestId":"d104e92e-e085-4d18-a0b7-77161da26899"}
 
-## 6. 同一所有者向另一个所有者的会话上传 → 404（上面的会话 id）
-$ curl ... -b "moyu_session=<session>" -F file ... http://127.0.0.1:4620/api/v1/conversations/18dd447e-ca0b-44e7-b708-3c5dd961408e/attachments
-HTTP 404
-{"error":{"code":"not_found","message":"Conversation not found","retryable":false},"requestId":"55389fd6-7679-4c92-ae7e-4102fe253b30"}
-
-## 7. 空文件 → 422
+## 6. 空文件 → 422
 HTTP 422
-{"error":{"code":"invalid_request","message":"附件不能是空文件","retryable":false},"requestId":"879aca6f-8bfc-4ce5-916a-12f753fd81be"}
+{"error":{"code":"invalid_request","message":"附件不能是空文件","retryable":false},"requestId":"9c16aa5f-e464-4bc4-9701-1d15efcd0b89"}
 
-## 8. 最终附件行数（与 A1 的 3 行一致，拒绝面没有新增）
- attachment_rows 
------------------
-               3
-(1 row)
-
+## 7. 最终行数与磁盘占用（与 A1 的 3 行一致，拒绝面没有新增）
+rows=3 files=6 bytes=318
+600 30 /tmp/m6a-run/artifacts/attachments/09a443bc-e3c3-4ae5-af8e-be212bf90c23/d3affd7b-d526-4a0d-86d3-a69326560dfd
+600 30 /tmp/m6a-run/artifacts/attachments/b971d63e-37db-490a-b0cb-6435ee6888fb/e845135f-51d3-4cba-a23e-32fd132cbbee
+600 59 /tmp/m6a-run/artifacts/attachments/09a443bc-e3c3-4ae5-af8e-be212bf90c23/8bb6b69e-8519-443b-bf07-8495c14ade4c
+600 59 /tmp/m6a-run/artifacts/attachments/b971d63e-37db-490a-b0cb-6435ee6888fb/d4e16ef4-782c-4016-a0a2-457e4fa06414
+600 70 /tmp/m6a-run/artifacts/attachments/09a443bc-e3c3-4ae5-af8e-be212bf90c23/997e0a53-0b4b-4042-aa11-a43e296dd214
+600 70 /tmp/m6a-run/artifacts/attachments/b971d63e-37db-490a-b0cb-6435ee6888fb/4f4271db-83fb-4aca-8271-a7d2a839bcc9

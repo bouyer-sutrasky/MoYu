@@ -8,7 +8,7 @@
       "width": 1440,
       "height": 900
     },
-    "conversationId": "fb6287ee-28c7-4300-bcb7-051c8f11edce"
+    "conversationId": "b971d63e-37db-490a-b0cb-6435ee6888fb"
   },
   {
     "name": "after-desktop-light-review-panel",
@@ -19,7 +19,7 @@
       "width": 1440,
       "height": 900
     },
-    "conversationId": "fb6287ee-28c7-4300-bcb7-051c8f11edce"
+    "conversationId": "b971d63e-37db-490a-b0cb-6435ee6888fb"
   },
   {
     "name": "before-mobile-light-review-panel",
@@ -30,7 +30,7 @@
       "width": 390,
       "height": 844
     },
-    "conversationId": "fb6287ee-28c7-4300-bcb7-051c8f11edce"
+    "conversationId": "b971d63e-37db-490a-b0cb-6435ee6888fb"
   },
   {
     "name": "after-mobile-light-review-panel",
@@ -41,7 +41,7 @@
       "width": 390,
       "height": 844
     },
-    "conversationId": "fb6287ee-28c7-4300-bcb7-051c8f11edce"
+    "conversationId": "b971d63e-37db-490a-b0cb-6435ee6888fb"
   },
   {
     "name": "before-desktop-dark-review-panel",
@@ -52,7 +52,7 @@
       "width": 1440,
       "height": 900
     },
-    "conversationId": "fb6287ee-28c7-4300-bcb7-051c8f11edce"
+    "conversationId": "b971d63e-37db-490a-b0cb-6435ee6888fb"
   },
   {
     "name": "after-desktop-dark-review-panel",
@@ -63,7 +63,7 @@
       "width": 1440,
       "height": 900
     },
-    "conversationId": "fb6287ee-28c7-4300-bcb7-051c8f11edce"
+    "conversationId": "b971d63e-37db-490a-b0cb-6435ee6888fb"
   },
   {
     "name": "before-mobile-dark-review-panel",
@@ -74,7 +74,7 @@
       "width": 390,
       "height": 844
     },
-    "conversationId": "fb6287ee-28c7-4300-bcb7-051c8f11edce"
+    "conversationId": "b971d63e-37db-490a-b0cb-6435ee6888fb"
   },
   {
     "name": "after-mobile-dark-review-panel",
@@ -85,7 +85,7 @@
       "width": 390,
       "height": 844
     },
-    "conversationId": "fb6287ee-28c7-4300-bcb7-051c8f11edce"
+    "conversationId": "b971d63e-37db-490a-b0cb-6435ee6888fb"
   },
   {
     "name": "after-desktop-light-cleaned",
@@ -96,6 +96,6 @@
       "width": 1440,
       "height": 900
     },
-    "conversationId": "9bf98092-0873-4a9a-9466-28bd60f6ec71"
+    "conversationId": "4cec6616-252d-41bf-806d-948bc55bb4a5"
   }
 ]

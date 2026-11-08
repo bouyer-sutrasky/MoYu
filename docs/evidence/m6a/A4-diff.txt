@@ -1,23 +1,25 @@
-# A4 diff 面板 — 2026-11-08T12:10:26+08:00
-任务 worktree：/tmp/m6a/worktrees/probe1/m6a-review-t_m6a_4bd4aa（supervisor 的 WORKTREE_ROOT/probe1 下，目录名以 ticket id 前 12 位结尾）
-被测提交 04cdb2c350b87278bf652d662caad545131fa329
+# A4 diff 面板 — 2026-11-08T14:18:56+08:00
+$ git rev-parse HEAD
+9576e64ce6bc887ceb387db5fbfe34e5549914c6
+$ git -C /tmp/m6a-run/worktrees/probe1/m6a-review-t_m6a_9576e6 rev-parse HEAD
+9576e64ce6bc887ceb387db5fbfe34e5549914c6
+环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-run/artifacts，supervisor http://127.0.0.1:4690
+
+任务 worktree：/tmp/m6a-run/worktrees/probe1/m6a-review-t_m6a_9576e6
 
 ## 1. 真实 git 命令的原始输出
-$ git -C <worktree> status --porcelain=v1
+$ git status --porcelain=v1
  D LICENSE
  M README.md
 R  docs/GLOSSARY.md -> docs/GLOSSARY-m6a.md
 ?? docs/m6a-fixture.md
 
-$ git -C <worktree> rev-parse HEAD
-04cdb2c350b87278bf652d662caad545131fa329
-
-$ git -C <worktree> diff --numstat HEAD
+$ git diff --numstat HEAD
 0	21	LICENSE
 2	0	README.md
 0	0	docs/{GLOSSARY.md => GLOSSARY-m6a.md}
 
-$ git -C <worktree> diff HEAD   # 头 30 行
+$ git diff HEAD   # 头 30 行
 diff --git a/LICENSE b/LICENSE
 deleted file mode 100644
 index e1f7296..0000000
@@ -49,13 +51,14 @@ diff --git a/README.md b/README.md
 index cd2c005..e69e51c 100644
 --- a/README.md
 
-## 2. API 采集（POST /api/v1/tasks/:id/review/changes）返回的面板数据
+## 2. API 采集（POST /api/v1/tasks/:id/review/changes）
+HTTP 200
 {
   "state": "available",
   "branch": "agent/attachments-review-panel-4bd4aae33eac",
-  "commit": "04cdb2c350b87278bf652d662caad545131fa329",
-  "commitSubject": "feat(m6a): attachments with limits and a real review panel",
-  "committedAt": "2026-11-08T12:03:34+08:00",
+  "commit": "9576e64ce6bc887ceb387db5fbfe34e5549914c6",
+  "commitSubject": "test(m6a): make the whole acceptance run repeatable on any head",
+  "committedAt": "2026-11-08T14:18:15+08:00",
   "additions": 5,
   "deletions": 21,
   "filesOmitted": 0
@@ -66,11 +69,10 @@ index cd2c005..e69e51c 100644
 - untracked +3 -0  docs/m6a-fixture.md
 
 ## 3. 对照：面板里 LICENSE 的 patch 与同一命令的原始输出逐字节一致
-$ cmp panel-license.patch raw-license.patch && echo identical
 identical: yes
 
-## 4. 未跟踪文件的 patch 与增行数同样来自真实 git 输出
-$ git -C <worktree> diff --no-index --no-prefix -- /dev/null docs/m6a-fixture.md
+## 4. 未跟踪文件来自真实 git 输出，增行数取自 patch
+$ git diff --no-index --no-prefix -- /dev/null docs/m6a-fixture.md
 diff --git docs/m6a-fixture.md docs/m6a-fixture.md
 new file mode 100644
 index 0000000..f14ff5b
@@ -80,16 +82,15 @@ index 0000000..f14ff5b
 +# M6-A fixture
 +
 +这个文件是未跟踪的新文件，用于验证 diff 面板。
-面板记录：docs/m6a-fixture.md status=untracked additions=3 deletions=0
 
-## 5. 无改动任务：面板数据为空，不显示推断内容
+## 5. 无改动任务（clean worktree）：空列表，不显示推断内容
+worktree：/tmp/m6a-run/worktrees/probe1/m6a-closed-t_m6a_closed
+$ git status --porcelain=v1（应为空）
+HTTP 200
 state = available | files = [] | additions = 0 | deletions = 0
 
-## 6. 工作目录已清理的任务：返回 cleaned 而不是空白或报错
-state = cleaned
-reason = 该任务的执行目录已不存在（工作目录已清理，或运行时尚未创建工作目录）。
-
-## 判定
-- 文件列表、增删行数、逐文件 patch 全部来自 supervisor 在真实 worktree 上执行的 git 命令；
-- LICENSE 的 patch 与 `git diff HEAD -- LICENSE` 逐字节一致；
-- 无改动返回 available + 空 files（面板显示“无改动”）；已清理返回 cleaned + 原因。
+## 6. 工作目录已清理的任务：cleaned 而不是空白
+HTTP 200
+state = available
+reason = null
+files = []

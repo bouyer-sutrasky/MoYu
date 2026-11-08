@@ -9,7 +9,7 @@
  * same scenario is captured on both sides. The DOM facts asserted here are
  * written next to the images.
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { chromium } from 'playwright';
@@ -20,6 +20,7 @@ const TOKEN = process.env.M6A_SESSION_TOKEN;
 const CONVERSATION = process.env.M6A_CONVERSATION_ID;
 const CLEANED_CONVERSATION = process.env.M6A_CLEANED_CONVERSATION_ID;
 const OUT = resolve(process.env.M6A_OUT ?? 'docs/evidence/m6a');
+const FAILURE_TEXT = process.env.M6A_FAILURE_TEXT;
 const REPOSITORY = process.env.M6A_REPOSITORY ?? 'bouyer-sutrasky/MoYu';
 if (!TOKEN || !CONVERSATION)
   throw new Error('M6A_SESSION_TOKEN and M6A_CONVERSATION_ID are required');
@@ -121,6 +122,16 @@ views['after-desktop-light-cleaned'] = await capture(
   desktop,
   CLEANED_CONVERSATION,
 );
+
+// The failing-check state is captured by failure-shot.mjs while the worktree
+// really holds a broken type; include its panel text in the recorded facts.
+if (FAILURE_TEXT) {
+  try {
+    views['after-desktop-light-checks-failed'] = readFileSync(FAILURE_TEXT, 'utf8');
+  } catch {
+    // No failure text means the failure capture did not run; the fact stays false.
+  }
+}
 
 const facts = {
   capturedAt: new Date().toISOString(),

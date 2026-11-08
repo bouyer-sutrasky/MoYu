@@ -5,6 +5,7 @@
  * runs between the deliberate type break and the restore, so the image shows the
  * real failing state instead of a re-rendered "passed" one.
  */
+import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { chromium } from 'playwright';
@@ -37,6 +38,7 @@ await page.waitForTimeout(1000);
 await page.getByRole('button', { name: '展开右侧详情' }).click();
 await page.waitForTimeout(2500);
 const text = await page.locator('aside[aria-label="会话详情"]').innerText();
+if (process.env.M6A_FAILURE_TEXT) writeFileSync(process.env.M6A_FAILURE_TEXT, text);
 await page.screenshot({ path: resolve(OUT, 'after-desktop-light-checks-failed.png') });
 await browser.close();
 if (!text.includes('失败') || !text.includes('exit 2')) {

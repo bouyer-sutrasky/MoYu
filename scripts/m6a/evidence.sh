@@ -94,10 +94,10 @@ psql "$ADMIN_URL" -q -c "DROP DATABASE IF EXISTS \"$DB_NAME\" WITH (FORCE)" \
 (cd "$REPO" && DATABASE_URL="$DATABASE_URL" corepack pnpm --filter @moyu/db db:migrate >/dev/null)
 
 log "==> create the ticket worktrees"
+# The cleaned task deliberately has no directory: that is the cleanup boundary.
 rm -rf "$WORKTREE" "$CLEAN_WORKTREE" "$CLOSED_WORKTREE"
 mkdir -p "$WORKROOT/probe1"
 git clone -q "$REPO" "$WORKTREE"
-git clone -q "$REPO" "$CLEAN_WORKTREE"
 git clone -q "$REPO" "$CLOSED_WORKTREE"
 # A real, reviewable worktree change set: modify, delete, rename, add untracked.
 printf '\nM6-A 验收用的一行改动。\n' >> "$WORKTREE/README.md"
@@ -406,6 +406,7 @@ for (const run of checks.runs) {
   echo '   面板失败状态截图：'
   M6A_SESSION_TOKEN="$SESSION_TOKEN" M6A_CONVERSATION_ID="$conversation_id" \
     M6A_AFTER_URL="http://127.0.0.1:$API_AFTER" M6A_OUT="$OUT" \
+    M6A_FAILURE_TEXT="$RUN/failure-text.txt" \
     node "$REPO/scripts/m6a/failure-shot.mjs"
   echo '## 3. 恢复文件后再次运行：通过'
   rm -f "$WORKTREE/apps/api/src/m6a-broken.ts"
@@ -430,7 +431,7 @@ header "A6 提交与 PR 关联" "$A6"
   if [ -n "${M6A_PR_NUMBER:-}" ]; then
     echo "## 3. GitHub 原始输出：本单 PR #$M6A_PR_NUMBER"
     echo "\$ gh pr view $M6A_PR_NUMBER --repo bouyer-sutrasky/MoYu --json number,url,state,headRefOid,baseRefName,updatedAt,closedAt,mergedAt"
-    gh pr view "$M6A_PR_NUMBER" --repo bouyer-sutrasky/MoYu --json number,url,state,headRefOid,baseRefName,updatedAt,closedAt,mergedAt
+    timeout 60 gh pr view "$M6A_PR_NUMBER" --repo bouyer-sutrasky/MoYu --json number,url,state,headRefOid,baseRefName,updatedAt,closedAt,mergedAt
   else
     echo '## 3. 未提供 M6A_PR_NUMBER，跳过 open PR 状态'
   fi
@@ -438,7 +439,7 @@ header "A6 提交与 PR 关联" "$A6"
   if [ -n "${M6A_CLOSED_PR_NUMBER:-}" ]; then
     echo "## 4. PR 关闭但未合并：#$M6A_CLOSED_PR_NUMBER"
     echo "\$ gh pr view $M6A_CLOSED_PR_NUMBER --repo bouyer-sutrasky/MoYu --json number,url,state,mergedAt"
-    gh pr view "$M6A_CLOSED_PR_NUMBER" --repo bouyer-sutrasky/MoYu --json number,url,state,mergedAt
+    timeout 60 gh pr view "$M6A_CLOSED_PR_NUMBER" --repo bouyer-sutrasky/MoYu --json number,url,state,mergedAt
     code=$(api -o "$RUN/a6-closed.json" -w '%{http_code}' -H 'content-type: application/json' -d '{}' \
       "http://127.0.0.1:$API_AFTER/api/v1/tasks/$closed_task_id/review/changes")
     echo "采集 HTTP $code"
@@ -510,6 +511,14 @@ console.log("identical to the pre-restart projection:", JSON.stringify(before) =
   node -e 'const c=require(process.argv[1]).data.review.changes; console.log("state :",c.state); console.log("reason:",c.reason); console.log("files :",c.files)' "$RUN/a7-cleaned.json"
 } >> "$A7" 2>&1
 
+log "==> before build (PR base) for the regression comparison and the screenshots"
+BASE_SHA=$(git -C "$REPO" merge-base HEAD origin/main)
+BEFORE="$RUN/before"
+rm -rf "$BEFORE"
+git -C "$REPO" worktree add -q --detach "$BEFORE" "$BASE_SHA" 2>/dev/null || true
+(cd "$BEFORE" && PATH="$NODE_BIN:$PATH" corepack pnpm install --frozen-lockfile >/dev/null && PATH="$NODE_BIN:$PATH" corepack pnpm build >/dev/null)
+(cd "$BEFORE" && git rev-parse HEAD > "$RUN/before-head")
+
 log "==> A8 regression counts"
 A8="$OUT/A8-regression.txt"
 header "A8 回归" "$A8"
@@ -522,18 +531,19 @@ header "A8 回归" "$A8"
   (cd "$REPO" && TEST_DATABASE_ADMIN_URL="$ADMIN_URL" PATH="$NODE_BIN:$PATH" corepack pnpm test:integration > "$RUN/integration.log" 2>&1); echo "exit=$?"
   grep -E 'Test Files|Tests  ' "$RUN/integration.log"
   echo
-  echo '## 3. 既有测试未回退'
-  echo '- before 的对照条数由 `M6A_BEFORE_CHECK_LOG`/`M6A_BEFORE_INTEGRATION_LOG` 提供时并列；本脚本只跑 after。'
-  echo '- 新增测试：附件集成 11 条、review 集成 5 条、supervisor review 9 条、迁移回滚 2 条。'
+  echo
+  echo '## 3. before 对照（同一台机器、同一隔离 PostgreSQL，PR 基线构建）'
+  echo '$ git -C <before> rev-parse HEAD'; cat "$RUN/before-head"
+  (cd "$BEFORE" && PATH="$NODE_BIN:$PATH" corepack pnpm check > "$RUN/check-before.log" 2>&1); echo "check exit=$?"
+  grep -E 'Tests  |Test Files|ℹ tests|ℹ pass|ℹ fail' "$RUN/check-before.log" | head -20
+  (cd "$BEFORE" && TEST_DATABASE_ADMIN_URL="$ADMIN_URL" PATH="$NODE_BIN:$PATH" corepack pnpm test:integration > "$RUN/integration-before.log" 2>&1); echo "integration exit=$?"
+  grep -E 'Test Files|Tests  ' "$RUN/integration-before.log"
+  echo
+  echo '## 4. 既有测试未回退'
+  echo '- before/after 的套件条数见上；新增测试：附件集成 11 条、review 集成 5 条、supervisor review 9 条、迁移回滚 2 条。'
 } >> "$A8" 2>&1
 
 log "==> screenshots (before = the PR base build)"
-# A baseline API for the visual comparison, built from the PR's base commit.
-BASE_SHA=$(git -C "$REPO" merge-base HEAD origin/main)
-BEFORE="$RUN/before"
-rm -rf "$BEFORE"
-git -C "$REPO" worktree add -q --detach "$BEFORE" "$BASE_SHA"
-(cd "$BEFORE" && PATH="$NODE_BIN:$PATH" corepack pnpm install --frozen-lockfile >/dev/null && PATH="$NODE_BIN:$PATH" corepack pnpm build >/dev/null)
 (cd "$BEFORE" && NODE_ENV=test API_HOST=127.0.0.1 API_PORT=$API_BEFORE LOG_LEVEL=warn DATABASE_URL="$DATABASE_URL" \
   WEBAUTHN_RP_ID=127.0.0.1 WEBAUTHN_RP_NAME=MoYu WEBAUTHN_ORIGIN="http://127.0.0.1:$API_BEFORE" \
   AUTH_COOKIE_SECURE=false ARTIFACT_STORAGE_DIR="$RUN/artifacts" WEB_DIST_DIR=apps/web/dist \
@@ -543,6 +553,7 @@ wait_http "http://127.0.0.1:$API_BEFORE/readyz" || { echo 'before API did not st
 
 M6A_SESSION_TOKEN="$SESSION_TOKEN" M6A_CONVERSATION_ID="$conversation_id" \
   M6A_CLEANED_CONVERSATION_ID="$cleaned_conversation_id" M6A_REPOSITORY=bouyer-sutrasky/MoYu \
+  M6A_FAILURE_TEXT="$RUN/failure-text.txt" \
   M6A_AFTER_URL="http://127.0.0.1:$API_AFTER" M6A_BEFORE_URL="http://127.0.0.1:$API_BEFORE" \
   node "$REPO/scripts/m6a/screenshots.mjs" > "$RUN/screenshots.out" 2>&1 || {
     echo 'screenshots failed:'; tail -20 "$RUN/screenshots.out"; exit 1; }
