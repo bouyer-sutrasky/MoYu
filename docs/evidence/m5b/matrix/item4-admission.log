@@ -1,5 +1,12 @@
 # item 4 — 准入、迟滞、OOM（三仓库 A/B 执行 + C 排队；成员级 OOM；解除压力后的有界恢复）
 
+## 基线产物（本轮所有读取都针对这一个文件）
+
+```
+$ sha256sum apps/dispatcher/dist/main.js
+0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6  apps/dispatcher/dist/main.js   (211968 B)
+```
+
 harness 前置改动（都在 `scripts/m5b/matrix/`，未动上游）：
 - 每个仓库一个 profile（`repository_instances` 对 profile 唯一）：`m5b` / `m5b-a` / `m5b-b`；
 - 每个 profile 自己的 webserver 端口（3404 / 3421 / 3431），否则第二个 runtime 起不来；

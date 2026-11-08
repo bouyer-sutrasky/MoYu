@@ -1,5 +1,12 @@
 # item 3 — 4 / 6 / 8 GiB 预算、6 GiB 高水位、以及真的顶到 memory.max
 
+## 基线产物（本轮所有读取都针对这一个文件）
+
+```
+$ sha256sum apps/dispatcher/dist/main.js
+0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6  apps/dispatcher/dist/main.js   (211968 B)
+```
+
 同一个切片 `m5bmatrix.slice`，三档分别用 `systemctl set-property` 设置 `MemoryMax` / `MemoryHigh`，
 每档只起**一个**合成成员填满剩余余量（`scripts/m5b/matrix/stress-member.sh`）。三条硬约束都在脚本里生效：
 

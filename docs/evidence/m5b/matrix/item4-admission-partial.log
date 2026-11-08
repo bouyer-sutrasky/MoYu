@@ -1,4 +1,12 @@
 # item 4 — A/B 执行、C 排队：本轮实测到的部分（未完成）
+
+## 基线产物（本轮所有读取都针对这一个文件）
+
+```
+$ sha256sum apps/dispatcher/dist/main.js
+0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6  apps/dispatcher/dist/main.js   (211968 B)
+```
+
 recorded=2026-11-08T09:48:10+08:00
 
 ## 三个仓库（真实 Web API 建会话，成功）

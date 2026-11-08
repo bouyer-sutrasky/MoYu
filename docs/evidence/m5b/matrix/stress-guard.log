@@ -1,5 +1,12 @@
 # item 1 之前的硬约束：合成压力成员的两条断言
 
+## 基线产物（本轮所有读取都针对这一个文件）
+
+```
+$ sha256sum apps/dispatcher/dist/main.js
+0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6  apps/dispatcher/dist/main.js   (211968 B)
+```
+
 按 2026-11-07T20:42Z 的要求，这两条不是写在文档里，而是实现在 `scripts/m5b/matrix/stress-member.sh` 里，
 四条断言都在现场跑过，原始输出如下。
 
