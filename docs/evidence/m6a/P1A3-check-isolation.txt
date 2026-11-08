@@ -308,6 +308,24 @@ EXIT=0
 
 判定（绿）：review 21 条全绿，supervisor 59 条全绿，typecheck 与全仓 `pnpm check` exit 0。
 
+### 2.1 检查路径上的功能回归（真实包管理器）
+
+用生产同一条 `runChecks` 路径（不是外面的 `pnpm check`）跑包管理器与身份探针：
+
+$ git rev-parse HEAD
+01a693d605bdfd1464d473af7f5f91cedf171eb8
+$ PATH=/opt/moyu-node24/bin:$PATH pnpm exec tsx /tmp/p1a3-pnpm-probe.mts
+command: pnpm --version
+passed: true exitCode: 0 timedOut: false
+output: 11.7.0
+command: node -p "process.getuid()"
+passed: true exitCode: 0 timedOut: false
+output: 0
+exit code: 0
+
+判定：白名单环境下 `pnpm --version` 仍解析到仓库固定的 11.7.0（exit 0），`node` 也可执行，说明清环境没有把功能改死；
+`node -p process.getuid()` 返回 `0`，与本机 supervisor 自身 uid 相同 —— 身份未隔离的直接证据，见 3.2。
+
 ## 3. 逐项判定
 
 ### 3.1 环境隔离 —— 已实现
