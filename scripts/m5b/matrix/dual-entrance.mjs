@@ -281,6 +281,7 @@ async function collect({ issue, conversationId }) {
       outbox.push({
         id: row.id,
         ticketId: value?.ticketId ?? null,
+        kind: value?.kind ?? null,
         channel: value?.channel?.source ?? null,
         thread: value?.channel?.thread ?? null,
         status: value?.status ?? null,
@@ -401,9 +402,10 @@ function checks(facts, { order, phase, taskId }) {
     );
   }
   expect(
-    runtimeFacts.githubOutbox.length === 1,
+    runtimeFacts.githubOutbox.length === 1 &&
+      runtimeFacts.githubOutbox[0]?.kind === 'acknowledgement',
     'one GitHub write for the trigger',
-    `${runtimeFacts.githubOutbox.length} outbox rows target ${facts.issueThread}`,
+    `outbox rows for ${facts.issueThread}: ${JSON.stringify(runtimeFacts.githubOutbox)}`,
   );
   expect(
     runtimeFacts.githubOutbox.every((row) => row.status === 'sent'),

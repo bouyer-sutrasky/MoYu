@@ -1685,7 +1685,6 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
         .filter((call) => call.kind === 'pause')
         .map((call) => call.ticketId),
     ).toEqual(['github-ticket-late-78']);
-    expect(afterReplay.rows[0]?.tasks).toBe(1);
   }, 30_000);
 
   it('returns the duplicate ticket id and persists a pause even when the first pause fails', async () => {

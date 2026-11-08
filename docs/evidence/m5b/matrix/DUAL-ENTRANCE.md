@@ -62,7 +62,7 @@ node scripts/m5b/matrix/dual-entrance.mjs check --order web-first --issue "$issu
 | 同一工作身份 | 平台仓库 = 探测仓库；该 Issue 只有一个会话、一个平台任务、任务跟随 Web 侧 runtime Ticket |
 | 只启动一次 | Web 侧 Ticket 的已启动 assignment 与 `worker-<ticket>` 会话目录各为 1；GitHub Ticket 两者都为 0 |
 | 多余票被停放 | GitHub Ticket `paused.stoppedAt`（或已结束）；`duplicate_tickets` 一行、状态 `paused`/`skipped`；会话里恰好 1 条 “not executed separately” 通知 |
-| 副作用 | 该 Issue 线程只有 1 条 GitHub 外发（接受回执），状态 `sent`；Issue 下 agent 账号只有 1 条带 `dsh-superagent:ack:` 的评论；任务无 PR |
+| 副作用 | 该 Issue 线程只有 1 条 `kind=acknowledgement` 的 GitHub 外发且状态 `sent`；Issue 下 agent 账号只有 1 条带 `dsh-superagent:ack:` 的评论；任务无 PR |
 | 租约 | 仓库最多 1 条 active 租约，且绑定执行中的任务 |
 
 ## 顺序 B：GitHub 先触发 → Web 后追加
@@ -95,6 +95,9 @@ GitHub 外发仍为 1（Web 消息只走 workspace 通道，不回写 GitHub）�
    outbox 与 GitHub 评论数都不增）。同一 Issue 上再来一条 @ 提及属于**另一个 runtime Ticket**，
    会多一行 `duplicate_tickets`（同样被停放），不属于本节的「同一事件重放」，如要观测请单独记录，
    不要拿它当 `check` 的输入。
+
+`check` 不把「可能还有别的外发」当通过：如果运行中出了第二条 GitHub 外发（例如报告或提问回写），
+它会把该行原样打印并判失败，作为现场发现记录，不擅自放宽判据。
 
 计数口径（与第 1 项既有证据一致，不读平台状态字段当证据）：
 
