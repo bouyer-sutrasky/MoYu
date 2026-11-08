@@ -1,0 +1,26 @@
+# item 4 — A/B 执行、C 排队：本轮实测到的部分（未完成）
+recorded=2026-11-08T09:48:10+08:00
+
+## 三个仓库（真实 Web API 建会话，成功）
+created Bouyer12/m5a-beta-adf10ad9    conversation=2f94ad6d-b05e-4082-85d2-9e2bb78f43cb
+created Bouyer12/m5a-delta-adf10ad9   conversation=00ecc82b-dd98-47ec-8658-4b7ecc848961
+created Bouyer12/m5a-epsilon-adf10ad9 conversation=42d9b76b-499d-42c4-a7b0-ce40d511bc36
+
+## 结果：三个任务全部 pending_admission，没有出现 A/B 执行、C 排队
+pending_admission|3
+
+## 为什么没出现（实测到的卡点，不是猜测）
+`repository_instances` 里只有最初那一个仓库有实例：
+
+  Bouyer12/m5a-beta-adf10ad9 | online | pid=2553782 | 3404 | 3403
+
+新增的两个仓库虽然写进了 `repositories`（status=active）和 `instances.json`
+（dshPort 3421/3431、bridgePort 3420/3430），但 supervisor 重启后**没有为它们创建实例**，
+日志里只有 beta 仓库的 `supervisor.instance_prepared / instance_spawned`。
+没有实例 → 平台侧准入拿不到该仓库的执行租约 → 三个任务都停在 `pending_admission`。
+
+## 因此
+- 第 1 条（A/B 执行、C 排队）**未验证**：需要先弄清「给一个新仓库分配实例」的路径
+  （instances.json 是否需要在 supervisor 启动前存在、是否需要平台侧的 provisioning 调用、
+  或 supervisor 是否只认平台下发的仓库列表）。
+- 第 2 条（成员级 OOM）与第 3 条（解除压力后的有界恢复）**未开始**。
