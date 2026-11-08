@@ -94,6 +94,8 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
 
 ## 3. 全量检查
 
+（下面两段是**锁顺序提交之后**的最终复跑；同一工作树、同一命令。）
+
 ```bash
 corepack pnpm check
 ```
@@ -136,20 +138,20 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres corepack pnpm t
 ```
 
 ```text
+
+ ✓ test/integration/recovery-review-repeat-catch.integration.test.ts (1 test) 580ms
+ ✓ test/integration/expired-reservation-projection.integration.test.ts (3 tests) 520ms
  ↓ test/integration/bridge-pause-resume.real.integration.test.ts (1 test | 1 skipped)
-stdout | test/integration/recovery-positive.integration.test.ts > execution reservation on real PostgreSQL > review recovery accepts a null-base GitHub snapshot on real PostgreSQL
-REVIEW_NULL_BASE_CLAIM claimed
+ ✓ test/integration/recovery-projection-branches.integration.test.ts (3 tests) 465ms
+stdout | test/integration/recovery-review-idempotent.integration.test.ts > execution reservation on real PostgreSQL > review recovery repeated identical mismatch is idempotent
+REVIEW_REPEATED_MISMATCH {"before":{"version":1,"stop_evidence":{"admissionRecovery":"snapshot_mismatch"}},"after":{"version":1,"stop_evidence":{"admissionRecovery":"snapshot_mismatch"}}}
 
- ✓ test/integration/recovery-positive.integration.test.ts (4 tests) 634ms
-stdout | test/integration/recovery-review-repeat-catch.integration.test.ts > execution reservation on real PostgreSQL > review recovery does not rewrite identical claim failure
-REVIEW_REPEAT_CLAIM_FAILURE {"before":{"version":1,"stop_evidence":{"admissionRecovery":"generation_mismatch","admissionRecoveryError":"execution claim requires the current active lease generation for this repository"}},"after":{"version":1,"stop_evidence":{"admissionRecovery":"generation_mismatch","admissionRecoveryError":"execution claim requires the current active lease generation for this repository"}}}
-
- ✓ test/integration/recovery-review-repeat-catch.integration.test.ts (1 test) 530ms
+ ✓ test/integration/recovery-review-idempotent.integration.test.ts (1 test) 404ms
 
  Test Files  17 passed | 1 skipped (18)
       Tests  83 passed | 1 skipped (84)
-   Start at  13:29:34
-   Duration  11.12s (transform 831ms, setup 0ms, collect 15.40s, tests 12.62s, environment 4ms, prepare 1.44s)
+   Start at  13:35:59
+   Duration  11.40s (transform 762ms, setup 0ms, collect 15.04s, tests 12.63s, environment 4ms, prepare 1.42s)
 
 integration exit=0
 ```
