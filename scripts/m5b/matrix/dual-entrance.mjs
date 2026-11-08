@@ -225,8 +225,8 @@ async function collect({ issue, conversationId }) {
     : [{ total: 0, notices: 0, userMessages: 0 }];
   const deliveries = conversationIds.length
     ? await query(
-        `select coalesce(d.state::text, 'none') as state, count(*)::int as count
-           from messages m left join deliveries d on d.message_id = m.id
+        `select d.state::text as state, count(*)::int as count
+           from messages m join deliveries d on d.message_id = m.id
           where m.conversation_id = any($1::uuid[])
           group by 1 order by 1`,
         [conversationIds],
@@ -456,7 +456,8 @@ function checks(facts, { order, phase, taskId }) {
       `${githubTickets[0]?.workerSessions ?? 0} session directories`,
     );
     expect(
-      githubTickets[0]?.pausedStoppedAt !== null || githubTickets[0]?.ended !== null,
+      typeof githubTickets[0]?.pausedStoppedAt === 'string' ||
+        typeof githubTickets[0]?.ended === 'string',
       'the extra ticket is parked',
       'the GitHub ticket is neither paused with a stop proof nor ended',
     );
