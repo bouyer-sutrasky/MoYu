@@ -251,7 +251,8 @@ JSON
 
 stage_dsh_home() {
   local staged=${1:-$M5B_MATRIX_PROFILE}
-  note "staging the runtime profile $staged into a matrix-owned harness home"
+  local port=${2:-3404}
+  note "staging the runtime profile $staged (webserver port $port) into a matrix-owned harness home"
   local dst="$M5B_MATRIX_DSH_HOME/profiles/$staged"
   mkdir -p "$dst/node_modules" "$M5B_MATRIX_DSH_HOME/state" "$M5B_MATRIX_DSH_HOME/sessions"
   for file in package.json cordis.patch.yml cordis.yml; do
@@ -260,6 +261,9 @@ stage_dsh_home() {
   ln -sfn "$M5B_MATRIX_UPSTREAM_BUILD" "$dst/node_modules/dsh-superagent"
   # The staged profile must point its state at this harness home; the supervisor
   # verifies that exact path before it reports the instance online.
+  # Each profile needs its own webserver port: two runtimes cannot bind one port,
+  # and the supervisor passes the port it recorded for the instance.
+  sed -i "/^- id: webserver/{n;n;n;s#^    port: .*#    port: $port#}" "$dst/cordis.patch.yml"
   sed -i "s#^    stateDir: .*#    stateDir: $M5B_MATRIX_DSH_HOME/state/$staged#" \
     "$dst/cordis.patch.yml"
   grep -n "stateDir:" "$dst/cordis.patch.yml"
@@ -531,9 +535,13 @@ case ${1:-} in
     start_provider
     write_instances_config
     stage_dsh_home
-    local extra_profile
+    extra_profile=''
+    extra_port=''
+    index=0
     for extra_profile in $(matrix_extra_profiles); do
-      stage_dsh_home "$extra_profile"
+      extra_port=$(printf '%s' "$M5B_MATRIX_EXTRA_REPOS" | cut -d, -f$((index + 1)) | awk -F: '{print $NF}')
+      stage_dsh_home "$extra_profile" "$((extra_port + 1))"
+      index=$((index + 1))
     done
     archive_runtime_state
     start_supervisor
