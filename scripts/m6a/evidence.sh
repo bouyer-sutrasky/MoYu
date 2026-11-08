@@ -281,6 +281,13 @@ PY
   grep -Ei '^(HTTP|content-type|content-disposition|content-security-policy|x-content-type-options)' "$RUN/h3.txt"
   echo '判定：attachment + octet-stream + nosniff + CSP sandbox，不以内联 HTML 下发'
   echo
+  echo '## 命令 5：真实浏览器附件操作（桌面 1440×900 + 手机 390×844）'
+  echo "$ node scripts/m6a/attachment-shot.mjs   # 真实 Web 构建 + 真实 API + 真实 Chromium"
+  M6A_AFTER_URL="http://127.0.0.1:$API_AFTER" M6A_SESSION_TOKEN="$SESSION_TOKEN" \
+    M6A_CONVERSATION_ID="$conversation_id" M6A_REPOSITORY=bouyer-sutrasky/MoYu \
+    M6A_OUT="$OUT" node "$REPO/scripts/m6a/attachment-shot.mjs"
+  echo "附件 UI 截图：$OUT/after-desktop-light-attachment.png 与 $OUT/after-mobile-light-attachment.png"
+  echo
   echo '## attachments 库表原始行'
   psql "$DATABASE_URL" -c "select id, conversation_id, message_id, type, mime_type, size_bytes, sha256, metadata from artifacts where type='attachment' order by created_at"
   echo
@@ -338,7 +345,7 @@ header "A2 上传拒绝面" "$A2"
     "http://127.0.0.1:$API_AFTER/api/v1/conversations/$conversation_id/attachments")
   echo "HTTP $code"; cat "$RUN/resp-empty.json"; echo
   echo
-  echo "## 7. 最终行数与磁盘占用（与 A1 的 3 行一致，拒绝面没有新增）"
+  echo "## 7. 最终行数与磁盘占用（与 A1 结束时的基线一致，拒绝面没有新增）"
   echo "rows=$(rows) $(storage)"
   find "$RUN/artifacts" -type f -printf '%m %s %p\n' | sort
 } >> "$A2" 2>&1
@@ -540,13 +547,27 @@ console.log("pr            :", JSON.stringify(r.pullRequest));
 console.log("digest        :", crypto.createHash("sha256").update(JSON.stringify(r, Object.keys(r).sort())).digest("hex"));
 ' "$1"
   }
-  echo '## 1. 重启前读取'
+  echo '## 1. 重启前读取主任务'
   api -o "$RUN/a7-before.json" "http://127.0.0.1:$API_AFTER/api/v1/tasks/$task_id/review"
   digest "$RUN/a7-before.json"
   api -o "$RUN/a7-messages-before.json" "http://127.0.0.1:$API_AFTER/api/v1/conversations/$conversation_id/messages"
   node -e 'const m=require(process.argv[1]).data.messages; console.log("attachments   :", JSON.stringify(m.flatMap((x)=>x.attachments).map((a)=>[a.filename,a.sha256])))' "$RUN/a7-messages-before.json"
   echo
-  echo '## 2. 重启平台 API 进程'
+  echo '## 2. 真实 available → cleaned：同一任务先读到目录，再删除目录后重读'
+  echo "任务：$closed_task_id（worktree：$CLOSED_WORKTREE）"
+  echo '$ ls -d "$CLOSED_WORKTREE"'; ls -d "$CLOSED_WORKTREE"
+  code=$(api -o "$RUN/a7-available.json" -w '%{http_code}' -H 'content-type: application/json' -d '{}' \
+    "http://127.0.0.1:$API_AFTER/api/v1/tasks/$closed_task_id/review/changes")
+  echo "HTTP $code"
+  node -e 'const c=require(process.argv[1]).data.review.changes; console.log("state =", c.state, "| files =", c.files.length, "| reason =", c.reason)' "$RUN/a7-available.json"
+  echo '$ rm -rf "$CLOSED_WORKTREE"'; rm -rf "$CLOSED_WORKTREE"
+  if [ -d "$CLOSED_WORKTREE" ]; then echo 'worktree still present'; else echo 'worktree removed'; fi
+  code=$(api -o "$RUN/a7-cleaned.json" -w '%{http_code}' -H 'content-type: application/json' -d '{}' \
+    "http://127.0.0.1:$API_AFTER/api/v1/tasks/$closed_task_id/review/changes")
+  echo "HTTP $code"
+  node -e 'const c=require(process.argv[1]).data.review.changes; console.log("state =", c.state); console.log("reason =", c.reason); console.log("files =", c.files)' "$RUN/a7-cleaned.json"
+  echo
+  echo '## 3. 重启平台 API 进程'
   old=$(cat "$PIDS/api-after.pid" 2>/dev/null || true)
   echo "old API pid: $old"
   stop_owned api-after
@@ -555,7 +576,7 @@ console.log("digest        :", crypto.createHash("sha256").update(JSON.stringify
   echo "new API pid: $(cat "$PIDS/api-after.pid" 2>/dev/null || true)"
   echo '$ curl -s http://127.0.0.1:'"$API_AFTER"'/readyz'; curl -s "http://127.0.0.1:$API_AFTER/readyz"; echo
   echo
-  echo '## 3. 重启后读取同一任务'
+  echo '## 4. 重启后读取同一主任务'
   api -o "$RUN/a7-after.json" "http://127.0.0.1:$API_AFTER/api/v1/tasks/$task_id/review"
   digest "$RUN/a7-after.json"
   node -e '
@@ -564,16 +585,16 @@ const after = require(process.argv[2]).data.review;
 console.log("identical to the pre-restart projection:", JSON.stringify(before) === JSON.stringify(after));
 ' "$RUN/a7-before.json" "$RUN/a7-after.json"
   echo
-  echo '## 4. 数据来自持久层：数据库里的产物行'
+  echo '## 5. 重启后同一任务的 cleaned 仍持久'
+  api -o "$RUN/a7-cleaned-after.json" "http://127.0.0.1:$API_AFTER/api/v1/tasks/$closed_task_id/review"
+  node -e 'const c=require(process.argv[1]).data.review.changes; console.log("state =", c.state); console.log("reason =", c.reason)' "$RUN/a7-cleaned-after.json"
+  echo
+  echo '## 6. 数据来自持久层：数据库里的产物行'
   psql "$DATABASE_URL" -c "select type, count(*), max(created_at) as newest from artifacts where task_id='$task_id' group by type order by type"
   echo
-  echo '## 5. 重启后附件仍逐字节一致'
+  echo '## 7. 重启后附件仍逐字节一致'
   api -o "$RUN/a7-download.png" "http://127.0.0.1:$API_AFTER/api/v1/attachments/$png_id"
   sha256sum "$RUN/upload.png" "$RUN/a7-download.png"
-  echo
-  echo '## 6. 已清理任务返回 cleaned 与原因'
-  api -o "$RUN/a7-cleaned.json" "http://127.0.0.1:$API_AFTER/api/v1/tasks/$cleaned_task_id/review"
-  node -e 'const c=require(process.argv[1]).data.review.changes; console.log("state :",c.state); console.log("reason:",c.reason); console.log("files :",c.files)' "$RUN/a7-cleaned.json"
 } >> "$A7" 2>&1
 
 log "==> before build (PR base) for the regression comparison and the screenshots"
@@ -608,7 +629,7 @@ header "A8 回归" "$A8"
   grep -E 'Test Files|Tests  ' "$RUN/integration-before.log"
   echo
   echo '## 4. 既有测试未回退'
-  echo '- before/after 的套件条数见上；新增测试：附件集成 11 条、review 集成 5 条、supervisor review 9 条、迁移回滚 2 条。'
+  echo '- before/after 的套件条数见上；新增测试：附件集成 11 条、review 集成 5 条、supervisor review 21 条、API 双入口附件合并 4 条、迁移回滚 2 条。'
 } >> "$A8" 2>&1
 
 log "==> screenshots (before = the PR base build)"
