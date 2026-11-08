@@ -238,3 +238,13 @@ Test Files  7 passed (7)
 - 本单不重跑七项矩阵。`docs/evidence/m5b/matrix/` 里 PR #32 的结论只对旧 harness 有效；
   任何复跑必须使用本文的 harness，并重新记录命令与原始输出。
 - 宿主 `3082`、生产库、生产迁移、真实设备 Passkey 未触碰（所有者保留项）。
+
+## 6. 复跑门槛（本单完成情况）
+
+| 要求 | 本单证据 | 现场状态 |
+| --- | --- | --- |
+| 限定仓库访问 | `guard.assertDedicatedSshKey`/`assertDedicatedGhConfig` + 单测：宿主 key 的改名副本、共享 gh 配置被拒；`precheck --online` 的判定逻辑已实现 | 待 §4.3 专用凭据后跑 `--online`（探测仓库可达、MoYu 被拒） |
+| 权限边界 | 只读预检给出当前 `violated` 的逐路径证据（计算 + 以测试身份实测）；单测覆盖组可写/可读与 clean 判定 | 待 §4.1 `--revoke` 后 `precheck` 退出 0 |
+| 异常清理 | `down` 删除 token、`up` 清空 Bridge 凭据与暂存状态；`cleanOwnedDir` 不跟随链接的回归 | 旧布局的 56 个凭据由下一次 `stack.sh up` 的 `reset_owned_state` 清空 |
+| 后续可复跑 | `prepare-run`/`write-protected`/`check-run` 重跑与路径替换的 CLI 回归；运行根可在旧属主上被采纳 | 待 §4 完成后按 README 复跑七项 |
+| 公开证据脱敏 | 预检只输出 owner/mode/布尔值；token 只在“present/not present”级别出现，日志打印的 argv 以 `TOKEN=***` 脱敏 | — |
