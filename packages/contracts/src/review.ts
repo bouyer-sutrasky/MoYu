@@ -124,6 +124,3 @@ export type TaskReview = z.infer<typeof taskReviewSchema>;
 export const taskReviewDataSchema = z.object({ review: taskReviewSchema });
 
 export type TaskReviewData = z.infer<typeof taskReviewDataSchema>;
-
-/** Check commands the runtime may run; the browser never supplies a command. */
-export const reviewCheckCommands = ['pnpm check'] as const;

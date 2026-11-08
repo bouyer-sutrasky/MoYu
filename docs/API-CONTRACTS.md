@@ -76,6 +76,7 @@ M2 实际 Cookie：https origin 使用 `__Host-moyu_session` 与 `__Host-moyu_bo
 | POST /api/v1/conversations/:id/attachments | **M6-A 已实现**：multipart 单文件字段 `file`；单文件 ≤10 MiB，只接受图片（PNG/JPEG/WebP/GIF）与文本类（txt/log/md/json/yaml/csv/源码等）；超限 413、类型不符 422、空文件 422、未登录 401、他人会话 404，且拒绝时不落库也不落盘；返回 `{attachment}`，含 `id`、文件名、MIME、字节数、sha256 与下载地址，不自动执行 |
 | GET /api/v1/attachments/:id | **M2 已实现、M6-A 收紧**：鉴权下载；`Content-Disposition: attachment`、`nosniff`、`CSP sandbox`，HTML/SVG 以 `application/octet-stream` 下发，不内联执行 |
 | POST /api/v1/conversations/:id/messages `attachmentIds` | **M6-A 已实现**：引用本会话尚未发送的附件，最多 20 个、总量 ≤25 MiB；跨会话或已发送的 id 返回 422 且整条消息不落库；消息与附件在同一事务内绑定，消息列表与详情返回 `attachments` |
+| GET /api/v1/conversations/:id/attachments | **M6-A 已实现**：本会话尚未随消息发送的草稿附件列表，供重新打开输入框时恢复；只返回本人仓库下的会话 |
 | 附件与执行器 | **M6-A 明确未传**：上游 Source 的 Trigger 没有附件字段，平台不把附件内容塞进消息正文，也不伪造已投递；附件保存在平台存储并随消息展示，投递到 runtime 属于后续单（需要上游 Bridge 补丁与能力协商） |
 
 建会话返回pending直到任务接单；task_links在接单后填upstreamTicketId，不能把Trigger stored视为Ticket已创建。conversation创建时锁仓库/分支选择，正式执行前解析并记录baseCommit；为避免讨论期间分支移动，执行同一已记录快照或显式要求刷新计划，禁止悄悄换起点。
