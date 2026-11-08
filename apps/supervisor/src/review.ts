@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
-import { existsSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { isAbsolute, join, relative, sep } from 'node:path';
 
 import { reviewCheckRunSchema, type ReviewCheckRun, type ReviewFile } from '@moyu/contracts';
 
@@ -146,9 +146,25 @@ async function gitDiff(directory: string, args: string[]): Promise<CommandResult
 }
 
 /**
+ * True when `child` is strictly below `parent`. Both arguments are real paths.
+ * Comparing `relative` segments, rather than string prefixes, keeps
+ * `/root/src/aaa-evil` from counting as a child of `/root/src/aaa`.
+ */
+function isStrictlyInside(parent: string, child: string): boolean {
+  const rel = relative(parent, child);
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+}
+
+/**
  * Resolves one ticket's workspace directory. The executor names it
  * `<ticket-name>-<first 12 characters of the ticket id>`, so the id is a stable
  * suffix and the supervisor never trusts a path supplied by the caller.
+ *
+ * Everything is resolved with `realpath` before use: the boundary is
+ * `worktreeRoot` itself, and a ticket directory (or the profile directory, or
+ * any link in between) that resolves outside that boundary is refused rather
+ * than stat-ed. The returned directory is the resolved path, so later git
+ * calls cannot be redirected by a link that changes underneath.
  */
 export function locateTicketWorktree(input: {
   worktreeRoot: string;
@@ -163,15 +179,46 @@ export function locateTicketWorktree(input: {
       profile: null,
     };
   }
-  const root = join(input.worktreeRoot, input.profile);
-  if (!existsSync(root)) {
+  const configuredRoot = join(input.worktreeRoot, input.profile);
+  if (!existsSync(configuredRoot)) {
     return {
       state: 'cleaned',
       directory: null,
-      reason: `执行根目录 ${root} 不存在；实例尚未创建工作目录或已被清理。`,
+      reason: `执行根目录 ${configuredRoot} 不存在；实例尚未创建工作目录或已被清理。`,
       profile: input.profile,
     };
   }
+
+  let boundary: string;
+  let root: string;
+  try {
+    boundary = realpathSync(input.worktreeRoot);
+    root = realpathSync(configuredRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return {
+        state: 'cleaned',
+        directory: null,
+        reason: `执行根目录 ${configuredRoot} 不存在；实例尚未创建工作目录或已被清理。`,
+        profile: input.profile,
+      };
+    }
+    return {
+      state: 'unavailable',
+      directory: null,
+      reason: `无法解析执行根目录的真实路径：${error instanceof Error ? error.message : String(error)}`,
+      profile: input.profile,
+    };
+  }
+  if (!isStrictlyInside(boundary, root)) {
+    return {
+      state: 'unavailable',
+      directory: null,
+      reason: `执行根目录 ${configuredRoot} 解析后超出允许的边界（${boundary}），拒绝读取。`,
+      profile: input.profile,
+    };
+  }
+
   const suffix = `-${input.ticketId.slice(0, 12)}`;
   let entries: string[];
   try {
@@ -184,16 +231,32 @@ export function locateTicketWorktree(input: {
       profile: input.profile,
     };
   }
-  const matches = entries.filter((name) => {
-    if (!name.endsWith(suffix)) return false;
-    const candidate = join(root, name);
+  const matches: string[] = [];
+  for (const entry of entries) {
+    if (!entry.endsWith(suffix)) continue;
+    const candidate = join(root, entry);
+    let resolved: string;
     try {
-      if (!statSync(candidate).isDirectory()) return false;
-      return existsSync(join(candidate, '.git'));
+      resolved = realpathSync(candidate);
     } catch {
-      return false;
+      continue;
     }
-  });
+    if (!isStrictlyInside(root, resolved)) {
+      return {
+        state: 'unavailable',
+        directory: null,
+        reason: `执行目录 ${candidate} 解析到允许边界之外，拒绝读取。`,
+        profile: input.profile,
+      };
+    }
+    try {
+      if (!statSync(resolved).isDirectory()) continue;
+      if (!existsSync(join(resolved, '.git'))) continue;
+    } catch {
+      continue;
+    }
+    matches.push(resolved);
+  }
   if (matches.length === 0) {
     return {
       state: 'cleaned',
@@ -212,7 +275,7 @@ export function locateTicketWorktree(input: {
   }
   return {
     state: 'available',
-    directory: join(root, matches[0]!),
+    directory: matches[0]!,
     reason: null,
     profile: input.profile,
   };
