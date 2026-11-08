@@ -1,0 +1,635 @@
+diff --git a/docs/007-architecture.md b/docs/007-architecture.md
+index 2600465..2c52677 100644
+--- a/docs/007-architecture.md
++++ b/docs/007-architecture.md
+@@ -418,6 +418,8 @@ Some generic modules still refer directly to GitHub or Feishu:
+ | `tests/discussion.spec.ts` | Discussion mode: the read-only tool allow-list and permission preset, the read-only worktree boundary and refusal of local tools such as subagent, the work tools and `danger-full-access` for execute, replacing the restriction when the mode changes, the discussion assignment text, and `discussing` state projection |
+ | `tests/pause.spec.ts` | A human pause and resume: Inputs and attention kept, the Executor pause, `stoppedAt` evidence and failures, resume admission and ticket identity, starting a discuss plan, non-retryability, and `DshExecutor.pause` stopping jobs with its evidence |
+ | `tests/admission.spec.ts` | Execution admission in the core: retry/start/admit without a usable token, an invalid or stale generation, the repository-wide fence for delayed Triggers, and pause-before-admit creating no Assignment |
++| `tests/pause-start.spec.ts` | A stop before or during the start lands in bounded time: a Web ticket whose launch is still preparing settles `stoppedAt` and ends that start, a GitHub ticket paused in `pending_admission` with no Assignment settles too, another process of the shared harness cannot fail a clean stop, and the resume of a start that never reached a worker is accepted |
++
+ | `tests/stop-proof-red.spec.ts` | Recovery red evidence: a real recorded process has exited, but without an authoritative stop completion the proof stays unproven and replacement stays blocked |
+ | `tests/stop-proof.spec.ts` | Durable stop proof: an unproven record blocks replacement while a recorded job/pid lives, missing admitted proof blocks, and only gone identities settle the proof |
+ | `tests/bridge-control.spec.ts` | M4 execution control: the operation log across a reopen, pause/resume/start/retry endpoints and their 202/404/409/422 answers, idempotency, settlement from Ticket state, operation persistence across a Bridge restart, the M4 ticket snapshot, `targetTicketId` attach/conflict/ended cases, `ticket.paused` events, and one-time GitHub `ticket.imported` events |
+diff --git a/src/app/bridge.ts b/src/app/bridge.ts
+index c1e2160..0fdeca9 100644
+--- a/src/app/bridge.ts
++++ b/src/app/bridge.ts
+@@ -778,8 +778,11 @@ export class Bridge {
+     if (!ticket.paused.stoppedAt) return json(res, 409, { error: 'still_stopping', code: 'pauseStopping' })
+     if (this.replay(res, body.operationId, ticketId, 'resume')) return
+     // The worktree must still be there before the pause is cleared; a missing directory would launch a worker into nowhere.
++    // A ticket whose Assignment never started never handed a workspace to a worker: the pause ended its start while it was
++    // still preparing, and the resume prepares the workspace again, so it is not a lost worktree.
+     const directory = ticket.execution?.directory
+-    if (!directory || !usableWorktree(directory)) {
++    const neverRan = ticket.assignments.every(assignment => !assignment.startedAt)
++    if (!directory || (!neverRan && !usableWorktree(directory))) {
+       return json(res, 409, { error: { code: 'worktreeMissing', message: 'The preserved worktree is missing' }, directory: directory ?? null })
+     }
+     // A PR closed unmerged while the ticket was paused must not be resumed or reopened by the runtime.
+diff --git a/src/core/engine.ts b/src/core/engine.ts
+index 1ce5873..c848771 100644
+--- a/src/core/engine.ts
++++ b/src/core/engine.ts
+@@ -272,13 +272,14 @@ export class Engine {
+   report(ticketId: string, report: WorkerReport): Ticket { return this.repo.atomic(() => this.assignments.report(ticketId, report)) }
+   /**
+    * The Executor's fact that a paused ticket's worker stopped: `stoppedAt` and the evidence are persisted on `ticket.paused`,
+-   * which is what turns the platform's `stopping` into `stopped` and allows a resume.
++   * which is what turns the platform's `stopping` into `stopped` and allows a resume. A ticket paused before its first
++   * Assignment exists has no Assignment to name; the pause operation identifies it.
+    */
+-  pauseSettled(ticketId: string, assignmentId: string, evidence: Record<string, unknown>): void {
++  pauseSettled(ticketId: string, assignmentId: string | undefined, evidence: Record<string, unknown>): void {
+     this.repo.atomic(() => { this.tickets.pauseSettled(ticketId, assignmentId, evidence) })
+   }
+   /** The Executor's fact that it could not stop a paused ticket's worker; the error is kept and no `stoppedAt` is written. */
+-  pauseFailed(ticketId: string, assignmentId: string, error: string): void {
++  pauseFailed(ticketId: string, assignmentId: string | undefined, error: string): void {
+     this.repo.atomic(() => { this.tickets.pauseFailed(ticketId, assignmentId, error) })
+   }
+   /**
+diff --git a/src/core/ports.ts b/src/core/ports.ts
+index ab90a82..3563f2f 100644
+--- a/src/core/ports.ts
++++ b/src/core/ports.ts
+@@ -67,11 +67,13 @@ export interface Executor {
+   /** End an assignment's work, such as cancelling its Session's turn; called after the ticket or assignment has already ended in the domain. */
+   stop(ticket: Ticket, assignment: Assignment, reason: string): void
+   /**
+-   * Stop a ticket's worker for a human pause: cancel the current turn keeping the inbox, kill its shell jobs, stop its
+-   * subagents, wait for it to go idle, and record the evidence through `Engine.pauseSettled` or `Engine.pauseFailed`. Unlike
+-   * `stop`, the ticket stays open and resumable; called after the pause transaction commits.
++   * Stop a ticket's work for a human pause: end a start still in flight, cancel the current turn keeping the inbox, kill its
++   * shell jobs, stop its subagents, wait for it to go idle, and record the evidence through `Engine.pauseSettled` or
++   * `Engine.pauseFailed`. The `assignment` is the one the pause ended, and is undefined when the ticket had none to end, such
++   * as a GitHub ticket the platform has not admitted yet; the Executor still has to say that nothing of the ticket runs.
++   * Unlike `stop`, the ticket stays open and resumable; called after the pause transaction commits.
+    */
+-  pause(ticket: Ticket, assignment: Assignment, operationId: string): void
++  pause(ticket: Ticket, assignment: Assignment | undefined, operationId: string): void
+ }
+ 
+ /** A message for a Channel; `ticketId` names the Ticket it is for, when there is one. */
+diff --git a/src/core/tickets.ts b/src/core/tickets.ts
+index 51e1e7f..80e8281 100644
+--- a/src/core/tickets.ts
++++ b/src/core/tickets.ts
+@@ -215,7 +215,10 @@ export class Tickets extends EnginePart {
+     ticket.updatedAt = at
+     this.repo.tickets.save(ticket)
+     this.emit('ticket.paused', { ticketId, operationId, at })
+-    if (latest) this.options.executor.pause(this.require(ticketId), latest, operationId)
++    // The Executor is asked even when no Assignment could be ended: a start may be in flight, a launch may still be queued, and
++    // only the Executor can say that nothing of the ticket runs any more. Without that answer the ticket would stay `stopping`
++    // for good, because no worker would ever report its own stop.
++    this.options.executor.pause(this.require(ticketId), latest, operationId)
+     return ticket
+   }
+   /**
+@@ -287,10 +290,13 @@ export class Tickets extends EnginePart {
+    * The Executor's fact that a paused ticket's worker is idle with no shell jobs or subagents left: record `stoppedAt` and the
+    * evidence, which is what lets the platform show `stopped` and allow a resume. A stale or failed pause is left as it is.
+    */
+-  pauseSettled(ticketId: string, assignmentId: string, evidence: Record<string, unknown>): void {
++  pauseSettled(ticketId: string, assignmentId: string | undefined, evidence: Record<string, unknown>): void {
+     const ticket = this.repo.tickets.get(ticketId)
+     const paused = ticket?.paused
+-    if (!ticket || !paused || paused.stoppedAt || paused.error || latestAssignment(ticket)?.id !== assignmentId) return
++    // The pause still being the asked-for one is the identity that matters: a ticket with no Assignment has none to name, and a
++    // resume clears `paused`, so an answer that arrives after one settles nothing.
++    if (!ticket || !paused || paused.stoppedAt || paused.error) return
++    if (assignmentId !== undefined && latestAssignment(ticket)?.id !== assignmentId) return
+     paused.stoppedAt = this.now()
+     paused.evidence = evidence
+     ticket.updatedAt = paused.stoppedAt
+@@ -298,10 +304,11 @@ export class Tickets extends EnginePart {
+     this.emit('ticket.paused', { ticketId, operationId: paused.operationId, at: paused.at, stoppedAt: paused.stoppedAt, evidence })
+   }
+   /** The Executor's fact that a pause could not stop the worker: keep the ticket paused with the error and no `stoppedAt`. */
+-  pauseFailed(ticketId: string, assignmentId: string, error: string): void {
++  pauseFailed(ticketId: string, assignmentId: string | undefined, error: string): void {
+     const ticket = this.repo.tickets.get(ticketId)
+     const paused = ticket?.paused
+-    if (!ticket || !paused || paused.stoppedAt || latestAssignment(ticket)?.id !== assignmentId) return
++    if (!ticket || !paused || paused.stoppedAt) return
++    if (assignmentId !== undefined && latestAssignment(ticket)?.id !== assignmentId) return
+     paused.error = error
+     ticket.updatedAt = this.now()
+     this.repo.tickets.save(ticket)
+diff --git a/src/executor/dsh.ts b/src/executor/dsh.ts
+index df2fc4e..10acc5a 100644
+--- a/src/executor/dsh.ts
++++ b/src/executor/dsh.ts
+@@ -37,7 +37,7 @@ const BACKGROUND_LIMIT_MS = 30 * 60_000
+ /** How long a host stop waits for the workers' background work to stop. */
+ const SHUTDOWN_STOP_MS = 10_000
+ /** How long a human pause waits for the worker's background work to stop, and then for its turn to go idle. */
+-const PAUSE_STOP_MS = 10_000, PAUSE_IDLE_MS = 10_000
++const PAUSE_STOP_MS = 10_000, PAUSE_IDLE_MS = 10_000, PAUSE_LAUNCH_MS = 10_000
+ /** Root of per-assignment discussion snapshots and homes. */
+ const DISCUSS_ROOT = process.env.DSH_DISCUSS_ROOT ?? '/srv/m4-discuss/runs'
+ /** How long a worker that goes on after a passing failure waits for a worker slot, or for processing to resume, between looks. */
+@@ -49,6 +49,11 @@ const fromPerson = (input?: TicketInput): boolean => input?.kind === 'trigger' ?
+  * DshExecutor catches it to mark the ticket failed immediately rather than retrying automatically, because an existing directory counts as prepared and an automatic retry would treat whatever a failed prepare command left behind in the directory as a prepared workspace.
+  */
+ class PrepareFailed extends Error {}
++/**
++ * Internal error thrown when a pause ends a launch's prepare command before the worker ever saw the workspace. The ticket is
++ * paused, not failed: the launch reports nothing, and a resume prepares the workspace again.
++ */
++class PrepareAborted extends Error {}
+ const PASSING = new RegExp(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND', 'EPIPE', 'UND_ERR', 'socket hang up', 'fetch failed',
+   'network error', 'overloaded', 'rate limit', '\\b(?:408|429|50[0-4])\\b'].join('|'), 'i')
+ /**
+@@ -320,6 +325,11 @@ export class DshExecutor implements Executor {
+   private readonly timers = new Set<ReturnType<typeof setTimeout>>()
+   /** External discussion processes by ticket, so pause, shutdown and restart guards can target the assignment's child. */
+   private readonly discuss = new Map<string, DiscussRun>()
++  /**
++   * Starts in flight, by ticket: the abort controller a pause uses to end the launch, and the promise of its end. A worker that
++   * has not been prompted yet has no turn to cancel, so the pause has to end the start itself before it can prove the stop.
++   */
++  private readonly launches = new Map<string, { abort: AbortController; ended: Promise<void> }>()
+   /** Registers the `launch` and `delivery` effect handlers; both are held (concurrency limit 0) while processing is paused. */
+   constructor(private readonly host: ExecutorHost) {
+     this.slots = new WorkerSlots(() => host.store.tickets.open().filter(ticket => this.running(ticket)).map(ticket => ticket.id),
+@@ -340,15 +350,23 @@ export class DshExecutor implements Executor {
+    * A failed prepare command throws `PrepareFailed`, which is not retried automatically; an empty directory it left is removed, a non-empty one kept.
+    * @throws PrepareFailed with the command's output when the prepare command fails.
+    */
+-  private async prepareDirectory(ticket: Ticket): Promise<void> {
++  private async prepareDirectory(ticket: Ticket, launch?: AbortSignal): Promise<void> {
+     const directory = ticket.execution?.directory ?? ''
++    // Whether this launch creates the workspace or finds it prepared changes what an aborted prepare must leave behind.
++    const existed = await stat(directory).then(() => true, () => false)
+     await mkdir(dirname(directory), { recursive: true })
+     const command = this.host.store.settings().executor.prepare.trim()
+     const env = Object.fromEntries(this.host.environment(ticket).map(variable => [variable.key, variable.value]))
+     // Enforce a timeout so a hung prepare command (such as on a credential prompt) fails the ticket instead of holding a worker slot indefinitely.
+-    const signal = AbortSignal.any([this.host.lifetime, AbortSignal.timeout(PREPARE_TIMEOUT_MS)])
++    const signal = AbortSignal.any([this.host.lifetime, AbortSignal.timeout(PREPARE_TIMEOUT_MS), ...launch ? [launch] : []])
+     if (command) await runAsWorker(this.host.context.subprocess, ['sh', '-c', command], dirname(directory), signal, env)
+       .catch(async (error: unknown) => {
++        // A pause ends the prepare before the worker ever sees the workspace: nothing of the ticket's work is in it, and a
++        // resume must check it out again instead of taking a half-prepared tree for a prepared one.
++        if (launch?.aborted && !existed) {
++          await rm(directory, { recursive: true, force: true }).catch(() => { /* Already gone, or held by someone else. */ })
++          throw new PrepareAborted(ticket.id)
++        }
+         // Remove an empty directory left by a failed prepare command so a later retry does not treat it as already prepared.
+         await rmdir(directory).catch(() => { /* Absent, or holding what the command wrote, which the output explains. */ })
+         throw new PrepareFailed(`The prepare command failed: ${error instanceof Error ? error.message : String(error)}`)
+@@ -381,8 +399,14 @@ export class DshExecutor implements Executor {
+     if (!ticket || ticket.paused || !liveTicket(ticket) || assignment?.id !== assignmentId || assignment.state !== 'pending') return
+     if (!this.admissionCurrent(ticket)) return
+     this.slots.reserve(ticketId, 'launch')
+-    try { await this.launch(ticket, assignment); this.transient.delete(`launch:${assignmentId}`) }
++    const abort = new AbortController()
++    let ended = (): void => {}
++    this.launches.set(ticketId, { abort, ended: new Promise<void>(resolve => { ended = resolve }) })
++    try { await this.launch(ticket, assignment, abort.signal); this.transient.delete(`launch:${assignmentId}`) }
+     catch (error) {
++      // A pause ended this launch on purpose: the ticket is stopped, and nothing is reported as failed.
++      if (error instanceof PrepareAborted || abort.signal.aborted) return
++      if (this.currentPaused(ticketId)) return
+       // Shutdown or pause re-queues the launch for resume, and transient network/provider errors retry with backoff.
+       // A failed prepare command is not retried automatically because an existing directory counts as prepared, so retrying
+       // would treat whatever a failed prepare command left behind in the directory as a prepared workspace; instead the
+@@ -390,7 +414,11 @@ export class DshExecutor implements Executor {
+       if (this.host.closing() || error instanceof Later) throw error
+       if (!(error instanceof PrepareFailed) && this.retries(`launch:${assignmentId}`, error)) throw error
+       this.launchFailed(ticketId, assignmentId, error)
+-    } finally { this.slots.free(ticketId) }
++    } finally {
++      ended()
++      if (this.launches.get(ticketId)?.abort === abort) this.launches.delete(ticketId)
++      this.slots.free(ticketId)
++    }
+   }
+   /**
+    * Delivers queued inputs to a running assignment one by one, re-reading ticket state before each delivery so delivery
+@@ -489,18 +517,22 @@ export class DshExecutor implements Executor {
+     })
+   }
+   /**
+-   * A human pause, after the transaction that set `ticket.paused` committed: end the look at the worker's background work,
+-   * cancel its current turn keeping the inbox, kill its shell jobs, stop its subagents, and wait (bounded) for it to be idle
+-   * with nothing left. Only then does it record `stoppedAt` and the evidence through `pauseSettled`; a timeout or a failure
+-   * is recorded through `pauseFailed`, and the ticket stays paused without a `stoppedAt`. It never calls the terminal `stop`.
++   * A human pause, after the transaction that set `ticket.paused` committed: end a start that is still in flight, end the look
++   * at the worker's background work, cancel its current turn keeping the inbox, kill its shell jobs, stop its subagents, and
++   * wait (bounded) for it to be idle with nothing left. Only then does it record `stoppedAt` and the evidence through
++   * `pauseSettled`; a timeout or a failure is recorded through `pauseFailed`, and the ticket stays paused without a `stoppedAt`.
++   * A ticket with nothing to stop still settles: no turn, no job and no subagent of it is left, which is a stop, not a
++   * refusal to answer. It never calls the terminal `stop`.
+    */
+-  pause(ticket: Ticket, assignment: Assignment, operationId: string): void {
+-    this.host.store.afterCommit(() => { void this.background(this.pauseWork(ticket.id, assignment.id, operationId)) })
++  pause(ticket: Ticket, assignment: Assignment | undefined, operationId: string): void {
++    this.host.store.afterCommit(() => { void this.background(this.pauseWork(ticket.id, assignment?.id, operationId)) })
+   }
+-  private async pauseWork(ticketId: string, assignmentId: string, operationId: string): Promise<void> {
++  /** Whether the ticket is paused right now, read from the store for a launch that may have been ended by that pause. */
++  private currentPaused(ticketId: string): boolean { return !!this.host.store.tickets.get(ticketId)?.paused }
++  private async pauseWork(ticketId: string, assignmentId: string | undefined, operationId: string): Promise<void> {
+     const discuss = this.discuss.get(ticketId)
+-    if (discuss?.assignmentId === assignmentId) {
+-      await this.pauseDiscuss(ticketId, assignmentId, operationId, discuss)
++    if (discuss && discuss.assignmentId === assignmentId) {
++      await this.pauseDiscuss(ticketId, assignmentId!, operationId, discuss)
+       return
+     }
+     const startedAt = now()
+@@ -509,6 +541,14 @@ export class DshExecutor implements Executor {
+     const before = runningJobs(this.host.context, sessionId)
+     const jobsBefore = before.map(job => ({ id: job.id, name: jobName(job) }))
+     const processesBefore = processTree()
++    // A start in flight would go on preparing after the pause and could prompt a worker: end it and wait for it to unwind, so
++    // the proof below is about a ticket that nothing of can still run.
++    const launch = this.launches.get(ticketId)
++    let launchEnded: 'none' | 'aborted' | 'timed-out' = 'none'
++    if (launch) {
++      launch.abort.abort()
++      launchEnded = await until(launch.ended, this.host.lifetime, PAUSE_LAUNCH_MS) === false ? 'timed-out' : 'aborted'
++    }
+     // A look at the worker's background work would keep it busy; the pause ends it before cancelling.
+     this.settling.get(ticketId)?.abort()
+     let cancelledTurn = false
+@@ -527,32 +567,27 @@ export class DshExecutor implements Executor {
+     const agentStatus = agent?.status ?? 'absent'
+     const stoppedAt = now()
+     const controlGroup = cgroup()
+-    // A cancelled turn may leave a short-lived child (a git/gh call) for a moment.
+-    // Wait for every pre-pause process to exit, and only then call the pause clean.
+-    const processBeforePids = processesBefore.map(item => item.pid)
+-    const aliveBefore = () => processBeforePids.filter(pid => {
+-      try { process.kill(pid, 0); return true } catch { return false }
+-    })
+-    let lingeringPids = aliveBefore()
+-    for (let wait = 0; lingeringPids.length > 0 && wait < 20; wait++) {
+-      await new Promise(resolve => setTimeout(resolve, 100))
+-      lingeringPids = aliveBefore()
+-    }
+     const processesAfter = processTree()
+-    const evidence = { ticketId, assignmentId, operationId, sessionId, harnessPid: process.pid, ...controlGroup ? { cgroup: controlGroup } : {},
+-      startedAt, stoppedAt, agentStatus, jobsBefore, jobsAfter, subagentsAfter, processesBefore, processesAfter, lingeringPids, cancelledTurn }
+-    // Success needs every part: the stop finished, the worker answered idle in time (an unloaded Session has no turn), and
+-    // no shell job or subagent is left.
++    // The tree below the harness is shared with every other ticket, its launches and the provider: it is evidence, never this
++    // ticket's boundary (M5-B reached the same conclusion for stop proofs and keyed them by the ticket's own job ids). What
++    // this ticket owns is its Session, its jobs, its subagents and its launch, and those are exactly what the check above and
++    // this one cover, so a leftover process of another ticket cannot fail a stop that is in fact clean.
++    const evidence = { ticketId, ...assignmentId ? { assignmentId } : {}, operationId, sessionId, harnessPid: process.pid,
++      ...controlGroup ? { cgroup: controlGroup } : {}, startedAt, stoppedAt, agentStatus, jobsBefore, jobsAfter, subagentsAfter,
++      processesBefore, processesAfter, launch: launchEnded, cancelledTurn }
++    // Success needs every part: the start in flight ended, the stop finished, the worker answered idle in time (an unloaded
++    // Session has no turn), and no shell job or subagent is left.
+     const idleWorker = !agent || agentStatus === 'idle'
+     if (!stopError && stopped !== false && idle !== false && idleWorker && jobsAfter.length === 0 && subagentsAfter === 0
+-      && lingeringPids.length === 0) {
++      && launchEnded !== 'timed-out') {
+       this.host.engine.pauseSettled(ticketId, assignmentId, evidence)
+       return
+     }
+     const reason = stopError !== undefined ? String(stopError)
++      : launchEnded === 'timed-out' ? `The start in flight did not end within ${PAUSE_LAUNCH_MS} ms`
+       : stopped === false ? `Stopping the worker's background work timed out after ${PAUSE_STOP_MS} ms`
+       : idle === false ? `The worker did not go idle within ${PAUSE_IDLE_MS} ms`
+-      : `The worker did not stop cleanly: agent ${agentStatus}, ${jobsAfter.length} job(s), ${subagentsAfter} subagent(s) and ${lingeringPids.length} process(es) remain`
++      : `The worker did not stop cleanly: agent ${agentStatus}, ${jobsAfter.length} job(s) and ${subagentsAfter} subagent(s) remain`
+     this.host.engine.pauseFailed(ticketId, assignmentId, reason)
+   }
+   /** Stop what a ticket's worker runs in the background (see `stopBackground`). */
+@@ -632,10 +667,12 @@ export class DshExecutor implements Executor {
+     })
+   }
+   private relay({ id, text }: { id: string; text: string }): void { this.host.sessions.relay(id, text) }
+-  private async launch(ticket: Ticket, assignment: Assignment): Promise<void> {
++  private async launch(ticket: Ticket, assignment: Assignment, signal?: AbortSignal): Promise<void> {
+     const current = () => {
+       if (this.host.closing()) throw new Error('dsh-superagent is stopping')
+       if (this.host.paused()) throw new Later('Processing is paused')
++      // A pause that ended this launch must not let it start a worker afterwards.
++      if (signal?.aborted) return false
+       const stored = this.host.store.tickets.get(ticket.id)
+       // A paused ticket is not launched again until an admitted resume creates a new Assignment;
+       // a generation superseded while prepare/ensure/stop awaited must not prompt or mark started.
+@@ -657,7 +694,7 @@ export class DshExecutor implements Executor {
+     }
+     // Prepare the workspace directory once; an existing directory counts as already prepared, including worktrees created before `prepare` commands existed.
+     if (!await stat(workspace).then(() => true, () => false)) {
+-      await this.prepareDirectory(ticket)
++      await this.prepareDirectory(ticket, signal)
+       if (!current()) return
+     }
+     if (!current()) return
+diff --git a/tests/bridge-control.spec.ts b/tests/bridge-control.spec.ts
+index 069740b..213309d 100644
+--- a/tests/bridge-control.spec.ts
++++ b/tests/bridge-control.spec.ts
+@@ -255,6 +255,8 @@ describe('POST /bridge/v1/tickets/:id/resume', () => {
+   it('refuses a resume when the original worktree is gone, keeping the pause', async () => {
+     const h = harness()
+     const ticket = paused('2026-11-03T12:11:00.000Z')
++    // Its worker did use this workspace, so the pause preserved work that a fresh prepare would silently replace.
++    ticket.assignments = [{ id: 'as1', state: 'ended', createdAt: '2026-11-03T12:00:00.000Z', startedAt: '2026-11-03T12:01:00.000Z' }]
+     ticket.execution = { name: 'gone', directory: '/nonexistent/m4-worktree', assignment: '' }
+     h.repo.tickets.save(ticket)
+     const { call } = await serve(h)
+@@ -264,6 +266,31 @@ describe('POST /bridge/v1/tickets/:id/resume', () => {
+     expect(h.repo.tickets.get('t1')?.paused).toMatchObject({ stoppedAt: '2026-11-03T12:11:00.000Z' })
+   })
+ 
++  it('accepts a resume of a ticket whose start never reached a worker, preparing the workspace again', async () => {
++    const h = harness()
++    // The pause ended a start that was still preparing: no Assignment ever started, so no worker ever saw the workspace,
++    // and the resume has the launch prepare it instead of calling a workspace that was never handed out "missing".
++    const ticket = paused('2026-11-03T12:11:00.000Z')
++    ticket.execution = { name: 'fix-t1', directory: '/nonexistent/never-prepared-worktree', assignment: 'Fix it' }
++    h.repo.tickets.save(ticket)
++    const { call } = await serve(h)
++    const response = await call('POST', '/bridge/v1/tickets/t1/resume', { operationId: 'op-1', admission: { leaseId: 'lease-1', fencingToken: 'fence-1' } })
++    expect(response).toMatchObject({ status: 202, body: { kind: 'resume' } })
++    expect(h.engine.resumeTicket).toHaveBeenCalledWith('t1', { leaseId: 'lease-1', fencingToken: 'fence-1' })
++  })
++
++  it('still refuses a resume when a workspace a worker did use is gone', async () => {
++    const h = harness()
++    const ticket = paused('2026-11-03T12:11:00.000Z')
++    ticket.assignments = [{ id: 'as1', state: 'ended', createdAt: '2026-11-03T12:00:00.000Z', startedAt: '2026-11-03T12:01:00.000Z' }]
++    ticket.execution = { name: 'gone', directory: '/nonexistent/m4-worktree', assignment: '' }
++    h.repo.tickets.save(ticket)
++    const { call } = await serve(h)
++    expect(await call('POST', '/bridge/v1/tickets/t1/resume', { operationId: 'op-1', admission: { leaseId: 'l', fencingToken: 'f' } }))
++      .toMatchObject({ status: 409, body: { error: { code: 'worktreeMissing' } } })
++    expect(h.engine.resumeTicket).not.toHaveBeenCalled()
++  })
++
+   it('refuses a resume when the followed PR was closed unmerged', async () => {
+     const h = harness()
+     h.repo.tickets.save({ ...paused('2026-11-03T12:11:00.000Z'), follows: [{ thread: 'github:4', own: true }] })
+diff --git a/tests/fixtures/host.ts b/tests/fixtures/host.ts
+index 70ace2e..e69bd23 100644
+--- a/tests/fixtures/host.ts
++++ b/tests/fixtures/host.ts
+@@ -152,13 +152,21 @@ export async function startRuntime(seed?: (store: Store) => void) {
+   }
+   /** A prepare command (`sh -c`) waits for this while it is set. */
+   const hooks: { prepare?: Promise<void> } = {}
+-  const subprocess = { spawn: vi.fn((spec: { argv: readonly string[] }) => {
++  const subprocess = { spawn: vi.fn((spec: { argv: readonly string[]; signal?: AbortSignal }) => {
+     const argv = [...spec.argv]
+     while (argv[0] === 'env' || /^[A-Z_]+=/.test(argv[0] ?? '')) argv.shift()
+     const reader = (text: string) => ({ readFrom: () => ({ text, nextOffset: text.length, lossy: false }) })
+     const exited = { exitCode: 0, signal: null }
+-    const done = argv[0] === 'sh' && hooks.prepare ? hooks.prepare.then(() => exited) : Promise.resolve(exited)
+-    return { done, collected: { stdout: reader(answers[argv.join(' ')] ?? ''), stderr: reader('') } }
++    const run = argv[0] === 'sh' && hooks.prepare ? hooks.prepare.then(() => exited) : Promise.resolve(exited)
++    // DSH ends a spawned command when its signal aborts; a prepare command held by a test must do the same.
++    const guarded = spec.signal
++      ? Promise.race([run, new Promise<never>((_, reject) => {
++        const stop = () => reject(Object.assign(new Error('The command was aborted'), { name: 'AbortError' }))
++        if (spec.signal!.aborted) stop()
++        else spec.signal!.addEventListener('abort', stop, { once: true })
++      })])
++      : run
++    return { done: guarded, collected: { stdout: reader(answers[argv.join(' ')] ?? ''), stderr: reader('') } }
+   }) }
+   const agents = new Map<string, FakeAgent>()
+   /** Each Session's next step, which takes the messages that wait for one. */
+diff --git a/tests/pause-start.spec.ts b/tests/pause-start.spec.ts
+new file mode 100644
+index 0000000..ae933cc
+--- /dev/null
++++ b/tests/pause-start.spec.ts
+@@ -0,0 +1,215 @@
++/**
++ * A person's stop must land in bounded time whether the worker has not started yet (the launch is still
++ * preparing) or the start is in flight. Before this regression only a worker that could report its own
++ * stop ever settled the pause, so those phases stayed `stopping` for good: `paused.stoppedAt` never
++ * arrived, the platform showed the ticket blocked, the resume was refused for ever, and the execution
++ * lease stayed held.
++ *
++ * The two entrances differ in one fact, and these tests keep it: a Web ticket is accepted with its first
++ * Assignment (the launch is queued or already preparing), while a GitHub ticket waits in
++ * `pending_admission` with no Assignment at all until the platform admits it.
++ */
++import { spawn } from 'node:child_process'
++import { once } from 'node:events'
++import { describe, expect, it, vi } from 'vitest'
++import { projectTicketState, workspaceTrigger } from '../src/app/bridge.ts'
++import { latestAssignment } from '../src/core/index.ts'
++import type { Ticket, Trigger } from '../src/core/index.ts'
++import { workspaceKind } from '../src/sources/workspace.ts'
++import { startRuntime, type Host } from './fixtures/host.ts'
++
++const OWNER = 'owner'
++/** How long a stop may take to land before the test calls it stuck; under vitest's own 5 s cap so a
++ * stuck pause fails on this bound with the reason, not on the runner's timeout. */
++const BOUND_MS = 3_000
++/** The prepare command the fixture's subprocess mock holds until the test releases it. */
++const PREPARE = 'git worktree add'
++
++const wsTrigger = (id = 'workspace:m1'): Trigger => workspaceTrigger({
++  triggerId: id, conversationId: 'c1', messageId: id, actor: { id: OWNER, name: 'MoYu Owner' },
++  text: 'Fix the margin', at: '2026-11-03T12:00:00.000Z',
++  executionSpec: { repository: 'acme/widgets', baseBranch: 'main', baseCommit: null,
++    model: { provider: 'commandcode', model: 'deepseek/deepseek-v4-flash' }, mode: 'execute' },
++}, 'abc123', { model: { provider: 'commandcode', model: 'deepseek/deepseek-v4-flash' }, source: 'spec' })
++
++/** Registers the Web Source and admits its owner, as a Bridge-delivered conversation is. */
++async function webRuntime(): Promise<Host> {
++  const host = await startRuntime()
++  host.runtime.sources.register(workspaceKind)
++  const settings = host.runtime.store.settings()
++  host.runtime.store.saveSettings({ ...settings,
++    // A prepare command the test can hold, as a real worktree checkout holds the launch.
++    executor: { ...settings.executor, prepare: PREPARE },
++    policy: { ...settings.policy, sources: { ...settings.policy.sources, workspace: { allowed: [{ id: OWNER, name: 'MoYu Owner' }], bots: [] } } } })
++  return host
++}
++
++/** Holds the prepare command until the returned release runs. */
++function holdPrepare(host: Host): () => void {
++  let release = (): void => {}
++  host.hooks.prepare = new Promise<void>(resolve => { release = resolve })
++  return release
++}
++
++/** Waits for a predicate the runtime reaches asynchronously; fails the test's own bound. */
++async function waitFor(what: string, check: () => boolean, boundMs = BOUND_MS): Promise<void> {
++  const deadline = Date.now() + boundMs
++  while (!check()) {
++    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`)
++    await new Promise(resolve => setTimeout(resolve, 10))
++  }
++}
++
++/** Accepts one ticket without waiting for its launch, which the test is racing. */
++async function acceptTicket(host: Host, trigger: Trigger): Promise<Ticket> {
++  host.runtime.receive(trigger)
++  // The ticket does not exist yet, so nothing is launching: `idle()` here only settles the assessment request.
++  await host.runtime.idle()
++  const result = await host.route({ kind: 'accept', trigger_id: trigger.id, title: 'Fix the margin', worktree_name: 'fix-margin',
++    acknowledgement: '收到。' })
++  return host.runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
++}
++
++/** The spawn specs of the ticket's prepare command. */
++const prepareSpawns = (host: Host) => host.subprocess.spawn.mock.calls
++  .map(call => call[0] as { argv: readonly string[]; signal?: AbortSignal })
++  .filter(spec => spec.argv.includes(PREPARE))
++
++/** Accepts one Web ticket with its launch already inside its prepare command. */
++async function acceptedWebTicket(host: Host, trigger = wsTrigger()): Promise<Ticket> {
++  const ticket = await acceptTicket(host, trigger)
++  await waitFor('the launch to start preparing', () => prepareSpawns(host).length > 0)
++  return host.runtime.store.tickets.get(ticket.id)!
++}
++
++/** The ticket as stored once the pause landed, waiting for it within the bound. */
++async function pausedTicket(host: Host, ticketId: string, boundMs = BOUND_MS): Promise<Ticket> {
++  const deadline = Date.now() + boundMs
++  for (;;) {
++    const ticket = host.runtime.store.tickets.get(ticketId)!
++    if (ticket.paused?.stoppedAt || ticket.paused?.error || Date.now() > deadline) return ticket
++    await new Promise(resolve => setTimeout(resolve, 20))
++  }
++}
++
++describe('a stop before the worker starts', () => {
++  it('lands for a Web ticket whose launch is still preparing, instead of leaving it stopping', async () => {
++    const host = await webRuntime()
++    const release = holdPrepare(host)
++    try {
++      const ticket = await acceptedWebTicket(host)
++      const assignment = latestAssignment(ticket)!
++      expect(assignment.state).toBe('pending')
++      host.runtime.engine.pauseTicket(ticket.id, 'op-pause-web')
++      const paused = await pausedTicket(host, ticket.id)
++      // A stop that never lands is the defect: `stoppedAt` must arrive, and with it the stopped projection.
++      expect(paused.paused?.error).toBeUndefined()
++      expect(paused.paused?.stoppedAt).toEqual(expect.any(String))
++      expect(projectTicketState(paused)).toBe('stopped')
++      // The start in flight was ended, not left preparing behind the pause: its process was signalled.
++      await waitFor('the prepare signal to abort', () => prepareSpawns(host).every(spec => spec.signal?.aborted === true))
++      // And no worker was ever prompted with the assignment.
++      expect(host.relays(`worker-${ticket.id}`)).toHaveLength(0)
++    } finally {
++      release()
++      await host.stop()
++    }
++  })
++
++  it('lands for a GitHub ticket held in pending_admission with no Assignment at all', async () => {
++    const previous = process.env.MOYU_REQUIRE_ADMISSION
++    process.env.MOYU_REQUIRE_ADMISSION = '1'
++    const host = await startRuntime()
++    try {
++      host.runtime.receive({
++        id: 'github:1', source: 'github', threads: [{ source: 'github', id: 'github:acme/widgets:1' }],
++        actor: { source: 'github', id: 'alice' }, human: true, addressed: 'mention', at: '2026-11-03T12:00:00.000Z',
++        text: 'Fix it', meta: { number: 1, repository: 'acme/widgets' },
++      })
++      await host.runtime.idle()
++      const result = await host.route({ kind: 'accept', trigger_id: 'github:1', title: 'Fix it', worktree_name: 'fix-it',
++        acknowledgement: 'On it.' })
++      const ticket = host.runtime.store.tickets.get((result.ticket as { ticket_id: string }).ticket_id)!
++      // The GitHub entrance's difference: the platform has not admitted it, so it has no Assignment to stop.
++      expect(ticket.assignments).toHaveLength(0)
++      expect(projectTicketState(ticket)).toBe('pending_admission')
++      host.runtime.engine.pauseTicket(ticket.id, 'op-pause-github')
++      const paused = await pausedTicket(host, ticket.id)
++      expect(paused.paused?.error).toBeUndefined()
++      expect(paused.paused?.stoppedAt).toEqual(expect.any(String))
++      expect(projectTicketState(paused)).toBe('stopped')
++    } finally {
++      await host.stop()
++      if (previous === undefined) delete process.env.MOYU_REQUIRE_ADMISSION
++      else process.env.MOYU_REQUIRE_ADMISSION = previous
++    }
++  })
++
++  it('does not let another process of the same harness fail a clean stop', async () => {
++    const host = await webRuntime()
++    const release = holdPrepare(host)
++    // Another ticket's prepare command, a provider child or a shell job of the same harness: the process tree below the
++    // harness is shared, so it can never be this ticket's stop proof. A live child used to fail every stop with
++    // "process(es) remain", which is what the site showed.
++    const child = spawn('sleep', ['30'], { stdio: 'ignore' })
++    try {
++      const ticket = await acceptedWebTicket(host)
++      release()
++      await waitFor('the worker to start', () => host.agents.get(`worker-${ticket.id}`)?.status === 'running')
++      host.runtime.engine.pauseTicket(ticket.id, 'op-pause-shared-tree')
++      const paused = await pausedTicket(host, ticket.id)
++      expect(paused.paused?.error).toBeUndefined()
++      expect(paused.paused?.stoppedAt).toEqual(expect.any(String))
++      expect(projectTicketState(paused)).toBe('stopped')
++    } finally {
++      child.kill('SIGKILL')
++      await once(child, 'exit')
++      release()
++      await host.stop()
++    }
++  })
++})
++
++describe('a resume after a stop before the start', () => {
++  it('is accepted, because nothing ran and the launch prepares the workspace', async () => {
++    const host = await webRuntime()
++    const release = holdPrepare(host)
++    try {
++      const ticket = await acceptedWebTicket(host)
++      host.runtime.engine.pauseTicket(ticket.id, 'op-pause-resume')
++      const paused = await pausedTicket(host, ticket.id)
++      expect(paused.paused?.stoppedAt).toEqual(expect.any(String))
++      // The workspace never finished preparing, so the resume must not refuse it as a lost worktree.
++      release()
++      const resumed = host.runtime.engine.resumeTicket(ticket.id, { leaseId: 'lease-1', fencingToken: '1' })
++      expect(resumed.paused).toBeUndefined()
++      expect(latestAssignment(resumed)?.state).toBe('pending')
++      await waitFor('the resumed worker to start', () => host.agents.get(`worker-${ticket.id}`)?.status === 'running')
++      expect(host.runtime.store.tickets.get(ticket.id)!.paused).toBeUndefined()
++    } finally {
++      release()
++      await host.stop()
++    }
++  })
++})
++
++describe('the stop proof a pause records', () => {
++  it('names what stopped instead of the shared harness tree', async () => {
++    const host = await webRuntime()
++    const release = holdPrepare(host)
++    const settled = vi.spyOn(host.runtime.engine, 'pauseSettled')
++    try {
++      const ticket = await acceptedWebTicket(host)
++      host.runtime.engine.pauseTicket(ticket.id, 'op-evidence')
++      const paused = await pausedTicket(host, ticket.id)
++      const evidence = paused.paused?.evidence as Record<string, unknown>
++      expect(settled).toHaveBeenCalled()
++      expect(evidence).toMatchObject({ agentStatus: 'absent', jobsAfter: [], subagentsAfter: 0, launch: 'aborted' })
++      expect(evidence.lingeringPids).toBeUndefined()
++      expect(evidence.assignmentId).toEqual(latestAssignment(paused)!.id)
++    } finally {
++      release()
++      await host.stop()
++    }
++  })
++})
+diff --git a/tests/pause.spec.ts b/tests/pause.spec.ts
+index f4aa149..c45d178 100644
+--- a/tests/pause.spec.ts
++++ b/tests/pause.spec.ts
+@@ -28,7 +28,7 @@ function harness(options: { requireAdmission?: boolean } = {}) {
+     start: (_ticket, assignment) => { starts.push(assignment.id) },
+     deliver: () => {},
+     stop: (_ticket, assignment) => { stops.push(assignment.id) },
+-    pause: (ticket, assignment, operationId) => { pauses.push({ ticketId: ticket.id, assignmentId: assignment.id, operationId }) },
++    pause: (ticket, assignment, operationId) => { pauses.push({ ticketId: ticket.id, assignmentId: assignment?.id ?? '', operationId }) },
+   }
+   const outbox: Outbox = { send: () => {}, status: () => undefined, withdraw: () => {} }
+   const policy: Policy = { version: 'v1', paused: false, evalTimeoutMs: 60_000,
