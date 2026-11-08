@@ -24,3 +24,47 @@ pending_admission|3
   （instances.json 是否需要在 supervisor 启动前存在、是否需要平台侧的 provisioning 调用、
   或 supervisor 是否只认平台下发的仓库列表）。
 - 第 2 条（成员级 OOM）与第 3 条（解除压力后的有界恢复）**未开始**。
+
+## 追加：实例行的来源找到了，准入的「按内存排队」也观测到了
+
+上一段说「新增仓库没有实例」。这一轮查清了实例行是怎么来的：
+
+```
+apps/api/src/domain/instances.ts
+async function loadInstance(...) {           // projectRuntime 会调用它
+  const [created] = await database.insert(repositoryInstances).values({ … }).onConflictDoNothing()
+  …
+}
+```
+也就是**仓库的 runtime 实例行是平台在读取仓库时按需 upsert 出来的**（`projectRuntime`），
+我先前只写了 `repositories` 行、没有触发这个 upsert，所以一直没有实例。
+用真实 API 读一次仓库列表就补齐了三行：
+
+```
+$ GET /api/v1/repositories
+API sees 3 repositories
+Bouyer12/m5a-beta-adf10ad9     online
+Bouyer12/m5a-delta-adf10ad9    sleeping
+Bouyer12/m5a-epsilon-adf10ad9  sleeping
+```
+
+随后为三个仓库同时建任务（真实 Web API，三条都建成），再采样：
+
+```
+Bouyer12/m5a-beta-adf10ad9    task=pending_admission  instance=online    reason=ownership_unverified  waiting=runtime
+Bouyer12/m5a-delta-adf10ad9   task=pending_admission  instance=sleeping  reason=resource_wait         waiting=memory
+Bouyer12/m5a-epsilon-adf10ad9 task=pending_admission  instance=sleeping  reason=resource_wait         waiting=memory
+```
+
+**这说明准入确实是按资源排队的**：同时来三个仓库的任务时，只有第一个拿到了（已 online 的）runtime，
+另外两个被判定 `resource_wait / waiting_for=memory`、停在 sleeping —— 也就是「后来的排队」，
+方向与要求的 A/B 执行、C 排队一致。
+
+但**还不算完成**：这一轮里 **A 自己也没真正执行起来**（它仍是 `pending_admission`，`waiting=runtime`，
+而不是 running），所以「A/B 执行、C 排队」这个具体形态只观测到一半（排队的一半），
+另一半（两个真的在跑）没做到。下一步要先弄清 `ownership_unverified` 这个原因码为什么会卡住
+已 online 的实例、以及准入给每个实例预留多少内存（决定两个实例能否同时在线）。
+
+## 仍未开始
+- 成员级 OOM（dmesg/journal 原始行 + `memory.events`，说明杀了哪个单元、其他成员是否存活）。
+- 解除压力后的有界恢复（C 按序被调起、容量回收、旧错误清除）。
