@@ -67,11 +67,19 @@ describe('0015 rollback script on real PostgreSQL', () => {
     expect(await read(database)).toEqual({ column_present: true, ledger_present: true });
 
     // The recreated foreign key still protects the column.
+    const owner = await database.pool.query<{ id: string }>(
+      "insert into owners (display_name) values ('0015 rollback') returning id",
+    );
+    const repository = await database.pool.query<{ id: string }>(
+      `insert into repositories (owner_id, full_name, default_branch, status)
+       values ($1, 'Bouyer12/0015-rollback', 'main', 'active') returning id`,
+      [owner.rows[0]?.id],
+    );
     await expect(
       database.pool.query(
         `insert into artifacts (repository_id, type, message_id)
-         select r.id, 'attachment', '00000000-0000-0000-0000-000000000000'::uuid
-           from repositories r limit 1`,
+         values ($1, 'attachment', '00000000-0000-0000-0000-000000000000'::uuid)`,
+        [repository.rows[0]?.id],
       ),
     ).rejects.toThrow();
   }, 30_000);
