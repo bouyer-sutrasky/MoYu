@@ -1252,6 +1252,7 @@ export function WorkspaceShell({
             <ConversationPane
               mode={mode}
               repository={selectedRepository}
+              repositories={repositories}
               conversation={conversation}
               conversationStatus={conversationStatus}
               conversationError={conversationError}

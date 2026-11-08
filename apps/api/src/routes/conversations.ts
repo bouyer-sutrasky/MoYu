@@ -16,18 +16,24 @@ import {
   messageListDataSchema,
   messageListQuerySchema,
   modelListDataSchema,
+  newTaskFromTaskDataSchema,
+  newTaskFromTaskInputSchema,
+  newTaskFromTaskPreviewDataSchema,
+  taskInheritanceSchema,
   uuidSchema,
   type AttachmentSummary,
   type ConversationSummary,
   type Message,
   type MessageListQuery,
   type ModelOption,
+  type TaskInheritance,
 } from '@moyu/contracts';
 import {
   artifacts,
   conversations,
   deliveries,
   messages,
+  repositories,
   taskLinks,
   taskOperations,
   type Database,
@@ -35,6 +41,7 @@ import {
   type Message as MessageRow,
   type TaskLink,
   type TaskOperation,
+  type Repository,
 } from '@moyu/db';
 
 import type { Authenticate } from '../auth/guards';
@@ -630,6 +637,311 @@ export function registerConversationRoutes(
       }
       return sendExistingConversation(database, reply, request, existing, fingerprint);
     }
+  });
+
+  /** Builds the L117 response with the inherited facts and the new, independent execution identity. */
+  function newTaskResponse(
+    conversation: typeof conversations.$inferSelect,
+    task: TaskLink,
+    inheritance: TaskInheritance,
+  ) {
+    return newTaskFromTaskDataSchema.parse({
+      conversation: toConversationSummary(conversation, task, conversation.title),
+      inheritance,
+      executionIdentity: {
+        conversationId: conversation.id,
+        taskId: task.id,
+        upstreamTicketId: task.upstreamTicketId,
+        reusesSourceSession: false,
+        startsFromCommit: task.baseCommit,
+      },
+    });
+  }
+
+  /** Answers a retried creation with the first conversation and the inheritance snapshot stored beside it. */
+  async function existingNewTask(
+    database: Database,
+    reply: FastifyReply,
+    request: FastifyRequest,
+    existing: typeof conversations.$inferSelect,
+    fingerprint: string,
+  ) {
+    if (existing.requestFingerprint !== fingerprint) {
+      throw ApiProblem.conflict(
+        'clientRequestId was already used for a different new-task request',
+      );
+    }
+    const [task] = await database
+      .select()
+      .from(taskLinks)
+      .where(eq(taskLinks.conversationId, existing.id))
+      .limit(1);
+    if (!task) throw ApiProblem.conflict('The existing conversation has no task');
+    const [notice] = await database
+      .select({ body: messages.body })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.conversationId, existing.id),
+          sql`${messages.sourceEventId} like ${`${INHERITANCE_PREFIX}%`}`,
+        ),
+      )
+      .limit(1);
+    const inheritance = notice ? parseInheritance(notice.body) : null;
+    if (!inheritance)
+      throw ApiProblem.conflict('The existing new task has no inheritance snapshot');
+    return sendData(reply, request, newTaskResponse(existing, task, inheritance), 200);
+  }
+
+  /** States from which a person may start a new task based on an old one; a running task has no result yet. */
+  const NEW_TASK_SOURCE_STATES = new Set(['completed', 'closed_unmerged']);
+  /** Fence that stores the exact inheritance snapshot inside the new conversation's first notice. */
+  const INHERITANCE_PREFIX = 'new-task-from:';
+
+  async function loadOwnedTask(
+    database: Database,
+    ownerId: string,
+    taskId: string,
+  ): Promise<{
+    task: TaskLink;
+    conversation: typeof conversations.$inferSelect;
+    repository: Repository;
+  }> {
+    const [row] = await database
+      .select({ task: taskLinks, conversation: conversations, repository: repositories })
+      .from(taskLinks)
+      .innerJoin(conversations, eq(taskLinks.conversationId, conversations.id))
+      .innerJoin(repositories, eq(conversations.repositoryId, repositories.id))
+      .where(and(eq(taskLinks.id, taskId), eq(conversations.ownerId, ownerId)))
+      .limit(1);
+    if (!row) throw ApiProblem.notFound('Task not found');
+    return row;
+  }
+
+  /** Reads the delivery summary a finished task reported, bounded and safe to show. */
+  async function deliverySummaryOf(
+    database: Database,
+    conversationId: string,
+  ): Promise<string | null> {
+    const [row] = await database
+      .select({ body: messages.body })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.conversationId, conversationId),
+          inArray(messages.kind, ['result', 'notice', 'progress']),
+        ),
+      )
+      .orderBy(desc(messages.createdAt), desc(messages.id))
+      .limit(1);
+    if (!row?.body) return null;
+    const text = row.body.replace(/\s+/g, ' ').trim();
+    return text.length > 600 ? `${text.slice(0, 600)}…` : text || null;
+  }
+
+  /**
+   * Builds the explicit inheritance a "new task from this task" action shows and
+   * stores. Nothing is copied into the new task's execution identity: the old
+   * worktree, session and pull request stay with the old task.
+   */
+  async function taskInheritance(
+    database: Database,
+    task: TaskLink,
+    conversation: typeof conversations.$inferSelect,
+  ): Promise<TaskInheritance> {
+    if (!NEW_TASK_SOURCE_STATES.has(task.state)) {
+      throw ApiProblem.conflict('只有已完成或已关闭的任务可以基于此任务新建');
+    }
+    const deliverySummary = await deliverySummaryOf(database, conversation.id);
+    const closed = task.state === 'closed_unmerged';
+    return {
+      fromTaskId: task.id,
+      fromConversationId: conversation.id,
+      fromRepositoryId: conversation.repositoryId,
+      fromState: task.state,
+      pullRequest: task.prUrl ? { url: task.prUrl, number: task.prNumber } : null,
+      deliverySummary,
+      baseBranch: task.baseBranch,
+      baseCommit: task.baseCommit,
+      // The platform never hands the old worktree to the new task; a cleaned
+      // directory therefore cannot block creation.
+      worktreeRecoverable: false,
+      worktreeNote:
+        '原任务的工作目录不会复用（已清理或不再可信）；新任务从确认的 base 起点重新创建，旧现场不可恢复。',
+      recovery: closed ? 'closed_unmerged_new_task' : 'completed_new_task',
+      recoveryNote: closed
+        ? '原 PR 已关闭未合并：允许基于原起点新建任务；不会重新打开原 PR，也不是恢复原现场。前置条件：原任务已结束、你对目标仓库有权限、起点可解析。'
+        : '原任务已完成：允许基于原起点新建任务；不会重新打开原 PR，也不是恢复原现场。',
+      reopensPullRequest: false,
+      reusesSourceExecution: false,
+    };
+  }
+
+  /** Serializes the inheritance beside a human-readable notice so a retry can return the same snapshot. */
+  function inheritanceMessage(inheritance: TaskInheritance): string {
+    return [
+      `基于任务 ${inheritance.fromTaskId} 新建（不是原现场恢复）。`,
+      `- 原 PR：${inheritance.pullRequest ? inheritance.pullRequest.url : '无'}`,
+      `- 交付摘要：${inheritance.deliverySummary ?? '无'}`,
+      `- 起点：${inheritance.baseBranch}@${inheritance.baseCommit ?? '最新'}`,
+      `- 恢复语义：${inheritance.recoveryNote}`,
+      '',
+      '```json',
+      JSON.stringify(inheritance),
+      '```',
+    ].join('\n');
+  }
+
+  function parseInheritance(body: string): TaskInheritance | null {
+    const match = /```json\n([\s\S]*?)\n```/.exec(body);
+    if (!match) return null;
+    try {
+      const parsed = taskInheritanceSchema.safeParse(JSON.parse(match[1]!));
+      return parsed.success ? parsed.data : null;
+    } catch {
+      return null;
+    }
+  }
+
+  app.get(
+    '/api/v1/tasks/:id/new-task-preview',
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const auth = request.auth;
+      if (!auth) throw ApiProblem.unauthorized();
+      const params = request.params as { id?: string };
+      const { task, conversation, repository } = await loadOwnedTask(
+        database,
+        auth.owner.id,
+        params.id ?? '',
+      );
+      const inheritance = await taskInheritance(database, task, conversation);
+      return sendData(
+        reply,
+        request,
+        newTaskFromTaskPreviewDataSchema.parse({
+          inheritance,
+          suggestedTarget: {
+            repositoryId: repository.id,
+            baseBranch: task.baseBranch,
+            baseCommit: task.baseCommit,
+          },
+        }),
+      );
+    },
+  );
+
+  app.post('/api/v1/tasks/:id/new-task', { preHandler: authenticate }, async (request, reply) => {
+    const auth = request.auth;
+    if (!auth) throw ApiProblem.unauthorized();
+    const params = request.params as { id?: string };
+    const input = parseInput(newTaskFromTaskInputSchema, request.body);
+    const {
+      task,
+      conversation: sourceConversation,
+      repository: sourceRepository,
+    } = await loadOwnedTask(database, auth.owner.id, params.id ?? '');
+    const inheritance = await taskInheritance(database, task, sourceConversation);
+    const targetRepository = await findOwnedRepository(database, auth.owner.id, input.repositoryId);
+    if (!targetRepository) throw ApiProblem.notFound('Repository not found');
+    const baseCommit =
+      input.baseCommit ?? (targetRepository.id === sourceRepository.id ? task.baseCommit : null);
+    const modelId = encodeModel(input.model);
+    const reasoningEffort = input.model?.reasoningEffort ?? null;
+    const fingerprint = createHash('sha256')
+      .update(
+        JSON.stringify({
+          fromTaskId: task.id,
+          repositoryId: targetRepository.id,
+          baseBranch: input.baseBranch,
+          baseCommit,
+          model: input.model ?? null,
+        }),
+      )
+      .digest('hex');
+
+    // A second click reuses the first conversation; the unique owner key is
+    // the database boundary, so two concurrent requests still make one task.
+    const [existing] = await database
+      .select()
+      .from(conversations)
+      .where(
+        and(
+          eq(conversations.ownerId, auth.owner.id),
+          eq(conversations.clientRequestId, input.clientRequestId),
+        ),
+      )
+      .limit(1);
+    if (existing) return existingNewTask(database, reply, request, existing, fingerprint);
+
+    let created: { conversation: typeof conversations.$inferSelect; task: TaskLink };
+    try {
+      created = await database.transaction(async (transaction) => {
+        const [inserted] = await transaction
+          .insert(conversations)
+          .values({
+            ownerId: auth.owner.id,
+            repositoryId: targetRepository.id,
+            mode: 'work',
+            executionMode: 'execute',
+            baseBranch: input.baseBranch,
+            baseCommit,
+            modelId,
+            modelReasoningEffort: reasoningEffort,
+            clientRequestId: input.clientRequestId,
+            requestFingerprint: fingerprint,
+            title: sourceConversation.title
+              ? `基于「${sourceConversation.title}」新建`
+              : '基于已完成任务新建',
+          })
+          .returning();
+        if (!inserted) throw new Error('conversation insert returned no row');
+        const [insertedTask] = await transaction
+          .insert(taskLinks)
+          .values({
+            conversationId: inserted.id,
+            repositoryId: targetRepository.id,
+            state: 'pending_admission',
+            baseBranch: input.baseBranch,
+            baseCommit,
+            modelId,
+            modelReasoningEffort: reasoningEffort,
+            executionMode: 'execute',
+          })
+          .returning();
+        if (!insertedTask) throw new Error('task link insert returned no row');
+        await transaction.insert(messages).values({
+          conversationId: inserted.id,
+          direction: 'outbound',
+          kind: 'notice',
+          source: 'web',
+          sourceEventId: `${INHERITANCE_PREFIX}${task.id}`,
+          body: inheritanceMessage(inheritance),
+        });
+        return { conversation: inserted, task: insertedTask };
+      });
+    } catch (error) {
+      if (!isUniqueViolation(error, 'conversations_owner_client_request_uq')) throw error;
+      const [again] = await database
+        .select()
+        .from(conversations)
+        .where(
+          and(
+            eq(conversations.ownerId, auth.owner.id),
+            eq(conversations.clientRequestId, input.clientRequestId),
+          ),
+        )
+        .limit(1);
+      if (!again) throw error;
+      return existingNewTask(database, reply, request, again, fingerprint);
+    }
+    await requestWake(database, config, targetRepository, 'new_task', request.log);
+    return sendData(
+      reply,
+      request,
+      newTaskResponse(created.conversation, created.task, inheritance),
+      201,
+    );
   });
 
   app.get('/api/v1/conversations/:id', { preHandler: authenticate }, async (request, reply) => {

@@ -1,4 +1,5 @@
 import clsx from 'clsx';
+import { useState } from 'react';
 
 import type { ConversationSummary, Message, RepositorySummary } from '@moyu/contracts';
 
@@ -14,6 +15,7 @@ import {
 } from '../lib/format';
 import { MarkdownMessage } from './markdown';
 import './markdown.css';
+import { NewTaskFromTaskDialog } from './NewTaskFromTaskDialog';
 import { NewTaskPanel } from './NewTaskPanel';
 import styles from './WorkspaceShell.module.css';
 
@@ -29,6 +31,7 @@ export interface ProgressEntry {
 interface ConversationPaneProps {
   mode: Mode;
   repository: RepositorySummary | null;
+  repositories: RepositorySummary[];
   conversation: ConversationSummary | null;
   conversationStatus: LoadStatus;
   conversationError: string | null;
@@ -145,6 +148,7 @@ export function ConversationPane({
   taskCommandBusy,
   taskCommandError,
   onTaskCommand,
+  repositories,
   onRetryConversation,
   onRetryMessages,
   onLoadOlderMessages,
@@ -283,6 +287,8 @@ export function ConversationPane({
   const canResume = taskState === 'stopped';
   const canRetry = taskState === 'failed' || taskState === 'blocked';
   const actionDisabled = taskCommandBusy || !!pendingOperation;
+  const [newTaskFromTaskOpen, setNewTaskFromTaskOpen] = useState(false);
+  const canStartFromTask = task?.state === 'completed' || task?.state === 'closed_unmerged';
   const operationLabel: Record<string, string> = {
     start: '启动执行',
     pause: '停止',
@@ -300,6 +306,16 @@ export function ConversationPane({
               <span className={styles.stateDot} aria-hidden="true" />
               {taskStateLabel(task?.state)}
             </span>
+            {canStartFromTask && task ? (
+              <button
+                type="button"
+                className={styles.secondaryButton}
+                onClick={() => setNewTaskFromTaskOpen(true)}
+                data-testid="new-task-from-task"
+              >
+                基于此任务新建
+              </button>
+            ) : null}
           </div>
           <div className={styles.conversationMeta}>
             <span className={styles.metaItem}>
@@ -487,6 +503,18 @@ export function ConversationPane({
           <MessageItem key={message.id} message={message} />
         ))}
       </section>
+      {newTaskFromTaskOpen && task ? (
+        <NewTaskFromTaskDialog
+          taskId={task.id}
+          repositories={repositories}
+          onCancel={() => setNewTaskFromTaskOpen(false)}
+          onCreated={(created) => {
+            setNewTaskFromTaskOpen(false);
+            onCreatedTask(created);
+          }}
+          onSessionLost={onSessionLost}
+        />
+      ) : null}
     </div>
   );
 }

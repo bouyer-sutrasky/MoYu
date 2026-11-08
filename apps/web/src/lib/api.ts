@@ -6,6 +6,8 @@ import {
   bootstrapExchangeDataSchema,
   ceremonyOptionsSchema,
   conversationDetailDataSchema,
+  newTaskFromTaskDataSchema,
+  newTaskFromTaskPreviewDataSchema,
   conversationListDataSchema,
   createMessageDataSchema,
   credentialListDataSchema,
@@ -37,6 +39,9 @@ import {
   type MessageDetailData,
   type MessageListData,
   type ModelListData,
+  type NewTaskFromTaskData,
+  type NewTaskFromTaskInput,
+  type NewTaskFromTaskPreviewData,
   type PasskeyCredentialSummary,
   type GithubRepositoryListData,
   type RepositoryActionData,
@@ -274,6 +279,22 @@ export const api = {
       method: 'POST',
       body: input,
     });
+  },
+  newTaskFromTaskPreview(taskId: string): Promise<NewTaskFromTaskPreviewData> {
+    return request(
+      `/api/v1/tasks/${encodeURIComponent(taskId)}/new-task-preview`,
+      newTaskFromTaskPreviewDataSchema,
+    );
+  },
+  createTaskFromTask(taskId: string, input: NewTaskFromTaskInput): Promise<NewTaskFromTaskData> {
+    return request(
+      `/api/v1/tasks/${encodeURIComponent(taskId)}/new-task`,
+      newTaskFromTaskDataSchema,
+      {
+        method: 'POST',
+        body: input,
+      },
+    );
   },
   conversation(id: string): Promise<ConversationDetailData> {
     return request(`/api/v1/conversations/${encodeURIComponent(id)}`, conversationDetailDataSchema);

@@ -10,3 +10,4 @@ export * from './repositories';
 export * from './review';
 export * from './runtime';
 export * from './tasks';
+export * from './task-followups';
