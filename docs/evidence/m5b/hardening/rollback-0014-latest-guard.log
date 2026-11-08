@@ -1,0 +1,93 @@
+# 0014 回滚：拒绝存在后续迁移的数据库
+
+- 排单键：`M5B-D02F07F-ROLLBACK-LATEST`
+- 来源：Issue #37（#31 / PR #32 全线复验的规范轴修正）
+- 基线：`d02f07f1483e0c85a13c1dfe24d03d855a72d0a1`
+- 记录时间：2026-11-08T04:51:36Z（2026-11-08T12:51:36+08:00）
+- 缺陷：ledger 里存在 0014 之后的迁移时，0014 down 仍删除 `execution_reservations`
+  及其自身 ledger 行；`migrateDatabase` 随后跳过 0014，表与约束不会重建。
+- 环境：独立 PostgreSQL 16（`/tmp/moyu-pgdata`，`127.0.0.1:55432`）。测试自建/自删
+  临时数据库；未连接生产库、未执行生产迁移。连接串在下方按
+  `postgres://moyu@127.0.0.1:55432/<isolated>` 脱敏（该实例无密码）。
+
+## 实际执行命令
+
+```bash
+export TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/<isolated>
+corepack pnpm --filter @moyu/db exec vitest run \
+  test/integration/rollback-0014.integration.test.ts --reporter=verbose
+```
+
+脚本的实际调用契约（与 0004-0013 一致）：
+
+```bash
+psql "$ISOLATED_DATABASE_URL" -v ON_ERROR_STOP=1 \
+  -v hash="$(sha256sum packages/db/migrations/0014_execution_reservations.sql | cut -d' ' -f1)" \
+  -f packages/db/migrations/rollback/0014_execution_reservations.down.sql
+```
+
+0014 正向迁移文件 sha256：
+`46344e9ba62e570e08f2797c21eaef6aaf194191378fa4860cee28444a01c1d3`。
+
+## Red（基线 SQL + 新回归，exit=1）
+
+```
+ ✓ removes the reservation schema and re-applies it 459ms
+ ✓ refuses a second rollback instead of silently deleting nothing 475ms
+ × refuses a wrong or missing hash without changing the schema or ledger 416ms
+   → expected +0 not to be +0 // Object.is equality
+ × refuses while a later migration is applied 401ms
+   → expected +0 not to be +0 // Object.is equality
+ ✓ refuses a duplicated ledger row without changing the schema or ledger 402ms
+ ✓ rolls back the DDL when a later statement in the same transaction fails 415ms
+ ✓ refuses when 0014 is not applied at all 432ms
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 5 passed (7)
+```
+
+- `wrong or missing hash`：基线脚本忽略调用方 hash，直接回滚成功（exit 0）。
+- `later migration`：基线脚本不检查“0014 是否为最新”，直接删表并删 ledger（exit 0）。
+- 重复 ledger 行与“0014 未应用”在基线已由 `count(hash) <> 1` 拦住；新回归继续锁定。
+
+## Green（修复后，exit=0）
+
+```
+ ✓ removes the reservation schema and re-applies it 477ms
+ ✓ refuses a second rollback instead of silently deleting nothing 501ms
+ ✓ refuses a wrong or missing hash without changing the schema or ledger 474ms
+ ✓ refuses while a later migration is applied 424ms
+ ✓ refuses a duplicated ledger row without changing the schema or ledger 422ms
+ ✓ rolls back the DDL when a later statement in the same transaction fails 404ms
+ ✓ refuses when 0014 is not applied at all 409ms
+
+ Test Files  1 passed (1)
+      Tests  7 passed (7)
+```
+
+## 覆盖矩阵
+
+| 场景 | 断言 | 结果 |
+| --- | --- | --- |
+| 正常 rollback → reapply | 表、3 个外键、ledger 行删除；`migrateDatabase` 后全部恢复 | 通过 |
+| 第二次 rollback | exit≠0，`expected exactly one applied 0014 migration`；表/约束/ledger 不变 | 通过 |
+| 错误 hash | exit≠0，`hash mismatch`；表/约束/ledger 不变 | 通过 |
+| 缺失 hash | exit≠0，`pass -v hash=`；表/约束/ledger 不变 | 通过 |
+| 0014 后存在后续迁移 | exit≠0，`0014 is not the latest applied migration`；表/约束/ledger 不变，后续记录保留 | 通过 |
+| ledger 重复 0014 记录 | exit≠0，`expected exactly one applied 0014 migration`；表/约束/ledger 不变 | 通过 |
+| 事务内后续语句失败 | 注入 ledger DELETE 失败后 exit≠0；已执行的 DDL 随事务回滚，表/约束/ledger 不变 | 通过 |
+| 0014 未应用 | exit≠0，`expected exactly one applied 0014 migration`；0013 记录与 14 行 ledger 保留 | 通过 |
+
+完整 db 集成套件（11 文件 / 43 测试）在同一隔离实例上通过；`0013` 等既有回滚测试未受影响。
+
+## 判定与边界
+
+- 0014 down 现在与 0004-0013 使用同一回滚契约：事务内先校验
+  `hash` 已提供且匹配正向文件、ledger 中恰好一条 0014 记录、且该记录为最新；
+  任一不满足即 `RAISE EXCEPTION`，DDL 与 ledger 删除均不执行。
+- 原先“普通 pg 客户端可直接执行”的 0014 脚本形态被 0013 契约取代：脚本使用
+  psql 元命令并需要 `-v hash=<0014 sha256>`。仓库内唯一调用方是集成测试，已同步更新；
+  `0004-0013` 的调用方式不变。
+- 本次只改 `0014_execution_reservations.down.sql`、`rollback-0014.integration.test.ts`
+  和本日志；未改产品代码、迁移正向文件或其它回滚脚本。
+- 未触碰生产数据库、正式发布、真实设备 Passkey 或 3082 bootstrap。

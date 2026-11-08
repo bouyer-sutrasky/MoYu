@@ -1,18 +1,35 @@
 -- Reverse 0014: execution reservations.
--- Plain SQL on purpose (no psql meta-commands) so both psql and a plain pg
--- client can execute it, and transactional so a refusal leaves the schema
--- untouched. 0013 requires the caller to supply the hash; 0014 verifies the
--- ledger row itself instead, which keeps the same drift protection without
--- needing a variable.
+-- Only runs when 0014 is the latest applied migration and the caller supplies
+-- the exact sha256 of 0014_execution_reservations.sql. This follows the same
+-- contract as every sibling rollback (0004-0013): the expected hash, the single
+-- matching ledger row, and "0014 is the newest row" are all checked inside the
+-- transaction, before any DDL, so a refusal leaves the table, its constraints
+-- and drizzle.__drizzle_migrations exactly as they were.
+\set ON_ERROR_STOP on
+\if :{?hash}
+\else
+  \set hash __MOYU_0014_HASH_MISSING__
+\endif
 BEGIN;
+SET LOCAL moyu.rollback_hash = :'hash';
 DO $$
 DECLARE
   expected constant text := '46344e9ba62e570e08f2797c21eaef6aaf194191378fa4860cee28444a01c1d3';
-  present integer;
+  supplied text := current_setting('moyu.rollback_hash', true);
+  matching integer;
+  latest text;
 BEGIN
-  SELECT count(*) INTO present FROM drizzle.__drizzle_migrations WHERE hash = expected;
-  IF present <> 1 THEN
-    RAISE EXCEPTION '0014 rollback refused: expected exactly one applied 0014 migration, found %', present;
+  IF supplied IS NULL OR supplied = '' OR supplied = '__MOYU_0014_HASH_MISSING__' THEN
+    RAISE EXCEPTION '0014 rollback refused: pass -v hash=<sha256 of 0014_execution_reservations.sql>';
+  END IF;
+  IF supplied <> expected THEN RAISE EXCEPTION '0014 rollback refused: hash mismatch'; END IF;
+  SELECT count(*) INTO matching FROM drizzle.__drizzle_migrations WHERE hash = expected;
+  IF matching <> 1 THEN
+    RAISE EXCEPTION '0014 rollback refused: expected exactly one applied 0014 migration, found %', matching;
+  END IF;
+  SELECT hash INTO latest FROM drizzle.__drizzle_migrations ORDER BY id DESC LIMIT 1;
+  IF latest <> expected THEN
+    RAISE EXCEPTION '0014 rollback refused: 0014 is not the latest applied migration';
   END IF;
 END $$;
 ALTER TABLE "execution_reservations" DROP CONSTRAINT IF EXISTS "execution_reservations_delivery_fk";
