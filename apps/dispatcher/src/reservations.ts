@@ -130,6 +130,21 @@ export async function supersedeReservationAssignmentOn(
     sourceEventId?: string;
   },
 ): Promise<string | null> {
+  // Same lock order as reserveExecution and claimExecution: the lease first, then
+  // the reservation. The ledger row this function appends references the lease,
+  // so taking the reservation first could deadlock against a concurrent claim.
+  const lease = await client.query<{ fencing_token: string; state: string }>(
+    `select fencing_token, state from runtime_leases
+      where id = $1 and repository_id = $2
+      for update`,
+    [input.leaseId, input.repositoryId],
+  );
+  if (
+    lease.rows[0]?.state !== 'active' ||
+    String(lease.rows[0].fencing_token) !== input.fencingToken
+  ) {
+    return null;
+  }
   const current = await client.query<{
     id: string;
     assignment_id: string;
