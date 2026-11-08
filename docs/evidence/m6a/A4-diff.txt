@@ -1,11 +1,11 @@
-# A4 diff 面板 — 2026-11-08T14:18:56+08:00
+# A4 diff 面板 — 2026-11-08T14:31:47+08:00
 $ git rev-parse HEAD
-9576e64ce6bc887ceb387db5fbfe34e5549914c6
-$ git -C /tmp/m6a-run/worktrees/probe1/m6a-review-t_m6a_9576e6 rev-parse HEAD
-9576e64ce6bc887ceb387db5fbfe34e5549914c6
+d4d5801358b9f0c814cf25ae7491aadb90f14f09
+$ git -C /tmp/m6a-run/worktrees/probe1/m6a-review-t_m6a_d4d580 rev-parse HEAD
+d4d5801358b9f0c814cf25ae7491aadb90f14f09
 环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-run/artifacts，supervisor http://127.0.0.1:4690
 
-任务 worktree：/tmp/m6a-run/worktrees/probe1/m6a-review-t_m6a_9576e6
+任务 worktree：/tmp/m6a-run/worktrees/probe1/m6a-review-t_m6a_d4d580
 
 ## 1. 真实 git 命令的原始输出
 $ git status --porcelain=v1
@@ -56,9 +56,9 @@ HTTP 200
 {
   "state": "available",
   "branch": "agent/attachments-review-panel-4bd4aae33eac",
-  "commit": "9576e64ce6bc887ceb387db5fbfe34e5549914c6",
-  "commitSubject": "test(m6a): make the whole acceptance run repeatable on any head",
-  "committedAt": "2026-11-08T14:18:15+08:00",
+  "commit": "d4d5801358b9f0c814cf25ae7491aadb90f14f09",
+  "commitSubject": "test(m6a): recreate the baseline worktree on every run",
+  "committedAt": "2026-11-08T14:30:39+08:00",
   "additions": 5,
   "deletions": 21,
   "filesOmitted": 0
@@ -91,6 +91,6 @@ state = available | files = [] | additions = 0 | deletions = 0
 
 ## 6. 工作目录已清理的任务：cleaned 而不是空白
 HTTP 200
-state = available
-reason = null
+state = cleaned
+reason = 该任务的执行目录已不存在（工作目录已清理，或运行时尚未创建工作目录）。
 files = []

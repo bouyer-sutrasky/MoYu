@@ -1,8 +1,8 @@
-# A3 附件与投递 — 2026-11-08T14:18:35+08:00
+# A3 附件与投递 — 2026-11-08T14:31:27+08:00
 $ git rev-parse HEAD
-9576e64ce6bc887ceb387db5fbfe34e5549914c6
-$ git -C /tmp/m6a-run/worktrees/probe1/m6a-review-t_m6a_9576e6 rev-parse HEAD
-9576e64ce6bc887ceb387db5fbfe34e5549914c6
+d4d5801358b9f0c814cf25ae7491aadb90f14f09
+$ git -C /tmp/m6a-run/worktrees/probe1/m6a-review-t_m6a_d4d580 rev-parse HEAD
+d4d5801358b9f0c814cf25ae7491aadb90f14f09
 环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-run/artifacts，supervisor http://127.0.0.1:4690
 
 ## 1. 带附件的消息
@@ -10,15 +10,15 @@ HTTP 202
 {
     "data": {
         "message": {
-            "id": "0a31f6e2-6949-45a7-8a71-b9775c5c1b4b",
-            "conversationId": "b971d63e-37db-490a-b0cb-6435ee6888fb",
+            "id": "0436bfe7-2a84-46c8-810f-b68410c192b5",
+            "conversationId": "417b7c96-5323-4efd-8644-4fc8bc6a0c62",
             "direction": "inbound",
             "kind": "user",
-            "clientMessageId": "m6a-attach-t_m6a_9576e6",
+            "clientMessageId": "m6a-attach-t_m6a_d4d580",
             "body": "\u9644\u4ef6\u968f\u6d88\u606f\u53d1\u9001\u7684\u9a8c\u6536\u8bb0\u5f55",
             "replyToMessageId": null,
             "source": "web",
-            "createdAt": "2026-11-08T06:18:35.703Z",
+            "createdAt": "2026-11-08T06:31:27.475Z",
             "delivery": {
                 "state": "stored",
                 "attemptCount": 0,
@@ -29,44 +29,44 @@ HTTP 202
             },
             "attachments": [
                 {
-                    "id": "90391a42-d278-45be-a11a-d6ba95e3d907",
-                    "conversationId": "b971d63e-37db-490a-b0cb-6435ee6888fb",
-                    "taskId": "c41d6581-c6c4-422d-99d8-f163db12cc57",
-                    "messageId": "0a31f6e2-6949-45a7-8a71-b9775c5c1b4b",
+                    "id": "f91da3c8-6539-42e4-84e5-70496a2418a4",
+                    "conversationId": "417b7c96-5323-4efd-8644-4fc8bc6a0c62",
+                    "taskId": "a2408c59-7adf-4158-a453-5d84fc5b8969",
+                    "messageId": "0436bfe7-2a84-46c8-810f-b68410c192b5",
                     "filename": "upload.png",
                     "mimeType": "image/png",
                     "sizeBytes": 70,
                     "sha256": "c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77",
                     "kind": "image",
-                    "createdAt": "2026-11-08T06:18:34.985Z",
-                    "downloadUrl": "/api/v1/attachments/90391a42-d278-45be-a11a-d6ba95e3d907"
+                    "createdAt": "2026-11-08T06:31:26.812Z",
+                    "downloadUrl": "/api/v1/attachments/f91da3c8-6539-42e4-84e5-70496a2418a4"
                 },
                 {
-                    "id": "41e7f669-b1a1-4a10-9e55-9e90d6d8a010",
-                    "conversationId": "b971d63e-37db-490a-b0cb-6435ee6888fb",
-                    "taskId": "c41d6581-c6c4-422d-99d8-f163db12cc57",
-                    "messageId": "0a31f6e2-6949-45a7-8a71-b9775c5c1b4b",
+                    "id": "d7b62952-2d59-4352-b675-205b0be24a82",
+                    "conversationId": "417b7c96-5323-4efd-8644-4fc8bc6a0c62",
+                    "taskId": "a2408c59-7adf-4158-a453-5d84fc5b8969",
+                    "messageId": "0436bfe7-2a84-46c8-810f-b68410c192b5",
                     "filename": "upload.txt",
                     "mimeType": "text/plain",
                     "sizeBytes": 30,
                     "sha256": "970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584",
                     "kind": "text",
-                    "createdAt": "2026-11-08T06:18:35.052Z",
-                    "downloadUrl": "/api/v1/attachments/41e7f669-b1a1-4a10-9e55-9e90d6d8a010"
+                    "createdAt": "2026-11-08T06:31:26.877Z",
+                    "downloadUrl": "/api/v1/attachments/d7b62952-2d59-4352-b675-205b0be24a82"
                 }
             ]
         },
         "duplicate": false
     },
-    "requestId": "f80c71f2-84d9-469c-bfc9-fc96ccbef074"
+    "requestId": "1d2ad138-2f33-4398-8455-b88bb8bc06b4"
 }
 
 ## 2. 附件行已绑定 message_id（同一事务）
                   id                  |              message_id              |  filename   | size_bytes 
 --------------------------------------+--------------------------------------+-------------+------------
- 90391a42-d278-45be-a11a-d6ba95e3d907 | 0a31f6e2-6949-45a7-8a71-b9775c5c1b4b | upload.png  |         70
- 41e7f669-b1a1-4a10-9e55-9e90d6d8a010 | 0a31f6e2-6949-45a7-8a71-b9775c5c1b4b | upload.txt  |         30
- 36daecfa-3e87-4723-ba5b-3fa614e7fad9 |                                      | upload.html |         59
+ f91da3c8-6539-42e4-84e5-70496a2418a4 | 0436bfe7-2a84-46c8-810f-b68410c192b5 | upload.png  |         70
+ d7b62952-2d59-4352-b675-205b0be24a82 | 0436bfe7-2a84-46c8-810f-b68410c192b5 | upload.txt  |         30
+ c98b0866-ff9d-4329-b2ef-ddcdfac94c46 |                                      | upload.html |         59
 (3 rows)
 
 
@@ -75,7 +75,7 @@ HTTP 202
 ## 4. 投递状态
               upstream_trigger_id               |  state  | attempt_count 
 ------------------------------------------------+---------+---------------
- workspace:0a31f6e2-6949-45a7-8a71-b9775c5c1b4b | pending |             0
+ workspace:0436bfe7-2a84-46c8-810f-b68410c192b5 | pending |             0
 (1 row)
 
 

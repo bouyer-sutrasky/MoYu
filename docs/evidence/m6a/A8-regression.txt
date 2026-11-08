@@ -1,8 +1,8 @@
-# A8 回归 — 2026-11-08T14:21:23+08:00
+# A8 回归 — 2026-11-08T14:34:29+08:00
 $ git rev-parse HEAD
-9576e64ce6bc887ceb387db5fbfe34e5549914c6
-$ git -C /tmp/m6a-run/worktrees/probe1/m6a-review-t_m6a_9576e6 rev-parse HEAD
-9576e64ce6bc887ceb387db5fbfe34e5549914c6
+d4d5801358b9f0c814cf25ae7491aadb90f14f09
+$ git -C /tmp/m6a-run/worktrees/probe1/m6a-review-t_m6a_d4d580 rev-parse HEAD
+d4d5801358b9f0c814cf25ae7491aadb90f14f09
 环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-run/artifacts，supervisor http://127.0.0.1:4690
 
 ## 1. pnpm check（lint + format + typecheck + 单元测试）
@@ -30,6 +30,31 @@ exit=0
  Test Files  16 passed | 1 skipped (17)
       Tests  80 passed | 1 skipped (81)
 
-## 3. 既有测试未回退
-- before 的对照条数由 `M6A_BEFORE_CHECK_LOG`/`M6A_BEFORE_INTEGRATION_LOG` 提供时并列；本脚本只跑 after。
-- 新增测试：附件集成 11 条、review 集成 5 条、supervisor review 9 条、迁移回滚 2 条。
+
+## 3. before 对照（同一台机器、同一隔离 PostgreSQL，PR 基线构建）
+$ git -C <before> rev-parse HEAD
+1001c2544c68b8f4d906e330566f6fdb6ff0c795
+check exit=0
+packages/contracts test:  Test Files  1 passed (1)
+packages/contracts test:       Tests  13 passed (13)
+packages/runtime-client test:  Test Files  2 passed (2)
+packages/runtime-client test:       Tests  13 passed (13)
+apps/dispatcher test:  Test Files  2 passed (2)
+apps/dispatcher test:       Tests  5 passed (5)
+apps/api test:  Test Files  3 passed (3)
+apps/api test:       Tests  20 passed (20)
+apps/supervisor test:  Test Files  6 passed (6)
+apps/supervisor test:       Tests  38 passed (38)
+ℹ tests 15
+ℹ pass 15
+ℹ fail 0
+integration exit=0
+ Test Files  11 passed (11)
+      Tests  38 passed (38)
+ Test Files  11 passed (11)
+      Tests  66 passed (66)
+ Test Files  16 passed | 1 skipped (17)
+      Tests  80 passed | 1 skipped (81)
+
+## 4. 既有测试未回退
+- before/after 的套件条数见上；新增测试：附件集成 11 条、review 集成 5 条、supervisor review 9 条、迁移回滚 2 条。

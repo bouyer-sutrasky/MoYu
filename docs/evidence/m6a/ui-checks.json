@@ -1,5 +1,5 @@
 {
-  "capturedAt": "2026-11-08T06:23:41.455Z",
+  "capturedAt": "2026-11-08T06:37:59.278Z",
   "afterUrl": "http://127.0.0.1:4620",
   "beforeUrl": "http://127.0.0.1:4621",
   "beforeShowsPlaceholder": true,
@@ -8,8 +8,8 @@
   "afterShowsCommit": true,
   "afterShowsFile": true,
   "afterShowsCheckPassed": true,
-  "afterShowsCheckFailed": false,
-  "afterShowsCleaned": false,
+  "afterShowsCheckFailed": true,
+  "afterShowsCleaned": true,
   "records": [
     {
       "name": "before-desktop-light-review-panel",
@@ -20,7 +20,7 @@
         "width": 1440,
         "height": 900
       },
-      "conversationId": "b971d63e-37db-490a-b0cb-6435ee6888fb"
+      "conversationId": "417b7c96-5323-4efd-8644-4fc8bc6a0c62"
     },
     {
       "name": "after-desktop-light-review-panel",
@@ -31,7 +31,7 @@
         "width": 1440,
         "height": 900
       },
-      "conversationId": "b971d63e-37db-490a-b0cb-6435ee6888fb"
+      "conversationId": "417b7c96-5323-4efd-8644-4fc8bc6a0c62"
     },
     {
       "name": "before-mobile-light-review-panel",
@@ -42,7 +42,7 @@
         "width": 390,
         "height": 844
       },
-      "conversationId": "b971d63e-37db-490a-b0cb-6435ee6888fb"
+      "conversationId": "417b7c96-5323-4efd-8644-4fc8bc6a0c62"
     },
     {
       "name": "after-mobile-light-review-panel",
@@ -53,7 +53,7 @@
         "width": 390,
         "height": 844
       },
-      "conversationId": "b971d63e-37db-490a-b0cb-6435ee6888fb"
+      "conversationId": "417b7c96-5323-4efd-8644-4fc8bc6a0c62"
     },
     {
       "name": "before-desktop-dark-review-panel",
@@ -64,7 +64,7 @@
         "width": 1440,
         "height": 900
       },
-      "conversationId": "b971d63e-37db-490a-b0cb-6435ee6888fb"
+      "conversationId": "417b7c96-5323-4efd-8644-4fc8bc6a0c62"
     },
     {
       "name": "after-desktop-dark-review-panel",
@@ -75,7 +75,7 @@
         "width": 1440,
         "height": 900
       },
-      "conversationId": "b971d63e-37db-490a-b0cb-6435ee6888fb"
+      "conversationId": "417b7c96-5323-4efd-8644-4fc8bc6a0c62"
     },
     {
       "name": "before-mobile-dark-review-panel",
@@ -86,7 +86,7 @@
         "width": 390,
         "height": 844
       },
-      "conversationId": "b971d63e-37db-490a-b0cb-6435ee6888fb"
+      "conversationId": "417b7c96-5323-4efd-8644-4fc8bc6a0c62"
     },
     {
       "name": "after-mobile-dark-review-panel",
@@ -97,7 +97,7 @@
         "width": 390,
         "height": 844
       },
-      "conversationId": "b971d63e-37db-490a-b0cb-6435ee6888fb"
+      "conversationId": "417b7c96-5323-4efd-8644-4fc8bc6a0c62"
     },
     {
       "name": "after-desktop-light-cleaned",
@@ -108,7 +108,7 @@
         "width": 1440,
         "height": 900
       },
-      "conversationId": "4cec6616-252d-41bf-806d-948bc55bb4a5"
+      "conversationId": "ac336284-5c0f-4b01-945a-8adcaf2d815c"
     }
   ]
 }
