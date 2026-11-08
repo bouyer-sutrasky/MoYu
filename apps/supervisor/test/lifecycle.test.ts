@@ -213,6 +213,11 @@ describe('restart ownership convergence', () => {
   });
 
   it('re-binds a live runtime whose boundary object disappeared', async () => {
+    // Without a writable cgroup v2 hierarchy the re-bind cannot happen; the
+    // isolated acceptance host proves it (scripts/m5b/cgroup-lifecycle-probe.sh).
+    const host = ensureCgroup(`lifecycle-host-${process.pid}-${Date.now()}`);
+    if (!host.ok || !host.path) return;
+    removeCgroup(host.path);
     const gone = join(CGROUP_ROOT, `missing-${process.pid}-${Date.now()}`);
     const { pid } = spawnPlain();
     // A live runtime reported without any usable boundary: the restart must give
