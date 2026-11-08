@@ -19,9 +19,8 @@ source "$HERE/lib.sh"
 
 RUN=$M5B_MATRIX_RUN
 FIXTURE_REPO=${M5B_MATRIX_FIXTURE_REPO:-Bouyer12/m5a-beta-adf10ad9}
-OPEN_PR_FILE="$RUN/open-pr.txt"
-PR_NUMBER_FILE="$RUN/pr-number.txt"
-GH=/usr/bin/gh
+OPEN_PR_FILE="$M5B_MATRIX_TMP/open-pr.txt"
+PR_NUMBER_FILE="$M5B_MATRIX_TMP/pr-number.txt"
 LIVE="node $M5B_MATRIX_ROOT/scripts/m5b/matrix/live.mjs"
 
 fail() {
@@ -30,7 +29,9 @@ fail() {
 }
 
 gh_agent() {
-  GH_CONFIG_DIR=/root/.config/gh-agent "$GH" "$@"
+  # The matrix uses its dedicated probe-only gh configuration, never the
+  # shared /root/.config/gh-agent token.
+  "$M5B_MATRIX_GH_CLI" "$@"
 }
 
 ticket_json() {

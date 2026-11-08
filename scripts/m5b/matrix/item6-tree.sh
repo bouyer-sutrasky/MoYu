@@ -17,7 +17,7 @@ RUN=$M5B_MATRIX_RUN
 SLICE=$M5B_MATRIX_SLICE_PATH
 CGROOT=$M5B_MATRIX_CGROUP_ROOT
 LIVE="node $M5B_MATRIX_ROOT/scripts/m5b/matrix/live.mjs"
-SLEEP_FILE="$RUN/worker-sleep.txt"
+SLEEP_FILE="$M5B_MATRIX_TMP/worker-sleep.txt"
 
 fail() {
   echo "FAIL: $*"

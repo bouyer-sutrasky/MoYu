@@ -3,6 +3,10 @@
 本目录是一次现场矩阵取证运行留下的东西：可复跑的隔离 harness、原始日志、以及每项的判定。
 **不是**七项全线的通过证明；哪些项做了、哪些没做，见 [SUMMARY.md](SUMMARY.md)。
 
+> 2026-11-08 起，harness 增加了凭据与特权文件的隔离（[HARNESS-ISOLATION.md](HARNESS-ISOLATION.md)）：
+> `stack.sh up` 会先审计测试身份对宿主配置的写权限、并要求专用探测凭据，任一不满足直接失败。
+> 本目录此前的日志来自旧 harness；复跑七项之前必须先完成该文档 §4 的所有者动作。
+
 ## 这个 harness 起的是什么
 
 `scripts/m5b/matrix/stack.sh up` 在一个**单一受管 slice** 里起整套现场：
@@ -34,13 +38,26 @@ node scripts/m5b/matrix/live.mjs snapshot --task <id>
 node scripts/m5b/matrix/live.mjs ticket --ticket <id>
 ```
 
-## 非 root 运行身份
+## 非 root 运行身份与凭据边界
 
 `scripts/m5b/matrix/prepare-nonroot.sh` 建一个专用身份 `m5bmatrix`（uid 995）并打印每处访问授权的
-before/after。之后 `stack.sh up` 让 **anchor / provider / supervisor / dispatcher / api** 全部以该身份运行
-（PostgreSQL 一直是 `postgres`）。supervisor 的实例 cgroup 在它自己被委托的单元 cgroup 下
-（`Delegate=yes` + `DelegateSubgroup=payload`），控制器以该身份写入。运行时的 harness home 与
-supervisor 的凭据/env/日志/worktree 目录都搬到了 `/tmp/m5bmatrix`，共享的 `/root/.dsh-m5` 不再被改。
+before/after。它只授予**读/遍历**权限；`/root/.dsh-m5`、`/root/.config/gh-agent` 和任何 DSH home
+都不再对测试身份可写。`stack.sh up` 让 **anchor / provider / supervisor / dispatcher / api** 全部以该
+身份运行（PostgreSQL 一直是 `postgres`）。supervisor 的实例 cgroup 在它自己被委托的单元 cgroup 下
+（`Delegate=yes` + `DelegateSubgroup=payload`），控制器以该身份写入。
+
+每次运行的状态分区：
+
+| 目录 | 属主/模式 | 内容 |
+| --- | --- | --- |
+| `/tmp/m5bmatrix` | root 0755 | 运行根，测试身份不能改名/替换条目 |
+| `protected/` | root 0700 | supervisor token、seeded 会话 token、`state.env` |
+| `config/` | root:matrix 0750 | `instances.json`（supervisor 只读） |
+| `tmp/ credentials/ instance-env/ dsh-home/ ...` | m5bmatrix 0700 | provider/worker 交互文件、Bridge 凭据、暂存 home |
+
+测试身份的仓库凭据与 gh 凭据都是**专用且仅授权探测仓库**的（`M5B_MATRIX_SSH_KEY`、
+`M5B_MATRIX_GH_CONFIG_DIR`）；`guard audit-credentials` 会拒绝宿主 agent key 的副本（含改名）
+和共享 gh 配置。缺凭据时 `prepare-nonroot.sh --check` 会打印所有者动作。
 
 ## 被刻意改过的现场配置（复跑前必读）
 
@@ -67,13 +84,18 @@ supervisor 的凭据/env/日志/worktree 目录都搬到了 `/tmp/m5bmatrix`，�
 - 所有压测/长回合都只在 `/sys/fs/cgroup/m5bmatrix.slice`（8 GiB，swap 0）内；
   `stack.sh` 在 `down` 时用 `cgroup.kill` 收掉 runtime 的 instance 子树，避免端口被孤儿进程占住。
 - 日志里的 token 一律 `***`；feishu/生产凭据未进入任何日志。
-- `local-provider` 的 prompt dump 只在 `/tmp/m5bmatrix/provider-prompts.jsonl`，不入库。
+- 特权 token 只在 `protected/`（root 0700）；`down` 会删除它们，Bridge 凭据目录每次 `up` 清空，
+  历史运行不再累积凭据文件。
+- `local-provider` 的 prompt dump 只在 `/tmp/m5bmatrix/tmp/provider-prompts.jsonl`，不入库。
 
 ## 非 root 运行还需要两样东西
 
-- `prepare-nonroot.sh` 之外，runtime 的 worker 要 clone 私有仓库：该身份在自己的
-  `/home/m5bmatrix/.ssh` 有一份 0600 的 agent 私钥副本与 `known_hosts`（源自 root 的
-  `/root/.ssh/sa_agent2` 与 `ssh-keyscan -p 443 ssh.github.com`），脚本会实测
-  `ssh -T git@ssh.github.com` 输出 `successfully authenticated`。
+- **专用探测凭据**：`prepare-nonroot.sh` 把 `/root/.config/m5bmatrix/probe_ssh_key`
+  （root:root 0600）安装为 `/home/m5bmatrix/.ssh/probe_deploy`（0600），并配置
+  `ssh-keyscan -p 443 ssh.github.com` 的 `known_hosts`；该 key 只应加入探测仓库。
+  gh 走 `/root/.config/m5bmatrix/gh`（0750 root:matrix，`hosts.yml` 0640），由
+  `scripts/m5b/matrix/gh-m5b.sh` 固定 `HOME`/`GH_CONFIG_DIR` 使用。
+  不再复制 `/root/.ssh/sa_agent2`；`prepare-nonroot.sh --revoke` 会删除旧副本。
+  现场范围用 `node scripts/m5b/matrix/precheck.mjs --online` 验证（探测仓库可达、MoYu 被拒）。
 - 构建测试进程用 `/opt/moyu-node24`，该目录组只读；不安装/不升级任何包。
 这两项都只给 `m5bmatrix` 组，退役时可用脚本打印的原始 group/mode 回退。
