@@ -4,9 +4,9 @@
 # item1-pause-start.sh pauses once, which is enough for a phase the platform accepts at once.
 # Pausing as soon as the ticket exists races the dispatcher recording that ticket: the API
 # answers 409 because the task version the command carried went stale, which is a fact of the
-# harness and not a product answer. This variant only adds a bounded retry of the same pause
-# command and prints every attempt, so a captured log shows which attempt the platform accepted
-# and what it rejected.
+# harness and not a product answer. This variant adds a bounded retry of the same pause command and
+# prints every attempt, so a captured log shows which attempt the platform accepted and what it
+# rejected, and it prints the artifact lines and the runtime's own operation record as measured.
 #
 # Against a stack this repository's scripts/m5b/matrix/stack.sh just booted:
 #

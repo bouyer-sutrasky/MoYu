@@ -504,9 +504,10 @@ runtime 侧同一次暂停的 operation 证据（`bridge/operations.jsonl`，自
 ### 8.2 c2 pause 在 start 进行中
 
 平台命令会因 `expectedVersion` 过期返回 409（调度器在票落地时推进了 `version`）：这是取证脚本与调度器的竞态，
-不是产品回答。所以 c2 用一个入库的脚本 `scripts/m5b/matrix/item1-pause-start-c2.sh`，它比 `item1-pause-start.sh`
-只多一件事 —— 对同一条 pause 命令做有界重试，并把每次结果打出来。这次第 1 次就被接受；重试仍然保留，因为
-2026-11-08T12:22 那次 409 是真实发生过的（见 git 历史里本文件上一版）。
+不是产品回答。所以 c2 用一个入库的脚本 `scripts/m5b/matrix/item1-pause-start-c2.sh`：它比
+`item1-pause-start.sh` 多做两件取证上的事 —— 对同一条 pause 命令做有界重试并打出每次结果，以及把制品行和
+runtime 自己的 operation 记录量出来打进去。这次第 1 次就被接受；重试仍然保留，因为 2026-11-08T12:22 那次 409
+是真实发生过的（见 git 历史里本文件上一版）。
 
 脚本里的制品行是**量出来的**，不是打印默认值：`runtime_loaded` 读这段栈实际装载的 profile 软链，`runtime_artifact`
 对那个目录的 `lib/index.js` 现算 sha256，`dispatcher_artifact` 对栈实际运行的 `apps/dispatcher/dist/main.js` 现算。
