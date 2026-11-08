@@ -20,7 +20,7 @@ const TOKEN = process.env.M6A_SESSION_TOKEN;
 const CONVERSATION = process.env.M6A_CONVERSATION_ID;
 const CLEANED_CONVERSATION = process.env.M6A_CLEANED_CONVERSATION_ID;
 const OUT = resolve(process.env.M6A_OUT ?? 'docs/evidence/m6a');
-const REPOSITORY = process.env.M6A_REPOSITORY ?? 'Bouyer12/m6a-review';
+const REPOSITORY = process.env.M6A_REPOSITORY ?? 'bouyer-sutrasky/MoYu';
 if (!TOKEN || !CONVERSATION)
   throw new Error('M6A_SESSION_TOKEN and M6A_CONVERSATION_ID are required');
 mkdirSync(OUT, { recursive: true });
@@ -111,17 +111,8 @@ for (const theme of ['light', 'dark']) {
   );
 }
 
-// The failing-check state is captured in its own run (the worktree really holds
-// a broken type at that moment), so a later pass re-run does not overwrite it.
-if (process.env.M6A_CAPTURE_FAILURE === '1') {
-  views['after-desktop-light-checks-failed'] = await capture(
-    'after-desktop-light-checks-failed',
-    AFTER,
-    'light',
-    desktop,
-    CONVERSATION,
-  );
-}
+// The failing-check state is captured by failure-shot.mjs while the worktree
+// really holds a broken type, so a later pass re-run does not overwrite it.
 // The additional after-only state: a cleaned worktree.
 views['after-desktop-light-cleaned'] = await capture(
   'after-desktop-light-cleaned',
