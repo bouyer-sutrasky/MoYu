@@ -1,0 +1,543 @@
+# pause 在 start 之前/期间：红 → 绿（原始输出）
+
+Issue #34。基线 `main` = `d02f07f1483e0c85a13c1dfe24d03d855a72d0a1`。
+本文件只记录实际执行过的命令、原始输出、退出码与判定；未执行的项目在 §10 明写为未验证。
+原始输出里的 ANSI 颜色控制符已去掉，文本与退出码未改。
+
+## 0. 结论
+
+| 相位 | 修复前（runtime `64ce5c5a…`） | 修复后（runtime `fbe3684e…`） |
+| --- | --- | --- |
+| c1 pause 在 start 之前（票 `queued`、`worker_sessions=0`） | 票卡 `stopping`，`paused.stoppedAt` 恒 `null`，平台 `blocked`，`resume` 被拒，租约一直 `active` | `stoppedAt` 落地，平台 `stopped`，租约 `released`，`resume` 接受并真的起了一个 worker |
+| c2 pause 在 start 进行中（票刚建、`worker_sessions=0`） | 同上（同一次失败） | `stoppedAt` 在 355 ms 内落地，`launch: aborted`，租约 `released`，`resume` 接受 |
+| c3 pause 在 start 完成之后（`running`、`worker_sessions=1`） | 通过 | 通过（未回退） |
+
+修复前 runtime 的失败原文（`bridge/operations.jsonl`，暂停 operation 直接 `failed`）：
+
+```json
+{"kind":"pause","state":"failed","error":"The worker did not stop cleanly: agent absent, 0 job(s), 0 subagent(s) and 3 process(es) remain"}
+```
+
+代码落点：`DshExecutor.pauseWork` 用**整棵 harness 进程树**做疑似残留判定（共享进程树里任一子进程都算本票的残留），
+且暂停从不等/结束仍在 prepare 的启动；`Tickets.pause` 在没有 Assignment 时根本不调用 Executor。详见
+`integrations/superagent/patches/0024-pause-before-start.patch`。
+
+## 1. 被测制品
+
+| 对象 | 标识 |
+| --- | --- |
+| 平台 API / dispatcher | 未改动；dispatcher `apps/dispatcher/dist/main.js` = `0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6` |
+| runtime 修复前 | `/root/src/upstream/m5b-admission-build21`，`lib/index.js` = `64ce5c5aeb6d0671a195ee5aad66c941a641c29919f1a7603fe64cd0b288df6f` |
+| runtime 修复后 | `/root/src/upstream/pause-start-build1`，`lib/index.js` = `fbe3684edde59f7c41c88e2b4dbd4aebb7c19a66f87b27ac099a540e3edfd0cd` |
+
+两个 runtime 都用同一套有序补丁从固定上游 `6337fc823ce20251c8de8085948165c81aaa701e` 构建，唯一差异是 `0024`。
+
+## 2. runtime 回归：修复前（红）
+
+新回归在**未修改的** runtime 源码上运行（`git stash push -- src`），只保留新测试与夹具：
+
+```bash
+cd /root/src/upstream/pause-start-work
+$ git stash push -- src      # 恢复成 0001–0023 的生产代码
+$ env -i HOME=/root/src/upstream/m0-home PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    COREPACK_HOME=/root/src/upstream/.corepack CI=1 corepack pnpm@11.7.0 vitest run tests/pause-start.spec.ts
+$ git stash pop
+```
+
+```text
+
+ RUN  v4.1.8 /root/src/upstream/pause-start-work
+
+(node:2681062) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ tests/pause-start.spec.ts (5 tests | 4 failed) 8743ms
+     × lands for a Web ticket whose launch is still preparing, instead of leaving it stopping 3189ms
+     × lands for a GitHub ticket held in pending_admission with no Assignment at all 3103ms
+     × does not let another process of the same harness fail a clean stop 2168ms
+     ✓ is accepted, because nothing ran and the launch prepares the workspace 158ms
+     × names what stopped instead of the shared harness tree 123ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/pause-start.spec.ts > a stop before the worker starts > lands for a Web ticket whose launch is still preparing, instead of leaving it stopping
+Error: timed out waiting for the prepare signal to abort
+ ❯ waitFor tests/pause-start.spec.ts:58:38
+     56|   const deadline = Date.now() + boundMs
+     57|   while (!check()) {
+     58|     if (Date.now() > deadline) throw new Error(`timed out waiting for …
+       |                                      ^
+     59|     await new Promise(resolve => setTimeout(resolve, 10))
+     60|   }
+ ❯ tests/pause-start.spec.ts:110:7
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  tests/pause-start.spec.ts > a stop before the worker starts > lands for a GitHub ticket held in pending_admission with no Assignment at all
+AssertionError: expected undefined to deeply equal Any<String>
+
+- Expected:
+Any<String>
+
++ Received:
+undefined
+
+ ❯ tests/pause-start.spec.ts:139:40
+    137|       const paused = await pausedTicket(host, ticket.id)
+    138|       expect(paused.paused?.error).toBeUndefined()
+    139|       expect(paused.paused?.stoppedAt).toEqual(expect.any(String))
+       |                                        ^
+    140|       expect(projectTicketState(paused)).toBe('stopped')
+    141|     } finally {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  tests/pause-start.spec.ts > a stop before the worker starts > does not let another process of the same harness fail a clean stop
+AssertionError: expected 'The worker did not stop cleanly: agen…' to be undefined
+
+- Expected:
+undefined
+
++ Received:
+"The worker did not stop cleanly: agent idle, 0 job(s), 0 subagent(s) and 1 process(es) remain"
+
+ ❯ tests/pause-start.spec.ts:161:36
+    159|       host.runtime.engine.pauseTicket(ticket.id, 'op-pause-shared-tree…
+    160|       const paused = await pausedTicket(host, ticket.id)
+    161|       expect(paused.paused?.error).toBeUndefined()
+       |                                    ^
+    162|       expect(paused.paused?.stoppedAt).toEqual(expect.any(String))
+    163|       expect(projectTicketState(paused)).toBe('stopped')
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  tests/pause-start.spec.ts > the stop proof a pause records > names what stopped instead of the shared harness tree
+AssertionError: expected { …(16) } to match object { agentStatus: 'absent', …(3) }
+(13 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+    "agentStatus": "absent",
+    "jobsAfter": [],
+-   "launch": "aborted",
+    "subagentsAfter": 0,
+  }
+
+ ❯ tests/pause-start.spec.ts:207:24
+    205|       const evidence = paused.paused?.evidence as Record<string, unkno…
+    206|       expect(settled).toHaveBeenCalled()
+    207|       expect(evidence).toMatchObject({ agentStatus: 'absent', jobsAfte…
+       |                        ^
+    208|       expect(evidence.lingeringPids).toBeUndefined()
+    209|       expect(evidence.assignmentId).toEqual(latestAssignment(paused)!.…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  4 failed | 1 passed (5)
+   Start at  12:24:21
+   Duration  9.92s (transform 708ms, setup 0ms, import 1.01s, tests 8.74s, environment 0ms)
+
+exit=1
+```
+
+退出码：1。判定：4 条红、1 条绿。红的原因就是缺陷本身，断言直接说出它：
+
+- `expected 'The worker did not stop cleanly: agent absent, 0 job(s), 0 subagent(s) and 3 process(es) remain' to be undefined`
+  —— 与现场 `bridge/operations.jsonl` 的失败原文逐字一致；
+- `expected undefined to deeply equal Any<String>` —— 有界时间内 `paused.stoppedAt` 根本没出现（Web 与 GitHub 两条）；
+- 证据用例缺 `launch: 'aborted'`。
+
+唯一的绿是 `is accepted, because nothing ran and the launch prepares the workspace`：它走 domain `resumeTicket`，
+不经过 Bridge 的工作目录闸门，所以修复前也绿；Bridge 闸门的红见 §4。
+
+## 3. runtime 回归：修复后（绿）
+
+```bash
+cd /root/src/upstream/pause-start-work
+$ env -i HOME=/root/src/upstream/m0-home PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    COREPACK_HOME=/root/src/upstream/.corepack CI=1 corepack pnpm@11.7.0 vitest run tests/pause-start.spec.ts tests/bridge-control.spec.ts
+```
+
+```text
+
+ RUN  v4.1.8 /root/src/upstream/pause-start-work
+
+(node:2680677) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ tests/bridge-control.spec.ts (27 tests) 409ms
+ ✓ tests/pause-start.spec.ts (5 tests) 714ms
+
+ Test Files  2 passed (2)
+      Tests  32 passed (32)
+   Start at  12:24:06
+   Duration  2.00s (transform 1.31s, setup 0ms, import 1.97s, tests 1.12s, environment 0ms)
+
+exit=0
+```
+
+退出码：0。32/32 通过（`pause-start` 5 + `bridge-control` 27）。
+
+## 4. Bridge `resume` 工作目录闸门：红 → 绿
+
+「从未运行过」的暂停（start 在 prepare 阶段就被结束）不应被 `resume` 当成丢失工作目录；真正被 worker 用过的工作目录仍然必须拒绝。
+
+红（未修改的 `src/app/bridge.ts`）：
+
+```text
+
+ RUN  v4.1.8 /root/src/upstream/pause-start-work
+
+ ❯ tests/bridge-control.spec.ts (27 tests | 1 failed) 367ms
+     ✓ keeps the latest record per operation across a reopen and drops a truncated last line 13ms
+     ✓ advertises pause, resume, retry, start, and read-only discussion 34ms
+     ✓ queues the operation, keeps the ticket, and succeeds only after stoppedAt and its evidence 35ms
+     ✓ records a failed pause with its error and never reports success 16ms
+     ✓ is idempotent for a repeated operation id and refuses an id reused by another ticket 15ms
+     ✓ returns the operation that already paused an idempotently paused ticket 11ms
+     ✓ refuses an ended ticket 8ms
+     ✓ refuses a still-stopping pause with 409 8ms
+     ✓ requires paused state and an admission 9ms
+     ✓ refuses a resume when the original worktree is gone, keeping the pause 9ms
+     × accepts a resume of a ticket whose start never reached a worker, preparing the workspace again 20ms
+     ✓ still refuses a resume when a workspace a worker did use is gone 12ms
+     ✓ refuses a resume when the followed PR was closed unmerged 10ms
+     ✓ starts a new Assignment under the admission and settles succeeded 14ms
+     ✓ moves a discuss ticket to execute and succeeds once a newer Assignment exists 12ms
+     ✓ refuses an execute ticket, a paused ticket, and a plan revision below 1 18ms
+     ✓ records a refused retry as a failed operation 11ms
+     ✓ answers the same operation from the new process 19ms
+     ✓ adds mode, planRevision, paused, and execution while keeping the M3 fields 6ms
+     ✓ projects paused tickets as stopping and stopped 0ms
+     ✓ attaches to the existing ticket on its origin thread with the workspace Channel and frozen spec 11ms
+     ✓ keeps a discuss ticket in discuss mode even when the platform sends execute 10ms
+     ✓ refuses a conflicting model, branch, or commit, and a ticket that ended 20ms
+     ✓ emits a stopping event and then a settled event with the evidence 17ms
+     ✓ emits one ticket.imported with the GitHub identity, text, base, and an initial state update 8ms
+     ✓ imports once across a Bridge restart and continues its state projection 12ms
+     ✓ does not import workspace tickets 5ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/bridge-control.spec.ts > POST /bridge/v1/tickets/:id/resume > accepts a resume of a ticket whose start never reached a worker, preparing the workspace again
+AssertionError: expected { status: 409, body: { …(2) } } to match object { status: 202, …(1) }
+(4 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+    "body": {
+-     "kind": "resume",
++     "directory": "/nonexistent/never-prepared-worktree",
++     "error": {
++       "code": "worktreeMissing",
++       "message": "The preserved worktree is missing",
+      },
+-   "status": 202,
++   },
++   "status": 409,
+  }
+
+ ❯ tests/bridge-control.spec.ts:278:22
+    276|     const { call } = await serve(h)
+    277|     const response = await call('POST', '/bridge/v1/tickets/t1/resume'…
+    278|     expect(response).toMatchObject({ status: 202, body: { kind: 'resum…
+       |                      ^
+    279|     expect(h.engine.resumeTicket).toHaveBeenCalledWith('t1', { leaseId…
+    280|   })
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 26 passed (27)
+   Start at  12:16:55
+   Duration  1.33s (transform 544ms, setup 0ms, import 800ms, tests 367ms, environment 0ms)
+
+exit=1
+```
+
+```text
+AssertionError: expected { status: 409, body: { …(2) } } to match object { status: 202, …(1) }
++       "code": "worktreeMissing",
+```
+
+绿（修复后）：`tests/bridge-control.spec.ts` 27/27 通过（见 §5 全量套件）。
+
+## 5. 全量 runtime 套件
+
+```bash
+$ env -i HOME=/root/src/upstream/m0-home PATH=… COREPACK_HOME=… CI=1 corepack pnpm@11.7.0 vitest run
+```
+
+```text
+      Tests  1 failed | 1322 passed (1323)
+   Start at  12:25:14
+   Duration  36.24s (transform 4.89s, setup 0ms, import 20.52s, tests 63.79s, environment 11.19s)
+
+exit=1
+```
+
+1322 通过、1 失败。唯一失败是 `tests/sources.spec.ts > feishu event consumer > takes in the event lines…`，
+**在未改动的基线上同样失败**（`git stash push` 掉全部改动后单跑该用例仍红），是
+`integrations/superagent/README.md` 里记录的既有 Feishu 用例失败，与本次改动无关。
+
+## 6. runtime 制品构建（有序补丁 0001–0024 从固定上游重建）
+
+```bash
+$ integrations/superagent/build-patched.sh \
+    /root/src/upstream/superagent-tar/dsh-superagent-prototype-6337fc823ce2 \
+    /root/src/upstream/pause-start-build1
+```
+
+```text
+  - rolldown-plugin-dts:fake-js transform (43 calls)
+See https://rolldown.rs/reference/InputOptions.checks#plugintimings for more details.
+
+✔ Build complete in 6477ms
+==> publishing the built package to new directory /root/src/upstream/pause-start-build1
+==> done
+lib files: 15
+d428e669805ea1dfb6a4900bddbffe3cafb8f06a0b1eb139266c2b2f6b94b021  /root/src/upstream/pause-start-build1/package.json
+c91fab94d3a27c7068b5f5391907fb4d69342112ad50f987fdfed9985c2c7905  /root/src/upstream/pause-start-build1/cordis.patch.yml
+fbe3684edde59f7c41c88e2b4dbd4aebb7c19a66f87b27ac099a540e3edfd0cd  /root/src/upstream/pause-start-build1/lib/index.js
+8d3ec8c2956977cc8158ea974f4ce7201667bd057994e6f217c276609c4aa90d  /root/src/upstream/pause-start-build1/lib/workspace-watch.js
+exit=0
+```
+
+退出码：0（`git apply --check` 顺序应用、`pnpm typecheck`、`pnpm build` 全过）。
+
+## 7. 现场：修复前（隔离栈 + `m5b-admission-build21`）
+
+同一套 `scripts/m5b/matrix/` 现场脚本、同一隔离栈（独立 PostgreSQL 55433、独立 `DSH_HOME`、3082 未触碰）：
+
+```bash
+$ M5B_MATRIX_UPSTREAM_BUILD=/root/src/upstream/m5b-admission-build21 scripts/m5b/matrix/stack.sh up
+$ (set -a; . /tmp/m5bmatrix/state.env; set +a; \
+    scripts/m5b/matrix/item1-pause-start.sh "c1-before-start:before-start")
+```
+
+```text
+# item 1c — pause and start in three phases (real Web entrance, real pause/resume)
+recorded=2026-11-08T12:04:39+08:00
+dispatcher_artifact=0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6
+
+==============================================================
+## phase: c1-before-start (pause before-start)
+  created_at=2026-11-08T12:04:39+08:00 task=78ed32e2-0c1d-4255-a42f-8358ea14a618
+  ticket_created_at=2026-11-08T12:04:43+08:00 ticket=76b57d2bdf89c4ce3cf3bb674baac9c4
+  $ pause while state=queued
+  paused_at=2026-11-08T12:04:44+08:00
+  [paused] platform_state=stopping ticket=76b57d2bdf89c4ce3cf3bb674baac9c4
+{"assignmentId": "5551ef6e363c3c5d5574f69b056ff813", "ended": null, "paused": {"stoppedAt": null}, "report": null, "runtime_state": "stopping"}
+  [paused] worker_sessions=0 lease_rows=active|task:78ed32e2-0c1d-4255-a42f-8358ea14a618 
+  [after-8s] platform_state=blocked ticket=76b57d2bdf89c4ce3cf3bb674baac9c4
+{"assignmentId": "5551ef6e363c3c5d5574f69b056ff813", "ended": null, "paused": {"stoppedAt": null}, "report": null, "runtime_state": "stopping"}
+  [after-8s] worker_sessions=0 lease_rows=active|task:78ed32e2-0c1d-4255-a42f-8358ea14a618 
+  $ resume (a real delivery)
+  resume rejected
+  resumed_at=2026-11-08T12:04:52+08:00
+  [resumed] platform_state=blocked ticket=76b57d2bdf89c4ce3cf3bb674baac9c4
+{"assignmentId": "5551ef6e363c3c5d5574f69b056ff813", "ended": null, "paused": {"stoppedAt": null}, "report": null, "runtime_state": "stopping"}
+  [resumed] worker_sessions=0 lease_rows=active|task:78ed32e2-0c1d-4255-a42f-8358ea14a618 
+  [settled] platform_state=blocked ticket=76b57d2bdf89c4ce3cf3bb674baac9c4
+{"assignmentId": "5551ef6e363c3c5d5574f69b056ff813", "ended": null, "paused": {"stoppedAt": null}, "report": null, "runtime_state": "stopping"}
+  [settled] worker_sessions=0 lease_rows=active|task:78ed32e2-0c1d-4255-a42f-8358ea14a618 
+  deliveries_for_this_ticket=2
+
+## how many worker executions actually ran (one session directory per ticket)
+24
+exit=0
+```
+
+退出码：0（脚本自身成功；判据是票的状态）。判定：**不通过** —— `paused.stoppedAt` 恒 `null`、平台 `blocked`、
+`resume rejected`、租约仍 `active`、`worker_sessions=0`。与 `item1-pause-start-three-phases.log` 的 c1/c2 一致。
+
+## 8. 现场：修复后（隔离栈 + `pause-start-build1`）
+
+### 8.1 c1 pause 在 start 之前
+
+```bash
+$ M5B_MATRIX_UPSTREAM_BUILD=/root/src/upstream/pause-start-build1 scripts/m5b/matrix/stack.sh up
+$ (set -a; . /tmp/m5bmatrix/state.env; set +a; \
+    scripts/m5b/matrix/item1-pause-start.sh "c1-before-start:before-start c2-during-start:during-start c3-after-start:after-start")
+```
+
+（三个相位共用一栈时，前一个相位 resume 出来的 worker 会一直占着仓库唯一的执行名额，后面的票只能停在
+`pending_admission`；因此 c1 在这里单跑，c2、c3 各自在**全新栈**上单跑，见 8.2、8.3。）
+
+```text
+# item 1c — pause and start in three phases (real Web entrance, real pause/resume)
+recorded=2026-11-08T12:12:00+08:00
+dispatcher_artifact=0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6
+
+==============================================================
+## phase: c1-before-start (pause before-start)
+  created_at=2026-11-08T12:12:00+08:00 task=343d8357-a8b8-4247-9c4b-9f8b398360ba
+  ticket_created_at=2026-11-08T12:12:03+08:00 ticket=5b389d4fa60fdbc64ab43586d7a937de
+  $ pause while state=queued
+  paused_at=2026-11-08T12:12:03+08:00
+  [paused] platform_state=queued ticket=5b389d4fa60fdbc64ab43586d7a937de
+{"assignmentId": "522354bfbaac524a46277f35a3913192", "ended": null, "paused": {"stoppedAt": "2026-11-08T04:12:03.645Z"}, "report": null, "runtime_state": "stopped"}
+  [paused] worker_sessions=0 lease_rows=active|task:343d8357-a8b8-4247-9c4b-9f8b398360ba 
+  [after-8s] platform_state=stopped ticket=5b389d4fa60fdbc64ab43586d7a937de
+{"assignmentId": "522354bfbaac524a46277f35a3913192", "ended": null, "paused": {"stoppedAt": "2026-11-08T04:12:03.645Z"}, "report": null, "runtime_state": "stopped"}
+  [after-8s] worker_sessions=0 lease_rows=released|task:343d8357-a8b8-4247-9c4b-9f8b398360ba 
+  $ resume (a real delivery)
+  resumed_at=2026-11-08T12:12:12+08:00
+  [resumed] platform_state=running ticket=5b389d4fa60fdbc64ab43586d7a937de
+{"assignmentId": "da789b44aeeb932c251319ab50f524c4", "ended": null, "paused": null, "report": null, "runtime_state": "running"}
+  [resumed] worker_sessions=1 lease_rows=released|task:343d8357-a8b8-4247-9c4b-9f8b398360ba active|task:343d8357-a8b8-4247-9c4b-9f8b398360ba 
+  [settled] platform_state=running ticket=5b389d4fa60fdbc64ab43586d7a937de
+{"assignmentId": "da789b44aeeb932c251319ab50f524c4", "ended": null, "paused": null, "report": null, "runtime_state": "running"}
+  [settled] worker_sessions=1 lease_rows=released|task:343d8357-a8b8-4247-9c4b-9f8b398360ba active|task:343d8357-a8b8-4247-9c4b-9f8b398360ba 
+  deliveries_for_this_ticket=1
+```
+
+判定：**通过** —— `stoppedAt` 落地、平台 `stopped`、租约 `released`、`resume` 接受（随后真的起了 worker：`worker_sessions=1`）。
+
+runtime 侧同一次暂停的 operation 证据（`bridge/operations.jsonl`，自 `queued` 到 `succeeded` 共 670 ms）：
+
+```json
+{"state":"succeeded","evidence":{"agentStatus":"absent","jobsAfter":[],"subagentsAfter":0,"launch":"aborted","cancelledTurn":false,"stoppedAt":"2026-11-08T04:12:03.638Z"}}
+```
+
+### 8.2 c2 pause 在 start 进行中
+
+平台命令会因 `expectedVersion` 过期返回 409（调度器在票落地时推进了 `version`），这是取证脚本的竞态，不是产品回答；
+下面的脚本对同一条命令做有界重试并把每次结果打出来：
+
+```bash
+$ M5B_MATRIX_UPSTREAM_BUILD=/root/src/upstream/pause-start-build1 scripts/m5b/matrix/stack.sh up
+$ # 同一 API/Bridge，重试用例化脚本（内容与 item1-pause-start.sh 的 single-phase 体一致，只把 pause 换成有界重试）
+$ bash /tmp/ev/c2-live.sh
+```
+
+```text
+# c2 — pause during the start (real Web entrance, fresh isolated stack)
+recorded=2026-11-08T12:22:10+08:00
+runtime_artifact=64ce5c5aeb6d0671a195ee5aad66c941a641c29919f1a7603fe64cd0b288df6f
+prepare_command=
+
+==============================================================
+## phase: c2-during-start (pause as soon as the ticket exists)
+  created_at=2026-11-08T12:22:12+08:00 task=664da976-f819-4bb5-af63-55ce5c436b7e
+  ticket_created_at=2026-11-08T12:22:14+08:00 ticket=57a41db5a15978d2de82ddb9882c99c3
+  $ pause while state=queued version=1
+  pause attempt 1 rejected: {   "status": 409,   "body": {     "error": {       "code": "conflict",       "message": "Task version changed (expected 2)",       "retryable": false     },   
+  pause accepted on attempt 2
+  paused_at=2026-11-08T12:22:15+08:00
+  [paused] platform_state=stopping version=3 ticket=57a41db5a15978d2de82ddb9882c99c3
+{"assignmentId": "099e2f8e515b589d93274453c6de6e06", "ended": null, "paused": {"stoppedAt": "2026-11-08T04:22:15.582Z"}, "report": null, "runtime_state": "stopped"}
+  [paused] worker_sessions=0 lease_rows=active|task:664da976-f819-4bb5-af63-55ce5c436b7e 
+  [after-8s] platform_state=stopped version=6 ticket=57a41db5a15978d2de82ddb9882c99c3
+{"assignmentId": "099e2f8e515b589d93274453c6de6e06", "ended": null, "paused": {"stoppedAt": "2026-11-08T04:22:15.582Z"}, "report": null, "runtime_state": "stopped"}
+  [after-8s] worker_sessions=0 lease_rows=released|task:664da976-f819-4bb5-af63-55ce5c436b7e 
+  $ resume (a real delivery)
+  resumed_at=2026-11-08T12:22:24+08:00
+  [resumed] platform_state=running version=9 ticket=57a41db5a15978d2de82ddb9882c99c3
+{"assignmentId": "b327a3b01fd6217bf58eda136be23059", "ended": null, "paused": null, "report": null, "runtime_state": "running"}
+  [resumed] worker_sessions=1 lease_rows=released|task:664da976-f819-4bb5-af63-55ce5c436b7e active|task:664da976-f819-4bb5-af63-55ce5c436b7e 
+  [settled] platform_state=running version=9 ticket=57a41db5a15978d2de82ddb9882c99c3
+{"assignmentId": "b327a3b01fd6217bf58eda136be23059", "ended": null, "paused": null, "report": null, "runtime_state": "running"}
+  [settled] worker_sessions=1 lease_rows=released|task:664da976-f819-4bb5-af63-55ce5c436b7e active|task:664da976-f819-4bb5-af63-55ce5c436b7e 
+c2_exit=0
+```
+
+判定：**通过** —— 暂停在 355 ms 内落地（`paused.stoppedAt = 2026-11-08T04:22:15.582Z`），`worker_sessions=0`
+证明 worker 从未起来，租约 `released`，`resume` 接受（新 assignment、`worker_sessions=1`）。
+runtime operation 证据：
+
+```json
+{"state":"succeeded","evidence":{"agentStatus":"absent","jobsAfter":[],"subagentsAfter":0,"launch":"aborted","stoppedAt":"2026-11-08T04:22:15.573Z"}}
+```
+
+说明：该段原始输出的 `runtime_artifact=` 一行打印的是 `lib.sh` 里的默认变量（build21 的 hash），不是本栈实际装载的包；
+本栈实际装载的是 `/root/src/upstream/pause-start-build1`（`lib/index.js` = `fbe3684e…`，`readlink` 已核对）。
+
+### 8.3 c3 pause 在 start 完成之后（未回退）
+
+```text
+# item 1c — pause and start in three phases (real Web entrance, real pause/resume)
+recorded=2026-11-08T12:19:07+08:00
+dispatcher_artifact=0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6
+
+==============================================================
+## phase: c3-after-start (pause after-start)
+  created_at=2026-11-08T12:19:07+08:00 task=e4cc58d4-228c-4ec9-9e1d-0f4260263241
+  ticket_created_at=2026-11-08T12:19:11+08:00 ticket=ded8b45797e64aaa0e023cc2e6d3e302
+  $ pause after the worker is running (state=running)
+  paused_at=2026-11-08T12:19:19+08:00
+  [paused] platform_state=stopping ticket=ded8b45797e64aaa0e023cc2e6d3e302
+{"assignmentId": "79d618ce3f929781a6ef92f3049bfec6", "ended": null, "paused": null, "report": null, "runtime_state": "running"}
+  [paused] worker_sessions=1 lease_rows=active|task:e4cc58d4-228c-4ec9-9e1d-0f4260263241 
+  [after-8s] platform_state=stopped ticket=ded8b45797e64aaa0e023cc2e6d3e302
+{"assignmentId": "79d618ce3f929781a6ef92f3049bfec6", "ended": null, "paused": {"stoppedAt": "2026-11-08T04:19:19.387Z"}, "report": null, "runtime_state": "stopped"}
+  [after-8s] worker_sessions=1 lease_rows=released|task:e4cc58d4-228c-4ec9-9e1d-0f4260263241 
+  $ resume (a real delivery)
+  resumed_at=2026-11-08T12:19:27+08:00
+  [resumed] platform_state=queued ticket=ded8b45797e64aaa0e023cc2e6d3e302
+{"assignmentId": "c75597c39c883636ad195979963b76f9", "ended": null, "paused": null, "report": null, "runtime_state": "running"}
+  [resumed] worker_sessions=1 lease_rows=released|task:e4cc58d4-228c-4ec9-9e1d-0f4260263241 active|task:e4cc58d4-228c-4ec9-9e1d-0f4260263241 
+  [settled] platform_state=queued ticket=ded8b45797e64aaa0e023cc2e6d3e302
+{"assignmentId": "c75597c39c883636ad195979963b76f9", "ended": null, "paused": null, "report": null, "runtime_state": "running"}
+  [settled] worker_sessions=1 lease_rows=released|task:e4cc58d4-228c-4ec9-9e1d-0f4260263241 active|task:e4cc58d4-228c-4ec9-9e1d-0f4260263241 
+  deliveries_for_this_ticket=2
+
+## how many worker executions actually ran (one session directory per ticket)
+27
+item_exit=0
+```
+
+判定：**通过**，与修复前一致 —— `stoppedAt` 落地、`stopped`、租约 `released`、`resume` 接受、随后 `running`。
+
+## 9. 本仓库（平台侧）检查
+
+本 PR 不改平台代码（缺陷在 runtime 集成层），但平台必须仍能把「有证据的停止」落成 `stopped`、归还租约、接受 `resume`：
+
+```bash
+$ pnpm check
+```
+
+```text
+ℹ suites 0
+ℹ pass 15
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 5986.358561
+exit=0
+```
+
+```bash
+$ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm test:integration
+```
+
+```text
+ ✓ test/integration/recovery-review-idempotent.integration.test.ts (1 test) 623ms
+
+ Test Files  16 passed | 1 skipped (17)
+      Tests  80 passed | 1 skipped (81)
+   Start at  12:15:16
+   Duration  14.42s (transform 1.06s, setup 0ms, collect 20.67s, tests 15.35s, environment 4ms, prepare 1.98s)
+
+exit=0
+```
+
+退出码：0 与 0（`@moyu/db` 38、`@moyu/api` 66、`@moyu/dispatcher` 80 + 1 skip）。
+
+## 10. 未验证
+
+- **GitHub 入口的现场证据**：本单要求 Web / GitHub 入口各一次。GitHub 入口的差别是票先在 `pending_admission`、
+  没有 Assignment；仓库里没有能产生「别人 @ agent」的凭据（agent 账号自己的评论被上游 `sameName` 过滤），
+  因此没有跑真实现场。该入口由一组 runtime 级回归覆盖（真实 GitHub-source 触发器 → `pending_admission` 票 →
+  Bridge 暂停 → 落地 `stoppedAt`，见 §3 的第二条），但**不是** GitHub 现场端到端。
+- 真实现场里的 c1 「票 `queued` 且平台命令被接受」窗口只有几百毫秒；本次 c1/c2 都由 `item1-pause-start.sh` 的
+  真实 Web 入口驱动，但没有覆盖「票还没被运行时接受」（`upstream_ticket_id` 为空）的更早窗口 —— 该窗口平台侧直接
+  拒绝暂停（`The runtime has not accepted this task yet`），不会有 `stopping`。
+- EPERM 导致的真实 kill 失败、cgroup 级残留仍未在本轮重测；本改动只是把「共享进程树的任一子进程」从判定里去掉，
+  不动 job/subagent 维度。
