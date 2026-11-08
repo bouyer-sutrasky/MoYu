@@ -29,6 +29,34 @@ import styles from './WorkspaceShell.module.css';
 
 type Mode = 'work' | 'chat';
 
+/**
+ * Attachment selections belong to one owner + repository + conversation, and a
+ * bucket version invalidates responses that started against an older state. A
+ * late upload from conversation A must never touch what B renders or sends.
+ */
+interface AttachmentBucket {
+  files: File[];
+  /** Attachment ids already uploaded for this bucket, reusable by a retry. */
+  uploaded: { key: string; id: string }[];
+  error: string | null;
+  uploading: boolean;
+}
+
+const EMPTY_ATTACHMENTS: AttachmentBucket = {
+  files: [],
+  uploaded: [],
+  error: null,
+  uploading: false,
+};
+
+function attachmentScopeKey(ownerId: string, repositoryId: string, conversationId: string): string {
+  return `${ownerId}\u0000${repositoryId}\u0000${conversationId}`;
+}
+
+function attachmentFileKey(file: File): string {
+  return `${file.name}\u0000${file.size}\u0000${file.lastModified}`;
+}
+
 interface ComposerProps {
   mode: Mode;
   repository: RepositorySummary | null;
@@ -62,9 +90,8 @@ export function Composer({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [storageWarning, setStorageWarning] = useState<string | null>(null);
-  const [files, setFiles] = useState<File[]>([]);
-  const [uploading, setUploading] = useState(false);
-  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [attachmentBuckets, setAttachmentBuckets] = useState<Record<string, AttachmentBucket>>({});
+  const attachmentVersionsRef = useRef<Map<string, number>>(new Map());
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const draftRef = useRef<Draft | null>(null);
@@ -75,6 +102,14 @@ export function Composer({
   const sendSequenceRef = useRef(0);
   conversationIdRef.current = conversation?.id ?? null;
   repositoryIdRef.current = repository?.id ?? null;
+  const attachmentScope =
+    conversation && repository ? attachmentScopeKey(ownerId, repository.id, conversation.id) : null;
+  const attachmentBucket = attachmentScope
+    ? (attachmentBuckets[attachmentScope] ?? EMPTY_ATTACHMENTS)
+    : EMPTY_ATTACHMENTS;
+  const files = attachmentBucket.files;
+  const uploading = attachmentBucket.uploading;
+  const attachmentError = attachmentBucket.error;
 
   const terminal =
     conversation?.task?.state === 'completed' ||
@@ -152,6 +187,47 @@ export function Composer({
             : conversation
               ? '消息按投递证据更新，不提前显示已读取'
               : '消息输入区未启用';
+
+  function attachmentVersion(scope: string): number {
+    return attachmentVersionsRef.current.get(scope) ?? 0;
+  }
+
+  /** A user edit of this conversation's attachments: bumps the bucket version. */
+  function changeAttachments(
+    scope: string,
+    change: (bucket: AttachmentBucket) => AttachmentBucket,
+  ): void {
+    attachmentVersionsRef.current.set(scope, attachmentVersion(scope) + 1);
+    setAttachmentBuckets((current) => ({
+      ...current,
+      [scope]: change(current[scope] ?? EMPTY_ATTACHMENTS),
+    }));
+  }
+
+  /** Applies a response only while the bucket still has the version it started with. */
+  function settleAttachments(
+    scope: string,
+    version: number,
+    change: (bucket: AttachmentBucket) => AttachmentBucket,
+  ): void {
+    if (attachmentVersion(scope) !== version) {
+      return;
+    }
+    setAttachmentBuckets((current) => {
+      if (attachmentVersion(scope) !== version) {
+        return current;
+      }
+      return { ...current, [scope]: change(current[scope] ?? EMPTY_ATTACHMENTS) };
+    });
+  }
+
+  /** Progress flags belong to the bucket, not to whatever conversation is open now. */
+  function patchAttachments(scope: string, patch: Partial<AttachmentBucket>): void {
+    setAttachmentBuckets((current) => ({
+      ...current,
+      [scope]: { ...(current[scope] ?? EMPTY_ATTACHMENTS), ...patch },
+    }));
+  }
 
   function addSending(conversationId: string, token: number): void {
     activeSendsRef.current.set(conversationId, token);
@@ -312,7 +388,10 @@ export function Composer({
     if (!selected || selected.length === 0) {
       return;
     }
-    const next = [...files];
+    if (!attachmentScope) {
+      return;
+    }
+    const next = [...attachmentBucket.files];
     const problems: string[] = [];
     for (const file of Array.from(selected)) {
       if (next.length >= attachmentLimits.maxFilesPerMessage) {
@@ -334,16 +413,31 @@ export function Composer({
       }
       next.push(file);
     }
-    setFiles(next);
-    setAttachmentError(problems.length > 0 ? problems.join('；') : null);
+    changeAttachments(attachmentScope, (bucket) => ({
+      ...bucket,
+      files: next,
+      error: problems.length > 0 ? problems.join('；') : null,
+    }));
     if (fileRef.current) {
       fileRef.current.value = '';
     }
   }
 
   function removeFile(index: number): void {
-    setFiles((current) => current.filter((_, position) => position !== index));
-    setAttachmentError(null);
+    if (!attachmentScope) {
+      return;
+    }
+    changeAttachments(attachmentScope, (bucket) => {
+      const removed = bucket.files[index];
+      return {
+        ...bucket,
+        files: bucket.files.filter((_, position) => position !== index),
+        uploaded: removed
+          ? bucket.uploaded.filter((entry) => entry.key !== attachmentFileKey(removed))
+          : bucket.uploaded,
+        error: null,
+      };
+    });
   }
 
   function formatFileSize(bytes: number): string {
@@ -356,7 +450,11 @@ export function Composer({
     const trimmed = text.trim();
     const conversationId = conversationIdRef.current;
     const repositoryId = repositoryIdRef.current;
-    if (!trimmed || !conversationId || !repositoryId || disabled || uploading) {
+    const scope = attachmentScope;
+    if (!trimmed || !conversationId || !repositoryId || !scope || disabled) {
+      return;
+    }
+    if (attachmentBucket.uploading) {
       return;
     }
     // Per-conversation request identity, not a single global flag: a late
@@ -387,21 +485,44 @@ export function Composer({
       setStorageWarning('浏览器无法保存本地草稿；当前输入仍保留在本页面，发送不受影响。');
     }
 
+    // The files, the upload target and the message all come from the bucket of
+    // the conversation that was open when send was pressed. A response that
+    // arrives after a conversation switch can only settle that same bucket.
+    const attachmentVersionAtSend = attachmentVersion(scope);
+    const filesToSend = attachmentBucket.files;
+    const uploadedAtSend = attachmentBucket.uploaded;
     const attachmentIds: string[] = [];
-    if (files.length > 0) {
-      setUploading(true);
-      setAttachmentError(null);
+    if (filesToSend.length > 0) {
+      patchAttachments(scope, { uploading: true, error: null });
       try {
-        for (const file of files) {
+        for (const file of filesToSend) {
+          const key = attachmentFileKey(file);
+          const existing = uploadedAtSend.find((entry) => entry.key === key);
+          if (existing) {
+            // A retry reuses the id already uploaded for this file.
+            attachmentIds.push(existing.id);
+            continue;
+          }
           const uploaded = await api.uploadAttachment(conversationId, file);
           attachmentIds.push(uploaded.attachment.id);
+          settleAttachments(scope, attachmentVersionAtSend, (bucket) =>
+            bucket.uploaded.some((entry) => entry.key === key)
+              ? bucket
+              : {
+                  ...bucket,
+                  uploaded: [...bucket.uploaded, { key, id: uploaded.attachment.id }],
+                },
+          );
         }
       } catch (caught) {
-        setUploading(false);
-        setAttachmentError(`附件上传失败：${describeApiError(caught)}`);
+        patchAttachments(scope, { uploading: false });
+        settleAttachments(scope, attachmentVersionAtSend, (bucket) => ({
+          ...bucket,
+          error: `附件上传失败：${describeApiError(caught)}`,
+        }));
         return;
       }
-      setUploading(false);
+      patchAttachments(scope, { uploading: false });
     }
 
     const token = ++sendSequenceRef.current;
@@ -410,10 +531,15 @@ export function Composer({
     setNotice(null);
     try {
       const result = await onSend(conversationId, trimmed, clientMessageId, attachmentIds);
-      if (conversationIdRef.current === conversationId) {
-        setFiles([]);
-        setAttachmentError(null);
-      }
+      // The message was sent with exactly these files; remove them from their
+      // own conversation bucket even when another conversation is open now.
+      const sentKeys = new Set(filesToSend.map(attachmentFileKey));
+      changeAttachments(scope, (bucket) => ({
+        ...bucket,
+        files: bucket.files.filter((file) => !filesToSend.includes(file)),
+        uploaded: bucket.uploaded.filter((entry) => !sentKeys.has(entry.key)),
+        error: null,
+      }));
       const targetConversationId = result.message.conversationId;
       if (targetConversationId !== conversationId) {
         // The API merged this Web conversation into an imported GitHub one.
