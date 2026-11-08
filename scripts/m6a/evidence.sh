@@ -18,13 +18,11 @@
 #   M6A_PR_NUMBER=44 M6A_PR_URL=https://github.com/…/pull/44 \
 #   M6A_CLOSED_PR_NUMBER=45 M6A_CLOSED_PR_URL=https://github.com/…/pull/45 \
 #   bash scripts/m6a/evidence.sh
-set -euo pipefail
-
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
 RUN=${M6A_RUN_DIR:-/tmp/m6a-run}
 OUT="$REPO/docs/evidence/m6a"
-ADMIN_URL=${TEST_DATABASE_ADMIN_URL:?TEST_DATABASE_ADMIN_URL is required}
+ADMIN_URL=${TEST_DATABASE_ADMIN_URL:-}
 DB_NAME=${M6A_DB_NAME:-moyu_m6a_evidence}
 DATABASE_URL="$(printf '%s' "$ADMIN_URL" | sed "s#/[^/]*\$#/$DB_NAME#")"
 API_AFTER=4620
@@ -47,8 +45,94 @@ CLOSED_WORKTREE="$WORKROOT/probe1/m6a-closed-$CLOSED12"
 NODE_BIN=${M6A_NODE_BIN:-/opt/moyu-node24/bin}
 PATH="$NODE_BIN:$PATH"
 
-mkdir -p "$OUT" "$RUN/logs" "$RUN/artifacts" "$RUN/creds" "$RUN/env"
-: > "$RUN/bridge-triggers.jsonl"
+# --- process ownership -------------------------------------------------------
+# Every process this run starts is recorded in $RUN/pids and carries a run marker
+# in its environment. Cleanup proves that marker before it signals anything.
+# This commit keeps the old port and command-line sweeps as well; the red test
+# shows they kill processes this run did not start.
+RUN_ID=${M6A_RUN_ID:-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')}
+PIDS="$RUN/pids"
+MARKER="M6A_RUN_ID=$RUN_ID"
+
+# True only for a live pid that carries this run's marker.
+owned_pid_alive() {
+  local pid=$1
+  [[ -n "$pid" && -d "/proc/$pid" ]] || return 1
+  grep -qzxF "$MARKER" "/proc/$pid/environ" 2>/dev/null
+}
+
+# Start one recorded service: <name> <cwd> <command...>. The command becomes the
+# session leader, so its pid is also its process group, and its pid is written
+# before it execs the real program.
+start_owned() {
+  local name=$1 cwd=$2 pid
+  shift 2
+  mkdir -p "$PIDS" "$RUN/logs"
+  M6A_RUN_ID="$RUN_ID" setsid bash -c '
+    cd "$1" || exit 1
+    printf "%s" "$$" > "$2"
+    shift 2
+    exec "$@"
+  ' _ "$cwd" "$PIDS/$name.pid" "$@" > "$RUN/logs/$name.log" 2>&1 < /dev/null &
+  for _ in $(seq 1 100); do [[ -s "$PIDS/$name.pid" ]] && break; sleep 0.05; done
+  pid=$(cat "$PIDS/$name.pid" 2>/dev/null || true)
+  if [[ -z "$pid" ]] || ! owned_pid_alive "$pid"; then
+    echo "cannot prove ownership of the $name process (pid=$pid)" >&2
+    return 1
+  fi
+  printf '%s\n' "$pid"
+}
+
+stop_owned() {
+  local name=$1 pid
+  [[ -f "$PIDS/$name.pid" ]] || return 0
+  pid=$(cat "$PIDS/$name.pid" 2>/dev/null || true)
+  if owned_pid_alive "$pid"; then
+    kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+    for _ in $(seq 1 50); do owned_pid_alive "$pid" || break; sleep 0.1; done
+    if owned_pid_alive "$pid"; then
+      kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+    fi
+  fi
+  rm -f "$PIDS/$name.pid"
+}
+
+stop_owned_services() {
+  local file name
+  for file in "$PIDS"/*.pid; do
+    [[ -e "$file" ]] || continue
+    name=$(basename "$file" .pid)
+    stop_owned "$name"
+  done
+}
+
+# Kept from the old cleanup: kills any listener on this run's ports.
+stop_listeners_by_port() {
+  local pid
+  for pid in $(ss -ltnp 2>/dev/null | grep -E ":$API_AFTER|:$API_BEFORE|:$SUP|:$STUB" \
+    | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | sort -u); do
+    kill "$pid" 2>/dev/null || true
+  done
+  sleep 1
+}
+
+# Kept from the old cleanup: kills every dispatcher by command line.
+stop_dispatchers_by_command() {
+  local pid
+  for pid in $(ps -eo pid,args | grep 'dispatcher/dist/main[.]js' | grep -v grep | awk '{print $1}'); do
+    kill "$pid" 2>/dev/null || true
+  done
+}
+
+stop_dispatcher() {
+  stop_dispatchers_by_command
+  stop_owned dispatcher
+}
+
+cleanup_run_processes() {
+  stop_owned_services
+  stop_listeners_by_port
+}
 
 log() { printf '%s\n' "$*"; }
 
@@ -76,14 +160,12 @@ wait_http() {
   return 1
 }
 
-stop_services() {
-  for pid in $(ss -ltnp 2>/dev/null | grep -E ":$API_AFTER|:$API_BEFORE|:$SUP|:$STUB" \
-    | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | sort -u); do
-    kill "$pid" 2>/dev/null || true
-  done
-  sleep 1
-}
-trap stop_services EXIT
+main() {
+  set -euo pipefail
+  : "${TEST_DATABASE_ADMIN_URL:?TEST_DATABASE_ADMIN_URL is required}"
+  mkdir -p "$OUT" "$RUN/logs" "$RUN/artifacts" "$RUN/creds" "$RUN/env" "$PIDS"
+  : > "$RUN/bridge-triggers.jsonl"
+  trap cleanup_run_processes EXIT
 
 log "==> build this checkout"
 (cd "$REPO" && corepack pnpm install --frozen-lockfile >/dev/null && corepack pnpm build >/dev/null)
@@ -134,15 +216,16 @@ cat > "$RUN/instances.json" <<JSON
   "portRange": { "start": 4692, "end": 4699 }
 }
 JSON
-M6A_STUB_PORT=$STUB M6A_STUB_TOKEN=$STUB_TOKEN M6A_STUB_RECORD="$RUN/bridge-triggers.jsonl" \
-  setsid nohup node "$REPO/scripts/m6a/stub-bridge.mjs" > "$RUN/logs/stub-bridge.log" 2>&1 < /dev/null &
-SUPERVISOR_TOKEN=$SUP_TOKEN DATABASE_URL="$DATABASE_URL" SUPERVISOR_HOST=127.0.0.1 SUPERVISOR_PORT=$SUP \
+start_owned stub "$REPO" env M6A_STUB_PORT="$STUB" M6A_STUB_TOKEN="$STUB_TOKEN" \
+  M6A_STUB_RECORD="$RUN/bridge-triggers.jsonl" node "$REPO/scripts/m6a/stub-bridge.mjs"
+start_owned supervisor "$REPO" env SUPERVISOR_TOKEN="$SUP_TOKEN" DATABASE_URL="$DATABASE_URL" \
+  SUPERVISOR_HOST=127.0.0.1 SUPERVISOR_PORT="$SUP" \
   INSTANCES_CONFIG="$RUN/instances.json" DSH_BIN=/usr/bin/dsh DSH_HOME="$RUN/dsh" \
   PLATFORM_URL="http://127.0.0.1:$API_AFTER" RUNTIME_CREDENTIALS_DIR="$RUN/creds" \
   INSTANCE_ENV_DIR="$RUN/env" INSTANCE_LOG_DIR="$RUN/logs" WORKTREE_ROOT="$WORKROOT" \
   LOG_LEVEL=info NODE_ENV=test REVIEW_CHECK_COMMANDS='["pnpm check"]' REVIEW_CHECK_TIMEOUT_MS=900000 \
   PATH="$NODE_BIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-  setsid nohup node "$REPO/apps/supervisor/dist/main.js" > "$RUN/logs/supervisor.log" 2>&1 < /dev/null &
+  node "$REPO/apps/supervisor/dist/main.js"
 
 cat > "$RUN/api.env" <<ENV
 NODE_ENV=test
@@ -161,8 +244,8 @@ SUPERVISOR_TOKEN=$SUP_TOKEN
 GITHUB_CLI=gh
 ENV
 start_api_after() {
-  (cd "$REPO" && set -a && . "$RUN/api.env" && set +a \
-    && setsid nohup "$NODE_BIN/node" apps/api/dist/server.js > "$RUN/logs/api.log" 2>&1 < /dev/null &)
+  start_owned api-after "$REPO" bash -c 'set -a; . "$1"; set +a; exec "$2" apps/api/dist/server.js' \
+    _ "$RUN/api.env" "$NODE_BIN/node"
 }
 start_api_after
 
@@ -294,10 +377,10 @@ header "A3 附件与投递" "$A3"
   psql "$DATABASE_URL" -c "select id, message_id, metadata->>'filename' as filename, size_bytes from artifacts where type='attachment' order by created_at"
   echo
   echo '## 3. dispatcher 实际发出的 Bridge Trigger（stub Bridge 原始记录，先启动 dispatcher）'
-  (cd "$REPO" && NODE_ENV=test LOG_LEVEL=warn DATABASE_URL="$DATABASE_URL" \
+  start_owned dispatcher "$REPO" env NODE_ENV=test LOG_LEVEL=warn DATABASE_URL="$DATABASE_URL" \
     BRIDGE_REPOSITORY=bouyer-sutrasky/MoYu BRIDGE_URL="http://127.0.0.1:$STUB" BRIDGE_TOKEN="$STUB_TOKEN" \
     DELIVERY_INTERVAL_MS=300 EVENT_SYNC_INTERVAL_MS=500 RECONCILE_ON_START=false \
-    setsid nohup node apps/dispatcher/dist/main.js > "$RUN/logs/dispatcher.log" 2>&1 < /dev/null &)
+    node apps/dispatcher/dist/main.js
   for _ in $(seq 1 40); do
     grep -q "$msg_id" "$RUN/bridge-triggers.jsonl" 2>/dev/null && break
     sleep 0.5
@@ -318,8 +401,7 @@ PY
   echo '- 共享契约 `bridgeTriggerInputSchema`（packages/contracts/src/runtime.ts）以 `.strict()` 结尾且没有 attachments 字段；'
   echo '  上游 Source 的 Trigger 也没有附件字段。上面的原始 Trigger 只有 text，没有 attachments。'
   echo '- 附件保存在平台存储并随消息展示/下载；投递到 runtime 需要上游 Bridge 补丁与能力协商，属后续单。'
-  for pid in $(ss -ltnp 2>/dev/null | grep ':4699' | sed -n 's/.*pid=\([0-9]*\).*/\1/p'); do :; done
-  for pid in $(ps -eo pid,args | grep 'dispatcher/dist/main[.]js' | grep -v grep | awk '{print $1}'); do kill "$pid" 2>/dev/null || true; done
+  stop_dispatcher
 } >> "$A3" 2>&1
 
 log "==> A4 diff panel"
@@ -483,11 +565,12 @@ console.log("digest        :", crypto.createHash("sha256").update(JSON.stringify
   node -e 'const m=require(process.argv[1]).data.messages; console.log("attachments   :", JSON.stringify(m.flatMap((x)=>x.attachments).map((a)=>[a.filename,a.sha256])))' "$RUN/a7-messages-before.json"
   echo
   echo '## 2. 重启平台 API 进程'
-  old=$(ss -ltnp 2>/dev/null | grep ":$API_AFTER" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')
-  echo "old API pid: $old"; kill "$old"; sleep 2
+  old=$(cat "$PIDS/api-after.pid" 2>/dev/null || true)
+  echo "old API pid: $old"
+  stop_owned api-after
   start_api_after
   wait_http "http://127.0.0.1:$API_AFTER/readyz"
-  echo "new API pid: $(ss -ltnp 2>/dev/null | grep ":$API_AFTER" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')"
+  echo "new API pid: $(cat "$PIDS/api-after.pid" 2>/dev/null || true)"
   echo '$ curl -s http://127.0.0.1:'"$API_AFTER"'/readyz'; curl -s "http://127.0.0.1:$API_AFTER/readyz"; echo
   echo
   echo '## 3. 重启后读取同一任务'
@@ -547,11 +630,12 @@ header "A8 回归" "$A8"
 } >> "$A8" 2>&1
 
 log "==> screenshots (before = the PR base build)"
-(cd "$BEFORE" && NODE_ENV=test API_HOST=127.0.0.1 API_PORT=$API_BEFORE LOG_LEVEL=warn DATABASE_URL="$DATABASE_URL" \
+start_owned api-before "$BEFORE" env NODE_ENV=test API_HOST=127.0.0.1 API_PORT="$API_BEFORE" \
+  LOG_LEVEL=warn DATABASE_URL="$DATABASE_URL" \
   WEBAUTHN_RP_ID=127.0.0.1 WEBAUTHN_RP_NAME=MoYu WEBAUTHN_ORIGIN="http://127.0.0.1:$API_BEFORE" \
   AUTH_COOKIE_SECURE=false ARTIFACT_STORAGE_DIR="$RUN/artifacts" WEB_DIST_DIR=apps/web/dist \
   SUPERVISOR_URL="http://127.0.0.1:$SUP" SUPERVISOR_TOKEN="$SUP_TOKEN" GITHUB_CLI=gh \
-  setsid nohup "$NODE_BIN/node" apps/api/dist/server.js > "$RUN/logs/api-before.log" 2>&1 < /dev/null &)
+  "$NODE_BIN/node" apps/api/dist/server.js
 wait_http "http://127.0.0.1:$API_BEFORE/readyz" || { echo 'before API did not start'; exit 1; }
 
 M6A_SESSION_TOKEN="$SESSION_TOKEN" M6A_CONVERSATION_ID="$conversation_id" \
@@ -565,3 +649,9 @@ import json; d=json.load(open('$OUT/ui-checks.json'))
 print(json.dumps({k:v for k,v in d.items() if k != 'records'}, ensure_ascii=False, indent=2))"
 
 log "==> done. Final head: $(git -C "$REPO" rev-parse HEAD)"
+
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
