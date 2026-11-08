@@ -146,6 +146,10 @@ DATABASE_URL=postgres://moyu@127.0.0.1:55432/<isolated> \
 结果：0013 是最后一条迁移时回滚成功（删除两个新表、9 个新增列/约束），错误/缺失 hash 与
 非最后一条时拒绝；reapply 后表、列、索引恢复。`rollback-0013` 测试通过。
 
+0014 使用同一契约：必须在 0014 为最后一条迁移时执行并传入 0014 SQL 的 sha256；存在后续
+迁移、缺失、重复或 hash 不匹配时拒绝，且不留下表/约束/ledger 的部分变更（Issue #37，
+证据见 `docs/evidence/m5b/hardening/rollback-0014-latest-guard.log`）。
+
 ## 5. 非 root 隔离 cgroup 与 8 GiB slice
 
 ```bash

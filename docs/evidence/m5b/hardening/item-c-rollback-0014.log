@@ -24,3 +24,8 @@ red 复现：`git show f953c88 -- packages/db/migrations/rollback/0014_execution
 回滚后 table_present=false 且 ledger_present=false；再跑 migrateDatabase 恢复 true/true。
 守卫：BEGIN/COMMIT 内先校验 drizzle 里恰好有一条 0014 记录，否则 RAISE EXCEPTION，拒绝时不留半套；
 第二次回滚会被明确拒绝而不是静默删零行。脚本保持纯 SQL，psql 与普通 pg 客户端均可执行。
+
+> 2026-11-08 后续（Issue #37）：本日志记录的“纯 SQL、普通 pg 客户端可执行”形态已被
+> 与 0004-0013 一致的回滚契约取代。0014 现在需要 `psql -v hash=<0014 sha256>`，并在
+> 事务内拒绝后续迁移、缺失、重复与 hash 不匹配；见
+> `docs/evidence/m5b/hardening/rollback-0014-latest-guard.log`。
