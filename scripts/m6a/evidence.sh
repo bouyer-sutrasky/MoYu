@@ -515,7 +515,10 @@ log "==> before build (PR base) for the regression comparison and the screenshot
 BASE_SHA=$(git -C "$REPO" merge-base HEAD origin/main)
 BEFORE="$RUN/before"
 rm -rf "$BEFORE"
-git -C "$REPO" worktree add -q --detach "$BEFORE" "$BASE_SHA" 2>/dev/null || true
+git -C "$REPO" worktree remove --force "$BEFORE" >/dev/null 2>&1 || true
+git -C "$REPO" worktree prune
+git -C "$REPO" worktree add -q --detach "$BEFORE" "$BASE_SHA"
+if [ ! -d "$BEFORE" ]; then echo "could not create the before worktree at $BEFORE"; exit 1; fi
 (cd "$BEFORE" && PATH="$NODE_BIN:$PATH" corepack pnpm install --frozen-lockfile >/dev/null && PATH="$NODE_BIN:$PATH" corepack pnpm build >/dev/null)
 (cd "$BEFORE" && git rev-parse HEAD > "$RUN/before-head")
 
