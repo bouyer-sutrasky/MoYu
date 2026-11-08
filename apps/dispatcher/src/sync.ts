@@ -10,7 +10,7 @@ import { claimExecution, reconcileExecutionClaimOn } from './reservations';
 import { appendEventSql } from './events-sql';
 import { endedState, stateFromSnapshot, TASK_COLUMNS, taskSummary, type TaskRow } from './tasks';
 import { pauseEvidenceProblem, pauseEvidenceProven } from './pause-evidence';
-import { acquireExecutionLeaseOn } from './leases';
+import { acquireExecutionLeaseOn, settleIgnoredAdmissionOn } from './leases';
 
 /** Last projection branch per Bridge event, for lifecycle diagnostics/tests. */
 export const projectionBranches = new Map<string, string>();
@@ -685,6 +685,40 @@ async function applyIgnoredDecision(
     [targetId, messageIds],
   );
   if (members.rows[0]?.count !== messageIds.length) return;
+  // The receipt names the messages it ignored, so their deliveries carry the
+  // execution generation it can settle. A task already bound to a newer
+  // generation is a late receipt: closing it or releasing its lease would end
+  // an admission this decision never saw.
+  const deliveries = await client.query<{ leaseId: string | null; fencingToken: string | null }>(
+    `select d.runtime_lease_id as "leaseId", d.fencing_token::text as "fencingToken"
+       from deliveries d
+       join messages m on m.id = d.message_id
+      where m.conversation_id = $1 and m.id = any($2::uuid[])`,
+    [targetId, messageIds],
+  );
+  const generations = new Map<string, string | null>();
+  for (const row of deliveries.rows) {
+    if (row.leaseId) generations.set(row.leaseId, row.fencingToken);
+  }
+  if (
+    task.runtimeLeaseId &&
+    (generations.size === 0 ||
+      [...generations.keys()].some((leaseId) => leaseId !== task.runtimeLeaseId))
+  ) {
+    traceBranch(event.id, 'return-stale-generation');
+    logger.info(
+      {
+        event: 'bridge.decision_ignored_stale',
+        decisionId,
+        taskId: task.id,
+        conversationId: targetId,
+        taskLeaseId: task.runtimeLeaseId,
+        ignoredLeaseIds: [...generations.keys()],
+      },
+      'left the admission open: the ignored receipt names another execution generation',
+    );
+    return;
+  }
   // Close only the admission generation the decision names. A later message or
   // an accepted-but-not-yet-delivered message must keep the task open, or the
   // ignore would strand that delivery forever.
@@ -713,6 +747,21 @@ async function applyIgnoredDecision(
     [task.id, repository.id, messageIds],
   );
   if ((updated.rowCount ?? 0) === 0) return;
+  let settlement: { settled: boolean; detail: string } | null = null;
+  if (task.runtimeLeaseId) {
+    // The runtime created no Ticket or Assignment for an ignored trigger, so the
+    // generation never executed: settle its reservation and lease in the same
+    // transaction that closes the admission. Evidence that it may still run
+    // keeps the generation occupied with a recovery reason.
+    settlement = await settleIgnoredAdmissionOn(client, repository.id, {
+      taskId: task.id,
+      decisionId,
+      messageIds,
+      leaseId: task.runtimeLeaseId,
+      fencingToken: generations.get(task.runtimeLeaseId) ?? null,
+      reason: 'the runtime ignored this admission; no Ticket or Assignment was created',
+    });
+  }
   const next = await taskByConversation(client, targetId, repository.id);
   if (next) {
     await emit(client, repository, event, 'task.state_changed', targetId, next.id, {
@@ -726,8 +775,13 @@ async function applyIgnoredDecision(
       taskId: task.id,
       conversationId: targetId,
       messageId,
+      leaseId: task.runtimeLeaseId,
+      leaseSettled: settlement?.settled ?? null,
+      leaseDetail: settlement?.detail ?? null,
     },
-    'closed the pending admission named by the ignored decision',
+    settlement?.settled
+      ? 'closed the ignored admission and released its unstarted execution generation'
+      : 'closed the ignored admission; its execution generation stays occupied unless released',
   );
 }
 

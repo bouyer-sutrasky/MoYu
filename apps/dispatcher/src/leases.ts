@@ -454,6 +454,172 @@ export async function releaseTaskLease(
   }
 }
 
+/** The exact generation an ignored runtime decision names. */
+export interface IgnoredAdmissionGeneration {
+  taskId: string;
+  decisionId: string;
+  messageIds: string[];
+  leaseId: string;
+  /** The delivery's fencing token; the lease row decides when it is absent. */
+  fencingToken: string | null;
+  reason: string;
+}
+
+export interface IgnoredAdmissionSettlement {
+  settled: boolean;
+  detail: string;
+}
+
+/**
+ * Settles the execution generation of an admission the runtime ignored.
+ *
+ * `decision.ignored` is the runtime's own statement that it created no ticket or
+ * Assignment for the named triggers, so this generation never executed. The
+ * caller passes the lease the ignored messages were delivered under: a late
+ * receipt that reaches a task already bound to a newer generation must not free
+ * that newer slot. The platform evidence is checked again here. A live runtime
+ * ticket, a claimed reservation, a pending delivery, a queued command or another
+ * task bound to the generation keeps it occupied and records why instead of
+ * releasing it.
+ *
+ * The caller owns the transaction, the task row lock and the `not_accepted`
+ * projection; this function locks the lease after the task, matching
+ * `releaseTaskLease`.
+ */
+export async function settleIgnoredAdmissionOn(
+  client: pg.PoolClient,
+  repositoryId: string,
+  generation: IgnoredAdmissionGeneration,
+): Promise<IgnoredAdmissionSettlement> {
+  const taskResult = await client.query<{
+    id: string;
+    state: string;
+    runtime_lease_id: string | null;
+    upstream_ticket_id: string | null;
+  }>(
+    `select id, state, runtime_lease_id, upstream_ticket_id
+       from task_links where id = $1 and repository_id = $2 for update`,
+    [generation.taskId, repositoryId],
+  );
+  const task = taskResult.rows[0];
+  if (!task) return { settled: false, detail: 'the platform task no longer exists' };
+  if (task.runtime_lease_id !== generation.leaseId) {
+    // The ignored receipt names an older generation; releasing the current one
+    // would free a slot that may still be executing.
+    return { settled: false, detail: 'the task is bound to a different execution generation' };
+  }
+  if (task.state !== 'not_accepted' && task.state !== 'pending_admission') {
+    return { settled: false, detail: `the task is ${task.state}, not an unaccepted admission` };
+  }
+  const leaseResult = await client.query<LeaseRow>(
+    `select ${LEASE_COLUMNS} from runtime_leases where id = $1 and repository_id = $2 for update`,
+    [generation.leaseId, repositoryId],
+  );
+  const lease = leaseResult.rows[0];
+  if (!lease || lease.state !== 'active') {
+    return { settled: false, detail: 'the execution lease is no longer active' };
+  }
+  if (
+    generation.fencingToken !== null &&
+    String(lease.fencing_token) !== String(generation.fencingToken)
+  ) {
+    return { settled: false, detail: 'the receipt carries an older fencing generation' };
+  }
+
+  const evidence = await client.query<{
+    operations: number;
+    claimed: number;
+    reserved: number;
+    deliveries: number;
+    otherTasks: number;
+  }>(
+    `select
+       (select count(*)::int from task_operations op
+         where op.task_id = $1 and op.state in ('queued', 'running')) as operations,
+       (select count(*)::int from execution_reservations r
+         where r.task_id = $1 and r.lease_id = $2 and r.state = 'claimed') as claimed,
+       (select count(*)::int from execution_reservations r
+         where r.task_id = $1 and r.lease_id = $2 and r.state = 'reserved') as reserved,
+       (select count(*)::int from deliveries d
+         where d.runtime_lease_id = $2 and d.state in ('pending', 'delivering')) as deliveries,
+       (select count(*)::int from task_links t
+         where t.runtime_lease_id = $2 and t.id <> $1) as "otherTasks"`,
+    [generation.taskId, generation.leaseId],
+  );
+  const facts = evidence.rows[0];
+  const problem =
+    task.upstream_ticket_id !== null
+      ? 'The runtime ticket bound to this admission cannot be proven not to have executed'
+      : facts && facts.deliveries > 0
+        ? 'A delivery is still in flight on this execution generation'
+        : facts && facts.operations > 0
+          ? 'A command is still queued on this execution generation'
+          : facts && facts.claimed > 0
+            ? 'The execution reservation is already claimed by the runtime'
+            : facts && facts.otherTasks > 0
+              ? 'Another task is bound to this execution generation'
+              : null;
+  if (problem) {
+    await client.query(
+      `update runtime_leases
+          set recovery_state = 'blocked', recovery_reason = $2,
+              waiting_for = 'execution_stop_proof', last_error = $2
+        where id = $1 and state = 'active'`,
+      [generation.leaseId, problem],
+    );
+    await appendLeaseEvent(client, {
+      leaseId: generation.leaseId,
+      repositoryId,
+      fencingToken: String(lease.fencing_token),
+      type: 'recovery_blocked',
+      detail: { reason: problem, source: 'decision_ignored', decisionId: generation.decisionId },
+    });
+    return { settled: false, detail: problem };
+  }
+
+  const proof = {
+    kind: 'admission_ignored',
+    decisionId: generation.decisionId,
+    messageIds: generation.messageIds,
+    taskId: generation.taskId,
+    noRuntimeTicket: true,
+  };
+  if (facts && facts.reserved > 0) {
+    // The generation never reached a claimed Assignment, so its platform
+    // reservation is abandoned with the same fence instead of being reused.
+    await client.query(
+      `update execution_reservations
+          set state = 'abandoned', updated_at = now()
+        where task_id = $1 and lease_id = $2 and state = 'reserved'`,
+      [generation.taskId, generation.leaseId],
+    );
+  }
+  await client.query(
+    `update runtime_leases
+        set state = 'released', released_at = now(), heartbeat_at = now(),
+            stop_proof = $2::jsonb, stop_proven_at = now(),
+            recovery_state = 'none', waiting_for = null, last_error = null
+      where id = $1 and state = 'active'`,
+    [generation.leaseId, JSON.stringify(proof)],
+  );
+  await client.query(
+    `update task_links
+        set runtime_lease_id = null,
+            stop_evidence = coalesce(stop_evidence, '{}'::jsonb) || $2::jsonb,
+            updated_at = now()
+      where id = $1 and runtime_lease_id = $3`,
+    [generation.taskId, JSON.stringify({ leaseSettlement: proof }), generation.leaseId],
+  );
+  await appendLeaseEvent(client, {
+    leaseId: generation.leaseId,
+    repositoryId,
+    fencingToken: String(lease.fencing_token),
+    type: 'released',
+    detail: { reason: generation.reason, proof },
+  });
+  return { settled: true, detail: 'settled the generation that never executed' };
+}
+
 /** Marks a live lease as needing a stop proof before any replacement. */
 export async function requireLeaseStopProof(
   pool: pg.Pool,
