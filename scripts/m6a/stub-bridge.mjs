@@ -11,7 +11,8 @@ import { createServer } from 'node:http';
 import { URL } from 'node:url';
 
 const PORT = Number(process.env.M6A_STUB_PORT ?? 4699);
-const TOKEN = process.env.M6A_STUB_TOKEN ?? 'm6a-bridge-token-0123456789';
+const TOKEN = process.env.M6A_STUB_TOKEN;
+if (!TOKEN) throw new Error('M6A_STUB_TOKEN is required');
 const RECORD = process.env.M6A_STUB_RECORD ?? '/tmp/m6a/bridge-triggers.jsonl';
 
 const server = createServer((request, response) => {

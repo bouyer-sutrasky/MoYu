@@ -1,0 +1,45 @@
+# A7 重启与已清理边界 — 2026-11-08T12:26:46+08:00
+
+## 1. 重启前读取（附件、diff、检查结果）
+commit        : 71c677a545dc45863cf243ad15f6aee7c8e1530e
+files         : ['LICENSE', 'README.md', 'docs/GLOSSARY-m6a.md', 'scripts/m6a/stub-bridge.mjs', 'docs/m6a-fixture.md']
+additions/dels: 7 21
+checks        : [('pnpm check', 0, '2026-11-08T04:19:45.534Z')]
+attachments   : [('upload.png', 'c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77'), ('upload.txt', '970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584')]
+review digest : 9582c97ec22a5c5a05831809cb9795681ebac2655658c19fb7b79dc6a547c565
+
+## 2. 重启平台 API 进程
+old API pid: 2672233
+new API pid: 2683894
+$ curl -s http://127.0.0.1:4620/readyz
+{"data":{"status":"ok","database":"ok"},"requestId":"077b63bc-2aee-4043-a87a-cac768e9adfd"}
+
+## 3. 重启后读取同一任务
+commit        : 71c677a545dc45863cf243ad15f6aee7c8e1530e
+files         : ['LICENSE', 'README.md', 'docs/GLOSSARY-m6a.md', 'scripts/m6a/stub-bridge.mjs', 'docs/m6a-fixture.md']
+checks        : [('pnpm check', 0, '2026-11-08T04:19:45.534Z')]
+attachments   : [('upload.png', 'c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77'), ('upload.txt', '970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584')]
+review digest : 9582c97ec22a5c5a05831809cb9795681ebac2655658c19fb7b79dc6a547c565
+identical to the pre-restart projection: True
+
+## 4. 数据来自持久层：数据库里的产物行
+     type     | count |            newest             
+--------------+-------+-------------------------------
+ diff         |     5 | 2026-11-08 12:20:48.693395+08
+ check_report |     5 | 2026-11-08 12:20:31.976404+08
+ attachment   |     3 | 2026-11-08 12:06:04.326839+08
+(3 rows)
+
+
+## 5. 重启后附件仍可逐字节下载
+c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77  /tmp/m6a/upload.png
+c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77  /tmp/m6a/a7-download.png
+
+## 6. 工作目录已清理的任务：面板显示「已清理」，不是空白或报错
+state : cleaned
+reason: 该任务的执行目录已不存在（工作目录已清理，或运行时尚未创建工作目录）。
+files : []
+
+## 判定
+- 重启 API 进程后，同一任务返回的 diff、检查结果与附件完全相同（digest 相同），数据来自 PostgreSQL/存储而非进程内存。
+- worktree 已清理的任务返回 cleaned 与原因，面板显示「工作目录已清理」。

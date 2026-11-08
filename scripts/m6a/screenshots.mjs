@@ -44,13 +44,22 @@ async function open(base, theme, viewport, conversationId) {
   if (!match) throw new Error(`repository option not found: ${REPOSITORY}`);
   await page.locator('select').first().selectOption({ label: match });
   await page.waitForTimeout(700);
-  await page.locator(`[data-conversation-id="${conversationId}"]`).first().click();
-  await page.waitForTimeout(900);
-  const toggle = page.getByRole('button', { name: '展开右侧详情' });
-  if (await toggle.count()) {
-    await toggle.click();
-    await page.waitForTimeout(1800);
+  if (viewport.width < 500) {
+    // The narrow layout keeps the sidebar off-canvas; open it explicitly.
+    await page.getByRole('button', { name: '打开导航' }).click();
+    await page.waitForTimeout(600);
   }
+  const row = page.locator(`[data-conversation-id="${conversationId}"]`).first();
+  await row.click();
+  await page.waitForTimeout(900);
+  // Desktop has the top-bar toggle; the narrow layout shows the panel from the
+  // conversation's own "详情" action instead.
+  if (viewport.width < 500) {
+    await page.getByRole('button', { name: '详情', exact: true }).first().click();
+  } else {
+    await page.getByRole('button', { name: '展开右侧详情' }).click();
+  }
+  await page.waitForTimeout(1800);
   return { context, page };
 }
 
@@ -102,14 +111,18 @@ for (const theme of ['light', 'dark']) {
   );
 }
 
-// The additional after-only states: a failing check run and a cleaned worktree.
-views['after-desktop-light-checks-failed'] = await capture(
-  'after-desktop-light-checks-failed',
-  AFTER,
-  'light',
-  desktop,
-  CONVERSATION,
-);
+// The failing-check state is captured in its own run (the worktree really holds
+// a broken type at that moment), so a later pass re-run does not overwrite it.
+if (process.env.M6A_CAPTURE_FAILURE === '1') {
+  views['after-desktop-light-checks-failed'] = await capture(
+    'after-desktop-light-checks-failed',
+    AFTER,
+    'light',
+    desktop,
+    CONVERSATION,
+  );
+}
+// The additional after-only state: a cleaned worktree.
 views['after-desktop-light-cleaned'] = await capture(
   'after-desktop-light-cleaned',
   AFTER,
@@ -126,7 +139,7 @@ const facts = {
   afterShowsChangesSection: (views['after-desktop-light'] ?? '').includes('变更'),
   afterShowsChecksSection: (views['after-desktop-light'] ?? '').includes('检查'),
   afterShowsCommit: /[0-9a-f]{40}/.test(views['after-desktop-light'] ?? ''),
-  afterShowsFile: (views['after-desktop-light'] ?? '').includes('review-fixture.txt'),
+  afterShowsFile: (views['after-desktop-light'] ?? '').includes('docs/m6a-fixture.md'),
   afterShowsCheckPassed: (views['after-desktop-light'] ?? '').includes('通过'),
   afterShowsCheckFailed: (views['after-desktop-light-checks-failed'] ?? '').includes('失败'),
   afterShowsCleaned: (views['after-desktop-light-cleaned'] ?? '').includes('工作目录已清理'),

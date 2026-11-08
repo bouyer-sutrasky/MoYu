@@ -1,0 +1,114 @@
+{
+  "capturedAt": "2026-11-08T04:26:08.974Z",
+  "afterUrl": "http://127.0.0.1:4620",
+  "beforeUrl": "http://127.0.0.1:4621",
+  "beforeShowsPlaceholder": true,
+  "afterShowsChangesSection": true,
+  "afterShowsChecksSection": true,
+  "afterShowsCommit": true,
+  "afterShowsFile": true,
+  "afterShowsCheckPassed": true,
+  "afterShowsCheckFailed": true,
+  "afterShowsCleaned": true,
+  "records": [
+    {
+      "name": "before-desktop-light-review-panel",
+      "file": "/root/src/attachments-review-panel-4bd4aae33eac/docs/evidence/m6a/before-desktop-light-review-panel.png",
+      "base": "http://127.0.0.1:4621",
+      "theme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "conversationId": "fb6287ee-28c7-4300-bcb7-051c8f11edce"
+    },
+    {
+      "name": "after-desktop-light-review-panel",
+      "file": "/root/src/attachments-review-panel-4bd4aae33eac/docs/evidence/m6a/after-desktop-light-review-panel.png",
+      "base": "http://127.0.0.1:4620",
+      "theme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "conversationId": "fb6287ee-28c7-4300-bcb7-051c8f11edce"
+    },
+    {
+      "name": "before-mobile-light-review-panel",
+      "file": "/root/src/attachments-review-panel-4bd4aae33eac/docs/evidence/m6a/before-mobile-light-review-panel.png",
+      "base": "http://127.0.0.1:4621",
+      "theme": "light",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "conversationId": "fb6287ee-28c7-4300-bcb7-051c8f11edce"
+    },
+    {
+      "name": "after-mobile-light-review-panel",
+      "file": "/root/src/attachments-review-panel-4bd4aae33eac/docs/evidence/m6a/after-mobile-light-review-panel.png",
+      "base": "http://127.0.0.1:4620",
+      "theme": "light",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "conversationId": "fb6287ee-28c7-4300-bcb7-051c8f11edce"
+    },
+    {
+      "name": "before-desktop-dark-review-panel",
+      "file": "/root/src/attachments-review-panel-4bd4aae33eac/docs/evidence/m6a/before-desktop-dark-review-panel.png",
+      "base": "http://127.0.0.1:4621",
+      "theme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "conversationId": "fb6287ee-28c7-4300-bcb7-051c8f11edce"
+    },
+    {
+      "name": "after-desktop-dark-review-panel",
+      "file": "/root/src/attachments-review-panel-4bd4aae33eac/docs/evidence/m6a/after-desktop-dark-review-panel.png",
+      "base": "http://127.0.0.1:4620",
+      "theme": "dark",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "conversationId": "fb6287ee-28c7-4300-bcb7-051c8f11edce"
+    },
+    {
+      "name": "before-mobile-dark-review-panel",
+      "file": "/root/src/attachments-review-panel-4bd4aae33eac/docs/evidence/m6a/before-mobile-dark-review-panel.png",
+      "base": "http://127.0.0.1:4621",
+      "theme": "dark",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "conversationId": "fb6287ee-28c7-4300-bcb7-051c8f11edce"
+    },
+    {
+      "name": "after-mobile-dark-review-panel",
+      "file": "/root/src/attachments-review-panel-4bd4aae33eac/docs/evidence/m6a/after-mobile-dark-review-panel.png",
+      "base": "http://127.0.0.1:4620",
+      "theme": "dark",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "conversationId": "fb6287ee-28c7-4300-bcb7-051c8f11edce"
+    },
+    {
+      "name": "after-desktop-light-cleaned",
+      "file": "/root/src/attachments-review-panel-4bd4aae33eac/docs/evidence/m6a/after-desktop-light-cleaned.png",
+      "base": "http://127.0.0.1:4620",
+      "theme": "light",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "conversationId": "9bf98092-0873-4a9a-9466-28bd60f6ec71"
+    }
+  ]
+}

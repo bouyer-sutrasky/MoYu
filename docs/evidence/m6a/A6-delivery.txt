@@ -1,0 +1,51 @@
+# A6 提交与 PR 关联 — 2026-11-08T12:20:09+08:00
+
+## 1. 任务 worktree 的真实 HEAD（完整 SHA）
+$ git -C <worktree> rev-parse HEAD
+71c677a545dc45863cf243ad15f6aee7c8e1530e
+$ git -C <worktree> log -1 --format="%H%n%s%n%cI"
+71c677a545dc45863cf243ad15f6aee7c8e1530e
+chore(m6a): format the acceptance scripts
+2026-11-08T12:12:11+08:00
+
+## 2. 面板投影里的提交与 PR（GET /api/v1/tasks/:id/review）
+{
+  "commit": "71c677a545dc45863cf243ad15f6aee7c8e1530e",
+  "commitSubject": "chore(m6a): format the acceptance scripts",
+  "pullRequest": {
+    "number": 44,
+    "url": "https://github.com/bouyer-sutrasky/MoYu/pull/44",
+    "state": "open",
+    "headSha": "406784368a17783c3158e738c70536c162889213",
+    "baseBranch": "main",
+    "updatedAt": "2026-11-08T04:18:10Z",
+    "unavailableReason": null
+  }
+}
+
+## 3. GitHub 原始输出：本单 PR #44
+$ gh pr view 44 --repo bouyer-sutrasky/MoYu --json number,url,state,headRefOid,baseRefName,updatedAt,closedAt,mergedAt
+{"baseRefName":"main","closedAt":null,"headRefOid":"406784368a17783c3158e738c70536c162889213","mergedAt":null,"number":44,"state":"OPEN","updatedAt":"2026-11-08T04:18:10Z","url":"https://github.com/bouyer-sutrasky/MoYu/pull/44"}
+
+## 4. PR 关闭但未合并：#45（真实关闭、未合并）
+$ gh pr view 45 --repo bouyer-sutrasky/MoYu --json number,url,state,mergedAt
+{"mergedAt":null,"number":45,"state":"CLOSED","url":"https://github.com/bouyer-sutrasky/MoYu/pull/45"}
+面板投影: {"number": 45, "url": "https://github.com/bouyer-sutrasky/MoYu/pull/45", "state": "closed", "headSha": "cb19465dde7c65d1a033620936b71ee6589f8b78", "baseBranch": "main", "updatedAt": "2026-11-08T04:18:35Z", "unavailableReason": null}
+判定: state = closed → 不会显示 merged
+
+## 5. 取不到 GitHub 数据时显示原因（把仓库名临时改成一个不存在的仓库）
+{
+  "number": 44,
+  "url": "https://github.com/bouyer-sutrasky/MoYu/pull/44",
+  "state": "unknown",
+  "headSha": null,
+  "baseBranch": null,
+  "updatedAt": null,
+  "unavailableReason": "无法从 GitHub 读取 PR 状态：Command failed: gh pr view 44 --repo bouyer-sutrasky/MoYu-does-not-exist --json number,url,state,headRefOid,baseRefName,updatedAt,closedAt,mergedAt\nGraphQL: Could not resolve to a Repository with the name 'bouyer-sutrasky/MoYu-does-not-exist'. (repository)\n"
+}
+（仓库名已恢复）
+
+## 判定
+- 完整 commit SHA 来自 worktree 的 `git rev-parse HEAD`，不是缩写或推断；
+- PR 号与状态来自 `gh pr view`：open → 进行中，CLOSED 且 mergedAt 为空 → 已关闭 · 未合并；
+- 取不到 GitHub 数据时返回 state=unknown 与原因，不显示 merged。
