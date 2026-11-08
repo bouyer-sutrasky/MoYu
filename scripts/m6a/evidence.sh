@@ -47,9 +47,9 @@ PATH="$NODE_BIN:$PATH"
 
 # --- process ownership -------------------------------------------------------
 # Every process this run starts is recorded in $RUN/pids and carries a run marker
-# in its environment. Cleanup proves that marker before it signals anything.
-# This commit keeps the old port and command-line sweeps as well; the red test
-# shows they kill processes this run did not start.
+# in its environment. Cleanup proves that marker before it signals anything, so
+# another process that happens to use the same ports or command line is left
+# alone. Command lines and listening ports belong to whoever owns them.
 RUN_ID=${M6A_RUN_ID:-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')}
 PIDS="$RUN/pids"
 MARKER="M6A_RUN_ID=$RUN_ID"
@@ -106,32 +106,14 @@ stop_owned_services() {
   done
 }
 
-# Kept from the old cleanup: kills any listener on this run's ports.
-stop_listeners_by_port() {
-  local pid
-  for pid in $(ss -ltnp 2>/dev/null | grep -E ":$API_AFTER|:$API_BEFORE|:$SUP|:$STUB" \
-    | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | sort -u); do
-    kill "$pid" 2>/dev/null || true
-  done
-  sleep 1
-}
-
-# Kept from the old cleanup: kills every dispatcher by command line.
-stop_dispatchers_by_command() {
-  local pid
-  for pid in $(ps -eo pid,args | grep 'dispatcher/dist/main[.]js' | grep -v grep | awk '{print $1}'); do
-    kill "$pid" 2>/dev/null || true
-  done
-}
-
+# The A3 dispatcher is one of the recorded services; nothing else is touched.
 stop_dispatcher() {
-  stop_dispatchers_by_command
   stop_owned dispatcher
 }
 
+# The only cleanup entry: every signal is preceded by the ownership check.
 cleanup_run_processes() {
   stop_owned_services
-  stop_listeners_by_port
 }
 
 log() { printf '%s\n' "$*"; }
@@ -217,7 +199,7 @@ cat > "$RUN/instances.json" <<JSON
 }
 JSON
 start_owned stub "$REPO" env M6A_STUB_PORT="$STUB" M6A_STUB_TOKEN="$STUB_TOKEN" \
-  M6A_STUB_RECORD="$RUN/bridge-triggers.jsonl" node "$REPO/scripts/m6a/stub-bridge.mjs"
+  M6A_STUB_RECORD="$RUN/bridge-triggers.jsonl" node "$REPO/scripts/m6a/stub-bridge.mjs" >/dev/null
 start_owned supervisor "$REPO" env SUPERVISOR_TOKEN="$SUP_TOKEN" DATABASE_URL="$DATABASE_URL" \
   SUPERVISOR_HOST=127.0.0.1 SUPERVISOR_PORT="$SUP" \
   INSTANCES_CONFIG="$RUN/instances.json" DSH_BIN=/usr/bin/dsh DSH_HOME="$RUN/dsh" \
@@ -225,7 +207,7 @@ start_owned supervisor "$REPO" env SUPERVISOR_TOKEN="$SUP_TOKEN" DATABASE_URL="$
   INSTANCE_ENV_DIR="$RUN/env" INSTANCE_LOG_DIR="$RUN/logs" WORKTREE_ROOT="$WORKROOT" \
   LOG_LEVEL=info NODE_ENV=test REVIEW_CHECK_COMMANDS='["pnpm check"]' REVIEW_CHECK_TIMEOUT_MS=900000 \
   PATH="$NODE_BIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-  node "$REPO/apps/supervisor/dist/main.js"
+  node "$REPO/apps/supervisor/dist/main.js" >/dev/null
 
 cat > "$RUN/api.env" <<ENV
 NODE_ENV=test
@@ -245,7 +227,7 @@ GITHUB_CLI=gh
 ENV
 start_api_after() {
   start_owned api-after "$REPO" bash -c 'set -a; . "$1"; set +a; exec "$2" apps/api/dist/server.js' \
-    _ "$RUN/api.env" "$NODE_BIN/node"
+    _ "$RUN/api.env" "$NODE_BIN/node" >/dev/null
 }
 start_api_after
 
@@ -380,7 +362,7 @@ header "A3 附件与投递" "$A3"
   start_owned dispatcher "$REPO" env NODE_ENV=test LOG_LEVEL=warn DATABASE_URL="$DATABASE_URL" \
     BRIDGE_REPOSITORY=bouyer-sutrasky/MoYu BRIDGE_URL="http://127.0.0.1:$STUB" BRIDGE_TOKEN="$STUB_TOKEN" \
     DELIVERY_INTERVAL_MS=300 EVENT_SYNC_INTERVAL_MS=500 RECONCILE_ON_START=false \
-    node apps/dispatcher/dist/main.js
+    node apps/dispatcher/dist/main.js >/dev/null
   for _ in $(seq 1 40); do
     grep -q "$msg_id" "$RUN/bridge-triggers.jsonl" 2>/dev/null && break
     sleep 0.5
@@ -635,7 +617,7 @@ start_owned api-before "$BEFORE" env NODE_ENV=test API_HOST=127.0.0.1 API_PORT="
   WEBAUTHN_RP_ID=127.0.0.1 WEBAUTHN_RP_NAME=MoYu WEBAUTHN_ORIGIN="http://127.0.0.1:$API_BEFORE" \
   AUTH_COOKIE_SECURE=false ARTIFACT_STORAGE_DIR="$RUN/artifacts" WEB_DIST_DIR=apps/web/dist \
   SUPERVISOR_URL="http://127.0.0.1:$SUP" SUPERVISOR_TOKEN="$SUP_TOKEN" GITHUB_CLI=gh \
-  "$NODE_BIN/node" apps/api/dist/server.js
+  "$NODE_BIN/node" apps/api/dist/server.js >/dev/null
 wait_http "http://127.0.0.1:$API_BEFORE/readyz" || { echo 'before API did not start'; exit 1; }
 
 M6A_SESSION_TOKEN="$SESSION_TOKEN" M6A_CONVERSATION_ID="$conversation_id" \
