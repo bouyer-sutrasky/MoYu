@@ -5,8 +5,10 @@
  * It implements the small set of endpoints the dispatcher needs; it is not a
  * runtime and makes no execution claims.
  */
+import { Buffer } from 'node:buffer';
 import { appendFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { URL } from 'node:url';
 
 const PORT = Number(process.env.M6A_STUB_PORT ?? 4699);
 const TOKEN = process.env.M6A_STUB_TOKEN ?? 'm6a-bridge-token-0123456789';
