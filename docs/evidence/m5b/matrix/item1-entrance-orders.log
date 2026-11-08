@@ -69,3 +69,49 @@ outbox 里也只有这一条：`ack:91be173c…`（channel `github:github:1`，a
 | --- | --- | --- |
 | GitHub→Web | **通过** | trigger → decision(accept/explicitRouted) → runtime ticket → 平台 conversation+task，Web API 可见且 `source=github`、`externalUrl` 指向该评论；耗时 10-11 秒 |
 | Web→GitHub | **部分**（按真实实现） | 接受回执确实写回了 GitHub（带 `dsh-superagent:ack:` 去重标记）；但 Web 侧追加的消息被 Bridge 以 **409** 永久拒绝，没有到达 runtime，因此也没有后续 GitHub 写入 |
+
+## 更正：那个 409 不是产品缺陷，是我自己改 source 仓库造成的
+
+### 原始 409 响应体（复现得到，不是我猜的）
+在干净栈里对同一个正在运行的票发同形状的 `POST /bridge/v1/triggers`：
+
+```
+spec.repository = bouyer-sutrasky/m4-github-probe  -> 409
+{"error":"The instance serves Bouyer12/m5a-beta-adf10ad9, not bouyer-sutrasky/m4-github-probe"}
+
+spec.repository = Bouyer12/m5a-beta-adf10ad9       -> 200
+{"result":"stored","triggerId":"workspace:repro-…","baseCommit":"4f4639ce…","ticketId":"59efa0e7…"}
+```
+
+### 判定分支（产物 `lib/index.js`，`async triggers(req, res)`）
+```js
+const deployment = this.host.deployment;
+if (request.executionSpec.repository !== deployment.repository)
+  return json(res, 409, { error: `The instance serves ${deployment.repository}, not ${request.executionSpec.repository}` });
+...
+if (request.targetTicketId) return await this.targetTrigger(res, request);
+```
+这条检查在 `targetTicketId` 分支**之前**，所以先于任何「续写已有票」的判断。
+
+### 根因
+方案 3 里我把**暂存矩阵实例的 GitHub source 仓库**改成了 `bouyer-sutrasky/m4-github-probe`，
+runtime 的 `deployment.repository` 也随之变成探测仓库；而平台侧的 delivery 仍按
+`executionSpec.repository = Bouyer12/m5a-beta-adf10ad9` 发送 → 命中上面这条检查 → 409。
+**是我改配置导致的，不是「运行中的回合拒绝追加消息」。**
+
+### 因此要更正的结论
+1. 「运行中的票不接受续写消息」——**假**。同一张运行中的票，用与冻结值一致的 spec 续写，两次都是 **200 stored**。
+2. `targetTrigger` 里真正会 409 的分支一共五条，各给原始响应体（在干净栈里逐条探测）：
+   ```
+   wrong baseCommit -> {"error":"The ticket froze base commit 4f4639ce…, not 0000…"}
+   wrong model      -> {"error":"The ticket froze a different model"}
+   wrong mode       -> {"error":"The ticket is in execute mode, not discuss"}
+   ticket ended     -> {"error":"ticket_ended","code":"ticketEnded"}
+   origin missing   -> {"error":"ticket_origin_missing"}
+   ```
+3. 那条 409 之后 dispatcher 记为 `delivery.failed … permanently`、不重试 —— 这个「永久」判定在
+   **配置不一致这种可恢复情形**下会把消息丢掉。这属于可讨论的健壮性问题（低严重度），但不是本子项的主因。
+
+### 对子项判据的影响
+`Web→GitHub 完整闭环` **不是判据不适用**，而是**我这次没能测成**：接受回执那条写入已经证明，
+追加消息那一步是被我的配置错误挡掉的。要补测只需把 source 指回平台仓库后重发一条 Web 消息。
