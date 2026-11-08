@@ -66,10 +66,27 @@ if not path or not path.startswith('/' + slice_name + '/'):
     print(f'REFUSED: this process is in cgroup {path!r}, not inside /{slice_name}/; no memory allocated', flush=True)
     sys.exit(4)
 print(f'placed_in={path}', flush=True)
+
+
+def available_mb():
+    with open('/proc/meminfo') as handle:
+        for line in handle:
+            if line.startswith('MemAvailable:'):
+                return int(line.split()[1]) // 1024
+    return None
+
+
+# Rule 3: the host's own headroom bounds this member too, so a run never takes
+# another service on the machine down with it.
+floor_mb = int(sys.argv[3]) if len(sys.argv) > 3 else 4096
 chunks = []
 step = 32 * 1024 * 1024
 held = 0
 while held < mb * 1024 * 1024:
+    available = available_mb()
+    if available is not None and available < floor_mb:
+        print(f'STOPPED: host MemAvailable {available} MiB is below the {floor_mb} MiB floor; holding {held} B', flush=True)
+        sys.exit(9)
     chunks.append(bytearray(step))
     held += step
     time.sleep(0.05)
@@ -80,7 +97,7 @@ PY
 echo "\$ systemd-run --slice=${SLICE_NAME} --unit=${UNIT} … (one member, confirmed before the next)"
 systemd-run --slice="$SLICE_NAME" --unit="$UNIT" --collect -p MemoryAccounting=yes \
   --description="M5-B matrix synthetic member (not a service)" \
-  /usr/bin/python3 -c "$ALLOCATOR" "$MB" "$SLICE_NAME"
+  /usr/bin/python3 -c "$ALLOCATOR" "$MB" "$SLICE_NAME" "${M5B_MATRIX_HOST_FLOOR_MB:-4096}"
 if (( $? != 0 )); then
   echo "REFUSED: systemd-run did not start the member"
   exit 5
