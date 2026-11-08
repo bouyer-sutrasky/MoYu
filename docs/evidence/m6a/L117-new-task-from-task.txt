@@ -1,0 +1,136 @@
+# L117 完成/关闭任务的「基于此任务新建」
+
+代码 head（本文件据其产出）：
+$ git rev-parse HEAD
+1c5a77be5c0ce2b36abe4148cc7fb188fbfea4ec
+
+证据环境：隔离 PostgreSQL `127.0.0.1:55432`（每次重建 `moyu_l117_evidence`）、隔离 API `127.0.0.1:4634`、
+真实 Chromium（1440×900，浅色）。未重启 3082、未改 `/root/src/upstream/*`、未改 0015 迁移。
+脚本：`scripts/m6a/l117-evidence.sh`（起隔离栈、seed 四种任务、跑浏览器检查）、`l117-new-task-check.mjs`、
+`l117-seed.mjs`；新建走真实 `POST /api/v1/tasks/:id/new-task`。
+
+seed：completed（原 PR #7 + result「delivered summary for completed」）、closed_unmerged（原 PR #7）、
+cleaned（base def5678，stop_evidence.worktreeRemoved=true）、running；另有一个同所有者仓库
+`Bouyer12/l117-target`（默认 trunk）和一个他人仓库 `someone/l117-foreign`。
+
+## 1. 红：旧构建没有入口
+
+在 `8d7cd3f`（L117 之前）的 Web/API 上跑同一检查：
+
+$ bash scripts/m6a/l117-evidence.sh
+FAIL completed-shows-action: {"count":0}
+FAIL l117-flow: {"error":"TimeoutError: locator.click: Timeout 30000ms exceeded.\nCall log:\n  - waiting for locator('[data-testid=\"new-task-from-task\"]')\n"}
+RESULT FAIL passed=11/13 failed=["completed-shows-action","l117-flow"]
+EXIT=1
+
+判定（红）：`completed-shows-action count=0`（已完成任务上没有「基于此任务新建」按钮），随后流程超时；
+`RESULT FAIL passed=11/13`、`EXIT=1`。旧构建也没有 preview/create 路由。
+
+## 2. 绿：确认后创建、显式继承、独立身份
+
+同一命令，新构建：
+
+$ bash scripts/m6a/l117-evidence.sh
+PASS completed-shows-action: {"count":1}
+PASS preview-shows-inheritance: {"text":"新任务会关联原任务 eec6c057-8efc-4c21-b082-24115d47e455，但拥有独立的会话、任务与执行身份。原 PR：https://github.com/Bouyer12/l117-source/pull/7交付摘要：delivered summary for completed原起点：main@abc1234原任务的工作目录不会复用（已清理或不再可信）；新任务从确认的 base 起点重新创建，旧现场不可恢复。原任务已完成：允许基于原起点新建任务；不会重新打开原 PR，也不是恢复原现场。不会重开原 PR不是原现场恢复独立执行身份"}
+PASS target-repositories-owned-only: ["Bouyer12/l117-source","Bouyer12/l117-target"]
+PASS no-post-before-confirm: {"postsBeforeConfirm":0}
+PASS cross-repo-start-point: {"branch":"trunk"}
+PASS create-201: {"status":201,"body":{"data":{"conversation":{"id":"70dd6096-ed93-405a-83e9-cd094451c3b6","repositoryId":"bd301b1a-945d-495b-8769-6a0c28bd154d","mode":"work","executionMode":"execute","source":"web","externalKey":null,"externalUrl":null,"planRevision":null,"baseBranch":"trunk","baseCommit":null,"model":null,"title":"基于「L117 completed 已完成任务」新建","createdAt":"2026-11-08T23:25:17.720Z","updatedAt":"2026-11-08T23:25:17.720Z","task":{"id":"c794ccaf-cbb2-42a5-9218-b5ec1196d2bb","conversationId":"70dd6096-ed93-405a-83e9-cd094451c3b6","repositoryId":"bd301b1a-945d-495b-8769-6a0c28bd154d","state":"pending_admission","upstreamTicketId":null,"upstreamThreadId":null,"baseBranch":"trunk","baseCommit":null,"model":null,"executionMode":"execute","question":null,"questionMessageId":null,"prUrl":null,"prNumber":null,"planRevision":null,"stopRequestedAt":null,"stoppedAt":null,"stopEvidence":{},"lastOperation":null,"version":0,"createdAt":"2026-11-08T23:25:17.720Z","updatedAt":"2026-11-08T23:25:17.720Z"}},"inheritance":{"fromTaskId":"eec6c057-8efc-4c21-b082-24115d47e455","fromConversationId":"ac4e6372-f157-4ba8-a52b-8dc3c2d36be4","fromRepositoryId":"ca3e5c35-c2f7-407a-9853-d3094b5c8c01","fromState":"completed","pullRequest":{"url":"https://github.com/Bouyer12/l117-source/pull/7","number":7},"deliverySummary":"delivered summary for completed","baseBranch":"main","baseCommit":"abc1234","worktreeRecoverable":false,"worktreeNote":"原任务的工作目录不会复用（已清理或不再可信）；新任务从确认的 base 起点重新创建，旧现场不可恢复。","recovery":"completed_new_task","recoveryNote":"原任务已完成：允许基于原起点新建任务；不会重新打开原 PR，也不是恢复原现场。","reopensPullRequest":false,"reusesSourceExecution":false},"executionIdentity":{"conversationId":"70dd6096-ed93-405a-83e9-cd094451c3b6","taskId":"c794ccaf-cbb2-42a5-9218-b5ec1196d2bb","upstreamTicketId":null,"reusesSourceSession":false,"startsFromCommit":null}},"requestId":"7819bfc5-04b2-41d2-84da-04843cfc8459"}}
+PASS new-independent-identity: {"conversationId":"70dd6096-ed93-405a-83e9-cd094451c3b6","taskId":"c794ccaf-cbb2-42a5-9218-b5ec1196d2bb","upstreamTicketId":null,"reusesSourceSession":false,"startsFromCommit":null}
+PASS new-task-target-repository: {"repositoryId":"bd301b1a-945d-495b-8769-6a0c28bd154d","taskRepositoryId":"bd301b1a-945d-495b-8769-6a0c28bd154d"}
+PASS new-conversation-opened: {"heading":"基于「L117 completed 已完成任务」新建"}
+PASS double-click-idempotent: {"newPosts":2,"statuses":[200,201],"conversations":["7a547117-0e0f-445c-b0e7-5de7fe95f59f"]}
+PASS closed-unmerged-recovery: {"text":"新任务会关联原任务 6f21aaaa-9f84-4a95-aa98-86b788e95e2d，但拥有独立的会话、任务与执行身份。原 PR：https://github.com/Bouyer12/l117-source/pull/7交付摘要：delivered summary for closed原起点：main@abc1234原任务的工作目录不会复用（已清理或不再可信）；新任务从确认的 base 起点重新创建，旧现场不可恢复。原 PR 已关闭未合并：允许基于原起点新建任务；不会重新打开原 PR，也不是恢复原现场。前置条件：原任务已结束、你对目标仓库有权限、起点可解析。不会重开原 PR不是原现场恢复独立执行身份"}
+PASS no-reopen-request: []
+PASS cleaned-worktree-warning: {"text":"新任务会关联原任务 1723ddaf-4095-4fcf-9c1f-dee98d2c4f99，但拥有独立的会话、任务与执行身份。原 PR：无交付摘要：delivered summary for cleaned原起点：main@def5678原任务的工作目录不会复用（已清理或不再可信）；新任务从确认的 base 起点重新创建，旧现场不可恢复。原任务已完成：允许基于原起点新建任务；不会重新打开原 PR，也不是恢复原现场。不会重开原 PR不是原现场恢复独立执行身份"}
+PASS running-has-no-action: {"count":0}
+RESULT PASS passed=13/13 failed=[]
+EXIT=0
+
+逐条原始值：
+
+| 组 | 原始证据 |
+| --- | --- |
+| 主链路 | `create-201` 原始响应含 `inheritance.fromTaskId/fromConversationId/pullRequest/deliverySummary/baseBranch/baseCommit/reopensPullRequest:false`，新 `conversation.id` 与原会话不同、`task.id` 与原任务不同 |
+| 独立身份 | `executionIdentity {upstreamTicketId:null, reusesSourceSession:false}`；新任务 `state=pending_admission`，`prUrl=null`（原 PR 仍在源任务上） |
+| 创建前确认 | 打开对话框只发 GET preview：`no-post-before-confirm: {postsBeforeConfirm:0}`；截图见 `after-desktop-l117-confirm-dialog.png` |
+| closed_unmerged | 对话框原文含「原 PR 已关闭未合并」「不会重新打开原 PR」「不是恢复原现场」「前置条件…」；`no-reopen-request: []` |
+| 已清理目录 | 对话框原文含「旧现场不可恢复」且保留原起点 `main@def5678`，创建仍成功 |
+| 重复点击 | 两次响应 `statuses:[200,201]`、同一 `conversation.id`（唯一） |
+| 跨仓库 | 目标仓库切到 `Bouyer12/l117-target` 后起点变为 `trunk`；`repositoryId`/`task.repositoryId` 均为目标仓库；他人仓库不在下拉（API 测试断言 404 + 原文） |
+
+截图：`before-desktop-l117-task.png`（旧构建，无按钮）、`after-desktop-l117-confirm-dialog.png`、
+`after-desktop-l117-created.png`、`after-desktop-l117-closed-unmerged.png`、`after-desktop-l117-running.png`。
+
+## 3. 后端测试（真实 PostgreSQL）
+
+$ cd apps/api && TEST_DATABASE_ADMIN_URL=... vitest run test/integration/new-task-from-task.integration.test.ts
+
+ RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/api
+
+{"level":30,"time":"2026-11-08T23:22:10.265Z","service":"moyu-api","env":"test","reqId":"b249e4cc-87ac-4e8b-a777-278c8a6ccaa7","req":{"method":"GET","url":"/api/v1/tasks/78251d0a-5757-4f80-9ab7-79ee1597859f/new-task-preview","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":"2026-11-08T23:22:10.282Z","service":"moyu-api","env":"test","reqId":"b249e4cc-87ac-4e8b-a777-278c8a6ccaa7","res":{"statusCode":200},"responseTime":15.939421999999922,"msg":"request completed"}
+{"level":30,"time":"2026-11-08T23:22:10.285Z","service":"moyu-api","env":"test","reqId":"ffd66337-db2e-4e5a-bd3e-a05a52e124b7","req":{"method":"POST","url":"/api/v1/tasks/78251d0a-5757-4f80-9ab7-79ee1597859f/new-task","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":"2026-11-08T23:22:10.305Z","service":"moyu-api","env":"test","reqId":"ffd66337-db2e-4e5a-bd3e-a05a52e124b7","res":{"statusCode":201},"responseTime":19.48384699999997,"msg":"request completed"}
+{"level":30,"time":"2026-11-08T23:22:10.308Z","service":"moyu-api","env":"test","reqId":"d2efe9ea-5def-45a0-aaeb-af0d500d13ee","req":{"method":"POST","url":"/api/v1/tasks/78251d0a-5757-4f80-9ab7-79ee1597859f/new-task","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":"2026-11-08T23:22:10.319Z","service":"moyu-api","env":"test","reqId":"d2efe9ea-5def-45a0-aaeb-af0d500d13ee","res":{"statusCode":201},"responseTime":10.219602000000123,"msg":"request completed"}
+{"level":30,"time":"2026-11-08T23:22:10.319Z","service":"moyu-api","env":"test","reqId":"2fc15aef-3204-43e3-b35d-e653f4c0c56b","req":{"method":"POST","url":"/api/v1/tasks/78251d0a-5757-4f80-9ab7-79ee1597859f/new-task","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":"2026-11-08T23:22:10.328Z","service":"moyu-api","env":"test","reqId":"2fc15aef-3204-43e3-b35d-e653f4c0c56b","res":{"statusCode":200},"responseTime":8.976879000000281,"msg":"request completed"}
+{"level":30,"time":"2026-11-08T23:22:10.333Z","service":"moyu-api","env":"test","reqId":"f2b4411b-97b8-48d9-842c-7a8de1eb32d5","req":{"method":"POST","url":"/api/v1/tasks/78251d0a-5757-4f80-9ab7-79ee1597859f/new-task","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":"2026-11-08T23:22:10.342Z","service":"moyu-api","env":"test","reqId":"f2b4411b-97b8-48d9-842c-7a8de1eb32d5","res":{"statusCode":201},"responseTime":9.050751000000218,"msg":"request completed"}
+{"level":30,"time":"2026-11-08T23:22:10.343Z","service":"moyu-api","env":"test","reqId":"fd69e9a4-c366-44a2-ab5b-6b5ace545144","req":{"method":"POST","url":"/api/v1/tasks/78251d0a-5757-4f80-9ab7-79ee1597859f/new-task","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":40,"time":"2026-11-08T23:22:10.347Z","service":"moyu-api","env":"test","reqId":"fd69e9a4-c366-44a2-ab5b-6b5ace545144","err":{"type":"ApiProblem","message":"Repository not found","stack":"ApiProblem: Repository not found\n    at ApiProblem.notFound (/root/src/review-isolation-m6a-fa8ec916012c/apps/api/src/lib/errors.ts:34:12)\n    at Object.<anonymous> (/root/src/review-isolation-m6a-fa8ec916012c/apps/api/src/routes/conversations.ts:846:45)\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)","statusCode":404,"code":"not_found","retryable":false,"name":"ApiProblem"},"event":"request.rejected","code":"not_found","msg":"request rejected"}
+{"level":30,"time":"2026-11-08T23:22:10.354Z","service":"moyu-api","env":"test","reqId":"fd69e9a4-c366-44a2-ab5b-6b5ace545144","res":{"statusCode":404},"responseTime":10.858714999999847,"msg":"request completed"}
+{"level":30,"time":"2026-11-08T23:22:10.355Z","service":"moyu-api","env":"test","reqId":"f00658a5-9443-47a2-a513-3e95a8d36e0b","req":{"method":"GET","url":"/api/v1/tasks/c09508ff-b89c-4acf-b6d1-18cc5acc6e0c/new-task-preview","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":"2026-11-08T23:22:10.359Z","service":"moyu-api","env":"test","reqId":"f00658a5-9443-47a2-a513-3e95a8d36e0b","res":{"statusCode":200},"responseTime":3.9703819999999723,"msg":"request completed"}
+{"level":30,"time":"2026-11-08T23:22:10.359Z","service":"moyu-api","env":"test","reqId":"73089e4e-460d-4cba-88ed-0292975b9315","req":{"method":"POST","url":"/api/v1/tasks/c09508ff-b89c-4acf-b6d1-18cc5acc6e0c/new-task","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":"2026-11-08T23:22:10.369Z","service":"moyu-api","env":"test","reqId":"73089e4e-460d-4cba-88ed-0292975b9315","res":{"statusCode":201},"responseTime":9.544134999999642,"msg":"request completed"}
+{"level":30,"time":"2026-11-08T23:22:10.370Z","service":"moyu-api","env":"test","reqId":"9125abe1-8419-4297-bfed-312b98e0de56","req":{"method":"GET","url":"/api/v1/tasks/bc730904-04e9-4b92-8462-e21965acff2f/new-task-preview","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":"2026-11-08T23:22:10.380Z","service":"moyu-api","env":"test","reqId":"9125abe1-8419-4297-bfed-312b98e0de56","res":{"statusCode":200},"responseTime":9.956334999999854,"msg":"request completed"}
+{"level":30,"time":"2026-11-08T23:22:10.381Z","service":"moyu-api","env":"test","reqId":"3bf26e0a-8d2d-4849-b214-57f5dbc7abda","req":{"method":"POST","url":"/api/v1/tasks/bc730904-04e9-4b92-8462-e21965acff2f/new-task","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":"2026-11-08T23:22:10.390Z","service":"moyu-api","env":"test","reqId":"3bf26e0a-8d2d-4849-b214-57f5dbc7abda","res":{"statusCode":201},"responseTime":8.96978799999988,"msg":"request completed"}
+{"level":30,"time":"2026-11-08T23:22:10.391Z","service":"moyu-api","env":"test","reqId":"5652cc18-57ea-4ede-be97-01f041c02c57","req":{"method":"GET","url":"/api/v1/tasks/b9e16a26-f137-4541-83fa-6f72d568e87e/new-task-preview","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":40,"time":"2026-11-08T23:22:10.394Z","service":"moyu-api","env":"test","reqId":"5652cc18-57ea-4ede-be97-01f041c02c57","err":{"type":"ApiProblem","message":"只有已完成或已关闭的任务可以基于此任务新建","stack":"ApiProblem: 只有已完成或已关闭的任务可以基于此任务新建\n    at ApiProblem.conflict (/root/src/review-isolation-m6a-fa8ec916012c/apps/api/src/lib/errors.ts:38:12)\n    at taskInheritance (/root/src/review-isolation-m6a-fa8ec916012c/apps/api/src/routes/conversations.ts:753:24)\n    at Object.<anonymous> (/root/src/review-isolation-m6a-fa8ec916012c/apps/api/src/routes/conversations.ts:818:33)\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)","statusCode":409,"code":"conflict","retryable":false,"name":"ApiProblem"},"event":"request.rejected","code":"conflict","msg":"request rejected"}
+{"level":30,"time":"2026-11-08T23:22:10.394Z","service":"moyu-api","env":"test","reqId":"5652cc18-57ea-4ede-be97-01f041c02c57","res":{"statusCode":409},"responseTime":3.379190000000108,"msg":"request completed"}
+{"level":30,"time":"2026-11-08T23:22:10.395Z","service":"moyu-api","env":"test","reqId":"4098040b-b498-4f54-8441-d227a4664c83","req":{"method":"POST","url":"/api/v1/tasks/b9e16a26-f137-4541-83fa-6f72d568e87e/new-task","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":40,"time":"2026-11-08T23:22:10.397Z","service":"moyu-api","env":"test","reqId":"4098040b-b498-4f54-8441-d227a4664c83","err":{"type":"ApiProblem","message":"只有已完成或已关闭的任务可以基于此任务新建","stack":"ApiProblem: 只有已完成或已关闭的任务可以基于此任务新建\n    at ApiProblem.conflict (/root/src/review-isolation-m6a-fa8ec916012c/apps/api/src/lib/errors.ts:38:12)\n    at taskInheritance (/root/src/review-isolation-m6a-fa8ec916012c/apps/api/src/routes/conversations.ts:753:24)\n    at Object.<anonymous> (/root/src/review-isolation-m6a-fa8ec916012c/apps/api/src/routes/conversations.ts:844:31)\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)","statusCode":409,"code":"conflict","retryable":false,"name":"ApiProblem"},"event":"request.rejected","code":"conflict","msg":"request rejected"}
+{"level":30,"time":"2026-11-08T23:22:10.398Z","service":"moyu-api","env":"test","reqId":"4098040b-b498-4f54-8441-d227a4664c83","res":{"statusCode":409},"responseTime":3.169288999999935,"msg":"request completed"}
+ ✓ test/integration/new-task-from-task.integration.test.ts (7 tests) 727ms
+
+ Test Files  1 passed (1)
+      Tests  7 passed (7)
+   Start at  07:22:07
+   Duration  2.69s (transform 494ms, setup 0ms, collect 1.66s, tests 727ms, environment 0ms, prepare 80ms)
+
+7 条覆盖：preview 继承字段、创建独立任务与首条 notice、同一 clientRequestId 重试只建一个、跨仓库允许
++ 他人仓库 404、closed_unmerged 语义且源 PR 不变、cleaned worktree 仍可创建、未结束任务 409。
+
+## 4. 回归
+
+$ pnpm check
+packages/contracts test:       Tests  19 passed (19)
+packages/runtime-client test:       Tests  13 passed (13)
+apps/dispatcher test:       Tests  5 passed (5)
+apps/api test:       Tests  20 passed (20)
+apps/supervisor test:       Tests  59 passed (59)
+EXIT=0
+
+$ pnpm test:integration
+ Test Files  12 passed (12)
+      Tests  40 passed (40)
+ Test Files  16 passed (16)
+      Tests  100 passed (100)
+ Test Files  16 passed | 1 skipped (17)
+      Tests  82 passed | 1 skipped (83)
+EXIT=0
+
+check `EXIT=0`；集成 db 40 / api 100（新增本文件 7 条）/ dispatcher 82+1 skipped，`EXIT=0`。
+
+## 5. 未验证 / 已知缺口
+
+- 「独立 session id」在平台侧以新 conversation/task 和不复用来源 ticket 表达；真实 runtime session 只有在投递后
+  才产生，本轮未起带模型的 runtime，因此没有 runtime session id 的原始值。
+- 目标仓库的起点分支只做表单确认与非空校验；是否存在该分支由 runtime 在投递时解析（与原新建任务一致）。
+- 他人仓库的拒绝是 API 层 404（无法在 UI 选择）；原文见 API 测试输出。
+- 交付摘要取源会话最近一条 result/notice/progress 消息，截断到 600 字；不是新的持久字段。
