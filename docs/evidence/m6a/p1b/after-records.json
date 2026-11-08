@@ -1,0 +1,216 @@
+{
+  "side": "after",
+  "checks": [
+    {
+      "name": "A shows the selected attachment before switching",
+      "ok": true,
+      "detail": "count=1"
+    },
+    {
+      "name": "B does not show A's selected attachment after switching",
+      "ok": true,
+      "detail": "count=0"
+    },
+    {
+      "name": "no attachment upload for B after the switch (raw URLs: [])",
+      "ok": true,
+      "detail": "uploads=0"
+    },
+    {
+      "name": "B's message carries no attachmentIds (raw body: [{\"clientMessageId\":\"8c6d6452-2178-48cd-9f65-6d67bc6c44d2\",\"text\":\"P1-B switch scenario\"}])",
+      "ok": true,
+      "detail": "messages=1"
+    },
+    {
+      "name": "B does not show A's in-flight upload indicator",
+      "ok": true,
+      "detail": "count=0"
+    },
+    {
+      "name": "B's attachment list does not receive A's late response",
+      "ok": true,
+      "detail": "count=0"
+    },
+    {
+      "name": "the late upload stays on A and the message goes to A (raw URLs)",
+      "ok": true,
+      "detail": "{\"uploads\":[\"http://127.0.0.1:4630/api/v1/conversations/57386e6a-99e6-4884-ac65-8235df100e7d/attachments\"],\"messages\":[\"http://127.0.0.1:4630/api/v1/conversations/57386e6a-99e6-4884-ac65-8235df100e7d/messages\"]}"
+    },
+    {
+      "name": "the upload target is the open conversation (raw URL)",
+      "ok": true,
+      "detail": "[\"http://127.0.0.1:4630/api/v1/conversations/405e0858-6762-4f1f-aab6-78cf915b335c/attachments\"]"
+    },
+    {
+      "name": "the message in the same conversation carries the uploaded attachment",
+      "ok": true,
+      "detail": "[{\"clientMessageId\":\"a982afb2-01e8-4725-a6c5-c33e690498a7\",\"text\":\"P1-B same conversation scenario\",\"attachmentIds\":[\"218319a5-39a6-4d61-8413-76078667b618\"]}]"
+    },
+    {
+      "name": "removing the file prevents its upload",
+      "ok": true,
+      "detail": "uploads=0"
+    },
+    {
+      "name": "the message carries no attachmentIds",
+      "ok": true,
+      "detail": "[{\"clientMessageId\":\"d7556ac6-b78c-4f41-b55f-fd1dfca50228\",\"text\":\"P1-B deleted attachment scenario\"}]"
+    },
+    {
+      "name": "the failed upload reports an attachment error",
+      "ok": true,
+      "detail": "count=1"
+    },
+    {
+      "name": "both upload attempts target the same conversation (raw URLs)",
+      "ok": true,
+      "detail": "[\"http://127.0.0.1:4630/api/v1/conversations/405e0858-6762-4f1f-aab6-78cf915b335c/attachments\",\"http://127.0.0.1:4630/api/v1/conversations/405e0858-6762-4f1f-aab6-78cf915b335c/attachments\"]"
+    },
+    {
+      "name": "the retried message carries exactly the retried attachment",
+      "ok": true,
+      "detail": "[{\"clientMessageId\":\"d0ef8e71-9fe9-46fa-9919-b669b3bdb5da\",\"text\":\"P1-B retry scenario\",\"attachmentIds\":[\"9528a0e2-6c3e-4a7b-a163-cd314b620b0c\"]}]"
+    },
+    {
+      "name": "the other conversation does not show A's attachment",
+      "ok": true,
+      "detail": "count=0"
+    },
+    {
+      "name": "returning to A restores its own attachment selection",
+      "ok": true,
+      "detail": "count=1"
+    },
+    {
+      "name": "editing the text does not disturb the selected attachment",
+      "ok": true,
+      "detail": "count=1"
+    }
+  ],
+  "records": [
+    {
+      "scenario": "switch",
+      "side": "after",
+      "inA": 1,
+      "inB": 0,
+      "uploads": [],
+      "messages": [
+        {
+          "kind": "message",
+          "url": "http://127.0.0.1:4630/api/v1/conversations/405e0858-6762-4f1f-aab6-78cf915b335c/messages",
+          "conversationId": "405e0858-6762-4f1f-aab6-78cf915b335c",
+          "body": {
+            "clientMessageId": "8c6d6452-2178-48cd-9f65-6d67bc6c44d2",
+            "text": "P1-B switch scenario"
+          }
+        }
+      ]
+    },
+    {
+      "scenario": "late",
+      "side": "after",
+      "uploadingVisibleInB": 0,
+      "lateChipInB": 0,
+      "uploads": [
+        {
+          "kind": "attachment",
+          "url": "http://127.0.0.1:4630/api/v1/conversations/57386e6a-99e6-4884-ac65-8235df100e7d/attachments",
+          "conversationId": "57386e6a-99e6-4884-ac65-8235df100e7d"
+        }
+      ],
+      "messages": [
+        {
+          "kind": "message",
+          "url": "http://127.0.0.1:4630/api/v1/conversations/57386e6a-99e6-4884-ac65-8235df100e7d/messages",
+          "conversationId": "57386e6a-99e6-4884-ac65-8235df100e7d",
+          "body": {
+            "clientMessageId": "0d04d4fa-7dfb-4e24-84c0-2bae82238790",
+            "text": "P1-B late response scenario",
+            "attachmentIds": [
+              "a938f14a-47d7-4822-9341-88b2b9d38e61"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "scenario": "same",
+      "side": "after",
+      "uploads": [
+        {
+          "kind": "attachment",
+          "url": "http://127.0.0.1:4630/api/v1/conversations/405e0858-6762-4f1f-aab6-78cf915b335c/attachments",
+          "conversationId": "405e0858-6762-4f1f-aab6-78cf915b335c"
+        }
+      ],
+      "messages": [
+        {
+          "kind": "message",
+          "url": "http://127.0.0.1:4630/api/v1/conversations/405e0858-6762-4f1f-aab6-78cf915b335c/messages",
+          "conversationId": "405e0858-6762-4f1f-aab6-78cf915b335c",
+          "body": {
+            "clientMessageId": "a982afb2-01e8-4725-a6c5-c33e690498a7",
+            "text": "P1-B same conversation scenario",
+            "attachmentIds": [
+              "218319a5-39a6-4d61-8413-76078667b618"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "scenario": "delete",
+      "side": "after",
+      "uploads": [],
+      "messages": [
+        {
+          "kind": "message",
+          "url": "http://127.0.0.1:4630/api/v1/conversations/405e0858-6762-4f1f-aab6-78cf915b335c/messages",
+          "conversationId": "405e0858-6762-4f1f-aab6-78cf915b335c",
+          "body": {
+            "clientMessageId": "d7556ac6-b78c-4f41-b55f-fd1dfca50228",
+            "text": "P1-B deleted attachment scenario"
+          }
+        }
+      ]
+    },
+    {
+      "scenario": "retry",
+      "side": "after",
+      "failureVisible": 1,
+      "uploads": [
+        {
+          "kind": "attachment",
+          "url": "http://127.0.0.1:4630/api/v1/conversations/405e0858-6762-4f1f-aab6-78cf915b335c/attachments",
+          "conversationId": "405e0858-6762-4f1f-aab6-78cf915b335c"
+        },
+        {
+          "kind": "attachment",
+          "url": "http://127.0.0.1:4630/api/v1/conversations/405e0858-6762-4f1f-aab6-78cf915b335c/attachments",
+          "conversationId": "405e0858-6762-4f1f-aab6-78cf915b335c"
+        }
+      ],
+      "messages": [
+        {
+          "kind": "message",
+          "url": "http://127.0.0.1:4630/api/v1/conversations/405e0858-6762-4f1f-aab6-78cf915b335c/messages",
+          "conversationId": "405e0858-6762-4f1f-aab6-78cf915b335c",
+          "body": {
+            "clientMessageId": "d0ef8e71-9fe9-46fa-9919-b669b3bdb5da",
+            "text": "P1-B retry scenario",
+            "attachmentIds": [
+              "9528a0e2-6c3e-4a7b-a163-cd314b620b0c"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "scenario": "edit",
+      "side": "after",
+      "inB": 0,
+      "backInA": 1,
+      "afterEdit": 1
+    }
+  ]
+}
