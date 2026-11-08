@@ -52,13 +52,18 @@ const GIT_TIMEOUT_MS = 20_000;
 /** Runs a command without a shell, bounded in time and output, and never throws. */
 export async function runCommand(
   argv: string[],
-  options: { cwd: string; timeoutMs: number; maxBytes?: number },
+  options: {
+    cwd: string;
+    timeoutMs: number;
+    maxBytes?: number;
+    env?: NodeJS.ProcessEnv;
+  },
 ): Promise<CommandResult> {
   const maxBytes = options.maxBytes ?? 4 * 1024 * 1024;
   return new Promise((resolve) => {
     const child = spawn(argv[0]!, argv.slice(1), {
       cwd: options.cwd,
-      env: process.env,
+      env: options.env ?? process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -89,8 +94,55 @@ export async function runCommand(
   });
 }
 
+/**
+ * The environment a git child gets. It is a minimum, not the supervisor's own:
+ * `GIT_EXTERNAL_DIFF`, `GIT_CONFIG_*`, `GIT_DIR` and any other inherited
+ * `GIT_*` value would otherwise let the launching environment point a
+ * read-only inspection at a helper or a different repository, and the global
+ * and system git config are dropped so only this process decides behaviour.
+ */
+function gitEnvironment(): NodeJS.ProcessEnv {
+  return {
+    PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
+    TMPDIR: process.env.TMPDIR ?? '/tmp',
+    LANG: 'C',
+    LC_ALL: 'C',
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_ATTR_NOSYSTEM: '1',
+    GIT_TERMINAL_PROMPT: '0',
+  };
+}
+
+/**
+ * Switches that keep a read-only diff from running anything the task
+ * repository configures. `--no-ext-diff` drops `diff.external`,
+ * `GIT_EXTERNAL_DIFF` and attribute `diff.<driver>.command`; `--no-textconv`
+ * drops `diff.<driver>.textconv`; the attributes override keeps a host-level
+ * attributes file out. `-c diff.external=` must not be used instead: git reads
+ * the empty value as an (empty) command and the diff dies.
+ */
+const DIFF_ISOLATION_FLAGS = ['--no-ext-diff', '--no-textconv'] as const;
+
 async function git(directory: string, args: string[]): Promise<CommandResult> {
-  return runCommand(['git', ...args], { cwd: directory, timeoutMs: GIT_TIMEOUT_MS });
+  // `core.fsmonitor` may name a program the task repository provides, and both
+  // `status` and `diff` refresh the index; a plain scan is all this needs.
+  return runCommand(['git', '-c', 'core.fsmonitor=false', ...args], {
+    cwd: directory,
+    timeoutMs: GIT_TIMEOUT_MS,
+    env: gitEnvironment(),
+  });
+}
+
+/** A `git diff` that cannot execute a task-repository helper. */
+async function gitDiff(directory: string, args: string[]): Promise<CommandResult> {
+  return git(directory, [
+    '-c',
+    'core.attributesFile=/dev/null',
+    'diff',
+    ...DIFF_ISOLATION_FLAGS,
+    ...args,
+  ]);
 }
 
 /**
@@ -253,7 +305,7 @@ export async function collectChanges(input: {
 
   const [status, numstat] = await Promise.all([
     git(directory, ['status', '--porcelain=v1', '-z']),
-    git(directory, ['diff', '--numstat', 'HEAD', '--']),
+    gitDiff(directory, ['--numstat', 'HEAD', '--']),
   ]);
   if (status.code !== 0) {
     return {
@@ -304,8 +356,7 @@ export async function collectChanges(input: {
     let binary = false;
     if (parsed.status === 'untracked') {
       // `git diff --no-index` exits 1 when the files differ; that is success here.
-      const diff = await git(directory, [
-        'diff',
+      const diff = await gitDiff(directory, [
         '--no-index',
         '--no-prefix',
         '--',
@@ -319,11 +370,11 @@ export async function collectChanges(input: {
         binary = /Binary files .* differ/.test(diff.stdout);
       }
     } else if (parsed.status === 'deleted') {
-      const diff = await git(directory, ['diff', 'HEAD', '--', entry.path]);
+      const diff = await gitDiff(directory, ['HEAD', '--', entry.path]);
       patch = diff.stdout;
       binary = /Binary files .* differ/.test(diff.stdout);
     } else {
-      const diff = await git(directory, ['diff', 'HEAD', '--', entry.path]);
+      const diff = await gitDiff(directory, ['HEAD', '--', entry.path]);
       patch = diff.stdout;
       binary = /Binary files .* differ/.test(diff.stdout);
     }
