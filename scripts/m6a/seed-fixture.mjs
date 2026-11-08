@@ -90,7 +90,7 @@ try {
     ).rows[0];
     await client.query(
       'insert into deliveries (message_id, upstream_trigger_id, state) values ($1, $2, $3)',
-      [message.id, `workspace:${message.id}`, 'read'],
+      [message.id, `workspace:${message.id}`, 'delivered'],
     );
     return { conversationId: conversation.id, taskId: task.id };
   };

@@ -105,6 +105,9 @@ describe('supervisor worktree diff', () => {
     expect(byPath.get('keep.txt')?.deletions).toBe(1);
     expect(byPath.get('untracked.txt')?.status).toBe('untracked');
     expect(byPath.get('untracked.txt')?.patch).toContain('+not staged yet');
+    // numstat has no entry for an untracked file; the panel still reports the
+    // real added line count taken from the patch.
+    expect(byPath.get('untracked.txt')?.additions).toBe(1);
 
     // The panel content is exactly what git prints for the same file.
     const raw = git(directory, ['diff', 'HEAD', '--', 'changed.txt']);

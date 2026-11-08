@@ -1,0 +1,70 @@
+# A1 上传主链路 — 2026-11-08T12:06:04+08:00
+基线 main=d02f07f1483e0c85a13c1dfe24d03d855a72d0a1；被测提交 04cdb2c350b87278bf652d662caad545131fa329
+隔离 API http://127.0.0.1:4620，DB moyu_m6a@127.0.0.1:55432，存储 /tmp/m6a/artifacts
+
+## 命令 1：上传 PNG
+$ curl -s -o /tmp/m6a/resp-png.json -w "%{http_code}" -b "moyu_session=<session>" -F "file=@/tmp/m6a/upload.png;type=image/png" \
+    http://127.0.0.1:4620/api/v1/conversations/fb6287ee-28c7-4300-bcb7-051c8f11edce/attachments
+HTTP 201
+响应体：
+{"data":{"attachment":{"id":"4258b11b-e4e7-40c6-b254-e63d50d38131","conversationId":"fb6287ee-28c7-4300-bcb7-051c8f11edce","taskId":"d36103cc-9123-4be6-95b0-a63f3182d428","messageId":null,"filename":"upload.png","mimeType":"image/png","sizeBytes":70,"sha256":"c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77","kind":"image","createdAt":"2026-11-08T04:06:04.178Z","downloadUrl":"/api/v1/attachments/4258b11b-e4e7-40c6-b254-e63d50d38131"}},"requestId":"fb0ce9b2-15a9-447f-bfbb-d48ab9d324b6"}
+
+## 命令 2：上传文本文件
+$ curl -s -o /tmp/m6a/resp-txt.json -w "%{http_code}" -b "moyu_session=<session>" -F "file=@/tmp/m6a/upload.txt;type=text/plain" \
+    http://127.0.0.1:4620/api/v1/conversations/fb6287ee-28c7-4300-bcb7-051c8f11edce/attachments
+HTTP 201
+响应体：
+{"data":{"attachment":{"id":"4d457cdf-c064-4f1f-99c6-4307c1ad1f68","conversationId":"fb6287ee-28c7-4300-bcb7-051c8f11edce","taskId":"d36103cc-9123-4be6-95b0-a63f3182d428","messageId":null,"filename":"upload.txt","mimeType":"text/plain","sizeBytes":30,"sha256":"970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584","kind":"text","createdAt":"2026-11-08T04:06:04.232Z","downloadUrl":"/api/v1/attachments/4d457cdf-c064-4f1f-99c6-4307c1ad1f68"}},"requestId":"4b2a1a18-273d-4b9f-92ee-3e8d2aadb721"}
+
+## 命令 3：鉴权下载并逐字节比较
+$ curl -s -b "moyu_session=<session>" -D /tmp/m6a/h1.txt -o /tmp/m6a/dl.png http://127.0.0.1:4620/api/v1/attachments/4258b11b-e4e7-40c6-b254-e63d50d38131
+响应头：
+HTTP/1.1 200 OK
+content-type: image/png
+content-length: 70
+content-disposition: attachment; filename="upload.png"; filename*=UTF-8''upload.png
+x-content-type-options: nosniff
+content-security-policy: default-src 'none'; sandbox
+$ sha256sum /tmp/m6a/upload.png /tmp/m6a/dl.png
+c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77  /tmp/m6a/upload.png
+c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77  /tmp/m6a/dl.png
+$ cmp /tmp/m6a/upload.png /tmp/m6a/dl.png && echo byte-identical
+byte-identical: yes
+
+$ sha256sum /tmp/m6a/upload.txt /tmp/m6a/dl.txt
+970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584  /tmp/m6a/upload.txt
+970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584  /tmp/m6a/dl.txt
+byte-identical: yes
+
+## 命令 4：HTML 不得内联执行
+$ curl -s -o /tmp/m6a/resp-html.json -w "%{http_code}" -b "moyu_session=<session>" -F "file=@/tmp/m6a/upload.html;type=text/html" http://127.0.0.1:4620/api/v1/conversations/fb6287ee-28c7-4300-bcb7-051c8f11edce/attachments
+HTTP 201
+{"data":{"attachment":{"id":"7a9a6618-da9b-4ab7-9944-3291d0f43dca","conversationId":"fb6287ee-28c7-4300-bcb7-051c8f11edce","taskId":"d36103cc-9123-4be6-95b0-a63f3182d428","messageId":null,"filename":"upload.html","mimeType":"text/html","sizeBytes":59,"sha256":"e911cfb2f8746daddecb91384342c051cf4caf421a8610abf5f3dff5d7a95bed","kind":"text","createdAt":"2026-11-08T04:06:04.326Z","downloadUrl":"/api/v1/attachments/7a9a6618-da9b-4ab7-9944-3291d0f43dca"}},"requestId":"36f8458a-088b-411c-9160-c1013d1c5115"}
+响应头：
+HTTP/1.1 200 OK
+content-type: application/octet-stream
+content-disposition: attachment; filename="upload.html"; filename*=UTF-8''upload.html
+x-content-type-options: nosniff
+content-security-policy: default-src 'none'; sandbox
+判定：Content-Disposition 为 attachment，Content-Type 为 application/octet-stream（不以内联 HTML 下发）
+
+## attachments 库表原始行
+$ psql "$DATABASE_URL" -c "select id, conversation_id, message_id, type, mime_type, size_bytes, sha256, metadata from artifacts where type = 'attachment' order by created_at"
+                  id                  |           conversation_id            | message_id |    type    | mime_type  | size_bytes |                              sha256                              |                  metadata                   
+--------------------------------------+--------------------------------------+------------+------------+------------+------------+------------------------------------------------------------------+---------------------------------------------
+ 4258b11b-e4e7-40c6-b254-e63d50d38131 | fb6287ee-28c7-4300-bcb7-051c8f11edce |            | attachment | image/png  |         70 | c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77 | {"kind": "image", "filename": "upload.png"}
+ 4d457cdf-c064-4f1f-99c6-4307c1ad1f68 | fb6287ee-28c7-4300-bcb7-051c8f11edce |            | attachment | text/plain |         30 | 970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584 | {"kind": "text", "filename": "upload.txt"}
+ 7a9a6618-da9b-4ab7-9944-3291d0f43dca | fb6287ee-28c7-4300-bcb7-051c8f11edce |            | attachment | text/html  |         59 | e911cfb2f8746daddecb91384342c051cf4caf421a8610abf5f3dff5d7a95bed | {"kind": "text", "filename": "upload.html"}
+(3 rows)
+
+
+## 存储目录（服务端生成的键，非用户路径）
+$ ls -l /tmp/m6a/artifacts/attachments/*/
+total 12
+-rw------- 1 root root 70 Nov  8 12:06 5d0712b5-f69b-4fa9-9028-c5540ee376c2
+-rw------- 1 root root 59 Nov  8 12:06 ae44312c-5916-4d35-a362-30a14f982b68
+-rw------- 1 root root 30 Nov  8 12:06 ebafbccc-4bbf-478c-b2d6-86b573a60fe0
+
+PNG_ATTACHMENT_ID=4258b11b-e4e7-40c6-b254-e63d50d38131
+TXT_ATTACHMENT_ID=4d457cdf-c064-4f1f-99c6-4307c1ad1f68
+HTML_ATTACHMENT_ID=7a9a6618-da9b-4ab7-9944-3291d0f43dca

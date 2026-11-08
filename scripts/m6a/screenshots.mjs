@@ -21,7 +21,8 @@ const CONVERSATION = process.env.M6A_CONVERSATION_ID;
 const CLEANED_CONVERSATION = process.env.M6A_CLEANED_CONVERSATION_ID;
 const OUT = resolve(process.env.M6A_OUT ?? 'docs/evidence/m6a');
 const REPOSITORY = process.env.M6A_REPOSITORY ?? 'Bouyer12/m6a-review';
-if (!TOKEN || !CONVERSATION) throw new Error('M6A_SESSION_TOKEN and M6A_CONVERSATION_ID are required');
+if (!TOKEN || !CONVERSATION)
+  throw new Error('M6A_SESSION_TOKEN and M6A_CONVERSATION_ID are required');
 mkdirSync(OUT, { recursive: true });
 
 const browser = await chromium.launch({ headless: true });
@@ -31,7 +32,9 @@ const views = {};
 async function open(base, theme, viewport, conversationId) {
   const context = await browser.newContext({ viewport, colorScheme: theme });
   await context.addInitScript((mode) => localStorage.setItem('moyu.theme', mode), theme);
-  await context.addCookies([{ name: 'moyu_session', value: TOKEN, domain: '127.0.0.1', path: '/' }]);
+  await context.addCookies([
+    { name: 'moyu_session', value: TOKEN, domain: '127.0.0.1', path: '/' },
+  ]);
   const page = await context.newPage();
   await page.goto(base, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('select', { timeout: 30_000 });

@@ -328,6 +328,16 @@ export async function collectChanges(input: {
       binary = /Binary files .* differ/.test(diff.stdout);
     }
     if (binary) patch = null;
+    // `git diff --numstat` has no entry for an untracked file, so count its
+    // added lines from the real patch rather than reporting a misleading zero.
+    if (parsed.status === 'untracked' && patch !== null) {
+      counts.additions = patch
+        .split('\n')
+        .filter((line) => line.startsWith('+') && !line.startsWith('+++')).length;
+      counts.deletions = 0;
+      additions += counts.additions;
+      deletions += counts.deletions;
+    }
     if (patch !== null && patch.length > budget) {
       patch = patch.slice(0, budget);
       patchTruncated = true;

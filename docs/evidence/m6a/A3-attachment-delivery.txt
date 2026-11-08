@@ -1,0 +1,108 @@
+# A3 附件与投递 — 2026-11-08T12:08:29+08:00
+隔离 API http://127.0.0.1:4620、真实 dispatcher、录制用 stub Bridge（只记录请求，不做执行）。
+
+## 1. 带附件的消息（HTTP 202，附件与消息同事务绑定）
+$ curl -s -b "moyu_session=<session>" -H "content-type: application/json" \
+    -d '{"clientMessageId":"m6a-attach-message-1","text":"附件随消息发送的验收记录","attachmentIds":["<png>","<txt>"]}' \
+    http://127.0.0.1:4620/api/v1/conversations/fb6287ee-28c7-4300-bcb7-051c8f11edce/messages
+{
+    "data": {
+        "message": {
+            "id": "d0d8f148-2417-43ed-a31b-f8d766af8a23",
+            "conversationId": "fb6287ee-28c7-4300-bcb7-051c8f11edce",
+            "direction": "inbound",
+            "kind": "user",
+            "clientMessageId": "m6a-attach-message-1",
+            "body": "\u9644\u4ef6\u968f\u6d88\u606f\u53d1\u9001\u7684\u9a8c\u6536\u8bb0\u5f55",
+            "replyToMessageId": null,
+            "source": "web",
+            "createdAt": "2026-11-08T04:07:10.562Z",
+            "delivery": {
+                "state": "stored",
+                "attemptCount": 0,
+                "lastError": null,
+                "deliveredAt": null,
+                "handedToWorkerAt": null,
+                "readAt": null
+            },
+            "attachments": [
+                {
+                    "id": "4258b11b-e4e7-40c6-b254-e63d50d38131",
+                    "conversationId": "fb6287ee-28c7-4300-bcb7-051c8f11edce",
+                    "taskId": "d36103cc-9123-4be6-95b0-a63f3182d428",
+                    "messageId": "d0d8f148-2417-43ed-a31b-f8d766af8a23",
+                    "filename": "upload.png",
+                    "mimeType": "image/png",
+                    "sizeBytes": 70,
+                    "sha256": "c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77",
+                    "kind": "image",
+                    "createdAt": "2026-11-08T04:06:04.178Z",
+                    "downloadUrl": "/api/v1/attachments/4258b11b-e4e7-40c6-b254-e63d50d38131"
+                },
+                {
+                    "id": "4d457cdf-c064-4f1f-99c6-4307c1ad1f68",
+                    "conversationId": "fb6287ee-28c7-4300-bcb7-051c8f11edce",
+                    "taskId": "d36103cc-9123-4be6-95b0-a63f3182d428",
+                    "messageId": "d0d8f148-2417-43ed-a31b-f8d766af8a23",
+                    "filename": "upload.txt",
+                    "mimeType": "text/plain",
+                    "sizeBytes": 30,
+                    "sha256": "970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584",
+                    "kind": "text",
+                    "createdAt": "2026-11-08T04:06:04.232Z",
+                    "downloadUrl": "/api/v1/attachments/4d457cdf-c064-4f1f-99c6-4307c1ad1f68"
+                }
+            ]
+        },
+        "duplicate": false
+    },
+    "requestId": "6af8de53-e020-4098-a2d2-7e203d760941"
+}
+
+## 2. attachments 表：两个附件已绑定到该 message_id
+                  id                  |              message_id              |  filename   | size_bytes |                              sha256                              
+--------------------------------------+--------------------------------------+-------------+------------+------------------------------------------------------------------
+ 4258b11b-e4e7-40c6-b254-e63d50d38131 | d0d8f148-2417-43ed-a31b-f8d766af8a23 | upload.png  |         70 | c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77
+ 4d457cdf-c064-4f1f-99c6-4307c1ad1f68 | d0d8f148-2417-43ed-a31b-f8d766af8a23 | upload.txt  |         30 | 970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584
+ 7a9a6618-da9b-4ab7-9944-3291d0f43dca |                                      | upload.html |         59 | e911cfb2f8746daddecb91384342c051cf4caf421a8610abf5f3dff5d7a95bed
+(3 rows)
+
+
+## 3. dispatcher 实际发出的 Bridge Trigger（原始 JSON，录制自 stub Bridge）
+{
+  "triggerId": "workspace:d0d8f148-2417-43ed-a31b-f8d766af8a23",
+  "conversationId": "fb6287ee-28c7-4300-bcb7-051c8f11edce",
+  "messageId": "d0d8f148-2417-43ed-a31b-f8d766af8a23",
+  "replyToMessageId": null,
+  "actor": {
+    "id": "3a3a419b-4c65-45f7-96ba-bcf4e4359029",
+    "name": "MoYu Owner"
+  },
+  "text": "附件随消息发送的验收记录",
+  "at": "2026-11-08T04:07:10.562Z",
+  "admission": {
+    "leaseId": "a593f78c-4293-46ca-8299-28bd49bed5fe",
+    "fencingToken": "1"
+  },
+  "executionSpec": {
+    "repository": "Bouyer12/m6a-review",
+    "baseBranch": "main",
+    "baseCommit": "d02f07f1483e0c85a13c1dfe24d03d855a72d0a1",
+    "model": null,
+    "mode": "execute"
+  }
+}
+
+## 4. 投递状态
+              upstream_trigger_id               |   state   | attempt_count 
+------------------------------------------------+-----------+---------------
+ workspace:d0d8f148-2417-43ed-a31b-f8d766af8a23 | delivered |             1
+(1 row)
+
+
+## 5. 结论：附件未传给 runtime（明确记录，不沉默）
+- 共享 Bridge 契约 `bridgeTriggerInputSchema`（packages/contracts/src/runtime.ts）是 `.strict()`，没有 attachments 字段；
+  上游 Source 的 Trigger 也没有附件字段。
+- 因此 dispatcher 发出的 Trigger 如上，只有 text，没有 attachments；平台也没有把附件内容塞进 text。
+- 附件保存在平台存储并随消息在网页展示与下载。投递到 runtime 需要上游 Bridge 补丁 + 能力协商，
+  属于后续单的附件投递能力；本单不声称该能力已交付。
