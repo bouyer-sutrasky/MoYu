@@ -1,5 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
@@ -7,6 +15,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { collectChanges, locateTicketWorktree, runChecks, type ReviewService } from '../src/review';
 import { createReviewService } from '../src/review';
+import { pidAlive } from '../src/process';
 
 const directories: string[] = [];
 
@@ -33,6 +42,17 @@ function repository(): string {
   git(directory, ['add', '.']);
   git(directory, ['commit', '-q', '-m', 'initial commit']);
   return directory;
+}
+
+/** Raw kernel state of a pid: null when gone, 'Z' when it only waits to be reaped. */
+function processState(pid: number): string | null {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    return fields[0] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 afterEach(() => {
@@ -347,6 +367,75 @@ describe('supervisor check runs', () => {
     expect(runs[0]?.passed).toBe(false);
     expect(runs[0]?.summary).toContain('超时');
   });
+
+  it('passes only the documented whitelist to a check command', async () => {
+    const directory = repository();
+    const home = temporary('moyu-check-home');
+    const tmp = temporary('moyu-check-tmp');
+    const overrides: Record<string, string> = {
+      HOME: home,
+      TMPDIR: tmp,
+      LANG: 'C.UTF-8',
+      LC_ALL: 'C.UTF-8',
+      MOYU_SENTINEL_ALPHA: 'alpha-secret',
+      MOYU_SENTINEL_BETA: 'beta-secret',
+      MOYU_SENTINEL_GAMMA: 'gamma-secret',
+    };
+    const saved = new Map<string, string | undefined>();
+    for (const key of Object.keys(overrides)) saved.set(key, process.env[key]);
+    Object.assign(process.env, overrides);
+    try {
+      const runs = await runChecks({ directory, commands: ['env'], timeoutMs: 30_000 });
+      const output = runs[0]!.output;
+      for (const [key, value] of Object.entries(overrides)) {
+        if (!key.startsWith('MOYU_SENTINEL_')) continue;
+        // Boolean assertions keep the whole environment out of a failing run's
+        // output, so a red log does not become a copy of the host environment.
+        expect(output.includes(key)).toBe(false);
+        expect(output.includes(value)).toBe(false);
+      }
+      // The whitelist itself must survive, so isolation does not break checks.
+      // A login shell may rewrite PATH or LANG from /etc/profile; HOME, TMPDIR
+      // and the contents of PATH are what this path controls.
+      expect(output).toContain(`HOME=${home}`);
+      expect(output).toContain(`TMPDIR=${tmp}`);
+      expect(output).toContain(process.env.PATH);
+      expect(output).toMatch(/^LANG=/m);
+      expect(output).toMatch(/^LC_ALL=/m);
+    } finally {
+      for (const [key, value] of saved) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
+  it("kills a timed-out check command's whole process group", async () => {
+    const directory = repository();
+    const pidFile = join(temporary('moyu-check-group'), 'grandchild.pid');
+    let pid = 0;
+    try {
+      const runs = await runChecks({
+        directory,
+        commands: [`sleep 30 >/dev/null 2>&1 & echo $! > '${pidFile}'; sleep 60`],
+        timeoutMs: 400,
+      });
+      expect(runs[0]?.timedOut).toBe(true);
+      pid = Number(readFileSync(pidFile, 'utf8').trim());
+      expect(pid).toBeGreaterThan(0);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      // /proc is the raw kernel view: absent or zombie both mean terminated.
+      expect([null, 'Z']).toContain(processState(pid));
+    } finally {
+      if (pid > 0 && pidAlive(pid)) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // Already gone.
+        }
+      }
+    }
+  });
 });
 
 describe('review service', () => {
@@ -368,5 +457,34 @@ describe('review service', () => {
     expect(changes.state).toBe('cleaned');
     expect(changes.files).toEqual([]);
     await expect(service.checks('repository', 'deadbeefdeadbeef')).rejects.toThrow();
+  });
+
+  it('rejects a second check for the same repository instead of running two', async () => {
+    const root = temporary('moyu-worktrees');
+    const profile = 'probe1';
+    const ticketId = 'abcdef0123456789';
+    const directory = join(root, profile, `mp-fix-${ticketId.slice(0, 12)}`);
+    mkdirSync(join(directory, '.git'), { recursive: true });
+    const counter = join(temporary('moyu-check-counter'), 'runs.txt');
+    const config = {
+      worktreeRoot: root,
+      reviewDiffMaxBytes: 4096,
+      reviewMaxFiles: 10,
+      reviewCheckCommands: [`printf x >> '${counter}'; sleep 0.3`],
+      reviewCheckTimeoutMs: 5_000,
+    };
+    const service: ReviewService = createReviewService({
+      config: config as never,
+      store: { getInstance: async () => ({ profile }) } as never,
+      logger: { info: () => undefined },
+    });
+
+    const first = service.checks('repository', ticketId);
+    const second = service.checks('repository', ticketId);
+    await expect(second).rejects.toThrow('该仓库已有检查正在运行，请等它结束');
+    const runs = await first;
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.passed).toBe(true);
+    expect(readFileSync(counter, 'utf8')).toBe('x');
   });
 });
