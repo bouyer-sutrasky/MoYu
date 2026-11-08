@@ -1,22 +1,22 @@
-# A1 上传主链路 — 2026-11-08T14:31:26+08:00
+# A1 上传主链路 — 2026-11-09T00:12:52+08:00
 $ git rev-parse HEAD
-d4d5801358b9f0c814cf25ae7491aadb90f14f09
-$ git -C /tmp/m6a-run/worktrees/probe1/m6a-review-t_m6a_d4d580 rev-parse HEAD
-d4d5801358b9f0c814cf25ae7491aadb90f14f09
-环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-run/artifacts，supervisor http://127.0.0.1:4690
+55d9e2935baebd3f660c9753ca5621d9ef8a980d
+$ git -C /tmp/m6a-run-rerun/worktrees/probe1/m6a-review-t_m6a_55d9e2 rev-parse HEAD
+55d9e2935baebd3f660c9753ca5621d9ef8a980d
+环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-run-rerun/artifacts，supervisor http://127.0.0.1:4690
 
 ## 命令 1：上传 PNG
 $ curl -s -o resp-png.json -w '%{http_code}' -b 'moyu_session=<session>' -F 'file=@upload.png;type=image/png' \
-    http://127.0.0.1:4620/api/v1/conversations/417b7c96-5323-4efd-8644-4fc8bc6a0c62/attachments
+    http://127.0.0.1:4620/api/v1/conversations/8e6cbcba-bb53-43cf-9d59-7412fc87b10a/attachments
 HTTP 201
-{"data":{"attachment":{"id":"f91da3c8-6539-42e4-84e5-70496a2418a4","conversationId":"417b7c96-5323-4efd-8644-4fc8bc6a0c62","taskId":"a2408c59-7adf-4158-a453-5d84fc5b8969","messageId":null,"filename":"upload.png","mimeType":"image/png","sizeBytes":70,"sha256":"c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77","kind":"image","createdAt":"2026-11-08T06:31:26.812Z","downloadUrl":"/api/v1/attachments/f91da3c8-6539-42e4-84e5-70496a2418a4"}},"requestId":"9ecdb771-831b-44a1-9d03-e81357dd5cc8"}
+{"data":{"attachment":{"id":"83fd8e86-c712-4e4c-8395-9ade3a45ba4b","conversationId":"8e6cbcba-bb53-43cf-9d59-7412fc87b10a","taskId":"c82fbbbd-c12b-45c3-b999-9d78b2f73f20","messageId":null,"filename":"upload.png","mimeType":"image/png","sizeBytes":70,"sha256":"c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77","kind":"image","createdAt":"2026-11-08T16:12:52.340Z","downloadUrl":"/api/v1/attachments/83fd8e86-c712-4e4c-8395-9ade3a45ba4b"}},"requestId":"6a677c2a-895f-4921-92f1-8847bb2de25c"}
 
 ## 命令 2：上传文本文件
 HTTP 201
-{"data":{"attachment":{"id":"d7b62952-2d59-4352-b675-205b0be24a82","conversationId":"417b7c96-5323-4efd-8644-4fc8bc6a0c62","taskId":"a2408c59-7adf-4158-a453-5d84fc5b8969","messageId":null,"filename":"upload.txt","mimeType":"text/plain","sizeBytes":30,"sha256":"970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584","kind":"text","createdAt":"2026-11-08T06:31:26.877Z","downloadUrl":"/api/v1/attachments/d7b62952-2d59-4352-b675-205b0be24a82"}},"requestId":"bdb2192a-6382-4590-9465-7f88109d119c"}
+{"data":{"attachment":{"id":"4f33f869-5f84-429e-96b0-29caa95a9c93","conversationId":"8e6cbcba-bb53-43cf-9d59-7412fc87b10a","taskId":"c82fbbbd-c12b-45c3-b999-9d78b2f73f20","messageId":null,"filename":"upload.txt","mimeType":"text/plain","sizeBytes":30,"sha256":"970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584","kind":"text","createdAt":"2026-11-08T16:12:52.403Z","downloadUrl":"/api/v1/attachments/4f33f869-5f84-429e-96b0-29caa95a9c93"}},"requestId":"11cf1739-86ad-4ba0-aa3d-dab9507a5e9b"}
 
 ## 命令 3：鉴权下载并逐字节比较
-$ curl -s -b 'moyu_session=<session>' -D h1.txt -o dl.png http://127.0.0.1:4620/api/v1/attachments/f91da3c8-6539-42e4-84e5-70496a2418a4
+$ curl -s -b 'moyu_session=<session>' -D h1.txt -o dl.png http://127.0.0.1:4620/api/v1/attachments/83fd8e86-c712-4e4c-8395-9ade3a45ba4b
 HTTP/1.1 200 OK
 content-type: image/png
 content-length: 70
@@ -24,17 +24,17 @@ content-disposition: attachment; filename="upload.png"; filename*=UTF-8''upload.
 x-content-type-options: nosniff
 content-security-policy: default-src 'none'; sandbox
 $ sha256sum upload.png dl.png
-c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77  /tmp/m6a-run/upload.png
-c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77  /tmp/m6a-run/dl.png
+c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77  /tmp/m6a-run-rerun/upload.png
+c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77  /tmp/m6a-run-rerun/dl.png
 byte-identical: yes
 $ sha256sum upload.txt dl.txt
-970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584  /tmp/m6a-run/upload.txt
-970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584  /tmp/m6a-run/dl.txt
+970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584  /tmp/m6a-run-rerun/upload.txt
+970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584  /tmp/m6a-run-rerun/dl.txt
 byte-identical: yes
 
 ## 命令 4：HTML 上传后下载不得内联执行
 HTTP 201
-{"data":{"attachment":{"id":"c98b0866-ff9d-4329-b2ef-ddcdfac94c46","conversationId":"417b7c96-5323-4efd-8644-4fc8bc6a0c62","taskId":"a2408c59-7adf-4158-a453-5d84fc5b8969","messageId":null,"filename":"upload.html","mimeType":"text/html","sizeBytes":59,"sha256":"e911cfb2f8746daddecb91384342c051cf4caf421a8610abf5f3dff5d7a95bed","kind":"text","createdAt":"2026-11-08T06:31:26.969Z","downloadUrl":"/api/v1/attachments/c98b0866-ff9d-4329-b2ef-ddcdfac94c46"}},"requestId":"deb265d4-ab0f-48e8-b319-dac80faa64da"}
+{"data":{"attachment":{"id":"db49edff-bd6e-490c-be34-7adf2e222e8e","conversationId":"8e6cbcba-bb53-43cf-9d59-7412fc87b10a","taskId":"c82fbbbd-c12b-45c3-b999-9d78b2f73f20","messageId":null,"filename":"upload.html","mimeType":"text/html","sizeBytes":59,"sha256":"e911cfb2f8746daddecb91384342c051cf4caf421a8610abf5f3dff5d7a95bed","kind":"text","createdAt":"2026-11-08T16:12:52.504Z","downloadUrl":"/api/v1/attachments/db49edff-bd6e-490c-be34-7adf2e222e8e"}},"requestId":"173c5162-573a-4de1-ae5e-e93f1c875442"}
 HTTP/1.1 200 OK
 content-type: application/octet-stream
 content-disposition: attachment; filename="upload.html"; filename*=UTF-8''upload.html
@@ -42,25 +42,28 @@ x-content-type-options: nosniff
 content-security-policy: default-src 'none'; sandbox
 判定：attachment + octet-stream + nosniff + CSP sandbox，不以内联 HTML 下发
 
+## 命令 5：真实浏览器附件操作（桌面 1440×900 + 手机 390×844）
+$ node scripts/m6a/attachment-shot.mjs   # 真实 Web 构建 + 真实 API + 真实 Chromium
+desktop: viewport=1440x900 chipVisible=1 shownInMessage=1 screenshot=/root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/after-desktop-light-attachment.png
+desktop: messageId=41cc7da2-1806-4bc9-8d27-f7846b5f25c0 attachment={"filename":"m6a-ui-desktop.txt","sizeBytes":56,"sha256":"09502e9f0d5aed1dd976c0c75c646864941affbf19483e868e582e69e5d57ed8"} expectedSha256=09502e9f0d5aed1dd976c0c75c646864941affbf19483e868e582e69e5d57ed8
+mobile: viewport=390x844 chipVisible=1 shownInMessage=1 screenshot=/root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/after-mobile-light-attachment.png
+mobile: messageId=a6c412c1-9d74-4f7c-b367-c4ba820dc594 attachment={"filename":"m6a-ui-mobile.txt","sizeBytes":56,"sha256":"09502e9f0d5aed1dd976c0c75c646864941affbf19483e868e582e69e5d57ed8"} expectedSha256=09502e9f0d5aed1dd976c0c75c646864941affbf19483e868e582e69e5d57ed8
+附件 UI 截图：/root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/after-desktop-light-attachment.png 与 /root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/after-mobile-light-attachment.png
+
 ## attachments 库表原始行
-                  id                  |           conversation_id            | message_id |    type    | mime_type  | size_bytes |                              sha256                              |                  metadata                   
---------------------------------------+--------------------------------------+------------+------------+------------+------------+------------------------------------------------------------------+---------------------------------------------
- f91da3c8-6539-42e4-84e5-70496a2418a4 | 417b7c96-5323-4efd-8644-4fc8bc6a0c62 |            | attachment | image/png  |         70 | c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77 | {"kind": "image", "filename": "upload.png"}
- d7b62952-2d59-4352-b675-205b0be24a82 | 417b7c96-5323-4efd-8644-4fc8bc6a0c62 |            | attachment | text/plain |         30 | 970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584 | {"kind": "text", "filename": "upload.txt"}
- c98b0866-ff9d-4329-b2ef-ddcdfac94c46 | 417b7c96-5323-4efd-8644-4fc8bc6a0c62 |            | attachment | text/html  |         59 | e911cfb2f8746daddecb91384342c051cf4caf421a8610abf5f3dff5d7a95bed | {"kind": "text", "filename": "upload.html"}
-(3 rows)
+                  id                  |           conversation_id            |              message_id              |    type    | mime_type  | size_bytes |                              sha256                              |                      metadata                      
+--------------------------------------+--------------------------------------+--------------------------------------+------------+------------+------------+------------------------------------------------------------------+----------------------------------------------------
+ 83fd8e86-c712-4e4c-8395-9ade3a45ba4b | 8e6cbcba-bb53-43cf-9d59-7412fc87b10a |                                      | attachment | image/png  |         70 | c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77 | {"kind": "image", "filename": "upload.png"}
+ 4f33f869-5f84-429e-96b0-29caa95a9c93 | 8e6cbcba-bb53-43cf-9d59-7412fc87b10a |                                      | attachment | text/plain |         30 | 970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584 | {"kind": "text", "filename": "upload.txt"}
+ db49edff-bd6e-490c-be34-7adf2e222e8e | 8e6cbcba-bb53-43cf-9d59-7412fc87b10a |                                      | attachment | text/html  |         59 | e911cfb2f8746daddecb91384342c051cf4caf421a8610abf5f3dff5d7a95bed | {"kind": "text", "filename": "upload.html"}
+ f464432f-008d-437e-97ba-beaa9c591c0c | 8e6cbcba-bb53-43cf-9d59-7412fc87b10a | 41cc7da2-1806-4bc9-8d27-f7846b5f25c0 | attachment | text/plain |         56 | 09502e9f0d5aed1dd976c0c75c646864941affbf19483e868e582e69e5d57ed8 | {"kind": "text", "filename": "m6a-ui-desktop.txt"}
+ 83501530-9755-437f-90fc-9e90d3ca5a38 | 8e6cbcba-bb53-43cf-9d59-7412fc87b10a | a6c412c1-9d74-4f7c-b367-c4ba820dc594 | attachment | text/plain |         56 | 09502e9f0d5aed1dd976c0c75c646864941affbf19483e868e582e69e5d57ed8 | {"kind": "text", "filename": "m6a-ui-mobile.txt"}
+(5 rows)
 
 
 ## 存储目录（服务端生成的键，0600）
-600 30 /tmp/m6a-run/artifacts/attachments/09a443bc-e3c3-4ae5-af8e-be212bf90c23/d3affd7b-d526-4a0d-86d3-a69326560dfd
-600 30 /tmp/m6a-run/artifacts/attachments/417b7c96-5323-4efd-8644-4fc8bc6a0c62/e61de759-29d1-4a90-8ea1-a37ca6fea77f
-600 30 /tmp/m6a-run/artifacts/attachments/5b905938-04d1-40ec-966a-9f5121eef889/574df7c7-9e97-46aa-a266-198cdbe9ddb8
-600 30 /tmp/m6a-run/artifacts/attachments/b971d63e-37db-490a-b0cb-6435ee6888fb/e845135f-51d3-4cba-a23e-32fd132cbbee
-600 59 /tmp/m6a-run/artifacts/attachments/09a443bc-e3c3-4ae5-af8e-be212bf90c23/8bb6b69e-8519-443b-bf07-8495c14ade4c
-600 59 /tmp/m6a-run/artifacts/attachments/417b7c96-5323-4efd-8644-4fc8bc6a0c62/66b1e243-1c39-421e-b790-6f0e2764b92d
-600 59 /tmp/m6a-run/artifacts/attachments/5b905938-04d1-40ec-966a-9f5121eef889/fb065856-0b6e-4ee2-8491-65913205935b
-600 59 /tmp/m6a-run/artifacts/attachments/b971d63e-37db-490a-b0cb-6435ee6888fb/d4e16ef4-782c-4016-a0a2-457e4fa06414
-600 70 /tmp/m6a-run/artifacts/attachments/09a443bc-e3c3-4ae5-af8e-be212bf90c23/997e0a53-0b4b-4042-aa11-a43e296dd214
-600 70 /tmp/m6a-run/artifacts/attachments/417b7c96-5323-4efd-8644-4fc8bc6a0c62/418dde5b-ca44-458e-8787-6c82e2c43c54
-600 70 /tmp/m6a-run/artifacts/attachments/5b905938-04d1-40ec-966a-9f5121eef889/a98c59c1-3723-4209-99f4-5813c9a53bf2
-600 70 /tmp/m6a-run/artifacts/attachments/b971d63e-37db-490a-b0cb-6435ee6888fb/4f4271db-83fb-4aca-8271-a7d2a839bcc9
+600 30 /tmp/m6a-run-rerun/artifacts/attachments/8e6cbcba-bb53-43cf-9d59-7412fc87b10a/7cb2ed81-fbb4-49b5-95f4-91ef82dc0da7
+600 56 /tmp/m6a-run-rerun/artifacts/attachments/8e6cbcba-bb53-43cf-9d59-7412fc87b10a/73cce3a7-da73-42a8-8b71-712f620d51fd
+600 56 /tmp/m6a-run-rerun/artifacts/attachments/8e6cbcba-bb53-43cf-9d59-7412fc87b10a/e8f924df-31e4-48c7-b2a3-310f921a0ba8
+600 59 /tmp/m6a-run-rerun/artifacts/attachments/8e6cbcba-bb53-43cf-9d59-7412fc87b10a/622277af-ac7c-484c-a977-d90d4ce6db43
+600 70 /tmp/m6a-run-rerun/artifacts/attachments/8e6cbcba-bb53-43cf-9d59-7412fc87b10a/64f13c61-6b0b-4cca-acd9-59c92745ff6e

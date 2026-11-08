@@ -1,36 +1,36 @@
-# A6 提交与 PR 关联 — 2026-11-08T14:34:11+08:00
+# A6 提交与 PR 关联 — 2026-11-09T00:15:34+08:00
 $ git rev-parse HEAD
-d4d5801358b9f0c814cf25ae7491aadb90f14f09
-$ git -C /tmp/m6a-run/worktrees/probe1/m6a-review-t_m6a_d4d580 rev-parse HEAD
-d4d5801358b9f0c814cf25ae7491aadb90f14f09
-环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-run/artifacts，supervisor http://127.0.0.1:4690
+55d9e2935baebd3f660c9753ca5621d9ef8a980d
+$ git -C /tmp/m6a-run-rerun/worktrees/probe1/m6a-review-t_m6a_55d9e2 rev-parse HEAD
+55d9e2935baebd3f660c9753ca5621d9ef8a980d
+环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-run-rerun/artifacts，supervisor http://127.0.0.1:4690
 
 ## 1. 任务 worktree 的真实 HEAD（完整 SHA）
 $ git rev-parse HEAD
-d4d5801358b9f0c814cf25ae7491aadb90f14f09
+55d9e2935baebd3f660c9753ca5621d9ef8a980d
 $ git log -1 --format="%H%n%s%n%cI"
-d4d5801358b9f0c814cf25ae7491aadb90f14f09
-test(m6a): recreate the baseline worktree on every run
-2026-11-08T14:30:39+08:00
+55d9e2935baebd3f660c9753ca5621d9ef8a980d
+docs(m6a): record the dual-entrance attachment merge with red-to-green evidence
+2026-11-08T23:25:28+08:00
 
 ## 2. 面板投影里的提交与 PR（GET /api/v1/tasks/:id/review）
 {
-  "commit": "d4d5801358b9f0c814cf25ae7491aadb90f14f09",
-  "commitSubject": "test(m6a): recreate the baseline worktree on every run",
+  "commit": "55d9e2935baebd3f660c9753ca5621d9ef8a980d",
+  "commitSubject": "docs(m6a): record the dual-entrance attachment merge with red-to-green evidence",
   "pullRequest": {
     "number": 44,
     "url": "https://github.com/bouyer-sutrasky/MoYu/pull/44",
     "state": "open",
-    "headSha": "d4d5801358b9f0c814cf25ae7491aadb90f14f09",
+    "headSha": "55d9e2935baebd3f660c9753ca5621d9ef8a980d",
     "baseBranch": "main",
-    "updatedAt": "2026-11-08T06:30:45Z",
+    "updatedAt": "2026-11-08T15:25:50Z",
     "unavailableReason": null
   }
 }
 
 ## 3. GitHub 原始输出：本单 PR #44
 $ gh pr view 44 --repo bouyer-sutrasky/MoYu --json number,url,state,headRefOid,baseRefName,updatedAt,closedAt,mergedAt
-{"baseRefName":"main","closedAt":null,"headRefOid":"d4d5801358b9f0c814cf25ae7491aadb90f14f09","mergedAt":null,"number":44,"state":"OPEN","updatedAt":"2026-11-08T06:30:45Z","url":"https://github.com/bouyer-sutrasky/MoYu/pull/44"}
+{"baseRefName":"main","closedAt":null,"headRefOid":"55d9e2935baebd3f660c9753ca5621d9ef8a980d","mergedAt":null,"number":44,"state":"OPEN","updatedAt":"2026-11-08T15:25:50Z","url":"https://github.com/bouyer-sutrasky/MoYu/pull/44"}
 
 ## 4. PR 关闭但未合并：#45
 $ gh pr view 45 --repo bouyer-sutrasky/MoYu --json number,url,state,mergedAt

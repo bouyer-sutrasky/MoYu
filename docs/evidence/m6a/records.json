@@ -1,101 +1,101 @@
 [
   {
     "name": "before-desktop-light-review-panel",
-    "file": "/root/src/attachments-review-panel-4bd4aae33eac/docs/evidence/m6a/before-desktop-light-review-panel.png",
+    "file": "/root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/before-desktop-light-review-panel.png",
     "base": "http://127.0.0.1:4621",
     "theme": "light",
     "viewport": {
       "width": 1440,
       "height": 900
     },
-    "conversationId": "417b7c96-5323-4efd-8644-4fc8bc6a0c62"
+    "conversationId": "8e6cbcba-bb53-43cf-9d59-7412fc87b10a"
   },
   {
     "name": "after-desktop-light-review-panel",
-    "file": "/root/src/attachments-review-panel-4bd4aae33eac/docs/evidence/m6a/after-desktop-light-review-panel.png",
+    "file": "/root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/after-desktop-light-review-panel.png",
     "base": "http://127.0.0.1:4620",
     "theme": "light",
     "viewport": {
       "width": 1440,
       "height": 900
     },
-    "conversationId": "417b7c96-5323-4efd-8644-4fc8bc6a0c62"
+    "conversationId": "8e6cbcba-bb53-43cf-9d59-7412fc87b10a"
   },
   {
     "name": "before-mobile-light-review-panel",
-    "file": "/root/src/attachments-review-panel-4bd4aae33eac/docs/evidence/m6a/before-mobile-light-review-panel.png",
+    "file": "/root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/before-mobile-light-review-panel.png",
     "base": "http://127.0.0.1:4621",
     "theme": "light",
     "viewport": {
       "width": 390,
       "height": 844
     },
-    "conversationId": "417b7c96-5323-4efd-8644-4fc8bc6a0c62"
+    "conversationId": "8e6cbcba-bb53-43cf-9d59-7412fc87b10a"
   },
   {
     "name": "after-mobile-light-review-panel",
-    "file": "/root/src/attachments-review-panel-4bd4aae33eac/docs/evidence/m6a/after-mobile-light-review-panel.png",
+    "file": "/root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/after-mobile-light-review-panel.png",
     "base": "http://127.0.0.1:4620",
     "theme": "light",
     "viewport": {
       "width": 390,
       "height": 844
     },
-    "conversationId": "417b7c96-5323-4efd-8644-4fc8bc6a0c62"
+    "conversationId": "8e6cbcba-bb53-43cf-9d59-7412fc87b10a"
   },
   {
     "name": "before-desktop-dark-review-panel",
-    "file": "/root/src/attachments-review-panel-4bd4aae33eac/docs/evidence/m6a/before-desktop-dark-review-panel.png",
+    "file": "/root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/before-desktop-dark-review-panel.png",
     "base": "http://127.0.0.1:4621",
     "theme": "dark",
     "viewport": {
       "width": 1440,
       "height": 900
     },
-    "conversationId": "417b7c96-5323-4efd-8644-4fc8bc6a0c62"
+    "conversationId": "8e6cbcba-bb53-43cf-9d59-7412fc87b10a"
   },
   {
     "name": "after-desktop-dark-review-panel",
-    "file": "/root/src/attachments-review-panel-4bd4aae33eac/docs/evidence/m6a/after-desktop-dark-review-panel.png",
+    "file": "/root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/after-desktop-dark-review-panel.png",
     "base": "http://127.0.0.1:4620",
     "theme": "dark",
     "viewport": {
       "width": 1440,
       "height": 900
     },
-    "conversationId": "417b7c96-5323-4efd-8644-4fc8bc6a0c62"
+    "conversationId": "8e6cbcba-bb53-43cf-9d59-7412fc87b10a"
   },
   {
     "name": "before-mobile-dark-review-panel",
-    "file": "/root/src/attachments-review-panel-4bd4aae33eac/docs/evidence/m6a/before-mobile-dark-review-panel.png",
+    "file": "/root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/before-mobile-dark-review-panel.png",
     "base": "http://127.0.0.1:4621",
     "theme": "dark",
     "viewport": {
       "width": 390,
       "height": 844
     },
-    "conversationId": "417b7c96-5323-4efd-8644-4fc8bc6a0c62"
+    "conversationId": "8e6cbcba-bb53-43cf-9d59-7412fc87b10a"
   },
   {
     "name": "after-mobile-dark-review-panel",
-    "file": "/root/src/attachments-review-panel-4bd4aae33eac/docs/evidence/m6a/after-mobile-dark-review-panel.png",
+    "file": "/root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/after-mobile-dark-review-panel.png",
     "base": "http://127.0.0.1:4620",
     "theme": "dark",
     "viewport": {
       "width": 390,
       "height": 844
     },
-    "conversationId": "417b7c96-5323-4efd-8644-4fc8bc6a0c62"
+    "conversationId": "8e6cbcba-bb53-43cf-9d59-7412fc87b10a"
   },
   {
     "name": "after-desktop-light-cleaned",
-    "file": "/root/src/attachments-review-panel-4bd4aae33eac/docs/evidence/m6a/after-desktop-light-cleaned.png",
+    "file": "/root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/after-desktop-light-cleaned.png",
     "base": "http://127.0.0.1:4620",
     "theme": "light",
     "viewport": {
       "width": 1440,
       "height": 900
     },
-    "conversationId": "ac336284-5c0f-4b01-945a-8adcaf2d815c"
+    "conversationId": "fecdde2f-fd5a-464d-b0df-636bed836a92"
   }
 ]

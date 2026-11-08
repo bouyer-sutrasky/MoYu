@@ -1,48 +1,60 @@
-# A7 重启与已清理边界 — 2026-11-08T14:34:18+08:00
+# A7 重启与已清理边界 — 2026-11-09T00:15:42+08:00
 $ git rev-parse HEAD
-d4d5801358b9f0c814cf25ae7491aadb90f14f09
-$ git -C /tmp/m6a-run/worktrees/probe1/m6a-review-t_m6a_d4d580 rev-parse HEAD
-d4d5801358b9f0c814cf25ae7491aadb90f14f09
-环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-run/artifacts，supervisor http://127.0.0.1:4690
+55d9e2935baebd3f660c9753ca5621d9ef8a980d
+$ git -C /tmp/m6a-run-rerun/worktrees/probe1/m6a-review-t_m6a_55d9e2 rev-parse HEAD
+55d9e2935baebd3f660c9753ca5621d9ef8a980d
+环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-run-rerun/artifacts，supervisor http://127.0.0.1:4690
 
-## 1. 重启前读取
-commit        : d4d5801358b9f0c814cf25ae7491aadb90f14f09
+## 1. 重启前读取主任务
+commit        : 55d9e2935baebd3f660c9753ca5621d9ef8a980d
 files         : LICENSE, README.md, docs/GLOSSARY-m6a.md, docs/m6a-fixture.md
 additions/dels: 5 21
-checks        : [["pnpm check",0,"2026-11-08T06:33:25.160Z"]]
-pr            : {"number":44,"url":"https://github.com/bouyer-sutrasky/MoYu/pull/44","state":"open","headSha":"d4d5801358b9f0c814cf25ae7491aadb90f14f09","baseBranch":"main","updatedAt":"2026-11-08T06:30:45Z","unavailableReason":null}
-digest        : 8587d6d795f77da002ba64a2e9801723e8e2f458702da4cc5c6e5a69c051065e
-attachments   : [["upload.png","c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77"],["upload.txt","970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584"]]
+checks        : [["pnpm check",0,"2026-11-08T16:14:47.305Z"]]
+pr            : {"number":44,"url":"https://github.com/bouyer-sutrasky/MoYu/pull/44","state":"open","headSha":"55d9e2935baebd3f660c9753ca5621d9ef8a980d","baseBranch":"main","updatedAt":"2026-11-08T15:25:50Z","unavailableReason":null}
+digest        : 6babb87fc47c386ca85c3deb256d8699d42a73574fe424a5eadc8e8c6a6602ec
+attachments   : [["m6a-ui-desktop.txt","09502e9f0d5aed1dd976c0c75c646864941affbf19483e868e582e69e5d57ed8"],["m6a-ui-mobile.txt","09502e9f0d5aed1dd976c0c75c646864941affbf19483e868e582e69e5d57ed8"],["upload.png","c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77"],["upload.txt","970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584"]]
 
-## 2. 重启平台 API 进程
-old API pid: 2834014
-new API pid: 2844771
+## 2. 真实 available → cleaned：同一任务先读到目录，再删除目录后重读
+任务：a1c31c4a-7814-4dad-ab85-46ce725639d5（worktree：/tmp/m6a-run-rerun/worktrees/probe1/m6a-closed-t_m6a_closed）
+$ ls -d "$CLOSED_WORKTREE"
+/tmp/m6a-run-rerun/worktrees/probe1/m6a-closed-t_m6a_closed
+HTTP 200
+state = available | files = 0 | reason = null
+$ rm -rf "$CLOSED_WORKTREE"
+worktree removed
+HTTP 200
+state = cleaned
+reason = 该任务的执行目录已不存在（工作目录已清理，或运行时尚未创建工作目录）。
+files = []
+
+## 3. 重启平台 API 进程
+old API pid: 3165437
+new API pid: 3173121
 $ curl -s http://127.0.0.1:4620/readyz
-{"data":{"status":"ok","database":"ok"},"requestId":"b43dca68-1046-4ef9-8eeb-f4d883bef269"}
+{"data":{"status":"ok","database":"ok"},"requestId":"c52076de-5f5b-4f83-a91a-aa26af677022"}
 
-## 3. 重启后读取同一任务
-commit        : d4d5801358b9f0c814cf25ae7491aadb90f14f09
+## 4. 重启后读取同一主任务
+commit        : 55d9e2935baebd3f660c9753ca5621d9ef8a980d
 files         : LICENSE, README.md, docs/GLOSSARY-m6a.md, docs/m6a-fixture.md
 additions/dels: 5 21
-checks        : [["pnpm check",0,"2026-11-08T06:33:25.160Z"]]
-pr            : {"number":44,"url":"https://github.com/bouyer-sutrasky/MoYu/pull/44","state":"open","headSha":"d4d5801358b9f0c814cf25ae7491aadb90f14f09","baseBranch":"main","updatedAt":"2026-11-08T06:30:45Z","unavailableReason":null}
-digest        : 8587d6d795f77da002ba64a2e9801723e8e2f458702da4cc5c6e5a69c051065e
+checks        : [["pnpm check",0,"2026-11-08T16:14:47.305Z"]]
+pr            : {"number":44,"url":"https://github.com/bouyer-sutrasky/MoYu/pull/44","state":"open","headSha":"55d9e2935baebd3f660c9753ca5621d9ef8a980d","baseBranch":"main","updatedAt":"2026-11-08T15:25:50Z","unavailableReason":null}
+digest        : 6babb87fc47c386ca85c3deb256d8699d42a73574fe424a5eadc8e8c6a6602ec
 identical to the pre-restart projection: true
 
-## 4. 数据来自持久层：数据库里的产物行
+## 5. 重启后同一任务的 cleaned 仍持久
+state = cleaned
+reason = 该任务的执行目录已不存在（工作目录已清理，或运行时尚未创建工作目录）。
+
+## 6. 数据来自持久层：数据库里的产物行
      type     | count |            newest             
 --------------+-------+-------------------------------
- diff         |     3 | 2026-11-08 14:34:18.029975+08
- check_report |     3 | 2026-11-08 14:34:11.789953+08
- attachment   |     3 | 2026-11-08 14:31:26.96921+08
+ diff         |     3 | 2026-11-09 00:15:42.840927+08
+ check_report |     3 | 2026-11-09 00:15:34.185731+08
+ attachment   |     5 | 2026-11-09 00:12:59.954639+08
 (3 rows)
 
 
-## 5. 重启后附件仍逐字节一致
-c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77  /tmp/m6a-run/upload.png
-c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77  /tmp/m6a-run/a7-download.png
-
-## 6. 已清理任务返回 cleaned 与原因
-state : cleaned
-reason: 该任务的执行目录已不存在（工作目录已清理，或运行时尚未创建工作目录）。
-files : []
+## 7. 重启后附件仍逐字节一致
+c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77  /tmp/m6a-run-rerun/upload.png
+c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77  /tmp/m6a-run-rerun/a7-download.png

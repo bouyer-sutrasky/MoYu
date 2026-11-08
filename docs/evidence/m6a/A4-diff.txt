@@ -1,11 +1,11 @@
-# A4 diff 面板 — 2026-11-08T14:31:47+08:00
+# A4 diff 面板 — 2026-11-09T00:13:22+08:00
 $ git rev-parse HEAD
-d4d5801358b9f0c814cf25ae7491aadb90f14f09
-$ git -C /tmp/m6a-run/worktrees/probe1/m6a-review-t_m6a_d4d580 rev-parse HEAD
-d4d5801358b9f0c814cf25ae7491aadb90f14f09
-环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-run/artifacts，supervisor http://127.0.0.1:4690
+55d9e2935baebd3f660c9753ca5621d9ef8a980d
+$ git -C /tmp/m6a-run-rerun/worktrees/probe1/m6a-review-t_m6a_55d9e2 rev-parse HEAD
+55d9e2935baebd3f660c9753ca5621d9ef8a980d
+环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-run-rerun/artifacts，supervisor http://127.0.0.1:4690
 
-任务 worktree：/tmp/m6a-run/worktrees/probe1/m6a-review-t_m6a_d4d580
+任务 worktree：/tmp/m6a-run-rerun/worktrees/probe1/m6a-review-t_m6a_55d9e2
 
 ## 1. 真实 git 命令的原始输出
 $ git status --porcelain=v1
@@ -55,10 +55,10 @@ index cd2c005..e69e51c 100644
 HTTP 200
 {
   "state": "available",
-  "branch": "agent/attachments-review-panel-4bd4aae33eac",
-  "commit": "d4d5801358b9f0c814cf25ae7491aadb90f14f09",
-  "commitSubject": "test(m6a): recreate the baseline worktree on every run",
-  "committedAt": "2026-11-08T14:30:39+08:00",
+  "branch": "agent/review-isolation-m6a-fa8ec916012c",
+  "commit": "55d9e2935baebd3f660c9753ca5621d9ef8a980d",
+  "commitSubject": "docs(m6a): record the dual-entrance attachment merge with red-to-green evidence",
+  "committedAt": "2026-11-08T23:25:28+08:00",
   "additions": 5,
   "deletions": 21,
   "filesOmitted": 0
@@ -84,7 +84,7 @@ index 0000000..f14ff5b
 +这个文件是未跟踪的新文件，用于验证 diff 面板。
 
 ## 5. 无改动任务（clean worktree）：空列表，不显示推断内容
-worktree：/tmp/m6a-run/worktrees/probe1/m6a-closed-t_m6a_closed
+worktree：/tmp/m6a-run-rerun/worktrees/probe1/m6a-closed-t_m6a_closed
 $ git status --porcelain=v1（应为空）
 HTTP 200
 state = available | files = [] | additions = 0 | deletions = 0

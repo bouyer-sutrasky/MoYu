@@ -1,49 +1,42 @@
-# A2 上传拒绝面 — 2026-11-08T14:31:27+08:00
+# A2 上传拒绝面 — 2026-11-09T00:13:01+08:00
 $ git rev-parse HEAD
-d4d5801358b9f0c814cf25ae7491aadb90f14f09
-$ git -C /tmp/m6a-run/worktrees/probe1/m6a-review-t_m6a_d4d580 rev-parse HEAD
-d4d5801358b9f0c814cf25ae7491aadb90f14f09
-环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-run/artifacts，supervisor http://127.0.0.1:4690
+55d9e2935baebd3f660c9753ca5621d9ef8a980d
+$ git -C /tmp/m6a-run-rerun/worktrees/probe1/m6a-review-t_m6a_55d9e2 rev-parse HEAD
+55d9e2935baebd3f660c9753ca5621d9ef8a980d
+环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-run-rerun/artifacts，supervisor http://127.0.0.1:4690
 
 ## 1. 超大小上限（10 MiB + 1 KiB）→ 4xx，不落库也不落盘
-before: rows=3 files=12 bytes=636
+before: rows=5 files=5 bytes=271
 HTTP 413
-{"error":{"code":"payload_too_large","message":"单个附件不能超过 10 MiB","retryable":false},"requestId":"1e1a7fc4-367c-41f5-bf7f-82f348f4ffab"}
-after : rows=3 files=12 bytes=636
+{"error":{"code":"payload_too_large","message":"单个附件不能超过 10 MiB","retryable":false},"requestId":"0fe7c301-ade8-46b7-ad13-d9068c147e17"}
+after : rows=5 files=5 bytes=271
 
 ## 2. 非法 MIME/类型 → 4xx，不落库也不落盘
-before: rows=3 files=12 bytes=636
+before: rows=5 files=5 bytes=271
 HTTP 422
-{"error":{"code":"invalid_request","message":"不支持的文件类型；只接受图片（PNG/JPEG/WebP/GIF）与文本类文件（txt/log/md/json/yaml/csv/源码等）","retryable":false},"requestId":"3d20a02c-655c-4915-bce2-9ee5b53602f8"}
-after : rows=3 files=12 bytes=636
+{"error":{"code":"invalid_request","message":"不支持的文件类型；只接受图片（PNG/JPEG/WebP/GIF）与文本类文件（txt/log/md/json/yaml/csv/源码等）","retryable":false},"requestId":"fc61c209-631f-489a-ac71-75049ca36fe8"}
+after : rows=5 files=5 bytes=271
 
 ## 3. 未登录 → 401
 HTTP 401
-{"error":{"code":"unauthorized","message":"Authentication required","retryable":false},"requestId":"056e181b-c029-4bef-9daf-fb68fc91cc6e"}
+{"error":{"code":"unauthorized","message":"Authentication required","retryable":false},"requestId":"54fbfd43-e5aa-4cab-9d25-cb7829b1f5ab"}
 
 ## 4. 另一个用户向本会话上传 → 404
 HTTP 404
-{"error":{"code":"not_found","message":"Conversation not found","retryable":false},"requestId":"639d40be-015d-4dd4-8141-faa327cae957"}
+{"error":{"code":"not_found","message":"Conversation not found","retryable":false},"requestId":"5d5bff42-c15a-49c7-8645-35a170e43068"}
 
 ## 5. 另一个用户读取本会话的 attachmentId → 404
 HTTP 404
-{"error":{"code":"not_found","message":"Attachment not found","retryable":false},"requestId":"aed9f9be-4be7-43c8-9d3f-c1e7adfa4c26"}
+{"error":{"code":"not_found","message":"Attachment not found","retryable":false},"requestId":"5b8cd18e-7e45-4dbc-bfbb-1c3666228147"}
 
 ## 6. 空文件 → 422
 HTTP 422
-{"error":{"code":"invalid_request","message":"附件不能是空文件","retryable":false},"requestId":"2ae513b1-5b6e-4563-96b5-75611b4953e1"}
+{"error":{"code":"invalid_request","message":"附件不能是空文件","retryable":false},"requestId":"3595c38f-869a-4f4e-8a04-78184ca609fb"}
 
-## 7. 最终行数与磁盘占用（与 A1 的 3 行一致，拒绝面没有新增）
-rows=3 files=12 bytes=636
-600 30 /tmp/m6a-run/artifacts/attachments/09a443bc-e3c3-4ae5-af8e-be212bf90c23/d3affd7b-d526-4a0d-86d3-a69326560dfd
-600 30 /tmp/m6a-run/artifacts/attachments/417b7c96-5323-4efd-8644-4fc8bc6a0c62/e61de759-29d1-4a90-8ea1-a37ca6fea77f
-600 30 /tmp/m6a-run/artifacts/attachments/5b905938-04d1-40ec-966a-9f5121eef889/574df7c7-9e97-46aa-a266-198cdbe9ddb8
-600 30 /tmp/m6a-run/artifacts/attachments/b971d63e-37db-490a-b0cb-6435ee6888fb/e845135f-51d3-4cba-a23e-32fd132cbbee
-600 59 /tmp/m6a-run/artifacts/attachments/09a443bc-e3c3-4ae5-af8e-be212bf90c23/8bb6b69e-8519-443b-bf07-8495c14ade4c
-600 59 /tmp/m6a-run/artifacts/attachments/417b7c96-5323-4efd-8644-4fc8bc6a0c62/66b1e243-1c39-421e-b790-6f0e2764b92d
-600 59 /tmp/m6a-run/artifacts/attachments/5b905938-04d1-40ec-966a-9f5121eef889/fb065856-0b6e-4ee2-8491-65913205935b
-600 59 /tmp/m6a-run/artifacts/attachments/b971d63e-37db-490a-b0cb-6435ee6888fb/d4e16ef4-782c-4016-a0a2-457e4fa06414
-600 70 /tmp/m6a-run/artifacts/attachments/09a443bc-e3c3-4ae5-af8e-be212bf90c23/997e0a53-0b4b-4042-aa11-a43e296dd214
-600 70 /tmp/m6a-run/artifacts/attachments/417b7c96-5323-4efd-8644-4fc8bc6a0c62/418dde5b-ca44-458e-8787-6c82e2c43c54
-600 70 /tmp/m6a-run/artifacts/attachments/5b905938-04d1-40ec-966a-9f5121eef889/a98c59c1-3723-4209-99f4-5813c9a53bf2
-600 70 /tmp/m6a-run/artifacts/attachments/b971d63e-37db-490a-b0cb-6435ee6888fb/4f4271db-83fb-4aca-8271-a7d2a839bcc9
+## 7. 最终行数与磁盘占用（与 A1 结束时的基线一致，拒绝面没有新增）
+rows=5 files=5 bytes=271
+600 30 /tmp/m6a-run-rerun/artifacts/attachments/8e6cbcba-bb53-43cf-9d59-7412fc87b10a/7cb2ed81-fbb4-49b5-95f4-91ef82dc0da7
+600 56 /tmp/m6a-run-rerun/artifacts/attachments/8e6cbcba-bb53-43cf-9d59-7412fc87b10a/73cce3a7-da73-42a8-8b71-712f620d51fd
+600 56 /tmp/m6a-run-rerun/artifacts/attachments/8e6cbcba-bb53-43cf-9d59-7412fc87b10a/e8f924df-31e4-48c7-b2a3-310f921a0ba8
+600 59 /tmp/m6a-run-rerun/artifacts/attachments/8e6cbcba-bb53-43cf-9d59-7412fc87b10a/622277af-ac7c-484c-a977-d90d4ce6db43
+600 70 /tmp/m6a-run-rerun/artifacts/attachments/8e6cbcba-bb53-43cf-9d59-7412fc87b10a/64f13c61-6b0b-4cca-acd9-59c92745ff6e
