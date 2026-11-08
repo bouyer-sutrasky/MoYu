@@ -21,6 +21,16 @@
 | 6 | 子进程与聚合 8 GiB 压力 | **部分**：全树递归遍历（9 子组、切片根 0 进程、runtime 四层含两个 `sleep 900`）与停后空树**通过**（停后 0 进程、端口全释放、无孤儿）；聚合压力**部分**：四服务同切片、成员上限和 3.5 GiB < 8 GiB，filler 顶到 6.19 GiB 时 `memory.high` 节流 18,697 次、切片本地 `max`/`oom_kill` 均为 0（调度而非 OOM 杀），**8 GiB 上限未顶到（未验证）** | `item6-processtree.log`、`item6-aggregate-stress.log` |
 | 7 | 状态原因、恢复引导、重试与清错 | **通过**（重试耗尽一条判据不适用）：真实 OOM → supervisor `oom_killed` → 平台 runtime 投影给出自然语言 `reason` 与 `wake`/`sleep` 引导（含 `unavailableReason`）；按引导 `wake` 后任务 `queued→running`、实例回 `online/listening`；重启 PG+supervisor 后实例报 `ownership_unverified` 而非 `oom_killed`（旧错误未复活）。`重试耗尽`无自动多轮重试可耗尽：`tasks.ts:57 RETRYABLE = {failed, blocked}` 是人工重试命令，实测失败即 `failed` | `item7-recovery.log` |
 
+## 第 1 项 c1/c2 的后续（不改本轮判定）
+
+第 1 项 c1/c2 的「暂停卡在 `stopping`」已作为**产品缺陷**单独立单（Issue #34）修复：根因在 runtime
+集成层 —— 暂停把**整棵 harness 进程树**当成一张票的残留证据（共享进程树里任一子进程都算本票的），
+而且从不等/结束仍在 `prepare` 的启动，于是没有 worker 能写 `stoppedAt`。修复补丁
+`integrations/superagent/patches/0024-pause-before-start.patch`，红→绿现场证据见
+[`../pause-before-start.log`](../pause-before-start.log)：同一现场脚本下 c1/c2 由「卡 `stopping`、
+`blocked`、`resume` 被拒、租约不放」变为「`stoppedAt` 落地、`stopped`、租约 `released`、`resume` 接受」，
+c3 未回退。本节只是交叉引用，**不改变**本矩阵「七项里只有第 2 项完整」的结论，也不能据此说 M5-B 通过。
+
 ## 顺带修正（已在本轮落地）
 
 - `item3-fence-observability.log` 末尾把 409 `admissionStale` 误写成 422 —— 已改为
