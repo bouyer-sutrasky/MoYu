@@ -1,0 +1,390 @@
+# 0015 非最新回滚守卫
+
+代码 head（本文件据其产出）：
+$ git rev-parse HEAD
+ca9fe2d102a29e2bd1e90ad9442413c8edeabb31
+
+被测文件：`packages/db/migrations/rollback/0015_late_gateway.down.sql`。
+环境：隔离 PostgreSQL 16（`127.0.0.1:55432`），每次运行重建 `moyu_0015_guard_red` /
+`moyu_0015_guard_legal` 两个一次性数据库；迁移用 `pnpm --filter @moyu/db db:migrate`（生产 0000–0015），
+「更晚迁移」用**测试专用** fixture `packages/db/test/fixtures/0016_later_guard_fixture.sql`（不在生产迁移目录）。
+复现脚本：`scripts/m6a/0015-guard-evidence.sh`；回滚用 `psql -v ON_ERROR_STOP=1 -f 0015_late_gateway.down.sql`，
+因此拒绝时 psql 退出码非 0。未改 0015 生产迁移本体与 3082。
+
+## 判定（期望 / 实际 / 结论）
+
+| # | 期望 | 实际 | 结论 |
+| --- | --- | --- | --- |
+| 1 | 已应用更晚迁移时，回滚必须被拒绝 | RED：`down exit code: 0`，且 `message_id` 列、外键、索引与 ledger 行都被删除；GREEN：`ERROR: 0015 rollback refused: 1 later migration(s) are already applied`，`down exit code: 3` | RED 暴露缺口，GREEN 修复成立 |
+| 2 | 拒绝时 schema 不变 | GREEN 回滚后 `artifacts` 仍有 `message_id:uuid`、`artifacts_message_id_messages_id_fk`、`artifacts_message_idx`；ledger `count(*) = 1` | 通过（DDL 前 RAISE，事务回滚） |
+| 3 | 0015 为最新已应用迁移时，回滚照旧成功 | RED 与 GREEN 的 LEGAL 段均 `down exit code: 0`；回滚后列/外键/索引消失、ledger `count(*) = 0` | 通过（不是一律拒绝） |
+| 4 | 守卫在生产路径 | 改动在 `0015_late_gateway.down.sql` 本体（`BEGIN; DO $$ ... RAISE EXCEPTION ... END $$; ... COMMIT;`），非测试判断 | 通过 |
+
+## RED（改动前：0015 down 只校验自己的 ledger 行）
+
+$ bash scripts/m6a/0015-guard-evidence.sh
+### RED: a later migration is applied, then the 0015 rollback runs
+$ DATABASE_URL=.../moyu_0015_guard_red pnpm --filter @moyu/db db:migrate
+{"level":"info","service":"moyu-db","event":"migrate.completed","message":"Database migrations applied successfully"}
+$ psql .../moyu_0015_guard_red -f packages/db/test/fixtures/0016_later_guard_fixture.sql
+BEGIN
+CREATE TABLE
+INSERT 0 1
+COMMIT
+$ ledger after fixture (id desc)
+17|test-0016-later-guard-fixture
+16|b50ad051f0dac6e0740722a345b64a0cdb3c0f392042d0858df75a295e729584
+$ before rollback: schema + ledger
+$ psql moyu_0015_guard_red -c '\d artifacts'
+                               Table "public.artifacts"
+     Column      |           Type           | Collation | Nullable |      Default      
+-----------------+--------------------------+-----------+----------+-------------------
+ id              | uuid                     |           | not null | gen_random_uuid()
+ repository_id   | uuid                     |           | not null | 
+ conversation_id | uuid                     |           |          | 
+ task_id         | uuid                     |           |          | 
+ type            | artifact_type            |           | not null | 
+ storage_key     | text                     |           |          | 
+ mime_type       | text                     |           |          | 
+ size_bytes      | bigint                   |           |          | 
+ sha256          | text                     |           |          | 
+ metadata        | jsonb                    |           | not null | '{}'::jsonb
+ created_at      | timestamp with time zone |           | not null | now()
+ message_id      | uuid                     |           |          | 
+Indexes:
+    "artifacts_pkey" PRIMARY KEY, btree (id)
+    "artifacts_conversation_idx" btree (conversation_id)
+    "artifacts_message_idx" btree (message_id)
+    "artifacts_storage_key_uq" UNIQUE, btree (storage_key) WHERE storage_key IS NOT NULL
+    "artifacts_task_idx" btree (task_id)
+Check constraints:
+    "artifacts_size_bytes_nonnegative" CHECK (size_bytes IS NULL OR size_bytes >= 0)
+Foreign-key constraints:
+    "artifacts_conversation_id_conversations_id_fk" FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL
+    "artifacts_message_id_messages_id_fk" FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE SET NULL
+    "artifacts_repository_id_repositories_id_fk" FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE RESTRICT
+    "artifacts_task_id_task_links_id_fk" FOREIGN KEY (task_id) REFERENCES task_links(id) ON DELETE SET NULL
+
+$ select message_id column / fk / index
+message_id:uuid
+artifacts_message_id_messages_id_fk
+artifacts_message_idx
+$ select count(*) ledger where hash = b50ad051f0dac6e0740722a345b64a0cdb3c0f392042d0858df75a295e729584
+1
+$ psql ... -f /root/src/review-isolation-m6a-fa8ec916012c/packages/db/migrations/rollback/0015_late_gateway.down.sql
+BEGIN
+DO
+DROP INDEX
+ALTER TABLE
+ALTER TABLE
+DELETE 1
+COMMIT
+down exit code: 0
+$ after rollback: schema + ledger
+$ psql moyu_0015_guard_red -c '\d artifacts'
+                               Table "public.artifacts"
+     Column      |           Type           | Collation | Nullable |      Default      
+-----------------+--------------------------+-----------+----------+-------------------
+ id              | uuid                     |           | not null | gen_random_uuid()
+ repository_id   | uuid                     |           | not null | 
+ conversation_id | uuid                     |           |          | 
+ task_id         | uuid                     |           |          | 
+ type            | artifact_type            |           | not null | 
+ storage_key     | text                     |           |          | 
+ mime_type       | text                     |           |          | 
+ size_bytes      | bigint                   |           |          | 
+ sha256          | text                     |           |          | 
+ metadata        | jsonb                    |           | not null | '{}'::jsonb
+ created_at      | timestamp with time zone |           | not null | now()
+Indexes:
+    "artifacts_pkey" PRIMARY KEY, btree (id)
+    "artifacts_conversation_idx" btree (conversation_id)
+    "artifacts_storage_key_uq" UNIQUE, btree (storage_key) WHERE storage_key IS NOT NULL
+    "artifacts_task_idx" btree (task_id)
+Check constraints:
+    "artifacts_size_bytes_nonnegative" CHECK (size_bytes IS NULL OR size_bytes >= 0)
+Foreign-key constraints:
+    "artifacts_conversation_id_conversations_id_fk" FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL
+    "artifacts_repository_id_repositories_id_fk" FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE RESTRICT
+    "artifacts_task_id_task_links_id_fk" FOREIGN KEY (task_id) REFERENCES task_links(id) ON DELETE SET NULL
+
+$ select message_id column / fk / index
+$ select count(*) ledger where hash = b50ad051f0dac6e0740722a345b64a0cdb3c0f392042d0858df75a295e729584
+0
+
+### LEGAL: 0015 is the newest applied migration, rollback must still succeed
+$ DATABASE_URL=.../moyu_0015_guard_legal pnpm --filter @moyu/db db:migrate
+{"level":"info","service":"moyu-db","event":"migrate.completed","message":"Database migrations applied successfully"}
+$ before rollback: schema + ledger
+$ psql moyu_0015_guard_legal -c '\d artifacts'
+                               Table "public.artifacts"
+     Column      |           Type           | Collation | Nullable |      Default      
+-----------------+--------------------------+-----------+----------+-------------------
+ id              | uuid                     |           | not null | gen_random_uuid()
+ repository_id   | uuid                     |           | not null | 
+ conversation_id | uuid                     |           |          | 
+ task_id         | uuid                     |           |          | 
+ type            | artifact_type            |           | not null | 
+ storage_key     | text                     |           |          | 
+ mime_type       | text                     |           |          | 
+ size_bytes      | bigint                   |           |          | 
+ sha256          | text                     |           |          | 
+ metadata        | jsonb                    |           | not null | '{}'::jsonb
+ created_at      | timestamp with time zone |           | not null | now()
+ message_id      | uuid                     |           |          | 
+Indexes:
+    "artifacts_pkey" PRIMARY KEY, btree (id)
+    "artifacts_conversation_idx" btree (conversation_id)
+    "artifacts_message_idx" btree (message_id)
+    "artifacts_storage_key_uq" UNIQUE, btree (storage_key) WHERE storage_key IS NOT NULL
+    "artifacts_task_idx" btree (task_id)
+Check constraints:
+    "artifacts_size_bytes_nonnegative" CHECK (size_bytes IS NULL OR size_bytes >= 0)
+Foreign-key constraints:
+    "artifacts_conversation_id_conversations_id_fk" FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL
+    "artifacts_message_id_messages_id_fk" FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE SET NULL
+    "artifacts_repository_id_repositories_id_fk" FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE RESTRICT
+    "artifacts_task_id_task_links_id_fk" FOREIGN KEY (task_id) REFERENCES task_links(id) ON DELETE SET NULL
+
+$ select message_id column / fk / index
+message_id:uuid
+artifacts_message_id_messages_id_fk
+artifacts_message_idx
+$ select count(*) ledger where hash = b50ad051f0dac6e0740722a345b64a0cdb3c0f392042d0858df75a295e729584
+1
+$ psql ... -f /root/src/review-isolation-m6a-fa8ec916012c/packages/db/migrations/rollback/0015_late_gateway.down.sql
+BEGIN
+DO
+DROP INDEX
+ALTER TABLE
+ALTER TABLE
+DELETE 1
+COMMIT
+down exit code: 0
+$ after rollback: schema + ledger
+$ psql moyu_0015_guard_legal -c '\d artifacts'
+                               Table "public.artifacts"
+     Column      |           Type           | Collation | Nullable |      Default      
+-----------------+--------------------------+-----------+----------+-------------------
+ id              | uuid                     |           | not null | gen_random_uuid()
+ repository_id   | uuid                     |           | not null | 
+ conversation_id | uuid                     |           |          | 
+ task_id         | uuid                     |           |          | 
+ type            | artifact_type            |           | not null | 
+ storage_key     | text                     |           |          | 
+ mime_type       | text                     |           |          | 
+ size_bytes      | bigint                   |           |          | 
+ sha256          | text                     |           |          | 
+ metadata        | jsonb                    |           | not null | '{}'::jsonb
+ created_at      | timestamp with time zone |           | not null | now()
+Indexes:
+    "artifacts_pkey" PRIMARY KEY, btree (id)
+    "artifacts_conversation_idx" btree (conversation_id)
+    "artifacts_storage_key_uq" UNIQUE, btree (storage_key) WHERE storage_key IS NOT NULL
+    "artifacts_task_idx" btree (task_id)
+Check constraints:
+    "artifacts_size_bytes_nonnegative" CHECK (size_bytes IS NULL OR size_bytes >= 0)
+Foreign-key constraints:
+    "artifacts_conversation_id_conversations_id_fk" FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL
+    "artifacts_repository_id_repositories_id_fk" FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE RESTRICT
+    "artifacts_task_id_task_links_id_fk" FOREIGN KEY (task_id) REFERENCES task_links(id) ON DELETE SET NULL
+
+$ select message_id column / fk / index
+$ select count(*) ledger where hash = b50ad051f0dac6e0740722a345b64a0cdb3c0f392042d0858df75a295e729584
+0
+
+判定（RED）：更晚迁移已应用时，旧脚本 `down exit code: 0`，回滚后 `message_id` 列、外键、`artifacts_message_idx`
+与 ledger 行全部消失（见上面 `after rollback` 的 `\d artifacts` 与 `count(*) = 0`）；LEGAL 段
+`down exit code: 0` 且 ledger `0`，合法路径本来就通过。
+
+## GREEN（改动后：先检查没有更晚的 ledger 行，再做 DDL）
+
+$ bash scripts/m6a/0015-guard-evidence.sh
+### RED: a later migration is applied, then the 0015 rollback runs
+$ DATABASE_URL=.../moyu_0015_guard_red pnpm --filter @moyu/db db:migrate
+{"level":"info","service":"moyu-db","event":"migrate.completed","message":"Database migrations applied successfully"}
+$ psql .../moyu_0015_guard_red -f packages/db/test/fixtures/0016_later_guard_fixture.sql
+BEGIN
+CREATE TABLE
+INSERT 0 1
+COMMIT
+$ ledger after fixture (id desc)
+17|test-0016-later-guard-fixture
+16|b50ad051f0dac6e0740722a345b64a0cdb3c0f392042d0858df75a295e729584
+$ before rollback: schema + ledger
+$ psql moyu_0015_guard_red -c '\d artifacts'
+                               Table "public.artifacts"
+     Column      |           Type           | Collation | Nullable |      Default      
+-----------------+--------------------------+-----------+----------+-------------------
+ id              | uuid                     |           | not null | gen_random_uuid()
+ repository_id   | uuid                     |           | not null | 
+ conversation_id | uuid                     |           |          | 
+ task_id         | uuid                     |           |          | 
+ type            | artifact_type            |           | not null | 
+ storage_key     | text                     |           |          | 
+ mime_type       | text                     |           |          | 
+ size_bytes      | bigint                   |           |          | 
+ sha256          | text                     |           |          | 
+ metadata        | jsonb                    |           | not null | '{}'::jsonb
+ created_at      | timestamp with time zone |           | not null | now()
+ message_id      | uuid                     |           |          | 
+Indexes:
+    "artifacts_pkey" PRIMARY KEY, btree (id)
+    "artifacts_conversation_idx" btree (conversation_id)
+    "artifacts_message_idx" btree (message_id)
+    "artifacts_storage_key_uq" UNIQUE, btree (storage_key) WHERE storage_key IS NOT NULL
+    "artifacts_task_idx" btree (task_id)
+Check constraints:
+    "artifacts_size_bytes_nonnegative" CHECK (size_bytes IS NULL OR size_bytes >= 0)
+Foreign-key constraints:
+    "artifacts_conversation_id_conversations_id_fk" FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL
+    "artifacts_message_id_messages_id_fk" FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE SET NULL
+    "artifacts_repository_id_repositories_id_fk" FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE RESTRICT
+    "artifacts_task_id_task_links_id_fk" FOREIGN KEY (task_id) REFERENCES task_links(id) ON DELETE SET NULL
+
+$ select message_id column / fk / index
+message_id:uuid
+artifacts_message_id_messages_id_fk
+artifacts_message_idx
+$ select count(*) ledger where hash = b50ad051f0dac6e0740722a345b64a0cdb3c0f392042d0858df75a295e729584
+1
+$ psql ... -f /root/src/review-isolation-m6a-fa8ec916012c/packages/db/migrations/rollback/0015_late_gateway.down.sql
+BEGIN
+psql:/root/src/review-isolation-m6a-fa8ec916012c/packages/db/migrations/rollback/0015_late_gateway.down.sql:24: ERROR:  0015 rollback refused: 1 later migration(s) are already applied; roll them back first
+CONTEXT:  PL/pgSQL function inline_code_block line 18 at RAISE
+down exit code: 3
+$ after rollback: schema + ledger
+$ psql moyu_0015_guard_red -c '\d artifacts'
+                               Table "public.artifacts"
+     Column      |           Type           | Collation | Nullable |      Default      
+-----------------+--------------------------+-----------+----------+-------------------
+ id              | uuid                     |           | not null | gen_random_uuid()
+ repository_id   | uuid                     |           | not null | 
+ conversation_id | uuid                     |           |          | 
+ task_id         | uuid                     |           |          | 
+ type            | artifact_type            |           | not null | 
+ storage_key     | text                     |           |          | 
+ mime_type       | text                     |           |          | 
+ size_bytes      | bigint                   |           |          | 
+ sha256          | text                     |           |          | 
+ metadata        | jsonb                    |           | not null | '{}'::jsonb
+ created_at      | timestamp with time zone |           | not null | now()
+ message_id      | uuid                     |           |          | 
+Indexes:
+    "artifacts_pkey" PRIMARY KEY, btree (id)
+    "artifacts_conversation_idx" btree (conversation_id)
+    "artifacts_message_idx" btree (message_id)
+    "artifacts_storage_key_uq" UNIQUE, btree (storage_key) WHERE storage_key IS NOT NULL
+    "artifacts_task_idx" btree (task_id)
+Check constraints:
+    "artifacts_size_bytes_nonnegative" CHECK (size_bytes IS NULL OR size_bytes >= 0)
+Foreign-key constraints:
+    "artifacts_conversation_id_conversations_id_fk" FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL
+    "artifacts_message_id_messages_id_fk" FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE SET NULL
+    "artifacts_repository_id_repositories_id_fk" FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE RESTRICT
+    "artifacts_task_id_task_links_id_fk" FOREIGN KEY (task_id) REFERENCES task_links(id) ON DELETE SET NULL
+
+$ select message_id column / fk / index
+message_id:uuid
+artifacts_message_id_messages_id_fk
+artifacts_message_idx
+$ select count(*) ledger where hash = b50ad051f0dac6e0740722a345b64a0cdb3c0f392042d0858df75a295e729584
+1
+
+### LEGAL: 0015 is the newest applied migration, rollback must still succeed
+$ DATABASE_URL=.../moyu_0015_guard_legal pnpm --filter @moyu/db db:migrate
+{"level":"info","service":"moyu-db","event":"migrate.completed","message":"Database migrations applied successfully"}
+$ before rollback: schema + ledger
+$ psql moyu_0015_guard_legal -c '\d artifacts'
+                               Table "public.artifacts"
+     Column      |           Type           | Collation | Nullable |      Default      
+-----------------+--------------------------+-----------+----------+-------------------
+ id              | uuid                     |           | not null | gen_random_uuid()
+ repository_id   | uuid                     |           | not null | 
+ conversation_id | uuid                     |           |          | 
+ task_id         | uuid                     |           |          | 
+ type            | artifact_type            |           | not null | 
+ storage_key     | text                     |           |          | 
+ mime_type       | text                     |           |          | 
+ size_bytes      | bigint                   |           |          | 
+ sha256          | text                     |           |          | 
+ metadata        | jsonb                    |           | not null | '{}'::jsonb
+ created_at      | timestamp with time zone |           | not null | now()
+ message_id      | uuid                     |           |          | 
+Indexes:
+    "artifacts_pkey" PRIMARY KEY, btree (id)
+    "artifacts_conversation_idx" btree (conversation_id)
+    "artifacts_message_idx" btree (message_id)
+    "artifacts_storage_key_uq" UNIQUE, btree (storage_key) WHERE storage_key IS NOT NULL
+    "artifacts_task_idx" btree (task_id)
+Check constraints:
+    "artifacts_size_bytes_nonnegative" CHECK (size_bytes IS NULL OR size_bytes >= 0)
+Foreign-key constraints:
+    "artifacts_conversation_id_conversations_id_fk" FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL
+    "artifacts_message_id_messages_id_fk" FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE SET NULL
+    "artifacts_repository_id_repositories_id_fk" FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE RESTRICT
+    "artifacts_task_id_task_links_id_fk" FOREIGN KEY (task_id) REFERENCES task_links(id) ON DELETE SET NULL
+
+$ select message_id column / fk / index
+message_id:uuid
+artifacts_message_id_messages_id_fk
+artifacts_message_idx
+$ select count(*) ledger where hash = b50ad051f0dac6e0740722a345b64a0cdb3c0f392042d0858df75a295e729584
+1
+$ psql ... -f /root/src/review-isolation-m6a-fa8ec916012c/packages/db/migrations/rollback/0015_late_gateway.down.sql
+BEGIN
+DO
+DROP INDEX
+ALTER TABLE
+ALTER TABLE
+DELETE 1
+COMMIT
+down exit code: 0
+$ after rollback: schema + ledger
+$ psql moyu_0015_guard_legal -c '\d artifacts'
+                               Table "public.artifacts"
+     Column      |           Type           | Collation | Nullable |      Default      
+-----------------+--------------------------+-----------+----------+-------------------
+ id              | uuid                     |           | not null | gen_random_uuid()
+ repository_id   | uuid                     |           | not null | 
+ conversation_id | uuid                     |           |          | 
+ task_id         | uuid                     |           |          | 
+ type            | artifact_type            |           | not null | 
+ storage_key     | text                     |           |          | 
+ mime_type       | text                     |           |          | 
+ size_bytes      | bigint                   |           |          | 
+ sha256          | text                     |           |          | 
+ metadata        | jsonb                    |           | not null | '{}'::jsonb
+ created_at      | timestamp with time zone |           | not null | now()
+Indexes:
+    "artifacts_pkey" PRIMARY KEY, btree (id)
+    "artifacts_conversation_idx" btree (conversation_id)
+    "artifacts_storage_key_uq" UNIQUE, btree (storage_key) WHERE storage_key IS NOT NULL
+    "artifacts_task_idx" btree (task_id)
+Check constraints:
+    "artifacts_size_bytes_nonnegative" CHECK (size_bytes IS NULL OR size_bytes >= 0)
+Foreign-key constraints:
+    "artifacts_conversation_id_conversations_id_fk" FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL
+    "artifacts_repository_id_repositories_id_fk" FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE RESTRICT
+    "artifacts_task_id_task_links_id_fk" FOREIGN KEY (task_id) REFERENCES task_links(id) ON DELETE SET NULL
+
+$ select message_id column / fk / index
+$ select count(*) ledger where hash = b50ad051f0dac6e0740722a345b64a0cdb3c0f392042d0858df75a295e729584
+0
+
+判定（GREEN）：RED 段回滚被拒绝（`ERROR: 0015 rollback refused: 1 later migration(s) are already applied`，
+`down exit code: 3`），且 `after rollback` 的 `\d artifacts` 仍含 `message_id` 列、`artifacts_message_idx`、
+`artifacts_message_id_messages_id_fk`，ledger `count(*) = 1`；LEGAL 段仍 `down exit code: 0`，列/外键/索引消失、
+ledger `0`。
+
+## 回归
+
+$ pnpm check
+packages/contracts test:       Tests  19 passed (19)
+packages/runtime-client test:       Tests  13 passed (13)
+apps/dispatcher test:       Tests  5 passed (5)
+apps/api test:       Tests  20 passed (20)
+apps/supervisor test:       Tests  59 passed (59)
+EXIT=0
+
+`EXIT=0`；工作树在提交本证据前干净（本轮只有上述 down 文件、测试 fixture、证据脚本与本文档）。
