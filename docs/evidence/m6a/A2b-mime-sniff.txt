@@ -1,0 +1,134 @@
+# A2b 上传 MIME 内容嗅探
+
+代码 head（本文件据其产出）：
+$ git rev-parse HEAD
+c01900bd06b5bfe38045b0359eafafedd1cab595
+
+口径：**A（拒绝式）**，全程一致。规则：
+- 按**前 512 字节**（`MIME_SNIFF_BYTES`）嗅探：PNG/JPEG/WebP/GIF 魔数、HTML/SVG 起始标记、`#!` 脚本、
+  ELF（`\x7fELF`）与 PE（`MZ`）、UTF-8 文本。
+- 图片字节 → 以嗅探出的图片类型入库（即使客户端声明 `text/plain`）；文本字节 → 保留白名单内声明类型。
+- 可执行/脚本/SVG → **422**；HTML 只有显式声明 `text/html` 才收下（下载侧仍中和，A1/A2 既有行为）；
+  声明为图片但内容不是图片、或无法识别内容 → **422**。拒绝发生在 `storeUpload` 之前，不落盘、不增行。
+- 未改动大小上限与 `ATTACHMENT_ALLOWED_TYPES` 白名单；`safeMimeType`（下载兜底）不作为上传守卫。
+
+复现：`scripts/m6a/a2b-mime-sniff-evidence.sh`（同一脚本在改动前后各跑一次；检查脚本 sha256
+`82b393831cf776adb7f2e3415344f0f559ee7f1823b5ab9e445c9a453357f1eb`）；隔离 PostgreSQL、隔离 API、真实 multipart。
+
+## 判定（期望 / 实际 / 结论）
+
+| 用例（filename / 声明 / 内容） | 期望 | RED 实际 | GREEN 实际 | 结论 |
+| --- | --- | --- | --- | --- |
+| evil.png / image/png / HTML | 拒绝 422，行数与文件数不变 | 201，`mime_type=image/png`、`kind=image`，rows 0→1 files 0→1 | 422，rows 0→0 files 0→0 | 缺口成立→修复 |
+| note.txt / text/plain / 真实 PNG | 类型按内容记为 image/png | 201，`mime_type=text/plain`、`kind=text` | 201，`mime_type=image/png`、`kind=image` | 修复 |
+| elf.png / image/png / ELF | 拒绝 422，不落盘 | 201，`mime_type=image/png`，rows 2→3 files 2→3 | 422，rows 1→1 files 1→1 | 缺口成立→修复 |
+| script.png / image/png / `#!/bin/sh` | 拒绝 422，不落盘 | 201，`mime_type=image/png`，rows 3→4 files 3→4 | 422，rows 1→1 files 1→1 | 缺口成立→修复 |
+| vector.svg / image/svg+xml / SVG | 拒绝 422 | 201，`mime_type=image/svg+xml`，rows 4→5 files 4→5 | 422，rows 1→1 files 1→1 | 缺口成立→修复 |
+| 真实 PNG/JPEG/WebP/GIF、txt/md/json/yaml/源码、显式 text/html | 照旧 201，mime/kind 正确 | 10/10 通过 | 10/10 通过 | 未误伤 |
+
+## RED（改动前：声明与扩展名决定类型）
+
+$ bash scripts/m6a/a2b-mime-sniff-evidence.sh
+CASE evil-png-as-image: filename=evil.png declared=image/png => HTTP 201 rows 0->1 files 0->1 artifact={"id":"df0a226f-6fa4-4884-acd8-3555f64ebb8b","mime_type":"image/png","size_bytes":"40","kind":"image","filename":"evil.png"} ok=false
+  body: {"data":{"attachment":{"id":"df0a226f-6fa4-4884-acd8-3555f64ebb8b","conversationId":"1a2dadfb-df61-4ae4-918f-faba71c66274","taskId":null,"messageId":null,"filename":"evil.png","mimeType":"image/png","sizeBytes":40,"sha256":"4e20174a6af428e6a703e1e4d7c4bccb02b797760a2e21c0067767fca5617c83","kind":"image","createdAt":"2026-11-09T05:44:29.936Z","downloadUrl":"/api/v1/attachments/df0a226f-6fa4-4884-ac
+CASE real-png-as-text: filename=note.txt declared=text/plain => HTTP 201 rows 1->2 files 1->2 artifact={"id":"f1e6b364-104b-4344-a192-af36660c12b6","mime_type":"text/plain","size_bytes":"70","kind":"text","filename":"note.txt"} ok=false
+  body: {"data":{"attachment":{"id":"f1e6b364-104b-4344-a192-af36660c12b6","conversationId":"1a2dadfb-df61-4ae4-918f-faba71c66274","taskId":null,"messageId":null,"filename":"note.txt","mimeType":"text/plain","sizeBytes":70,"sha256":"c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77","kind":"text","createdAt":"2026-11-09T05:44:29.958Z","downloadUrl":"/api/v1/attachments/f1e6b364-104b-4344-a1
+CASE elf-as-image: filename=elf.png declared=image/png => HTTP 201 rows 2->3 files 2->3 artifact={"id":"8634bf07-a496-43fb-9837-69ef2d498ed0","mime_type":"image/png","size_bytes":"71","kind":"image","filename":"elf.png"} ok=false
+  body: {"data":{"attachment":{"id":"8634bf07-a496-43fb-9837-69ef2d498ed0","conversationId":"1a2dadfb-df61-4ae4-918f-faba71c66274","taskId":null,"messageId":null,"filename":"elf.png","mimeType":"image/png","sizeBytes":71,"sha256":"7c2b0abede183eaf26658784d5696fbd1c6cf9a7cd5c7f78413d39a5bfb46219","kind":"image","createdAt":"2026-11-09T05:44:29.968Z","downloadUrl":"/api/v1/attachments/8634bf07-a496-43fb-983
+CASE script-as-image: filename=script.png declared=image/png => HTTP 201 rows 3->4 files 3->4 artifact={"id":"d1183228-28a2-47e7-95f4-7460d823609a","mime_type":"image/png","size_bytes":"21","kind":"image","filename":"script.png"} ok=false
+  body: {"data":{"attachment":{"id":"d1183228-28a2-47e7-95f4-7460d823609a","conversationId":"1a2dadfb-df61-4ae4-918f-faba71c66274","taskId":null,"messageId":null,"filename":"script.png","mimeType":"image/png","sizeBytes":21,"sha256":"cebf25e0668376ce72d60cc05894de697b174396e5036fdb525363c351bf1f9b","kind":"image","createdAt":"2026-11-09T05:44:29.979Z","downloadUrl":"/api/v1/attachments/d1183228-28a2-47e7-
+CASE html-as-image-svg: filename=vector.svg declared=image/svg+xml => HTTP 201 rows 4->5 files 4->5 artifact={"id":"22750fe3-b6a1-4eaa-8ce2-7e214e679a29","mime_type":"image/svg+xml","size_bytes":"71","kind":"text","filename":"vector.svg"} ok=false
+  body: {"data":{"attachment":{"id":"22750fe3-b6a1-4eaa-8ce2-7e214e679a29","conversationId":"1a2dadfb-df61-4ae4-918f-faba71c66274","taskId":null,"messageId":null,"filename":"vector.svg","mimeType":"image/svg+xml","sizeBytes":71,"sha256":"3f67c8be987aa1db0ef99ce330286efe1929e729f5f9d1695b5fd0b987246244","kind":"text","createdAt":"2026-11-09T05:44:29.987Z","downloadUrl":"/api/v1/attachments/22750fe3-b6a1-4e
+CASE valid-png: filename=ok.png declared=image/png => HTTP 201 rows 5->6 files 5->6 artifact={"id":"9bbdc742-304b-418a-b9e6-cd48425e4d3d","mime_type":"image/png","size_bytes":"70","kind":"image","filename":"ok.png"} ok=true
+  body: {"data":{"attachment":{"id":"9bbdc742-304b-418a-b9e6-cd48425e4d3d","conversationId":"1a2dadfb-df61-4ae4-918f-faba71c66274","taskId":null,"messageId":null,"filename":"ok.png","mimeType":"image/png","sizeBytes":70,"sha256":"c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77","kind":"image","createdAt":"2026-11-09T05:44:29.995Z","downloadUrl":"/api/v1/attachments/9bbdc742-304b-418a-b9e6
+CASE valid-jpeg: filename=ok.jpg declared=image/jpeg => HTTP 201 rows 6->7 files 6->7 artifact={"id":"a7371d55-724f-4c9a-ab39-3e30d6fe92b6","mime_type":"image/jpeg","size_bytes":"517","kind":"image","filename":"ok.jpg"} ok=true
+  body: {"data":{"attachment":{"id":"a7371d55-724f-4c9a-ab39-3e30d6fe92b6","conversationId":"1a2dadfb-df61-4ae4-918f-faba71c66274","taskId":null,"messageId":null,"filename":"ok.jpg","mimeType":"image/jpeg","sizeBytes":517,"sha256":"fea3a3836c286266f807a61158074ad33343cb73770bf0f79af4494491387f7f","kind":"image","createdAt":"2026-11-09T05:44:30.003Z","downloadUrl":"/api/v1/attachments/a7371d55-724f-4c9a-ab
+CASE valid-webp: filename=ok.webp declared=image/webp => HTTP 201 rows 7->8 files 7->8 artifact={"id":"3c50f146-c19e-43b1-950b-617650d557a2","mime_type":"image/webp","size_bytes":"46","kind":"image","filename":"ok.webp"} ok=true
+  body: {"data":{"attachment":{"id":"3c50f146-c19e-43b1-950b-617650d557a2","conversationId":"1a2dadfb-df61-4ae4-918f-faba71c66274","taskId":null,"messageId":null,"filename":"ok.webp","mimeType":"image/webp","sizeBytes":46,"sha256":"81c63865605935a10ea1502fc63e2d34bbc29bea5078bc10047bf48de7d17e2b","kind":"image","createdAt":"2026-11-09T05:44:30.011Z","downloadUrl":"/api/v1/attachments/3c50f146-c19e-43b1-95
+CASE valid-gif: filename=ok.gif declared=image/gif => HTTP 201 rows 8->9 files 8->9 artifact={"id":"a9e190aa-32cf-4782-af6a-085ff61647b0","mime_type":"image/gif","size_bytes":"34","kind":"image","filename":"ok.gif"} ok=true
+  body: {"data":{"attachment":{"id":"a9e190aa-32cf-4782-af6a-085ff61647b0","conversationId":"1a2dadfb-df61-4ae4-918f-faba71c66274","taskId":null,"messageId":null,"filename":"ok.gif","mimeType":"image/gif","sizeBytes":34,"sha256":"1e85ec81b9800b4c443d39caca0d0926089a3ac201120db1ceb45b93789480b8","kind":"image","createdAt":"2026-11-09T05:44:30.019Z","downloadUrl":"/api/v1/attachments/a9e190aa-32cf-4782-af6a
+CASE valid-txt: filename=notes.txt declared=text/plain => HTTP 201 rows 9->10 files 9->10 artifact={"id":"62c5d0dd-84d1-4619-a8ab-dc7b01d5e175","mime_type":"text/plain","size_bytes":"11","kind":"text","filename":"notes.txt"} ok=true
+  body: {"data":{"attachment":{"id":"62c5d0dd-84d1-4619-a8ab-dc7b01d5e175","conversationId":"1a2dadfb-df61-4ae4-918f-faba71c66274","taskId":null,"messageId":null,"filename":"notes.txt","mimeType":"text/plain","sizeBytes":11,"sha256":"c30a92f9ef889c07c781a7cf99f5b71415d4d1289e84473d1b9e6f01feffc62d","kind":"text","createdAt":"2026-11-09T05:44:30.027Z","downloadUrl":"/api/v1/attachments/62c5d0dd-84d1-4619-a
+CASE valid-md: filename=readme.md declared=text/markdown => HTTP 201 rows 10->11 files 10->11 artifact={"id":"f27baa63-5579-4d25-9473-10712d0ee380","mime_type":"text/markdown","size_bytes":"8","kind":"text","filename":"readme.md"} ok=true
+  body: {"data":{"attachment":{"id":"f27baa63-5579-4d25-9473-10712d0ee380","conversationId":"1a2dadfb-df61-4ae4-918f-faba71c66274","taskId":null,"messageId":null,"filename":"readme.md","mimeType":"text/markdown","sizeBytes":8,"sha256":"497c96e612373c14de69c0cbd79e8c6b870cc73ae6da4037f1a1e0c58bcc9315","kind":"text","createdAt":"2026-11-09T05:44:30.034Z","downloadUrl":"/api/v1/attachments/f27baa63-5579-4d25
+CASE valid-json: filename=data.json declared=application/json => HTTP 201 rows 11->12 files 11->12 artifact={"id":"74182b69-5917-4d88-87cb-afad95fef0ee","mime_type":"application/json","size_bytes":"12","kind":"text","filename":"data.json"} ok=true
+  body: {"data":{"attachment":{"id":"74182b69-5917-4d88-87cb-afad95fef0ee","conversationId":"1a2dadfb-df61-4ae4-918f-faba71c66274","taskId":null,"messageId":null,"filename":"data.json","mimeType":"application/json","sizeBytes":12,"sha256":"e5f1eb4d806641698a35efe20e098efd20d7d57a9b90ee69079d5bb650920726","kind":"text","createdAt":"2026-11-09T05:44:30.040Z","downloadUrl":"/api/v1/attachments/74182b69-5917-
+CASE valid-yaml: filename=config.yaml declared=text/yaml => HTTP 201 rows 12->13 files 12->13 artifact={"id":"68020bad-0afb-4a02-9b46-ae612ed59ae3","mime_type":"text/yaml","size_bytes":"9","kind":"text","filename":"config.yaml"} ok=true
+  body: {"data":{"attachment":{"id":"68020bad-0afb-4a02-9b46-ae612ed59ae3","conversationId":"1a2dadfb-df61-4ae4-918f-faba71c66274","taskId":null,"messageId":null,"filename":"config.yaml","mimeType":"text/yaml","sizeBytes":9,"sha256":"e4959e64276da4756978788e4a473eb17435c52f6dc936fe551cbb310e2e00d0","kind":"text","createdAt":"2026-11-09T05:44:30.048Z","downloadUrl":"/api/v1/attachments/68020bad-0afb-4a02-9
+CASE valid-source: filename=index.ts declared=text/plain => HTTP 201 rows 13->14 files 13->14 artifact={"id":"85ef4255-4270-4b77-ba43-282e06026e69","mime_type":"text/plain","size_bytes":"24","kind":"text","filename":"index.ts"} ok=true
+  body: {"data":{"attachment":{"id":"85ef4255-4270-4b77-ba43-282e06026e69","conversationId":"1a2dadfb-df61-4ae4-918f-faba71c66274","taskId":null,"messageId":null,"filename":"index.ts","mimeType":"text/plain","sizeBytes":24,"sha256":"ad5abda1e1f8bfb618e985a13fbe07068662681d75f2c253244ec898a773c120","kind":"text","createdAt":"2026-11-09T05:44:30.054Z","downloadUrl":"/api/v1/attachments/85ef4255-4270-4b77-ba
+CASE html-as-text-html: filename=page.html declared=text/html => HTTP 201 rows 14->15 files 14->15 artifact={"id":"be19c800-d7a7-4e67-938a-e27317611dc8","mime_type":"text/html","size_bytes":"40","kind":"text","filename":"page.html"} ok=true
+  body: {"data":{"attachment":{"id":"be19c800-d7a7-4e67-938a-e27317611dc8","conversationId":"1a2dadfb-df61-4ae4-918f-faba71c66274","taskId":null,"messageId":null,"filename":"page.html","mimeType":"text/html","sizeBytes":40,"sha256":"4e20174a6af428e6a703e1e4d7c4bccb02b797760a2e21c0067767fca5617c83","kind":"text","createdAt":"2026-11-09T05:44:30.060Z","downloadUrl":"/api/v1/attachments/be19c800-d7a7-4e67-93
+RESULT FAIL passed=10/15
+EXIT=1
+
+判定（RED）：5 个恶意/不符用例全部 **201** 并写入 `artifacts` 与磁盘（HTML→image/png、PNG→text/plain、
+ELF→image/png、脚本→image/png、SVG→image/svg+xml）；合法用例 10/10 通过。`RESULT FAIL passed=10/15`、`EXIT=1`。
+
+## GREEN（改动后：字节决定类型）
+
+$ bash scripts/m6a/a2b-mime-sniff-evidence.sh
+CASE evil-png-as-image: filename=evil.png declared=image/png => HTTP 422 rows 0->0 files 0->0 artifact=null ok=true
+  body: {"error":{"code":"invalid_request","message":"文件内容与声明的类型不符：内容为 HTML，与声明的类型不符","retryable":false},"requestId":"4eb266e4-1320-4f90-9017-4c63d89d8abe"}
+CASE real-png-as-text: filename=note.txt declared=text/plain => HTTP 201 rows 0->1 files 0->1 artifact={"id":"8a33347c-e1ce-441d-802c-0928793db001","mime_type":"image/png","size_bytes":"70","kind":"image","filename":"note.txt"} ok=true
+  body: {"data":{"attachment":{"id":"8a33347c-e1ce-441d-802c-0928793db001","conversationId":"644ede07-e67c-4155-89d0-e26a2f22786b","taskId":null,"messageId":null,"filename":"note.txt","mimeType":"image/png","sizeBytes":70,"sha256":"c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77","kind":"image","createdAt":"2026-11-09T05:45:49.680Z","downloadUrl":"/api/v1/attachments/8a33347c-e1ce-441d-80
+CASE elf-as-image: filename=elf.png declared=image/png => HTTP 422 rows 1->1 files 1->1 artifact=null ok=true
+  body: {"error":{"code":"invalid_request","message":"文件内容与声明的类型不符：可执行文件或脚本不能作为附件上传","retryable":false},"requestId":"0fbd7884-ef65-4cc4-acef-33e312bbf713"}
+CASE script-as-image: filename=script.png declared=image/png => HTTP 422 rows 1->1 files 1->1 artifact=null ok=true
+  body: {"error":{"code":"invalid_request","message":"文件内容与声明的类型不符：可执行文件或脚本不能作为附件上传","retryable":false},"requestId":"bfa85f41-a252-4a93-9ffa-ed7d7be03c3b"}
+CASE html-as-image-svg: filename=vector.svg declared=image/svg+xml => HTTP 422 rows 1->1 files 1->1 artifact=null ok=true
+  body: {"error":{"code":"invalid_request","message":"文件内容与声明的类型不符：SVG 可以携带脚本，不能作为附件上传","retryable":false},"requestId":"51d5149f-c291-463e-a89a-2e5297e90b73"}
+CASE valid-png: filename=ok.png declared=image/png => HTTP 201 rows 1->2 files 1->2 artifact={"id":"e50c8b64-0bf4-419e-bcc0-aee8af0bd141","mime_type":"image/png","size_bytes":"70","kind":"image","filename":"ok.png"} ok=true
+  body: {"data":{"attachment":{"id":"e50c8b64-0bf4-419e-bcc0-aee8af0bd141","conversationId":"644ede07-e67c-4155-89d0-e26a2f22786b","taskId":null,"messageId":null,"filename":"ok.png","mimeType":"image/png","sizeBytes":70,"sha256":"c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77","kind":"image","createdAt":"2026-11-09T05:45:49.715Z","downloadUrl":"/api/v1/attachments/e50c8b64-0bf4-419e-bcc0
+CASE valid-jpeg: filename=ok.jpg declared=image/jpeg => HTTP 201 rows 2->3 files 2->3 artifact={"id":"3424c617-b918-43df-adc8-ee221b32533e","mime_type":"image/jpeg","size_bytes":"517","kind":"image","filename":"ok.jpg"} ok=true
+  body: {"data":{"attachment":{"id":"3424c617-b918-43df-adc8-ee221b32533e","conversationId":"644ede07-e67c-4155-89d0-e26a2f22786b","taskId":null,"messageId":null,"filename":"ok.jpg","mimeType":"image/jpeg","sizeBytes":517,"sha256":"fea3a3836c286266f807a61158074ad33343cb73770bf0f79af4494491387f7f","kind":"image","createdAt":"2026-11-09T05:45:49.724Z","downloadUrl":"/api/v1/attachments/3424c617-b918-43df-ad
+CASE valid-webp: filename=ok.webp declared=image/webp => HTTP 201 rows 3->4 files 3->4 artifact={"id":"7f639976-c50c-4713-ab77-b30e0d9434cf","mime_type":"image/webp","size_bytes":"46","kind":"image","filename":"ok.webp"} ok=true
+  body: {"data":{"attachment":{"id":"7f639976-c50c-4713-ab77-b30e0d9434cf","conversationId":"644ede07-e67c-4155-89d0-e26a2f22786b","taskId":null,"messageId":null,"filename":"ok.webp","mimeType":"image/webp","sizeBytes":46,"sha256":"81c63865605935a10ea1502fc63e2d34bbc29bea5078bc10047bf48de7d17e2b","kind":"image","createdAt":"2026-11-09T05:45:49.731Z","downloadUrl":"/api/v1/attachments/7f639976-c50c-4713-ab
+CASE valid-gif: filename=ok.gif declared=image/gif => HTTP 201 rows 4->5 files 4->5 artifact={"id":"ef5a7e16-d5e1-4455-9da6-fb06f6dc19c0","mime_type":"image/gif","size_bytes":"34","kind":"image","filename":"ok.gif"} ok=true
+  body: {"data":{"attachment":{"id":"ef5a7e16-d5e1-4455-9da6-fb06f6dc19c0","conversationId":"644ede07-e67c-4155-89d0-e26a2f22786b","taskId":null,"messageId":null,"filename":"ok.gif","mimeType":"image/gif","sizeBytes":34,"sha256":"1e85ec81b9800b4c443d39caca0d0926089a3ac201120db1ceb45b93789480b8","kind":"image","createdAt":"2026-11-09T05:45:49.739Z","downloadUrl":"/api/v1/attachments/ef5a7e16-d5e1-4455-9da6
+CASE valid-txt: filename=notes.txt declared=text/plain => HTTP 201 rows 5->6 files 5->6 artifact={"id":"01e5f649-c314-4421-bcb4-d8f8fce22ec0","mime_type":"text/plain","size_bytes":"11","kind":"text","filename":"notes.txt"} ok=true
+  body: {"data":{"attachment":{"id":"01e5f649-c314-4421-bcb4-d8f8fce22ec0","conversationId":"644ede07-e67c-4155-89d0-e26a2f22786b","taskId":null,"messageId":null,"filename":"notes.txt","mimeType":"text/plain","sizeBytes":11,"sha256":"c30a92f9ef889c07c781a7cf99f5b71415d4d1289e84473d1b9e6f01feffc62d","kind":"text","createdAt":"2026-11-09T05:45:49.747Z","downloadUrl":"/api/v1/attachments/01e5f649-c314-4421-b
+CASE valid-md: filename=readme.md declared=text/markdown => HTTP 201 rows 6->7 files 6->7 artifact={"id":"a9816b1c-d239-4ef7-b470-cb404cf98873","mime_type":"text/markdown","size_bytes":"8","kind":"text","filename":"readme.md"} ok=true
+  body: {"data":{"attachment":{"id":"a9816b1c-d239-4ef7-b470-cb404cf98873","conversationId":"644ede07-e67c-4155-89d0-e26a2f22786b","taskId":null,"messageId":null,"filename":"readme.md","mimeType":"text/markdown","sizeBytes":8,"sha256":"497c96e612373c14de69c0cbd79e8c6b870cc73ae6da4037f1a1e0c58bcc9315","kind":"text","createdAt":"2026-11-09T05:45:49.754Z","downloadUrl":"/api/v1/attachments/a9816b1c-d239-4ef7
+CASE valid-json: filename=data.json declared=application/json => HTTP 201 rows 7->8 files 7->8 artifact={"id":"f6a0f769-1ae4-4461-b549-f3b3f6b30945","mime_type":"application/json","size_bytes":"12","kind":"text","filename":"data.json"} ok=true
+  body: {"data":{"attachment":{"id":"f6a0f769-1ae4-4461-b549-f3b3f6b30945","conversationId":"644ede07-e67c-4155-89d0-e26a2f22786b","taskId":null,"messageId":null,"filename":"data.json","mimeType":"application/json","sizeBytes":12,"sha256":"e5f1eb4d806641698a35efe20e098efd20d7d57a9b90ee69079d5bb650920726","kind":"text","createdAt":"2026-11-09T05:45:49.761Z","downloadUrl":"/api/v1/attachments/f6a0f769-1ae4-
+CASE valid-yaml: filename=config.yaml declared=text/yaml => HTTP 201 rows 8->9 files 8->9 artifact={"id":"aed2b2d5-2aca-45b3-8418-453614a378e4","mime_type":"text/yaml","size_bytes":"9","kind":"text","filename":"config.yaml"} ok=true
+  body: {"data":{"attachment":{"id":"aed2b2d5-2aca-45b3-8418-453614a378e4","conversationId":"644ede07-e67c-4155-89d0-e26a2f22786b","taskId":null,"messageId":null,"filename":"config.yaml","mimeType":"text/yaml","sizeBytes":9,"sha256":"e4959e64276da4756978788e4a473eb17435c52f6dc936fe551cbb310e2e00d0","kind":"text","createdAt":"2026-11-09T05:45:49.768Z","downloadUrl":"/api/v1/attachments/aed2b2d5-2aca-45b3-8
+CASE valid-source: filename=index.ts declared=text/plain => HTTP 201 rows 9->10 files 9->10 artifact={"id":"8cd972bf-f904-4e29-9d80-8edace96d762","mime_type":"text/plain","size_bytes":"24","kind":"text","filename":"index.ts"} ok=true
+  body: {"data":{"attachment":{"id":"8cd972bf-f904-4e29-9d80-8edace96d762","conversationId":"644ede07-e67c-4155-89d0-e26a2f22786b","taskId":null,"messageId":null,"filename":"index.ts","mimeType":"text/plain","sizeBytes":24,"sha256":"ad5abda1e1f8bfb618e985a13fbe07068662681d75f2c253244ec898a773c120","kind":"text","createdAt":"2026-11-09T05:45:49.776Z","downloadUrl":"/api/v1/attachments/8cd972bf-f904-4e29-9d
+CASE html-as-text-html: filename=page.html declared=text/html => HTTP 201 rows 10->11 files 10->11 artifact={"id":"e930e880-4a6a-40ae-bc02-89989629468c","mime_type":"text/html","size_bytes":"40","kind":"text","filename":"page.html"} ok=true
+  body: {"data":{"attachment":{"id":"e930e880-4a6a-40ae-bc02-89989629468c","conversationId":"644ede07-e67c-4155-89d0-e26a2f22786b","taskId":null,"messageId":null,"filename":"page.html","mimeType":"text/html","sizeBytes":40,"sha256":"4e20174a6af428e6a703e1e4d7c4bccb02b797760a2e21c0067767fca5617c83","kind":"text","createdAt":"2026-11-09T05:45:49.783Z","downloadUrl":"/api/v1/attachments/e930e880-4a6a-40ae-bc
+RESULT PASS passed=15/15
+EXIT=0
+
+判定（GREEN）：5 个恶意/不符用例全部 **422**，且 `rows`/`files` 前后不变（拒绝在落盘前）；真实 PNG 声明为
+text/plain 时入库为 `image/png`/`kind=image`；10 个合法用例全部 201 且类型正确。`RESULT PASS passed=15/15`、`EXIT=0`。
+
+## 回归
+
+$ pnpm check
+packages/contracts test:       Tests  19 passed (19)
+packages/runtime-client test:       Tests  13 passed (13)
+apps/dispatcher test:       Tests  5 passed (5)
+apps/api test:       Tests  20 passed (20)
+apps/supervisor test:       Tests  59 passed (59)
+EXIT=0
+
+$ pnpm test:integration
+ Test Files  12 passed (12)
+      Tests  40 passed (40)
+ Test Files  16 passed (16)
+      Tests  105 passed (105)
+ Test Files  16 passed | 1 skipped (17)
+      Tests  82 passed | 1 skipped (83)
+EXIT=0
+
+`pnpm check` EXIT=0；集成 db 40 / api 105（既有附件套件 11 条 + 新增 5 条，另 1 条 HTML 下载中和仍通过）/
+dispatcher 82+1 skipped，EXIT=0。A1/A2 既有上传（含 `text/html`）保持通过。
+
+## 未验证 / 已知缺口
+
+- 只覆盖常见图片魔数与文本/脚本/可执行/标记；未穷举所有二进制格式（未知内容按口径 A 拒绝）。
+- `MZ` 前缀的纯文本会被当作 PE 拒绝（白名单场景下可接受，已写在代码注释里）。
+- 下载侧仍保留 `safeMimeType` 的 HTML/SVG 中和兜底（本轮未改，`image/svg+xml` 上传已被拒）。
+- 未在生产部署与 3082 上执行；证据来自隔离 PostgreSQL + 真实 API。
