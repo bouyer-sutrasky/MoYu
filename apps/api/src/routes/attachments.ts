@@ -23,6 +23,7 @@ import {
   storeUpload,
   toAttachmentSummary,
 } from '../domain/attachments';
+import { decideUploadType } from '../domain/mime-sniff';
 import { ApiProblem } from '../lib/errors';
 import { parseInput, sendData } from '../lib/http';
 
@@ -120,6 +121,14 @@ export function registerAttachmentRoutes(
         throw ApiProblem.invalid('附件不能是空文件');
       }
 
+      // The bytes decide the stored type: a declared image/HTML/executable cannot
+      // hide different content, and a real image declared as text is recorded as
+      // the image it is. Refusals happen before anything is written to disk.
+      const decision = decideUploadType(mimeType, bytes);
+      if (!decision.ok) {
+        throw ApiProblem.invalid(`文件内容与声明的类型不符：${decision.reason}`);
+      }
+      const storedMimeType = decision.mimeType;
       const storageKey = attachmentStorageKey(conversationId);
       const stored = await storeUpload(config, storageKey, bytes);
       try {
@@ -131,10 +140,10 @@ export function registerAttachmentRoutes(
             taskId: conversation.taskId,
             type: 'attachment',
             storageKey: stored.storageKey,
-            mimeType,
+            mimeType: storedMimeType,
             sizeBytes: stored.sizeBytes,
             sha256: stored.sha256,
-            metadata: { filename, kind: attachmentKindFor(mimeType) },
+            metadata: { filename, kind: attachmentKindFor(storedMimeType) },
           })
           .returning();
         if (!row) {

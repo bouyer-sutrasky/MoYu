@@ -416,6 +416,84 @@ describe('M6 attachment upload and download', () => {
     expect(response.statusCode).toBe(422);
   });
 
+  it('refuses HTML declared as image/png without writing a row or a file', async () => {
+    const conversationId = await createConversation(harness);
+    const filesBefore = readdirSync(harness.storageDir, { recursive: true }).length;
+    const rowsBefore = await countAttachments(harness);
+    const response = await upload(harness, conversationId, {
+      filename: 'evil.png',
+      contentType: 'image/png',
+      bytes: HTML_BYTES,
+    });
+    expect(response.statusCode).toBe(422);
+    expect((response.json() as { error: { message: string } }).error.message).toContain('HTML');
+    expect(await countAttachments(harness)).toBe(rowsBefore);
+    expect(readdirSync(harness.storageDir, { recursive: true }).length).toBe(filesBefore);
+  });
+
+  it('refuses ELF and shebang bytes declared as image/png', async () => {
+    const conversationId = await createConversation(harness);
+    const elf = Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46]), Buffer.alloc(32)]);
+    const elfResponse = await upload(harness, conversationId, {
+      filename: 'elf.png',
+      contentType: 'image/png',
+      bytes: elf,
+    });
+    expect(elfResponse.statusCode).toBe(422);
+    const scriptResponse = await upload(harness, conversationId, {
+      filename: 'script.png',
+      contentType: 'image/png',
+      bytes: Buffer.from('#!/bin/sh\necho pwned\n', 'utf8'),
+    });
+    expect(scriptResponse.statusCode).toBe(422);
+  });
+
+  it('records a real PNG declared as text/plain as image/png', async () => {
+    const conversationId = await createConversation(harness);
+    const attachment = await uploadedAttachment(harness, conversationId, {
+      filename: 'note.txt',
+      contentType: 'text/plain',
+      bytes: PNG_BYTES,
+    });
+    expect(attachment.mimeType).toBe('image/png');
+    expect(attachment.kind).toBe('image');
+  });
+
+  it('keeps valid images, text, source and explicit text/html uploads', async () => {
+    const conversationId = await createConversation(harness);
+    const png = await uploadedAttachment(harness, conversationId, {
+      filename: 'ok.png',
+      contentType: 'image/png',
+      bytes: PNG_BYTES,
+    });
+    expect(png.mimeType).toBe('image/png');
+    expect(png.kind).toBe('image');
+    for (const file of [
+      { filename: 'notes.txt', contentType: 'text/plain', bytes: Buffer.from('plain\n') },
+      { filename: 'readme.md', contentType: 'text/markdown', bytes: Buffer.from('# t\n') },
+      { filename: 'data.json', contentType: 'application/json', bytes: Buffer.from('{}\n') },
+      {
+        filename: 'index.ts',
+        contentType: 'text/plain',
+        bytes: Buffer.from('export const x = 1;\n'),
+      },
+      { filename: 'page.html', contentType: 'text/html', bytes: HTML_BYTES },
+    ]) {
+      const attachment = await uploadedAttachment(harness, conversationId, file);
+      expect(attachment.kind).toBe('text');
+    }
+  });
+
+  it('refuses SVG bytes even when declared image/svg+xml', async () => {
+    const conversationId = await createConversation(harness);
+    const response = await upload(harness, conversationId, {
+      filename: 'vector.svg',
+      contentType: 'image/svg+xml',
+      bytes: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>', 'utf8'),
+    });
+    expect(response.statusCode).toBe(422);
+  });
+
   it('does not accept a new attachment once the task has ended', async () => {
     const conversationId = await createConversation(harness);
     await harness.database
