@@ -60,12 +60,24 @@ async function counts() {
   return { messages: messages.rows[0].n, deliveries: deliveries.rows[0].n };
 }
 async function artifactRows() {
-  const result = await client.query(
-    `select id, mime_type, message_id, revoked_at, storage_key
-       from artifacts where conversation_id = $1 and type = 'attachment' order by created_at, id`,
-    [CONVERSATION],
-  );
-  return result.rows;
+  try {
+    const result = await client.query(
+      `select id, mime_type, message_id, revoked_at, storage_key
+         from artifacts where conversation_id = $1 and type = 'attachment' order by created_at, id`,
+      [CONVERSATION],
+    );
+    return result.rows;
+  } catch (error) {
+    // The pre-0016 tree has no revoked_at column; the same script still reports
+    // its real rows, with revocation always absent.
+    if (error?.code !== '42703') throw error;
+    const result = await client.query(
+      `select id, mime_type, message_id, null::timestamptz as revoked_at, storage_key
+         from artifacts where conversation_id = $1 and type = 'attachment' order by created_at, id`,
+      [CONVERSATION],
+    );
+    return result.rows;
+  }
 }
 async function upload(name) {
   const form = new FormData();
