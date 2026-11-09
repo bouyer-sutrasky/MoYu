@@ -1,24 +1,25 @@
-# A3 附件与投递 — 2026-11-09T00:13:01+08:00
+# A3 附件与投递 — 2026-11-09T16:08:16+08:00
 $ git rev-parse HEAD
-55d9e2935baebd3f660c9753ca5621d9ef8a980d
-$ git -C /tmp/m6a-run-rerun/worktrees/probe1/m6a-review-t_m6a_55d9e2 rev-parse HEAD
-55d9e2935baebd3f660c9753ca5621d9ef8a980d
-环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-run-rerun/artifacts，supervisor http://127.0.0.1:4690
+4978dee443ce40d7dddb3df5f4d884168629cc68
+$ git -C /tmp/m6a-refresh/worktrees/probe1/m6a-review-t_m6a_4978de rev-parse HEAD
+4978dee443ce40d7dddb3df5f4d884168629cc68
+环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-refresh/artifacts，supervisor http://127.0.0.1:4690
+本 head 的 PR #44 必需检查：check pass；integration (real PostgreSQL) pass（2026-11-09T06:58:50Z / 07:00:01Z）。
 
 ## 1. 带附件的消息
 HTTP 202
 {
     "data": {
         "message": {
-            "id": "c7277974-f924-4828-b50d-9a2e99a4d519",
-            "conversationId": "8e6cbcba-bb53-43cf-9d59-7412fc87b10a",
+            "id": "164a8b58-4ba2-47d7-b778-5aaa52dc0f17",
+            "conversationId": "16518fae-0ec7-4a10-b82f-7f2acd481467",
             "direction": "inbound",
             "kind": "user",
-            "clientMessageId": "m6a-attach-t_m6a_55d9e2",
+            "clientMessageId": "m6a-attach-t_m6a_4978de",
             "body": "\u9644\u4ef6\u968f\u6d88\u606f\u53d1\u9001\u7684\u9a8c\u6536\u8bb0\u5f55",
             "replyToMessageId": null,
             "source": "web",
-            "createdAt": "2026-11-08T16:13:01.822Z",
+            "createdAt": "2026-11-09T08:08:16.114Z",
             "delivery": {
                 "state": "stored",
                 "attemptCount": 0,
@@ -29,46 +30,48 @@ HTTP 202
             },
             "attachments": [
                 {
-                    "id": "83fd8e86-c712-4e4c-8395-9ade3a45ba4b",
-                    "conversationId": "8e6cbcba-bb53-43cf-9d59-7412fc87b10a",
-                    "taskId": "c82fbbbd-c12b-45c3-b999-9d78b2f73f20",
-                    "messageId": "c7277974-f924-4828-b50d-9a2e99a4d519",
+                    "id": "0abc7d2d-937a-4cef-88b2-dc4ac7d2ac62",
+                    "conversationId": "16518fae-0ec7-4a10-b82f-7f2acd481467",
+                    "taskId": "fcee8524-a299-4779-b63e-584cd591e70e",
+                    "messageId": "164a8b58-4ba2-47d7-b778-5aaa52dc0f17",
                     "filename": "upload.png",
                     "mimeType": "image/png",
                     "sizeBytes": 70,
                     "sha256": "c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77",
                     "kind": "image",
-                    "createdAt": "2026-11-08T16:12:52.340Z",
-                    "downloadUrl": "/api/v1/attachments/83fd8e86-c712-4e4c-8395-9ade3a45ba4b"
+                    "revokedAt": null,
+                    "createdAt": "2026-11-09T08:08:06.662Z",
+                    "downloadUrl": "/api/v1/attachments/0abc7d2d-937a-4cef-88b2-dc4ac7d2ac62"
                 },
                 {
-                    "id": "4f33f869-5f84-429e-96b0-29caa95a9c93",
-                    "conversationId": "8e6cbcba-bb53-43cf-9d59-7412fc87b10a",
-                    "taskId": "c82fbbbd-c12b-45c3-b999-9d78b2f73f20",
-                    "messageId": "c7277974-f924-4828-b50d-9a2e99a4d519",
+                    "id": "e1562278-eaa3-4042-b052-1ce5219c7408",
+                    "conversationId": "16518fae-0ec7-4a10-b82f-7f2acd481467",
+                    "taskId": "fcee8524-a299-4779-b63e-584cd591e70e",
+                    "messageId": "164a8b58-4ba2-47d7-b778-5aaa52dc0f17",
                     "filename": "upload.txt",
                     "mimeType": "text/plain",
                     "sizeBytes": 30,
                     "sha256": "970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584",
                     "kind": "text",
-                    "createdAt": "2026-11-08T16:12:52.403Z",
-                    "downloadUrl": "/api/v1/attachments/4f33f869-5f84-429e-96b0-29caa95a9c93"
+                    "revokedAt": null,
+                    "createdAt": "2026-11-09T08:08:06.735Z",
+                    "downloadUrl": "/api/v1/attachments/e1562278-eaa3-4042-b052-1ce5219c7408"
                 }
             ]
         },
         "duplicate": false
     },
-    "requestId": "62723461-cc8b-4003-8f41-41dde1fa68f8"
+    "requestId": "1b81060a-64d1-44aa-882d-a0a2abedc73c"
 }
 
 ## 2. 附件行已绑定 message_id（同一事务）
                   id                  |              message_id              |      filename      | size_bytes 
 --------------------------------------+--------------------------------------+--------------------+------------
- 83fd8e86-c712-4e4c-8395-9ade3a45ba4b | c7277974-f924-4828-b50d-9a2e99a4d519 | upload.png         |         70
- 4f33f869-5f84-429e-96b0-29caa95a9c93 | c7277974-f924-4828-b50d-9a2e99a4d519 | upload.txt         |         30
- db49edff-bd6e-490c-be34-7adf2e222e8e |                                      | upload.html        |         59
- f464432f-008d-437e-97ba-beaa9c591c0c | 41cc7da2-1806-4bc9-8d27-f7846b5f25c0 | m6a-ui-desktop.txt |         56
- 83501530-9755-437f-90fc-9e90d3ca5a38 | a6c412c1-9d74-4f7c-b367-c4ba820dc594 | m6a-ui-mobile.txt  |         56
+ 0abc7d2d-937a-4cef-88b2-dc4ac7d2ac62 | 164a8b58-4ba2-47d7-b778-5aaa52dc0f17 | upload.png         |         70
+ e1562278-eaa3-4042-b052-1ce5219c7408 | 164a8b58-4ba2-47d7-b778-5aaa52dc0f17 | upload.txt         |         30
+ d4b9d390-6fbc-47d0-b50d-50f3c09fd67e |                                      | upload.html        |         59
+ ecfbc5e1-f431-45b9-ac03-864f183eb77e | 7e5ef19e-ea44-45ca-9c28-3780a1fcd6bf | m6a-ui-desktop.txt |         56
+ 70bb2510-03b1-45a9-a2ef-ad46d8b3f8fc | cf955478-437d-49f3-b530-03b35b31db10 | m6a-ui-mobile.txt  |         56
 (5 rows)
 
 
@@ -77,7 +80,7 @@ HTTP 202
 ## 4. 投递状态
               upstream_trigger_id               |  state  | attempt_count 
 ------------------------------------------------+---------+---------------
- workspace:c7277974-f924-4828-b50d-9a2e99a4d519 | pending |             0
+ workspace:164a8b58-4ba2-47d7-b778-5aaa52dc0f17 | pending |             0
 (1 row)
 
 
@@ -85,3 +88,44 @@ HTTP 202
 - 共享契约 `bridgeTriggerInputSchema`（packages/contracts/src/runtime.ts）以 `.strict()` 结尾且没有 attachments 字段；
   上游 Source 的 Trigger 也没有附件字段。上面的原始 Trigger 只有 text，没有 attachments。
 - 附件保存在平台存储并随消息展示/下载；投递到 runtime 需要上游 Bridge 补丁与能力协商，属后续单。
+
+
+## 6. 投递补跑（首次运行时实例被标为 fault，未派发）
+首次 A3 运行时 `repository_instances` 为 `fault / prepare_failed`，dispatcher 没有认领，delivery 停留在 `pending/0`（原始行见第 4 节，保留不改）。把实例恢复 `online`、仓库 `active` 并重置该条 delivery 后，同一套 dispatcher（`apps/dispatcher/dist/main.js`）在隔离 PostgreSQL 上补跑：
+
+$ psql ... -c "update repositories set status='active' where full_name='bouyer-sutrasky/MoYu'"
+$ psql ... -c "update repository_instances set state='online', desired_state='sleeping', reason_code='listening'"
+$ psql ... -c "update deliveries set state='pending', attempt_count=0, lease_owner=null, lease_expires_at=null, next_attempt_at=now() where message_id='<msg>'"
+$ node apps/dispatcher/dist/main.js   # BRIDGE_URL 指向本机 stub，DELIVERY_INTERVAL_MS=300
+$ cat /tmp/a3-trigger.jsonl           # stub Bridge 原始记录
+{
+  "triggerId": "workspace:164a8b58-4ba2-47d7-b778-5aaa52dc0f17",
+  "conversationId": "16518fae-0ec7-4a10-b82f-7f2acd481467",
+  "messageId": "164a8b58-4ba2-47d7-b778-5aaa52dc0f17",
+  "replyToMessageId": null,
+  "actor": {
+    "id": "fe6b9c0e-9fe6-4245-bdf7-dbfd2f7dd961",
+    "name": "MoYu Owner"
+  },
+  "text": "附件随消息发送的验收记录",
+  "at": "2026-11-09T08:08:16.114Z",
+  "admission": {
+    "leaseId": "05d08028-d546-48d4-807b-64c3c23d0d12",
+    "fencingToken": "1"
+  },
+  "executionSpec": {
+    "repository": "bouyer-sutrasky/MoYu",
+    "baseBranch": "main",
+    "baseCommit": "d02f07f1483e0c85a13c1dfe24d03d855a72d0a1",
+    "model": null,
+    "mode": "execute"
+  }
+}
+$ psql ... -c "select upstream_trigger_id,state,attempt_count from deliveries where message_id='<msg>'"
+ workspace:164a8b58-4ba2-47d7-b778-5aaa52dc0f17 | delivered | 1
+exit code: 0
+
+判定（期望 / 实际 / 结论）：
+- 期望：带附件消息 202、附件行同一事务绑定 message_id、dispatcher Trigger 原始 JSON 有 text 且没有 attachments、delivery 变为 delivered/attempt 1。
+- 实际：第 1 节 HTTP 202；第 2 节两行 message_id 相同；上面 Trigger JSON 无 `attachments` 字段；补跑后 `delivered | 1`。
+- 结论：通过（补跑）；首次未派发的原因是隔离仓库实例状态而非产品行为，原始 pending 行保留以如实记录。

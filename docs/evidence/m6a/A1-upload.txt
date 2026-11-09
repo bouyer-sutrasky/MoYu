@@ -1,22 +1,23 @@
-# A1 上传主链路 — 2026-11-09T00:12:52+08:00
+# A1 上传主链路 — 2026-11-09T16:08:06+08:00
 $ git rev-parse HEAD
-55d9e2935baebd3f660c9753ca5621d9ef8a980d
-$ git -C /tmp/m6a-run-rerun/worktrees/probe1/m6a-review-t_m6a_55d9e2 rev-parse HEAD
-55d9e2935baebd3f660c9753ca5621d9ef8a980d
-环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-run-rerun/artifacts，supervisor http://127.0.0.1:4690
+4978dee443ce40d7dddb3df5f4d884168629cc68
+$ git -C /tmp/m6a-refresh/worktrees/probe1/m6a-review-t_m6a_4978de rev-parse HEAD
+4978dee443ce40d7dddb3df5f4d884168629cc68
+环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-refresh/artifacts，supervisor http://127.0.0.1:4690
+本 head 的 PR #44 必需检查：check pass；integration (real PostgreSQL) pass（2026-11-09T06:58:50Z / 07:00:01Z）。
 
 ## 命令 1：上传 PNG
 $ curl -s -o resp-png.json -w '%{http_code}' -b 'moyu_session=<session>' -F 'file=@upload.png;type=image/png' \
-    http://127.0.0.1:4620/api/v1/conversations/8e6cbcba-bb53-43cf-9d59-7412fc87b10a/attachments
+    http://127.0.0.1:4620/api/v1/conversations/16518fae-0ec7-4a10-b82f-7f2acd481467/attachments
 HTTP 201
-{"data":{"attachment":{"id":"83fd8e86-c712-4e4c-8395-9ade3a45ba4b","conversationId":"8e6cbcba-bb53-43cf-9d59-7412fc87b10a","taskId":"c82fbbbd-c12b-45c3-b999-9d78b2f73f20","messageId":null,"filename":"upload.png","mimeType":"image/png","sizeBytes":70,"sha256":"c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77","kind":"image","createdAt":"2026-11-08T16:12:52.340Z","downloadUrl":"/api/v1/attachments/83fd8e86-c712-4e4c-8395-9ade3a45ba4b"}},"requestId":"6a677c2a-895f-4921-92f1-8847bb2de25c"}
+{"data":{"attachment":{"id":"0abc7d2d-937a-4cef-88b2-dc4ac7d2ac62","conversationId":"16518fae-0ec7-4a10-b82f-7f2acd481467","taskId":"fcee8524-a299-4779-b63e-584cd591e70e","messageId":null,"filename":"upload.png","mimeType":"image/png","sizeBytes":70,"sha256":"c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77","kind":"image","revokedAt":null,"createdAt":"2026-11-09T08:08:06.662Z","downloadUrl":"/api/v1/attachments/0abc7d2d-937a-4cef-88b2-dc4ac7d2ac62"}},"requestId":"add1e07d-7aba-45ef-991f-c94f5e538917"}
 
 ## 命令 2：上传文本文件
 HTTP 201
-{"data":{"attachment":{"id":"4f33f869-5f84-429e-96b0-29caa95a9c93","conversationId":"8e6cbcba-bb53-43cf-9d59-7412fc87b10a","taskId":"c82fbbbd-c12b-45c3-b999-9d78b2f73f20","messageId":null,"filename":"upload.txt","mimeType":"text/plain","sizeBytes":30,"sha256":"970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584","kind":"text","createdAt":"2026-11-08T16:12:52.403Z","downloadUrl":"/api/v1/attachments/4f33f869-5f84-429e-96b0-29caa95a9c93"}},"requestId":"11cf1739-86ad-4ba0-aa3d-dab9507a5e9b"}
+{"data":{"attachment":{"id":"e1562278-eaa3-4042-b052-1ce5219c7408","conversationId":"16518fae-0ec7-4a10-b82f-7f2acd481467","taskId":"fcee8524-a299-4779-b63e-584cd591e70e","messageId":null,"filename":"upload.txt","mimeType":"text/plain","sizeBytes":30,"sha256":"970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584","kind":"text","revokedAt":null,"createdAt":"2026-11-09T08:08:06.735Z","downloadUrl":"/api/v1/attachments/e1562278-eaa3-4042-b052-1ce5219c7408"}},"requestId":"49dbdb08-c4ea-4db8-9c66-30585ae91e53"}
 
 ## 命令 3：鉴权下载并逐字节比较
-$ curl -s -b 'moyu_session=<session>' -D h1.txt -o dl.png http://127.0.0.1:4620/api/v1/attachments/83fd8e86-c712-4e4c-8395-9ade3a45ba4b
+$ curl -s -b 'moyu_session=<session>' -D h1.txt -o dl.png http://127.0.0.1:4620/api/v1/attachments/0abc7d2d-937a-4cef-88b2-dc4ac7d2ac62
 HTTP/1.1 200 OK
 content-type: image/png
 content-length: 70
@@ -24,17 +25,17 @@ content-disposition: attachment; filename="upload.png"; filename*=UTF-8''upload.
 x-content-type-options: nosniff
 content-security-policy: default-src 'none'; sandbox
 $ sha256sum upload.png dl.png
-c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77  /tmp/m6a-run-rerun/upload.png
-c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77  /tmp/m6a-run-rerun/dl.png
+c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77  /tmp/m6a-refresh/upload.png
+c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77  /tmp/m6a-refresh/dl.png
 byte-identical: yes
 $ sha256sum upload.txt dl.txt
-970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584  /tmp/m6a-run-rerun/upload.txt
-970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584  /tmp/m6a-run-rerun/dl.txt
+970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584  /tmp/m6a-refresh/upload.txt
+970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584  /tmp/m6a-refresh/dl.txt
 byte-identical: yes
 
 ## 命令 4：HTML 上传后下载不得内联执行
 HTTP 201
-{"data":{"attachment":{"id":"db49edff-bd6e-490c-be34-7adf2e222e8e","conversationId":"8e6cbcba-bb53-43cf-9d59-7412fc87b10a","taskId":"c82fbbbd-c12b-45c3-b999-9d78b2f73f20","messageId":null,"filename":"upload.html","mimeType":"text/html","sizeBytes":59,"sha256":"e911cfb2f8746daddecb91384342c051cf4caf421a8610abf5f3dff5d7a95bed","kind":"text","createdAt":"2026-11-08T16:12:52.504Z","downloadUrl":"/api/v1/attachments/db49edff-bd6e-490c-be34-7adf2e222e8e"}},"requestId":"173c5162-573a-4de1-ae5e-e93f1c875442"}
+{"data":{"attachment":{"id":"d4b9d390-6fbc-47d0-b50d-50f3c09fd67e","conversationId":"16518fae-0ec7-4a10-b82f-7f2acd481467","taskId":"fcee8524-a299-4779-b63e-584cd591e70e","messageId":null,"filename":"upload.html","mimeType":"text/html","sizeBytes":59,"sha256":"e911cfb2f8746daddecb91384342c051cf4caf421a8610abf5f3dff5d7a95bed","kind":"text","revokedAt":null,"createdAt":"2026-11-09T08:08:06.834Z","downloadUrl":"/api/v1/attachments/d4b9d390-6fbc-47d0-b50d-50f3c09fd67e"}},"requestId":"857483f6-9319-4a54-8f4b-ee97c6d89f48"}
 HTTP/1.1 200 OK
 content-type: application/octet-stream
 content-disposition: attachment; filename="upload.html"; filename*=UTF-8''upload.html
@@ -45,25 +46,31 @@ content-security-policy: default-src 'none'; sandbox
 ## 命令 5：真实浏览器附件操作（桌面 1440×900 + 手机 390×844）
 $ node scripts/m6a/attachment-shot.mjs   # 真实 Web 构建 + 真实 API + 真实 Chromium
 desktop: viewport=1440x900 chipVisible=1 shownInMessage=1 screenshot=/root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/after-desktop-light-attachment.png
-desktop: messageId=41cc7da2-1806-4bc9-8d27-f7846b5f25c0 attachment={"filename":"m6a-ui-desktop.txt","sizeBytes":56,"sha256":"09502e9f0d5aed1dd976c0c75c646864941affbf19483e868e582e69e5d57ed8"} expectedSha256=09502e9f0d5aed1dd976c0c75c646864941affbf19483e868e582e69e5d57ed8
+desktop: messageId=7e5ef19e-ea44-45ca-9c28-3780a1fcd6bf attachment={"filename":"m6a-ui-desktop.txt","sizeBytes":56,"sha256":"09502e9f0d5aed1dd976c0c75c646864941affbf19483e868e582e69e5d57ed8"} expectedSha256=09502e9f0d5aed1dd976c0c75c646864941affbf19483e868e582e69e5d57ed8
 mobile: viewport=390x844 chipVisible=1 shownInMessage=1 screenshot=/root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/after-mobile-light-attachment.png
-mobile: messageId=a6c412c1-9d74-4f7c-b367-c4ba820dc594 attachment={"filename":"m6a-ui-mobile.txt","sizeBytes":56,"sha256":"09502e9f0d5aed1dd976c0c75c646864941affbf19483e868e582e69e5d57ed8"} expectedSha256=09502e9f0d5aed1dd976c0c75c646864941affbf19483e868e582e69e5d57ed8
+mobile: messageId=cf955478-437d-49f3-b530-03b35b31db10 attachment={"filename":"m6a-ui-mobile.txt","sizeBytes":56,"sha256":"09502e9f0d5aed1dd976c0c75c646864941affbf19483e868e582e69e5d57ed8"} expectedSha256=09502e9f0d5aed1dd976c0c75c646864941affbf19483e868e582e69e5d57ed8
 附件 UI 截图：/root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/after-desktop-light-attachment.png 与 /root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/after-mobile-light-attachment.png
 
 ## attachments 库表原始行
                   id                  |           conversation_id            |              message_id              |    type    | mime_type  | size_bytes |                              sha256                              |                      metadata                      
 --------------------------------------+--------------------------------------+--------------------------------------+------------+------------+------------+------------------------------------------------------------------+----------------------------------------------------
- 83fd8e86-c712-4e4c-8395-9ade3a45ba4b | 8e6cbcba-bb53-43cf-9d59-7412fc87b10a |                                      | attachment | image/png  |         70 | c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77 | {"kind": "image", "filename": "upload.png"}
- 4f33f869-5f84-429e-96b0-29caa95a9c93 | 8e6cbcba-bb53-43cf-9d59-7412fc87b10a |                                      | attachment | text/plain |         30 | 970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584 | {"kind": "text", "filename": "upload.txt"}
- db49edff-bd6e-490c-be34-7adf2e222e8e | 8e6cbcba-bb53-43cf-9d59-7412fc87b10a |                                      | attachment | text/html  |         59 | e911cfb2f8746daddecb91384342c051cf4caf421a8610abf5f3dff5d7a95bed | {"kind": "text", "filename": "upload.html"}
- f464432f-008d-437e-97ba-beaa9c591c0c | 8e6cbcba-bb53-43cf-9d59-7412fc87b10a | 41cc7da2-1806-4bc9-8d27-f7846b5f25c0 | attachment | text/plain |         56 | 09502e9f0d5aed1dd976c0c75c646864941affbf19483e868e582e69e5d57ed8 | {"kind": "text", "filename": "m6a-ui-desktop.txt"}
- 83501530-9755-437f-90fc-9e90d3ca5a38 | 8e6cbcba-bb53-43cf-9d59-7412fc87b10a | a6c412c1-9d74-4f7c-b367-c4ba820dc594 | attachment | text/plain |         56 | 09502e9f0d5aed1dd976c0c75c646864941affbf19483e868e582e69e5d57ed8 | {"kind": "text", "filename": "m6a-ui-mobile.txt"}
+ 0abc7d2d-937a-4cef-88b2-dc4ac7d2ac62 | 16518fae-0ec7-4a10-b82f-7f2acd481467 |                                      | attachment | image/png  |         70 | c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77 | {"kind": "image", "filename": "upload.png"}
+ e1562278-eaa3-4042-b052-1ce5219c7408 | 16518fae-0ec7-4a10-b82f-7f2acd481467 |                                      | attachment | text/plain |         30 | 970c9cae19fd17e9e34d52ea00589d59524b9ef2da6babea4419c184fb482584 | {"kind": "text", "filename": "upload.txt"}
+ d4b9d390-6fbc-47d0-b50d-50f3c09fd67e | 16518fae-0ec7-4a10-b82f-7f2acd481467 |                                      | attachment | text/html  |         59 | e911cfb2f8746daddecb91384342c051cf4caf421a8610abf5f3dff5d7a95bed | {"kind": "text", "filename": "upload.html"}
+ ecfbc5e1-f431-45b9-ac03-864f183eb77e | 16518fae-0ec7-4a10-b82f-7f2acd481467 | 7e5ef19e-ea44-45ca-9c28-3780a1fcd6bf | attachment | text/plain |         56 | 09502e9f0d5aed1dd976c0c75c646864941affbf19483e868e582e69e5d57ed8 | {"kind": "text", "filename": "m6a-ui-desktop.txt"}
+ 70bb2510-03b1-45a9-a2ef-ad46d8b3f8fc | 16518fae-0ec7-4a10-b82f-7f2acd481467 | cf955478-437d-49f3-b530-03b35b31db10 | attachment | text/plain |         56 | 09502e9f0d5aed1dd976c0c75c646864941affbf19483e868e582e69e5d57ed8 | {"kind": "text", "filename": "m6a-ui-mobile.txt"}
 (5 rows)
 
 
 ## 存储目录（服务端生成的键，0600）
-600 30 /tmp/m6a-run-rerun/artifacts/attachments/8e6cbcba-bb53-43cf-9d59-7412fc87b10a/7cb2ed81-fbb4-49b5-95f4-91ef82dc0da7
-600 56 /tmp/m6a-run-rerun/artifacts/attachments/8e6cbcba-bb53-43cf-9d59-7412fc87b10a/73cce3a7-da73-42a8-8b71-712f620d51fd
-600 56 /tmp/m6a-run-rerun/artifacts/attachments/8e6cbcba-bb53-43cf-9d59-7412fc87b10a/e8f924df-31e4-48c7-b2a3-310f921a0ba8
-600 59 /tmp/m6a-run-rerun/artifacts/attachments/8e6cbcba-bb53-43cf-9d59-7412fc87b10a/622277af-ac7c-484c-a977-d90d4ce6db43
-600 70 /tmp/m6a-run-rerun/artifacts/attachments/8e6cbcba-bb53-43cf-9d59-7412fc87b10a/64f13c61-6b0b-4cca-acd9-59c92745ff6e
+600 30 /tmp/m6a-refresh/artifacts/attachments/16518fae-0ec7-4a10-b82f-7f2acd481467/c258c2ab-8b84-4d3f-b14d-b0ec3edf7f67
+600 56 /tmp/m6a-refresh/artifacts/attachments/16518fae-0ec7-4a10-b82f-7f2acd481467/5abc642c-2fab-4f86-9c33-c69ae770bc4f
+600 56 /tmp/m6a-refresh/artifacts/attachments/16518fae-0ec7-4a10-b82f-7f2acd481467/67299680-2036-4a4d-87fd-27f36d0b892c
+600 59 /tmp/m6a-refresh/artifacts/attachments/16518fae-0ec7-4a10-b82f-7f2acd481467/64fac49a-4f4d-40eb-84e2-1f557f94e05c
+600 70 /tmp/m6a-refresh/artifacts/attachments/16518fae-0ec7-4a10-b82f-7f2acd481467/d8d4dca1-f2ae-4ac6-b182-12a5c8f9061c
+
+
+## 刷新判定（期望 / 实际 / 结论，head 4978dee）
+- 期望：PNG/文本 multipart 均为 201，下载字节 sha256 与上传一致，下载头为 attachment，`artifacts` 有对应原始行且摘要含 `revokedAt`（本 head 新增字段，值 null）。
+- 实际：见上文 `HTTP 201` 两处响应体（均含 `"revokedAt":null`）、`sha256sum` 对比两行相同、`HTTP/1.1 200 OK` 头、`attachments 库表原始行` 三行。
+- 结论：通过。未改产品代码，本文件由 `scripts/m6a/evidence.sh` 在 head 4978dee 重跑生成（A1 段）。

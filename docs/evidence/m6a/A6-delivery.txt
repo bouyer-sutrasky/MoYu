@@ -1,36 +1,37 @@
-# A6 提交与 PR 关联 — 2026-11-09T00:15:34+08:00
+# A6 提交与 PR 关联 — 2026-11-09T16:10:52+08:00
 $ git rev-parse HEAD
-55d9e2935baebd3f660c9753ca5621d9ef8a980d
-$ git -C /tmp/m6a-run-rerun/worktrees/probe1/m6a-review-t_m6a_55d9e2 rev-parse HEAD
-55d9e2935baebd3f660c9753ca5621d9ef8a980d
-环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-run-rerun/artifacts，supervisor http://127.0.0.1:4690
+4978dee443ce40d7dddb3df5f4d884168629cc68
+$ git -C /tmp/m6a-refresh/worktrees/probe1/m6a-review-t_m6a_4978de rev-parse HEAD
+4978dee443ce40d7dddb3df5f4d884168629cc68
+环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-refresh/artifacts，supervisor http://127.0.0.1:4690
+本 head 的 PR #44 必需检查：check pass；integration (real PostgreSQL) pass（2026-11-09T06:58:50Z / 07:00:01Z）。
 
 ## 1. 任务 worktree 的真实 HEAD（完整 SHA）
 $ git rev-parse HEAD
-55d9e2935baebd3f660c9753ca5621d9ef8a980d
+4978dee443ce40d7dddb3df5f4d884168629cc68
 $ git log -1 --format="%H%n%s%n%cI"
-55d9e2935baebd3f660c9753ca5621d9ef8a980d
-docs(m6a): record the dual-entrance attachment merge with red-to-green evidence
-2026-11-08T23:25:28+08:00
+4978dee443ce40d7dddb3df5f4d884168629cc68
+docs(m6a): record the A2c attachment-revoke evidence
+2026-11-09T14:57:47+08:00
 
 ## 2. 面板投影里的提交与 PR（GET /api/v1/tasks/:id/review）
 {
-  "commit": "55d9e2935baebd3f660c9753ca5621d9ef8a980d",
-  "commitSubject": "docs(m6a): record the dual-entrance attachment merge with red-to-green evidence",
+  "commit": "4978dee443ce40d7dddb3df5f4d884168629cc68",
+  "commitSubject": "docs(m6a): record the A2c attachment-revoke evidence",
   "pullRequest": {
     "number": 44,
     "url": "https://github.com/bouyer-sutrasky/MoYu/pull/44",
     "state": "open",
-    "headSha": "55d9e2935baebd3f660c9753ca5621d9ef8a980d",
+    "headSha": "4978dee443ce40d7dddb3df5f4d884168629cc68",
     "baseBranch": "main",
-    "updatedAt": "2026-11-08T15:25:50Z",
+    "updatedAt": "2026-11-09T06:58:06Z",
     "unavailableReason": null
   }
 }
 
 ## 3. GitHub 原始输出：本单 PR #44
 $ gh pr view 44 --repo bouyer-sutrasky/MoYu --json number,url,state,headRefOid,baseRefName,updatedAt,closedAt,mergedAt
-{"baseRefName":"main","closedAt":null,"headRefOid":"55d9e2935baebd3f660c9753ca5621d9ef8a980d","mergedAt":null,"number":44,"state":"OPEN","updatedAt":"2026-11-08T15:25:50Z","url":"https://github.com/bouyer-sutrasky/MoYu/pull/44"}
+{"baseRefName":"main","closedAt":null,"headRefOid":"4978dee443ce40d7dddb3df5f4d884168629cc68","mergedAt":null,"number":44,"state":"OPEN","updatedAt":"2026-11-09T06:58:06Z","url":"https://github.com/bouyer-sutrasky/MoYu/pull/44"}
 
 ## 4. PR 关闭但未合并：#45
 $ gh pr view 45 --repo bouyer-sutrasky/MoYu --json number,url,state,mergedAt
@@ -50,3 +51,9 @@ state = closed → 不显示 merged
   "unavailableReason": "无法从 GitHub 读取 PR 状态：Command failed: gh pr view 44 --repo bouyer-sutrasky/MoYu-does-not-exist --json number,url,state,headRefOid,baseRefName,updatedAt,closedAt,mergedAt\nGraphQL: Could not resolve to a Repository with the name 'bouyer-sutrasky/MoYu-does-not-exist'. (repository)\n"
 }
 （仓库名已恢复）
+
+
+## 刷新判定（期望 / 实际 / 结论，head 4978dee）
+- 期望：任务 worktree HEAD、面板提交、GitHub PR #44 的 headRefOid 三者等于本 head（4978dee）；关闭未合并的 #45 显示 closed 且不显示 merged；GitHub 不可达时给出原因。
+- 实际：第 1 节完整 SHA 与第 3 节 `"headRefOid":"4978dee443ce40d7dddb3df5f4d884168629cc68"` 相同；第 4 节 `state = closed → 不显示 merged`；第 5 节 `unavailableReason` 为 `Could not resolve to a Repository`。
+- 结论：通过（本文件由 evidence.sh 在本 head 重跑生成）。

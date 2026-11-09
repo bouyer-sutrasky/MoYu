@@ -6,9 +6,12 @@
 环境：隔离 PostgreSQL `127.0.0.1:55432`、Node v24.22.2；`TEST_DATABASE_ADMIN_URL` 指向该隔离实例，测试用真实数据库，没有 mock。
 未改 `/root/src/upstream/*`，未重启 3082，未合并 PR。
 
-代码 head（本文件据其产出，其后一个 docs-only 提交入库）：
+刷新到 head（本轮重跑，作为最终提交证据）：
 $ git rev-parse HEAD
-83a8f3b2d6fd3b9793656fb3d7615a5bf712c8f2
+4978dee443ce40d7dddb3df5f4d884168629cc68
+本 head 的 PR #44 必需检查：check pass；integration (real PostgreSQL) pass。
+
+原证据头（历史，保留）：83a8f3b2d6fd3b9793656fb3d7615a5bf712c8f2
 
 $ git log --oneline 71f5629..HEAD
 83a8f3b fix(api): move conversation artifacts into the target before a merge binds attachments
@@ -313,3 +316,46 @@ EXIT=0
 - 本条只改产品代码两处路径（合并事务 + 新集成测试），未动 Web/runner/supervisor 逻辑。
 - 未跑完整 A1–A8（会重写既有证据与截图）；本轮只跑真实 PG 集成套件与 `pnpm check`。
 - 未验证：推送后的 GitHub CI（本轮结束时尚未触发）。
+
+
+## 刷新重跑（head 4978dee443ce40d7dddb3df5f4d884168629cc68）
+
+$ cd apps/api && TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm exec vitest run test/integration/dual-entrance-attachment.integration.test.ts
+
+ RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/api
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > moves the attachment into the target conversation in the same transaction
+merge response: 202 {"data":{"message":{"id":"514daefa-0c11-4e40-b793-47d17a7ae5f2","conversationId":"58a718e7-e169-48d6-82be-6ba30c11f692","direction":"inbound","kind":"user","clientMessageId":"p1bp-merge-fac517d5-e8b4-4f56-9690-4e988a7c1bd9","body":"Same requirement: https://github.com/Bouyer12/p1bp-merge-test/issues/1","replyToMessageId":null,"source":"web","createdAt":"2026-11-09T08:10:12.051Z","delivery":{"state":"stored","attemptCount":0,"lastError":null,"deliveredAt":null,"handedToWorkerAt":null,"readAt":null},"attachments":[{"id":"69939fa4-e933-4270-8903-016a66a3dc71","conversationId":"58a718e7-e169-48d6-82be-6ba30c11f692","taskId":null,"messageId":"514daefa-0c11-4e40-b793-47d17a7ae5f2","filename":"p1bp.txt","mimeType":"text/plain","sizeBytes":40,"sha256":"57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16","kind":"text","revokedAt":null,"createdAt":"2026-11-09T08:10:12.014Z","downloadUrl":"/api/v1/attachments/69939fa4-e933-4270-8903-016a66a3dc71"}]},"duplicate":false},"requestId":"9b078be6-cf2a-4f6f-b3a9-65d670a96f3b"}
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > moves the attachment into the target conversation in the same transaction
+download: 200 sha256= 57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16 expected= 57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > still refuses an attachment that belongs to another owner
+foreign response: 422 {"error":{"code":"invalid_request","message":"attachmentIds 必须是本会话尚未发送的附件","retryable":false},"requestId":"1a0190f7-6e76-48f8-a4c6-aa4c3f5821aa"}
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > rolls the whole merge back when one attachment cannot be sent
+rollback before: {"messages":2,"attachments":[{"id":"911b1600-35da-4c1c-b229-5dd419aac6b6","conversationId":"6cbd5cfd-6aea-4ffc-b0ae-4b20fb0dcf72","messageId":"632be882-9085-4313-a5ff-860bd0ca3c7e","sha256":"57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16"},{"id":"adfdac1c-f2d1-46ec-9e87-719b3b2f4a6e","conversationId":"6cbd5cfd-6aea-4ffc-b0ae-4b20fb0dcf72","messageId":null,"sha256":"57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16"}]}
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > rolls the whole merge back when one attachment cannot be sent
+rollback response: 422 {"error":{"code":"invalid_request","message":"attachmentIds 必须是本会话尚未发送的附件","retryable":false},"requestId":"955b759b-60ae-4d15-952f-1adc9c5bbeaa"}
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > rolls the whole merge back when one attachment cannot be sent
+rollback after: {"messages":2,"attachments":[{"id":"911b1600-35da-4c1c-b229-5dd419aac6b6","conversationId":"6cbd5cfd-6aea-4ffc-b0ae-4b20fb0dcf72","messageId":"632be882-9085-4313-a5ff-860bd0ca3c7e","sha256":"57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16"},{"id":"adfdac1c-f2d1-46ec-9e87-719b3b2f4a6e","conversationId":"6cbd5cfd-6aea-4ffc-b0ae-4b20fb0dcf72","messageId":null,"sha256":"57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16"}]}
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > replays the same clientMessageId without moving the attachment twice
+merge response: 202 {"data":{"message":{"id":"f2ae5edf-9289-45c9-ad8e-68f08ad11ffe","conversationId":"58a718e7-e169-48d6-82be-6ba30c11f692","direction":"inbound","kind":"user","clientMessageId":"p1bp-retry-cf18de7b-7eac-4c15-a012-305f5c2b3cae","body":"Same requirement: https://github.com/Bouyer12/p1bp-merge-test/issues/1","replyToMessageId":null,"source":"web","createdAt":"2026-11-09T08:10:12.225Z","delivery":{"state":"stored","attemptCount":0,"lastError":null,"deliveredAt":null,"handedToWorkerAt":null,"readAt":null},"attachments":[{"id":"40b4a3a9-0ada-45ef-9b21-908b0fa07472","conversationId":"58a718e7-e169-48d6-82be-6ba30c11f692","taskId":null,"messageId":"f2ae5edf-9289-45c9-ad8e-68f08ad11ffe","filename":"retry.txt","mimeType":"text/plain","sizeBytes":40,"sha256":"57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16","kind":"text","revokedAt":null,"createdAt":"2026-11-09T08:10:12.210Z","downloadUrl":"/api/v1/attachments/40b4a3a9-0ada-45ef-9b21-908b0fa07472"}]},"duplicate":false},"requestId":"f77d9411-fc8f-4bab-b94f-362836c3c499"}
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > replays the same clientMessageId without moving the attachment twice
+retry response: 200 {"data":{"message":{"id":"f2ae5edf-9289-45c9-ad8e-68f08ad11ffe","conversationId":"58a718e7-e169-48d6-82be-6ba30c11f692","direction":"inbound","kind":"user","clientMessageId":"p1bp-retry-cf18de7b-7eac-4c15-a012-305f5c2b3cae","body":"Same requirement: https://github.com/Bouyer12/p1bp-merge-test/issues/1","replyToMessageId":null,"source":"web","createdAt":"2026-11-09T08:10:12.225Z","delivery":{"state":"stored","attemptCount":0,"lastError":null,"deliveredAt":null,"handedToWorkerAt":null,"readAt":null},"attachments":[{"id":"40b4a3a9-0ada-45ef-9b21-908b0fa07472","conversationId":"58a718e7-e169-48d6-82be-6ba30c11f692","taskId":null,"messageId":"f2ae5edf-9289-45c9-ad8e-68f08ad11ffe","filename":"retry.txt","mimeType":"text/plain","sizeBytes":40,"sha256":"57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16","kind":"text","revokedAt":null,"createdAt":"2026-11-09T08:10:12.210Z","downloadUrl":"/api/v1/attachments/40b4a3a9-0ada-45ef-9b21-908b0fa07472"}]},"duplicate":true},"requestId":"4d438073-3e13-45a5-8373-fe8c37ff0582"}
+
+ ✓ test/integration/dual-entrance-attachment.integration.test.ts (4 tests) 1090ms
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  16:10:08
+   Duration  3.55s (transform 691ms, setup 0ms, collect 2.08s, tests 1.09s, environment 0ms, prepare 103ms)
+
+判定（期望 / 实际 / 结论）：
+- 期望：带附件首条消息进入合并事务后不再 422，源会话附件移动到目标会话并绑定新消息（4 条测试全绿）。
+- 实际：`Test Files 1 passed (1)`、`Tests 4 passed (4)`、`EXIT=0`（原始输出见上）。
+- 结论：通过；本 head 上真实 PostgreSQL 重跑。未改产品代码。

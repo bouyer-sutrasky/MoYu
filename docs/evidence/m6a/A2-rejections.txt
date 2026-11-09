@@ -1,42 +1,63 @@
-# A2 上传拒绝面 — 2026-11-09T00:13:01+08:00
+# A2 上传拒绝面 — 2026-11-09T16:08:15+08:00
 $ git rev-parse HEAD
-55d9e2935baebd3f660c9753ca5621d9ef8a980d
-$ git -C /tmp/m6a-run-rerun/worktrees/probe1/m6a-review-t_m6a_55d9e2 rev-parse HEAD
-55d9e2935baebd3f660c9753ca5621d9ef8a980d
-环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-run-rerun/artifacts，supervisor http://127.0.0.1:4690
+4978dee443ce40d7dddb3df5f4d884168629cc68
+$ git -C /tmp/m6a-refresh/worktrees/probe1/m6a-review-t_m6a_4978de rev-parse HEAD
+4978dee443ce40d7dddb3df5f4d884168629cc68
+环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-refresh/artifacts，supervisor http://127.0.0.1:4690
+本 head 的 PR #44 必需检查：check pass；integration (real PostgreSQL) pass（2026-11-09T06:58:50Z / 07:00:01Z）。
 
 ## 1. 超大小上限（10 MiB + 1 KiB）→ 4xx，不落库也不落盘
 before: rows=5 files=5 bytes=271
 HTTP 413
-{"error":{"code":"payload_too_large","message":"单个附件不能超过 10 MiB","retryable":false},"requestId":"0fe7c301-ade8-46b7-ad13-d9068c147e17"}
+{"error":{"code":"payload_too_large","message":"单个附件不能超过 10 MiB","retryable":false},"requestId":"1275cc55-6b98-4a15-b194-f0fbf80ad024"}
 after : rows=5 files=5 bytes=271
 
 ## 2. 非法 MIME/类型 → 4xx，不落库也不落盘
 before: rows=5 files=5 bytes=271
 HTTP 422
-{"error":{"code":"invalid_request","message":"不支持的文件类型；只接受图片（PNG/JPEG/WebP/GIF）与文本类文件（txt/log/md/json/yaml/csv/源码等）","retryable":false},"requestId":"fc61c209-631f-489a-ac71-75049ca36fe8"}
+{"error":{"code":"invalid_request","message":"不支持的文件类型；只接受图片（PNG/JPEG/WebP/GIF）与文本类文件（txt/log/md/json/yaml/csv/源码等）","retryable":false},"requestId":"8b486076-aeed-4378-8d2e-9e04e8a7ad88"}
 after : rows=5 files=5 bytes=271
 
 ## 3. 未登录 → 401
 HTTP 401
-{"error":{"code":"unauthorized","message":"Authentication required","retryable":false},"requestId":"54fbfd43-e5aa-4cab-9d25-cb7829b1f5ab"}
+{"error":{"code":"unauthorized","message":"Authentication required","retryable":false},"requestId":"b4045ba9-7ca5-4664-8e59-10ad777a069d"}
 
 ## 4. 另一个用户向本会话上传 → 404
 HTTP 404
-{"error":{"code":"not_found","message":"Conversation not found","retryable":false},"requestId":"5d5bff42-c15a-49c7-8645-35a170e43068"}
+{"error":{"code":"not_found","message":"Conversation not found","retryable":false},"requestId":"6abd2446-190f-4e52-ac1a-d8777f6c7f7b"}
 
 ## 5. 另一个用户读取本会话的 attachmentId → 404
 HTTP 404
-{"error":{"code":"not_found","message":"Attachment not found","retryable":false},"requestId":"5b8cd18e-7e45-4dbc-bfbb-1c3666228147"}
+{"error":{"code":"not_found","message":"Attachment not found","retryable":false},"requestId":"5bb79685-2579-419c-a8b9-e4d536117255"}
 
 ## 6. 空文件 → 422
 HTTP 422
-{"error":{"code":"invalid_request","message":"附件不能是空文件","retryable":false},"requestId":"3595c38f-869a-4f4e-8a04-78184ca609fb"}
+{"error":{"code":"invalid_request","message":"附件不能是空文件","retryable":false},"requestId":"1f571e60-3109-4298-a896-85ad5d949c94"}
 
 ## 7. 最终行数与磁盘占用（与 A1 结束时的基线一致，拒绝面没有新增）
 rows=5 files=5 bytes=271
-600 30 /tmp/m6a-run-rerun/artifacts/attachments/8e6cbcba-bb53-43cf-9d59-7412fc87b10a/7cb2ed81-fbb4-49b5-95f4-91ef82dc0da7
-600 56 /tmp/m6a-run-rerun/artifacts/attachments/8e6cbcba-bb53-43cf-9d59-7412fc87b10a/73cce3a7-da73-42a8-8b71-712f620d51fd
-600 56 /tmp/m6a-run-rerun/artifacts/attachments/8e6cbcba-bb53-43cf-9d59-7412fc87b10a/e8f924df-31e4-48c7-b2a3-310f921a0ba8
-600 59 /tmp/m6a-run-rerun/artifacts/attachments/8e6cbcba-bb53-43cf-9d59-7412fc87b10a/622277af-ac7c-484c-a977-d90d4ce6db43
-600 70 /tmp/m6a-run-rerun/artifacts/attachments/8e6cbcba-bb53-43cf-9d59-7412fc87b10a/64f13c61-6b0b-4cca-acd9-59c92745ff6e
+600 30 /tmp/m6a-refresh/artifacts/attachments/16518fae-0ec7-4a10-b82f-7f2acd481467/c258c2ab-8b84-4d3f-b14d-b0ec3edf7f67
+600 56 /tmp/m6a-refresh/artifacts/attachments/16518fae-0ec7-4a10-b82f-7f2acd481467/5abc642c-2fab-4f86-9c33-c69ae770bc4f
+600 56 /tmp/m6a-refresh/artifacts/attachments/16518fae-0ec7-4a10-b82f-7f2acd481467/67299680-2036-4a4d-87fd-27f36d0b892c
+600 59 /tmp/m6a-refresh/artifacts/attachments/16518fae-0ec7-4a10-b82f-7f2acd481467/64fac49a-4f4d-40eb-84e2-1f557f94e05c
+600 70 /tmp/m6a-refresh/artifacts/attachments/16518fae-0ec7-4a10-b82f-7f2acd481467/d8d4dca1-f2ae-4ac6-b182-12a5c8f9061c
+
+
+## 8. 可执行内容声明为 image/png（MIME 内容嗅探，不是扩展名判断）
+同一检查脚本 `scripts/m6a/a2b-mime-sniff-evidence.sh` 在 head 4978dee 的隔离 API 上运行（A2b 套件；`.exe` 与 `.png` 文件名同走内容嗅探分支）：
+
+$ M6A_A2B_SKIP_BUILD=1 bash scripts/m6a/a2b-mime-sniff-evidence.sh
+CASE evil-png-as-image: filename=evil.png declared=image/png => HTTP 422 rows 0->0 files 0->0 artifact=null ok=true
+CASE elf-as-image: filename=elf.png declared=image/png => HTTP 422 rows 1->1 files 1->1 artifact=null ok=true
+CASE exe-as-image: filename=virus.exe declared=image/png => HTTP 422 rows 1->1 files 1->1 artifact=null ok=true
+RESULT PASS passed=16/16
+
+判定（期望 / 实际 / 结论）：
+- 期望：可执行字节（ELF）即使声明 `image/png`、文件名 `virus.exe`，也必须 422，且 `artifacts` 行数与存储文件数不变。
+- 实际：`CASE exe-as-image: filename=virus.exe declared=image/png => HTTP 422 rows 1->1 files 1->1 artifact=null ok=true`；HTML/ELF 用例同样 422；`RESULT PASS passed=16/16`。
+- 结论：通过；失败原因是内容嗅探（`可执行文件或脚本不能作为附件上传`），不是仅靠扩展名拒绝。
+
+## 刷新判定（head 4978dee）
+- 期望：超限 413、非法类型 422、未登录 401、他人会话/附件 404、空文件 422，且每一步 rows/files 不增（磁盘面 before/after）。
+- 实际：上述 6 个 HTTP 状态与每次 `before/after rows/files` 见本文件第 1–7 节；最终 `rows=5 files=5` 与 A1 基线一致。
+- 结论：通过；拒绝面没有落盘或增行。

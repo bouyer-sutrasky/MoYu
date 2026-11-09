@@ -53,6 +53,7 @@ const cases = [
     expect: 'accept-image',
   },
   { name: 'elf-as-image', filename: 'elf.png', type: 'image/png', bytes: elf, expect: 'reject' },
+  { name: 'exe-as-image', filename: 'virus.exe', type: 'image/png', bytes: elf, expect: 'reject' },
   {
     name: 'script-as-image',
     filename: 'script.png',

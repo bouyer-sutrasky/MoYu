@@ -1,8 +1,11 @@
 # L116 消息安全 Markdown / 代码块复制 / 长日志折叠
 
-代码 head（本文件据其产出）：
+刷新到 head（本轮重跑，作为最终提交证据）：
 $ git rev-parse HEAD
-d286323ceb8ea5794d3fff1a5aa02523dfde0011
+4978dee443ce40d7dddb3df5f4d884168629cc68
+本 head 的 PR #44 必需检查：check pass；integration (real PostgreSQL) pass。
+
+原证据头（历史，保留）：d286323ceb8ea5794d3fff1a5aa02523dfde0011
 
 证据环境：隔离 PostgreSQL `127.0.0.1:55432`（每次重建 `moyu_l116_evidence`）、隔离 API `127.0.0.1:4631`、
 真实 Chromium（Playwright，桌面 1440×900 / 手机 390×844，浅色）。未重启 3082、未改 `/root/src/upstream/*`。
@@ -111,3 +114,27 @@ EXIT=0
   会按普通文本显示（不是错误，是范围）。
 - 未做浏览器端“粘贴富文本”输入路径的检查；消息正文仍由平台以纯文本存储。
 - 手机证据为 390×844 浅色；深色主题未单独截图（样式使用继承色/主题变量）。
+
+
+## 6. 刷新重跑（head 4978dee443ce40d7dddb3df5f4d884168629cc68）
+
+$ M6A_L116_SKIP_BUILD=1 bash scripts/m6a/l116-evidence.sh
+PASS xss-window-not-set: {"pwn":"undefined","scripts":0,"iframes":0,"imgs":0}
+PASS xss-no-script-iframe-img: {"pwn":"undefined","scripts":0,"iframes":0,"imgs":0}
+PASS xss-only-safe-anchor: [{"href":"https://example.com/safe","text":"安全"}]
+PASS xss-dangerous-shown-as-text: "执行器通知16:17L116-XSS 安全渲染：\n<img src=x onerror=\"window.__pwn=1\">\n<script>window.__pwn=2</script>\n<iframe src=\"javascript:alert(1)\"></iframe>\n危险1 危险2 安全"
+PASS markdown-semantic-elements: {"h1":1,"strong":1,"inlineCode":1,"ul":2,"ol":2,"tableHeaders":2,"tableCells":4,"preCode":1,"safeLink":"https://example.com/page"}
+PASS copy-byte-identical: {"copied":"const total = 1 + 2;\n\tif (total > 2) {\n\t\tconsole.log(\"ok\");\n\t}","expected":"const total = 1 + 2;\n\tif (total > 2) {\n\t\tconsole.log(\"ok\");\n\t}"}
+PASS log-folded-bounded: {"folded":"true","height":260,"length":899}
+PASS log-expanded-content-identical: {"before":260,"after":1141,"sameText":true}
+PASS desktop-no-page-overflow: {"scrollWidth":1440,"clientWidth":1440}
+PASS plain-text-preserved: {"plain":"执行器通知16:17L116-PLAIN 普通消息\n第一行\n第二行"}
+PASS mobile-no-page-overflow: {"scrollWidth":390,"clientWidth":390,"bodyScrollWidth":390}
+RESULT PASS passed=8/8 failed=[]
+EXIT=0
+EXIT=0
+
+判定（期望 / 实际 / 结论）：
+- 期望：XSS 不执行、危险链接只作文本、Markdown 语义、复制逐字节一致、长日志折叠、桌面 1440 与手机 390 无横向溢出
+- 实际：见上面原始 `PASS`/`RESULT` 行与 `EXIT=0`。
+- 结论：通过；`L116 的 8/8 检查全部通过`。本轮未改产品代码，只重跑既有取证脚本。
