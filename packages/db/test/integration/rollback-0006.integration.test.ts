@@ -95,7 +95,7 @@ describe('0006 rollback script on real PostgreSQL', () => {
 
     await migrateDatabase(database.db);
     expect(await tableExists(database)).toBe(true);
-    expect(await migrationCount(database)).toBe(16);
+    expect(await migrationCount(database)).toBe(17);
   }, 30_000);
 
   it('rejects a missing or wrong hash and keeps the table', async () => {

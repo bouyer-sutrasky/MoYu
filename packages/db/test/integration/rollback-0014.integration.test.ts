@@ -12,6 +12,7 @@ const ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 let hash = '';
 let downSql = '';
 let downSql0015 = '';
+let downSql0016 = '';
 const databases: TestDatabase[] = [];
 
 const read = async (database: TestDatabase) => {
@@ -41,6 +42,7 @@ const messageColumn = async (database: TestDatabase): Promise<boolean> => {
  * #37's scope, not this ticket's.
  */
 async function rollBackThrough0014(database: TestDatabase): Promise<void> {
+  await database.pool.query(downSql0016);
   await database.pool.query(downSql0015);
   await database.pool.query(downSql);
 }
@@ -62,6 +64,10 @@ describe('0014 rollback script on real PostgreSQL', () => {
     );
     downSql0015 = await readFile(
       path.join(ROOT, 'packages/db/migrations/rollback/0015_late_gateway.down.sql'),
+      'utf8',
+    );
+    downSql0016 = await readFile(
+      path.join(ROOT, 'packages/db/migrations/rollback/0016_attachment_revoke.down.sql'),
       'utf8',
     );
   });

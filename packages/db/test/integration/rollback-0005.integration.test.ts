@@ -168,7 +168,7 @@ describe('0005 rollback script on real PostgreSQL', () => {
 
     await migrateDatabase(database.db);
     expect(await readState(database)).toMatchObject({
-      migrations: 16,
+      migrations: 17,
       conversations: 1,
       taskLinks: 1,
       operationsTable: true,

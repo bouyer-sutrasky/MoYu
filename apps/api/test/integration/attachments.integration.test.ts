@@ -8,11 +8,21 @@ import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
+  attachmentRevokeDataSchema,
   attachmentUploadDataSchema,
   messageListDataSchema,
   type AttachmentSummary,
 } from '@moyu/contracts';
-import { artifacts, owners, repositories, sessions, taskLinks, type Database } from '@moyu/db';
+import {
+  artifacts,
+  deliveries,
+  messages,
+  owners,
+  repositories,
+  sessions,
+  taskLinks,
+  type Database,
+} from '@moyu/db';
 
 import { buildApp } from '../../src/app';
 import { hashSecret, randomToken } from '../../src/auth/crypto';
@@ -492,6 +502,153 @@ describe('M6 attachment upload and download', () => {
       bytes: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>', 'utf8'),
     });
     expect(response.statusCode).toBe(422);
+  });
+
+  it('revokes an attachment softly and idempotently, and blocks its download', async () => {
+    const conversationId = await createConversation(harness);
+    const attachment = await uploadedAttachment(harness, conversationId, {
+      filename: 'revoke.png',
+      contentType: 'image/png',
+      bytes: PNG_BYTES,
+    });
+    const revoke = await harness.app.inject({
+      method: 'POST',
+      url: `/api/v1/attachments/${attachment.id}/revoke`,
+      ...authCookie(harness),
+    });
+    expect(revoke.statusCode).toBe(200);
+    const revoked = attachmentRevokeDataSchema.parse(
+      (revoke.json() as { data: unknown }).data,
+    ).attachment;
+    expect(revoked.revokedAt).not.toBeNull();
+    const [row] = await harness.database
+      .select()
+      .from(artifacts)
+      .where(eq(artifacts.id, attachment.id));
+    expect(row?.revokedAt).not.toBeNull();
+    // The bytes stay on disk; only the state changes.
+    expect(row?.storageKey).not.toBeNull();
+    const download = await harness.app.inject({
+      method: 'GET',
+      url: `/api/v1/attachments/${attachment.id}`,
+      ...authCookie(harness),
+    });
+    expect(download.statusCode).toBe(404);
+    const again = await harness.app.inject({
+      method: 'POST',
+      url: `/api/v1/attachments/${attachment.id}/revoke`,
+      ...authCookie(harness),
+    });
+    expect(again.statusCode).toBe(200);
+    const second = attachmentRevokeDataSchema.parse(
+      (again.json() as { data: unknown }).data,
+    ).attachment;
+    expect(second.revokedAt).toBe(revoked.revokedAt);
+    const drafts = await harness.app.inject({
+      method: 'GET',
+      url: `/api/v1/conversations/${conversationId}/attachments`,
+      ...authCookie(harness),
+    });
+    expect(drafts.statusCode).toBe(200);
+    const listed = (
+      drafts.json() as { data: { attachments: { id: string; revokedAt: string | null }[] } }
+    ).data.attachments.find((item) => item.id === attachment.id);
+    expect(listed?.revokedAt).toBe(revoked.revokedAt);
+  });
+
+  it('refuses to send a revoked attachment without creating a message or delivery', async () => {
+    const conversationId = await createConversation(harness);
+    const attachment = await uploadedAttachment(harness, conversationId, {
+      filename: 'revoked.png',
+      contentType: 'image/png',
+      bytes: PNG_BYTES,
+    });
+    await harness.app.inject({
+      method: 'POST',
+      url: `/api/v1/attachments/${attachment.id}/revoke`,
+      ...authCookie(harness),
+    });
+    const countMessages = async () =>
+      (
+        await harness.database
+          .select({ id: messages.id })
+          .from(messages)
+          .where(eq(messages.conversationId, conversationId))
+      ).length;
+    const countDeliveries = async () =>
+      (
+        await harness.database
+          .select({ id: deliveries.id })
+          .from(deliveries)
+          .innerJoin(messages, eq(deliveries.messageId, messages.id))
+          .where(eq(messages.conversationId, conversationId))
+      ).length;
+    const messagesBefore = await countMessages();
+    const deliveriesBefore = await countDeliveries();
+    const sent = await harness.app.inject({
+      method: 'POST',
+      url: `/api/v1/conversations/${conversationId}/messages`,
+      ...authCookie(harness),
+      payload: {
+        clientMessageId: `revoked-${randomUUID()}`,
+        text: 'should not be stored',
+        attachmentIds: [attachment.id],
+      },
+    });
+    expect(sent.statusCode).toBe(422);
+    expect(await countMessages()).toBe(messagesBefore);
+    expect(await countDeliveries()).toBe(deliveriesBefore);
+  });
+
+  it('keeps an unrevoked attachment downloadable and sendable', async () => {
+    const conversationId = await createConversation(harness);
+    const attachment = await uploadedAttachment(harness, conversationId, {
+      filename: 'live.png',
+      contentType: 'image/png',
+      bytes: PNG_BYTES,
+    });
+    const download = await harness.app.inject({
+      method: 'GET',
+      url: `/api/v1/attachments/${attachment.id}`,
+      ...authCookie(harness),
+    });
+    expect(download.statusCode).toBe(200);
+    const sent = await harness.app.inject({
+      method: 'POST',
+      url: `/api/v1/conversations/${conversationId}/messages`,
+      ...authCookie(harness),
+      payload: {
+        clientMessageId: `live-${randomUUID()}`,
+        text: 'with a live attachment',
+        attachmentIds: [attachment.id],
+      },
+    });
+    expect(sent.statusCode).toBe(202);
+  });
+
+  it('answers 404 for another owner and 401 without a session, leaving the row unchanged', async () => {
+    const conversationId = await createConversation(harness);
+    const attachment = await uploadedAttachment(harness, conversationId, {
+      filename: 'foreign.png',
+      contentType: 'image/png',
+      bytes: PNG_BYTES,
+    });
+    const foreign = await harness.app.inject({
+      method: 'POST',
+      url: `/api/v1/attachments/${attachment.id}/revoke`,
+      cookies: { [secondHarness.cookieName]: secondHarness.token },
+    });
+    expect(foreign.statusCode).toBe(404);
+    const anonymous = await harness.app.inject({
+      method: 'POST',
+      url: `/api/v1/attachments/${attachment.id}/revoke`,
+    });
+    expect(anonymous.statusCode).toBe(401);
+    const [row] = await harness.database
+      .select()
+      .from(artifacts)
+      .where(eq(artifacts.id, attachment.id));
+    expect(row?.revokedAt).toBeNull();
   });
 
   it('does not accept a new attachment once the task has ended', async () => {

@@ -40,6 +40,8 @@ export const artifacts = pgTable(
     sizeBytes: bigint('size_bytes', { mode: 'number' }),
     sha256: text('sha256'),
     metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+    /** Soft revocation: set once an owner withdraws the attachment; the bytes stay on disk for audit/quota work. */
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [

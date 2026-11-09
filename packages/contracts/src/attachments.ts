@@ -22,6 +22,8 @@ export const attachmentSummarySchema = z.object({
   sizeBytes: z.number().int().nonnegative(),
   sha256: z.string().length(64),
   kind: attachmentKindSchema,
+  /** Set when the owner revoked the attachment: the row and bytes remain, but download and sending stop. */
+  revokedAt: isoTimestampSchema.nullable(),
   createdAt: isoTimestampSchema,
   downloadUrl: z.string().min(1),
 });
@@ -31,6 +33,12 @@ export type AttachmentSummary = z.infer<typeof attachmentSummarySchema>;
 export const attachmentUploadDataSchema = z.object({
   attachment: attachmentSummarySchema,
 });
+
+export const attachmentRevokeDataSchema = z.object({
+  attachment: attachmentSummarySchema,
+});
+
+export type AttachmentRevokeData = z.infer<typeof attachmentRevokeDataSchema>;
 
 export type AttachmentUploadData = z.infer<typeof attachmentUploadDataSchema>;
 

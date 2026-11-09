@@ -131,7 +131,7 @@ export async function sendStoredAttachment(
   artifact: Artifact,
   options: { contentType: string; headers?: Record<string, string> },
 ): Promise<FastifyReply> {
-  if (!artifact.storageKey) {
+  if (!artifact.storageKey || artifact.revokedAt) {
     throw ApiProblem.notFound('Attachment not found');
   }
   const file = await verifiedStorageFile(config, artifact.storageKey);
@@ -179,6 +179,7 @@ export function toAttachmentSummary(artifact: Artifact): AttachmentSummary {
     sizeBytes: artifact.sizeBytes ?? 0,
     sha256: artifact.sha256 ?? '',
     kind: typeof metadata.kind === 'string' ? metadata.kind : attachmentKindFor(mimeType),
+    revokedAt: artifact.revokedAt?.toISOString() ?? null,
     createdAt: artifact.createdAt.toISOString(),
     downloadUrl: `/api/v1/attachments/${artifact.id}`,
   });
@@ -233,6 +234,7 @@ export async function attachToMessage(
         eq(artifacts.type, 'attachment'),
         eq(artifacts.conversationId, conversationId),
         isNull(artifacts.messageId),
+        isNull(artifacts.revokedAt),
       ),
     )
     .orderBy(artifacts.createdAt, artifacts.id);
@@ -254,6 +256,7 @@ export async function attachToMessage(
         eq(artifacts.type, 'attachment'),
         eq(artifacts.conversationId, conversationId),
         isNull(artifacts.messageId),
+        isNull(artifacts.revokedAt),
       ),
     )
     .returning();

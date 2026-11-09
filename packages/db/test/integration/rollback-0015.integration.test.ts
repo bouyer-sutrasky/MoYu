@@ -11,6 +11,7 @@ import { createTestDatabase, type TestDatabase } from './helpers';
 const ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 let hash = '';
 let downSql = '';
+let downSql0016 = '';
 const databases: TestDatabase[] = [];
 
 const read = async (database: TestDatabase) => {
@@ -38,12 +39,18 @@ describe('0015 rollback script on real PostgreSQL', () => {
       path.join(ROOT, 'packages/db/migrations/rollback/0015_late_gateway.down.sql'),
       'utf8',
     );
+    downSql0016 = await readFile(
+      path.join(ROOT, 'packages/db/migrations/rollback/0016_attachment_revoke.down.sql'),
+      'utf8',
+    );
   });
 
   it('refuses a second rollback instead of silently deleting nothing', async () => {
     const database = await createTestDatabase();
     databases.push(database);
 
+    // 0016 is newer: the supported order is to roll it back first.
+    await database.pool.query(downSql0016);
     await database.pool.query(downSql);
     expect(await read(database)).toEqual({ column_present: false, ledger_present: false });
 
@@ -60,6 +67,7 @@ describe('0015 rollback script on real PostgreSQL', () => {
     databases.push(database);
     expect(await read(database)).toEqual({ column_present: true, ledger_present: true });
 
+    await database.pool.query(downSql0016);
     await database.pool.query(downSql);
     expect(await read(database)).toEqual({ column_present: false, ledger_present: false });
 

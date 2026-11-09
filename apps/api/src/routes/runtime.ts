@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 
 import {
@@ -277,6 +277,7 @@ export function registerRuntimeRoutes(
             eq(artifacts.id, attachmentId),
             eq(artifacts.type, 'attachment'),
             eq(artifacts.repositoryId, conversation.repositoryId),
+            isNull(artifacts.revokedAt),
           ),
         )
         .limit(1);

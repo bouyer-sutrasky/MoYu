@@ -1,10 +1,11 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 
 import {
   attachmentLimits,
   attachmentListDataSchema,
   attachmentMimeFromFilename,
+  attachmentRevokeDataSchema,
   attachmentUploadDataSchema,
   ATTACHMENT_ALLOWED_TYPES,
   attachmentKindFor,
@@ -163,6 +164,54 @@ export function registerAttachmentRoutes(
     },
   );
 
+  app.post(
+    '/api/v1/attachments/:id/revoke',
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const auth = request.auth;
+      if (!auth) {
+        throw ApiProblem.unauthorized();
+      }
+      const params = request.params as { id?: string };
+      const attachmentId = parseInput(uuidSchema, params.id);
+      // The owner check and the soft revoke happen on the same row: a foreign
+      // attachment is indistinguishable from a missing one (404).
+      const [owned] = await database
+        .select({ artifact: artifacts })
+        .from(artifacts)
+        .innerJoin(repositories, eq(artifacts.repositoryId, repositories.id))
+        .where(
+          and(
+            eq(artifacts.id, attachmentId),
+            eq(artifacts.type, 'attachment'),
+            eq(repositories.ownerId, auth.owner.id),
+          ),
+        )
+        .limit(1);
+      if (!owned) {
+        throw ApiProblem.notFound('Attachment not found');
+      }
+      if (owned.artifact.revokedAt) {
+        return sendData(
+          reply,
+          request,
+          attachmentRevokeDataSchema.parse({ attachment: toAttachmentSummary(owned.artifact) }),
+        );
+      }
+      const [updated] = await database
+        .update(artifacts)
+        .set({ revokedAt: new Date() })
+        .where(and(eq(artifacts.id, attachmentId), isNull(artifacts.revokedAt)))
+        .returning();
+      const artifact = updated ?? owned.artifact;
+      return sendData(
+        reply,
+        request,
+        attachmentRevokeDataSchema.parse({ attachment: toAttachmentSummary(artifact) }),
+      );
+    },
+  );
+
   app.get('/api/v1/attachments/:id', { preHandler: authenticate }, async (request, reply) => {
     const auth = request.auth;
     if (!auth) {
@@ -180,6 +229,7 @@ export function registerAttachmentRoutes(
           eq(artifacts.id, attachmentId),
           eq(artifacts.type, 'attachment'),
           eq(repositories.ownerId, auth.owner.id),
+          isNull(artifacts.revokedAt),
         ),
       )
       .limit(1);
