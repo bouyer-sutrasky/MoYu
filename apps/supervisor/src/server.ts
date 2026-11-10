@@ -6,8 +6,10 @@ import { z } from 'zod';
 import { uuidSchema } from '@moyu/contracts';
 
 import type { SupervisorConfig } from './config';
+import type { SupervisorStore } from './store';
 import type { SupervisorLogger } from './logger';
 import type { InstanceManager } from './manager';
+import { createReviewService } from './review';
 
 const wakeSchema = z
   .object({
@@ -26,6 +28,8 @@ const wakeSchema = z
 
 const sleepSchema = z.object({ manual: z.boolean().optional() }).strict();
 
+const reviewTicketSchema = z.object({ ticketId: z.string().min(1).max(200) }).strict();
+
 function digest(value: string): Buffer {
   return createHash('sha256').update(value).digest();
 }
@@ -39,9 +43,11 @@ function repositoryIdOf(request: { params: unknown }): string {
 export function buildSupervisorServer(options: {
   config: SupervisorConfig;
   manager: InstanceManager;
+  store: SupervisorStore;
   logger: SupervisorLogger;
 }): FastifyInstance {
   const { config, manager, logger } = options;
+  const review = createReviewService({ config, store: options.store, logger });
   const app = Fastify({ logger: false, bodyLimit: 32 * 1024 });
 
   app.addHook('onRequest', async (request, reply) => {
@@ -97,6 +103,29 @@ export function buildSupervisorServer(options: {
     const repositoryId = repositoryIdOf(request);
     const result = await manager.wake(repositoryId, { priority: 5, reason: 'retry' });
     return { data: result };
+  });
+
+  // Review inspection. The caller names only a ticket id; the supervisor resolves
+  // the worktree under its own configured root and the check commands come from
+  // its own configuration, never from the request.
+  app.post('/control/v1/instances/:repositoryId/review/worktree', async (request) => {
+    const repositoryId = repositoryIdOf(request);
+    const body = reviewTicketSchema.parse(request.body ?? {});
+    return { data: await review.resolve(repositoryId, body.ticketId) };
+  });
+
+  app.post('/control/v1/instances/:repositoryId/review/changes', async (request) => {
+    const repositoryId = repositoryIdOf(request);
+    const body = reviewTicketSchema.parse(request.body ?? {});
+    return { data: await review.changes(repositoryId, body.ticketId) };
+  });
+
+  app.post('/control/v1/instances/:repositoryId/review/checks', async (request) => {
+    const repositoryId = repositoryIdOf(request);
+    const body = reviewTicketSchema.parse(request.body ?? {});
+    const worktree = await review.resolve(repositoryId, body.ticketId);
+    const runs = await review.checks(repositoryId, body.ticketId);
+    return { data: { worktree, runs } };
   });
 
   app.get('/control/v1/instances/:repositoryId', async (request) => {

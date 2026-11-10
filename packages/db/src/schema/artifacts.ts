@@ -13,6 +13,7 @@ import { sql } from 'drizzle-orm';
 
 import { conversations } from './conversations';
 import { artifactType } from './enums';
+import { messages } from './messages';
 import { repositories } from './repositories';
 import { taskLinks } from './task-links';
 
@@ -31,17 +32,22 @@ export const artifacts = pgTable(
       onDelete: 'set null',
     }),
     taskId: uuid('task_id').references(() => taskLinks.id, { onDelete: 'set null' }),
+    /** The message an uploaded attachment was sent with; a review artifact has none. */
+    messageId: uuid('message_id').references(() => messages.id, { onDelete: 'set null' }),
     type: artifactType('type').notNull(),
     storageKey: text('storage_key'),
     mimeType: text('mime_type'),
     sizeBytes: bigint('size_bytes', { mode: 'number' }),
     sha256: text('sha256'),
     metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+    /** Soft revocation: set once an owner withdraws the attachment; the bytes stay on disk for audit/quota work. */
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index('artifacts_task_idx').on(table.taskId),
     index('artifacts_conversation_idx').on(table.conversationId),
+    index('artifacts_message_idx').on(table.messageId),
     uniqueIndex('artifacts_storage_key_uq')
       .on(table.storageKey)
       .where(sql`${table.storageKey} is not null`),

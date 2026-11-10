@@ -1,0 +1,96 @@
+# A4 diff 面板 — 2026-11-09T00:13:22+08:00
+$ git rev-parse HEAD
+55d9e2935baebd3f660c9753ca5621d9ef8a980d
+$ git -C /tmp/m6a-run-rerun/worktrees/probe1/m6a-review-t_m6a_55d9e2 rev-parse HEAD
+55d9e2935baebd3f660c9753ca5621d9ef8a980d
+环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-run-rerun/artifacts，supervisor http://127.0.0.1:4690
+
+任务 worktree：/tmp/m6a-run-rerun/worktrees/probe1/m6a-review-t_m6a_55d9e2
+
+## 1. 真实 git 命令的原始输出
+$ git status --porcelain=v1
+ D LICENSE
+ M README.md
+R  docs/GLOSSARY.md -> docs/GLOSSARY-m6a.md
+?? docs/m6a-fixture.md
+
+$ git diff --numstat HEAD
+0	21	LICENSE
+2	0	README.md
+0	0	docs/{GLOSSARY.md => GLOSSARY-m6a.md}
+
+$ git diff HEAD   # 头 30 行
+diff --git a/LICENSE b/LICENSE
+deleted file mode 100644
+index e1f7296..0000000
+--- a/LICENSE
++++ /dev/null
+@@ -1,21 +0,0 @@
+-MIT License
+-
+-Copyright (c) 2026 sutrasky
+-
+-Permission is hereby granted, free of charge, to any person obtaining a copy
+-of this software and associated documentation files (the "Software"), to deal
+-in the Software without restriction, including without limitation the rights
+-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+-copies of the Software, and to permit persons to whom the Software is
+-furnished to do so, subject to the following conditions:
+-
+-The above copyright notice and this permission notice shall be included in all
+-copies or substantial portions of the Software.
+-
+-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+-SOFTWARE.
+diff --git a/README.md b/README.md
+index cd2c005..e69e51c 100644
+--- a/README.md
+
+## 2. API 采集（POST /api/v1/tasks/:id/review/changes）
+HTTP 200
+{
+  "state": "available",
+  "branch": "agent/review-isolation-m6a-fa8ec916012c",
+  "commit": "55d9e2935baebd3f660c9753ca5621d9ef8a980d",
+  "commitSubject": "docs(m6a): record the dual-entrance attachment merge with red-to-green evidence",
+  "committedAt": "2026-11-08T23:25:28+08:00",
+  "additions": 5,
+  "deletions": 21,
+  "filesOmitted": 0
+}
+- deleted   +0 -21  LICENSE
+- modified  +2 -0  README.md
+- renamed   +0 -0  docs/GLOSSARY-m6a.md (← docs/GLOSSARY.md)
+- untracked +3 -0  docs/m6a-fixture.md
+
+## 3. 对照：面板里 LICENSE 的 patch 与同一命令的原始输出逐字节一致
+identical: yes
+
+## 4. 未跟踪文件来自真实 git 输出，增行数取自 patch
+$ git diff --no-index --no-prefix -- /dev/null docs/m6a-fixture.md
+diff --git docs/m6a-fixture.md docs/m6a-fixture.md
+new file mode 100644
+index 0000000..f14ff5b
+--- /dev/null
++++ docs/m6a-fixture.md
+@@ -0,0 +1,3 @@
++# M6-A fixture
++
++这个文件是未跟踪的新文件，用于验证 diff 面板。
+
+## 5. 无改动任务（clean worktree）：空列表，不显示推断内容
+worktree：/tmp/m6a-run-rerun/worktrees/probe1/m6a-closed-t_m6a_closed
+$ git status --porcelain=v1（应为空）
+HTTP 200
+state = available | files = [] | additions = 0 | deletions = 0
+
+## 6. 工作目录已清理的任务：cleaned 而不是空白
+HTTP 200
+state = cleaned
+reason = 该任务的执行目录已不存在（工作目录已清理，或运行时尚未创建工作目录）。
+files = []

@@ -56,6 +56,12 @@ export const bridgeCapabilitiesSchema = z.object({
     branches: z.boolean().optional(),
     /** M5-B: execution requests carry a lease admission and un-admitted Source tickets wait. */
     admission: z.boolean().optional(),
+    /**
+     * M6-A L113: triggers may carry attachment references and the executor
+     * fetches them into the workspace. Absent means unsupported: an old Bridge's
+     * strict trigger schema would answer 400, so the platform never sends them.
+     */
+    attachments: z.boolean().optional(),
   }),
   source: z.object({ kind: z.string(), enabled: z.boolean() }),
 });
@@ -96,6 +102,30 @@ export const bridgeAdmissionSchema = z
 
 export type BridgeAdmission = z.infer<typeof bridgeAdmissionSchema>;
 
+/**
+ * One attachment reference on a trigger. It carries locating and verification
+ * metadata only: no bytes, no download URL and no token. The runtime derives the
+ * download path from its own platform configuration, so a trigger can never
+ * smuggle a foreign URL or credential into the executor or the upstream store.
+ */
+export const bridgeAttachmentSchema = z
+  .object({
+    id: uuidSchema,
+    filename: z.string().min(1).max(255),
+    mimeType: z.string().min(1).max(200),
+    sizeBytes: z
+      .number()
+      .int()
+      .positive()
+      .max(10 * 1024 * 1024),
+    sha256: z.string().regex(/^[0-9a-f]{64}$/),
+    /** L113 delivers images and text; binary files stay on the platform. */
+    kind: z.enum(['image', 'text']),
+  })
+  .strict();
+
+export type BridgeAttachment = z.infer<typeof bridgeAttachmentSchema>;
+
 export const bridgeTriggerInputSchema = z
   .object({
     triggerId: z.string().min(1).max(256),
@@ -112,6 +142,12 @@ export const bridgeTriggerInputSchema = z
      */
     targetTicketId: z.string().min(1).max(200).optional(),
     admission: bridgeAdmissionSchema.optional(),
+    /**
+     * M6-A L113: the message's attachment references. The platform sends this
+     * only after the runtime declares `capabilities.attachments`; a runtime
+     * without that capability must never receive the key at all.
+     */
+    attachments: z.array(bridgeAttachmentSchema).max(10).optional(),
     executionSpec: z.object({
       repository: z.string().regex(/^[^/\s]+\/[^/\s]+$/),
       baseBranch: z.string().min(1),

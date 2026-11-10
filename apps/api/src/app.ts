@@ -3,8 +3,9 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 import fastifyCookie from '@fastify/cookie';
+import fastifyMultipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
-import { errorResponse, successResponse } from '@moyu/contracts';
+import { attachmentLimits, errorResponse, successResponse } from '@moyu/contracts';
 import type { Database } from '@moyu/db';
 import { sql } from 'drizzle-orm';
 import Fastify, { type FastifyError, type FastifyInstance } from 'fastify';
@@ -25,6 +26,7 @@ import { registerEventRoutes } from './routes/events';
 import { registerPreferenceRoutes } from './routes/preferences';
 import { registerRuntimeRoutes } from './routes/runtime';
 import { registerRepositoryRoutes } from './routes/repositories';
+import { registerReviewRoutes } from './routes/review';
 import { registerTaskRoutes } from './routes/tasks';
 import { SERVICE_NAME, SERVICE_VERSION } from './version';
 
@@ -74,6 +76,9 @@ export function buildApp({
   app.addHook('onSend', async (request, reply) => {
     reply.header('x-request-id', request.id);
     for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+      // A route may narrow a policy for one response (the attachment download
+      // adds `sandbox`); the process-wide default must not overwrite it.
+      if (name === 'content-security-policy' && reply.getHeader(name)) continue;
       reply.header(name, value);
     }
   });
@@ -90,6 +95,12 @@ export function buildApp({
   });
 
   app.register(fastifyCookie, {});
+  // Attachment upload is the only multipart route. The per-file limit is a
+  // hard ceiling: the plugin aborts the stream, so nothing reaches storage or
+  // the database when a file is too large.
+  app.register(fastifyMultipart, {
+    limits: { fileSize: attachmentLimits.maxFileBytes, files: 1, fields: 4 },
+  });
 
   const webDistDir = config.webDistDir ? path.resolve(config.webDistDir) : null;
   const hasWebBuild = Boolean(webDistDir && existsSync(path.join(webDistDir, 'index.html')));
@@ -135,6 +146,7 @@ export function buildApp({
       events: eventBus,
     });
     registerAttachmentRoutes(app, { config, database, authenticate });
+    registerReviewRoutes(app, { config, database, authenticate });
 
     // Bind the configured repository once the owner exists; a first boot before
     // Passkey registration simply waits for a later call (list, conversation,
@@ -248,19 +260,21 @@ export function buildApp({
     }
 
     const code =
-      status === 404
-        ? 'not_found'
-        : status === 401
-          ? 'unauthorized'
-          : status === 403
-            ? 'forbidden'
-            : status === 409
-              ? 'conflict'
-              : status === 429
-                ? 'rate_limited'
-                : status >= 500
-                  ? 'internal_error'
-                  : 'invalid_request';
+      status === 413
+        ? 'payload_too_large'
+        : status === 404
+          ? 'not_found'
+          : status === 401
+            ? 'unauthorized'
+            : status === 403
+              ? 'forbidden'
+              : status === 409
+                ? 'conflict'
+                : status === 429
+                  ? 'rate_limited'
+                  : status >= 500
+                    ? 'internal_error'
+                    : 'invalid_request';
 
     return reply
       .code(status)

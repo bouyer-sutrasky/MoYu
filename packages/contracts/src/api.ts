@@ -9,6 +9,7 @@ export const apiErrorCodeSchema = z.enum([
   'not_found',
   'conflict',
   'rate_limited',
+  'payload_too_large',
   'dependency_unavailable',
   'internal_error',
 ]);

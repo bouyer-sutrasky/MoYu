@@ -8,6 +8,7 @@ import {
   type ConversationSummary,
   type Message,
   type RepositorySummary,
+  type TaskReview,
   type WorkspaceEvent,
 } from '@moyu/contracts';
 
@@ -149,6 +150,11 @@ export function WorkspaceShell({
   const [connection, setConnection] = useState<ConnectionStatus>('connecting');
 
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [review, setReview] = useState<TaskReview | null>(null);
+  const [reviewStatus, setReviewStatus] = useState<LoadStatus>('idle');
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const [reviewBusy, setReviewBusy] = useState<'changes' | 'checks' | null>(null);
+  const reviewTaskRef = useRef<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -170,6 +176,7 @@ export function WorkspaceShell({
   const pendingDeliveryIdsRef = useRef<Set<string>>(new Set());
   const deliveryRefreshSeqRef = useRef(0);
   const deliveryRefreshTokensRef = useRef<Map<string, number>>(new Map());
+  const reviewRequestRef = useRef(0);
   const mainRef = useRef<HTMLElement | null>(null);
   const scrollAdjustRef = useRef<{
     conversationId: string;
@@ -853,10 +860,19 @@ export function WorkspaceShell({
   );
 
   const sendMessage = useCallback(
-    async (conversationId: string, text: string, clientMessageId: string) => {
+    async (
+      conversationId: string,
+      text: string,
+      clientMessageId: string,
+      attachmentIds: string[] = [],
+    ) => {
       const repositoryId = selectedRepositoryIdRef.current;
       try {
-        const result = await api.sendMessage(conversationId, { clientMessageId, text });
+        const result = await api.sendMessage(conversationId, {
+          clientMessageId,
+          text,
+          ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
+        });
         // The API merged a Web message naming an existing GitHub requirement into
         // that imported conversation and removed the empty Web one. Only follow
         // it if the user is still looking at the conversation they sent from.
@@ -886,6 +902,122 @@ export function WorkspaceShell({
     },
     [loadConversations, loadConversation, loadMessages, onSessionLost],
   );
+
+  /**
+   * Loads the stored review projection. `collect` asks the runtime (through the
+   * API and the host supervisor) for a fresh worktree diff; plain loads only
+   * read persisted artifacts, so opening the panel never runs anything.
+   */
+  const loadReview = useCallback(
+    async (taskId: string, options: { collect?: boolean } = {}) => {
+      const token = ++reviewRequestRef.current;
+      setReviewStatus('loading');
+      setReviewError(null);
+      if (options.collect) setReviewBusy('changes');
+      try {
+        const result = options.collect
+          ? await api.refreshTaskReview(taskId)
+          : await api.taskReview(taskId);
+        if (token !== reviewRequestRef.current) return;
+        setReview(result.review);
+        setReviewStatus('ready');
+        reviewTaskRef.current = taskId;
+      } catch (caught) {
+        if (token !== reviewRequestRef.current) return;
+        if (caught instanceof ApiClientError && caught.status === 401) {
+          onSessionLost();
+          return;
+        }
+        setReviewStatus('error');
+        setReviewError(describeApiError(caught));
+      } finally {
+        if (token === reviewRequestRef.current) {
+          setReviewBusy((current) => (current === 'changes' ? null : current));
+        }
+      }
+    },
+    [onSessionLost],
+  );
+
+  const collectReviewChanges = useCallback(async () => {
+    const taskId = conversation?.task?.id;
+    if (!taskId || reviewBusy) return;
+    await loadReview(taskId, { collect: true });
+  }, [conversation?.task?.id, loadReview, reviewBusy]);
+
+  const runReviewChecks = useCallback(async () => {
+    const taskId = conversation?.task?.id;
+    if (!taskId || reviewBusy) return;
+    const token = ++reviewRequestRef.current;
+    setReviewBusy('checks');
+    setReviewError(null);
+    try {
+      const result = await api.runTaskChecks(taskId);
+      if (token !== reviewRequestRef.current) return;
+      setReview(result.review);
+      setReviewStatus('ready');
+    } catch (caught) {
+      if (token !== reviewRequestRef.current) return;
+      if (caught instanceof ApiClientError && caught.status === 401) {
+        onSessionLost();
+        return;
+      }
+      setReviewError(describeApiError(caught));
+    } finally {
+      if (token === reviewRequestRef.current) setReviewBusy(null);
+    }
+  }, [conversation?.task?.id, onSessionLost, reviewBusy]);
+
+  // Load the stored review whenever the details panel opens for a task, and
+  // collect once automatically when nothing has been stored yet. A task with no
+  // runtime ticket simply shows the stated reason; no placeholder diff is made.
+  useEffect(() => {
+    const taskId = conversation?.task?.id ?? null;
+    if (!detailsOpen || !taskId) {
+      setReview(null);
+      setReviewStatus('idle');
+      setReviewError(null);
+      reviewTaskRef.current = null;
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const token = ++reviewRequestRef.current;
+      setReviewStatus('loading');
+      setReviewError(null);
+      try {
+        const result = await api.taskReview(taskId);
+        if (cancelled || token !== reviewRequestRef.current) return;
+        setReview(result.review);
+        setReviewStatus('ready');
+        reviewTaskRef.current = taskId;
+        if (
+          result.review.changes.state === 'unavailable' &&
+          result.review.changes.collectedAt === null &&
+          conversation?.task?.upstreamTicketId
+        ) {
+          void loadReview(taskId, { collect: true });
+        }
+      } catch (caught) {
+        if (cancelled || token !== reviewRequestRef.current) return;
+        if (caught instanceof ApiClientError && caught.status === 401) {
+          onSessionLost();
+          return;
+        }
+        setReviewStatus('error');
+        setReviewError(describeApiError(caught));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    detailsOpen,
+    conversation?.task?.id,
+    conversation?.task?.upstreamTicketId,
+    loadReview,
+    onSessionLost,
+  ]);
 
   const runTaskCommand = useCallback(
     async (action: 'start' | 'stop' | 'resume' | 'retry') => {
@@ -1120,6 +1252,7 @@ export function WorkspaceShell({
             <ConversationPane
               mode={mode}
               repository={selectedRepository}
+              repositories={repositories}
               conversation={conversation}
               conversationStatus={conversationStatus}
               conversationError={conversationError}
@@ -1168,6 +1301,12 @@ export function WorkspaceShell({
           open={detailsOpen}
           repository={selectedRepository}
           conversation={conversation}
+          review={review}
+          reviewStatus={reviewStatus}
+          reviewError={reviewError}
+          reviewBusy={reviewBusy}
+          onRefreshChanges={collectReviewChanges}
+          onRunChecks={runReviewChecks}
           onClose={() => setDetailsOpen(false)}
         />
       </div>

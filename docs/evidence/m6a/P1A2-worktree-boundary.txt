@@ -1,0 +1,326 @@
+# P1-A 第二刀：locateTicketWorktree 用真实路径校验边界 — 2026-11-08T19:17:03+08:00
+
+依据：#56 复审 P1-A；`docs/M6A-REWORK-HANDOFF.md` §2.1 第二条、§4 之后的最小下一步（`M6A-REWORK-ISS57-P1A2`）。
+分支：本地 `agent/review-isolation-m6a-fa8ec916012c` 指向 `origin/agent/attachments-review-panel-4bd4aae33eac`（沿用 PR #44）。
+基线：`3e93dff478f8fdd9dbff8df48820255ba60a4a3f`（上一轮 P1-A 第一刀 + 证据）；`main = 1001c2544c68b8f4d906e330566f6fdb6ff0c795`。
+环境：`/opt/moyu-node24/bin`（Node v24.22.2、pnpm 11.7.0）、git 2.43.0、Linux；未改 `/root/src/upstream/*`，未重启 3082，未合并 PR。
+
+代码 head（本文件据其产出，其后一个 docs-only 提交入库）：
+$ git rev-parse HEAD
+a9e12c10d85de42740ae3c1d6b32fce907e08ca6
+
+$ git log --oneline 3e93dff..HEAD
+a9e12c1 fix(supervisor): resolve the ticket worktree inside the configured boundary
+5b0060c test(supervisor): prove the worktree locator accepts out-of-bound symlinks
+
+## 1. 红段：测试先落（HEAD = 5b0060c，生产代码未改）
+
+$ git rev-parse HEAD
+5b0060cd609c2897b9ff60385d6421066d72f4c4
+$ git status --short
+$ cd apps/supervisor && /opt/moyu-node24/bin/pnpm exec vitest run test/review.test.ts
+
+ RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/supervisor
+
+ ❯ test/review.test.ts (18 tests | 4 failed) 708ms
+   ✓ supervisor review worktree resolution > finds the single directory whose name ends with the ticket id prefix 3ms
+   ✓ supervisor review worktree resolution > reports a missing instance profile as unavailable, never as an empty diff 1ms
+   ✓ supervisor review worktree resolution > refuses to guess when two directories match the same ticket id 1ms
+   × supervisor worktree boundary > refuses a ticket directory symlinked outside the worktree root 9ms
+     → expected 'available' to be 'unavailable' // Object.is equality
+   × supervisor worktree boundary > refuses a profile directory symlinked outside the worktree root 2ms
+     → expected 'available' to be 'unavailable' // Object.is equality
+   × supervisor worktree boundary > refuses a profile path that climbs out of the worktree root with .. 1ms
+     → expected 'available' to be 'unavailable' // Object.is equality
+   × supervisor worktree boundary > refuses a symlink chain that reaches outside the worktree root 1ms
+     → expected 'available' to be 'unavailable' // Object.is equality
+   ✓ supervisor worktree boundary > still locates a real directory inside the worktree root 1ms
+   ✓ supervisor worktree diff > reads a real git diff, including untracked, modified, deleted and renamed files 62ms
+   ✓ supervisor worktree diff > reports no files for a clean worktree instead of inventing changes 33ms
+   ✓ supervisor worktree diff > marks a non-repository directory as unavailable with the git error 6ms
+   ✓ supervisor diff helper isolation > never runs an external diff command named by the task repository attributes 40ms
+   ✓ supervisor diff helper isolation > never runs a textconv command named by the task repository attributes 39ms
+   ✓ supervisor diff helper isolation > ignores diff helpers inherited through the supervisor environment 34ms
+   ✓ supervisor diff helper isolation > never runs a repository-configured fsmonitor program while reading status 36ms
+   ✓ supervisor check runs > keeps the real exit code, timestamps and output tail of each command 111ms
+   ✓ supervisor check runs > terminates a hung command and records the timeout  324ms
+   ✓ review service > returns a cleaned state when the ticket worktree is gone 3ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/review.test.ts > supervisor worktree boundary > refuses a ticket directory symlinked outside the worktree root
+AssertionError: expected 'available' to be 'unavailable' // Object.is equality
+
+Expected: "unavailable"
+Received: "available"
+
+ ❯ expectRefused test/review.test.ts:110:26
+    108| 
+    109|   function expectRefused(result: ReturnType<typeof locateTicketWorktre…
+    110|     expect(result.state).toBe('unavailable');
+       |                          ^
+    111|     expect(result.directory).toBeNull();
+    112|     expect(result.reason).toContain('边界');
+ ❯ test/review.test.ts:126:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  test/review.test.ts > supervisor worktree boundary > refuses a profile directory symlinked outside the worktree root
+AssertionError: expected 'available' to be 'unavailable' // Object.is equality
+
+Expected: "unavailable"
+Received: "available"
+
+ ❯ expectRefused test/review.test.ts:110:26
+    108| 
+    109|   function expectRefused(result: ReturnType<typeof locateTicketWorktre…
+    110|     expect(result.state).toBe('unavailable');
+       |                          ^
+    111|     expect(result.directory).toBeNull();
+    112|     expect(result.reason).toContain('边界');
+ ❯ test/review.test.ts:138:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  test/review.test.ts > supervisor worktree boundary > refuses a profile path that climbs out of the worktree root with ..
+AssertionError: expected 'available' to be 'unavailable' // Object.is equality
+
+Expected: "unavailable"
+Received: "available"
+
+ ❯ expectRefused test/review.test.ts:110:26
+    108| 
+    109|   function expectRefused(result: ReturnType<typeof locateTicketWorktre…
+    110|     expect(result.state).toBe('unavailable');
+       |                          ^
+    111|     expect(result.directory).toBeNull();
+    112|     expect(result.reason).toContain('边界');
+ ❯ test/review.test.ts:149:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  test/review.test.ts > supervisor worktree boundary > refuses a symlink chain that reaches outside the worktree root
+AssertionError: expected 'available' to be 'unavailable' // Object.is equality
+
+Expected: "unavailable"
+Received: "available"
+
+ ❯ expectRefused test/review.test.ts:110:26
+    108| 
+    109|   function expectRefused(result: ReturnType<typeof locateTicketWorktre…
+    110|     expect(result.state).toBe('unavailable');
+       |                          ^
+    111|     expect(result.directory).toBeNull();
+    112|     expect(result.reason).toContain('边界');
+ ❯ test/review.test.ts:162:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  4 failed | 14 passed (18)
+   Start at  19:14:55
+   Duration  1.20s (transform 143ms, setup 0ms, collect 252ms, tests 708ms, environment 0ms, prepare 74ms)
+
+exit code: 1
+
+判定（红）：4 条新测试失败，定位都返回 `available`（即接受越界符号链接），
+而「正常目录仍能定位」这条回归断言在红段就是绿的（证明功能没有被改死）。exit 1。
+
+## 2. 绿段：修复后（HEAD = a9e12c1）
+
+$ git rev-parse HEAD
+a9e12c10d85de42740ae3c1d6b32fce907e08ca6
+$ cd apps/supervisor && /opt/moyu-node24/bin/pnpm exec vitest run test/review.test.ts
+
+ RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/supervisor
+
+ ✓ test/review.test.ts (18 tests) 711ms
+   ✓ supervisor check runs > terminates a hung command and records the timeout  326ms
+
+ Test Files  1 passed (1)
+      Tests  18 passed (18)
+   Start at  19:15:43
+   Duration  1.24s (transform 151ms, setup 0ms, collect 274ms, tests 711ms, environment 0ms, prepare 87ms)
+
+exit code: 0
+
+$ git rev-parse HEAD
+a9e12c10d85de42740ae3c1d6b32fce907e08ca6
+$ cd apps/supervisor && /opt/moyu-node24/bin/pnpm test
+$ vitest run --exclude "test/integration/**"
+
+ RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/supervisor
+
+ ✓ test/review.test.ts (18 tests) 724ms
+   ✓ supervisor check runs > terminates a hung command and records the timeout  327ms
+ ✓ test/server-wake.test.ts (1 test) 88ms
+ ✓ test/config.test.ts (3 tests) 17ms
+ ✓ test/resources.test.ts (8 tests) 8ms
+ ✓ test/stop-proof.test.ts (4 tests) 2267ms
+   ✓ supervisor cgroup stop proof > serializes independent processes with the kernel lock  2130ms
+ ✓ test/provision-env.test.ts (1 test) 4ms
+ ✓ test/process.test.ts (21 tests) 6508ms
+   ✓ supervisor process evidence > never signals a reused root PID whose start time does not match  318ms
+   ✓ supervisor process evidence > does not signal a reused process group after the owned members exited  303ms
+   ✓ supervisor process evidence > does not report stopped when the timeout expires before the child exits  1787ms
+   ✓ supervisor process evidence > kills a child that ignores SIGTERM before reporting stopped  1666ms
+   ✓ supervisor process evidence > retains a newly started service regardless of its age  360ms
+   ✓ cgroup launcher only accepts a positive release > exits without executing when the parent dies before release  542ms
+
+ Test Files  7 passed (7)
+      Tests  56 passed (56)
+   Start at  19:16:38
+   Duration  6.97s (transform 424ms, setup 0ms, collect 1.04s, tests 9.62s, environment 2ms, prepare 568ms)
+
+exit code: 0
+
+$ cd apps/supervisor && /opt/moyu-node24/bin/pnpm --filter @moyu/supervisor typecheck
+$ tsc --noEmit
+exit code: 0
+
+$ /opt/moyu-node24/bin/pnpm check   # lint + format:check + typecheck + 全仓单测
+$ pnpm lint && pnpm format:check && pnpm typecheck && pnpm test
+$ eslint .
+
+/root/src/review-isolation-m6a-fa8ec916012c/apps/dispatcher/test/integration/dispatcher.integration.test.ts
+  716:7  warning  Unused eslint-disable directive (no problems were reported from 'no-console')
+
+✖ 1 problem (0 errors, 1 warning)
+  0 errors and 1 warning potentially fixable with the `--fix` option.
+
+$ prettier --check "**/*.{ts,tsx,mjs,cjs,json,yml,yaml,css,html}"
+Checking formatting...
+All matched files use Prettier code style!
+$ pnpm -r --if-present typecheck
+Scope: 8 of 9 workspace projects
+packages/contracts typecheck$ tsc --noEmit
+packages/db typecheck$ tsc --noEmit
+packages/theme typecheck$ tsc --noEmit
+packages/theme typecheck: Done
+packages/contracts typecheck: Done
+packages/db typecheck: Done
+apps/web typecheck$ tsc --noEmit
+packages/runtime-client typecheck$ tsc --noEmit
+packages/runtime-client typecheck: Done
+apps/web typecheck: Done
+apps/api typecheck$ tsc --noEmit
+apps/dispatcher typecheck$ tsc --noEmit
+apps/supervisor typecheck$ tsc --noEmit
+apps/supervisor typecheck: Done
+apps/dispatcher typecheck: Done
+apps/api typecheck: Done
+$ pnpm -r --if-present test && node --test scripts/m3/guard.test.mjs integrations/superagent/tests/verify-lock.test.mjs
+Scope: 8 of 9 workspace projects
+packages/contracts test$ vitest run
+packages/contracts test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/packages/contracts
+packages/contracts test:  ✓ test/contracts.test.ts (13 tests) 21ms
+packages/contracts test:  Test Files  1 passed (1)
+packages/contracts test:       Tests  13 passed (13)
+packages/contracts test:    Start at  19:16:14
+packages/contracts test:    Duration  494ms (transform 120ms, setup 0ms, collect 226ms, tests 21ms, environment 0ms, prepare 78ms)
+packages/contracts test: Done
+packages/runtime-client test$ vitest run
+packages/runtime-client test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/packages/runtime-client
+packages/runtime-client test:  ✓ test/credentials.test.ts (5 tests) 7ms
+packages/runtime-client test:  ✓ test/client.test.ts (8 tests) 27ms
+packages/runtime-client test:  Test Files  2 passed (2)
+packages/runtime-client test:       Tests  13 passed (13)
+packages/runtime-client test:    Start at  19:16:15
+packages/runtime-client test:    Duration  566ms (transform 202ms, setup 0ms, collect 345ms, tests 34ms, environment 0ms, prepare 162ms)
+packages/runtime-client test: Done
+apps/api test$ vitest run --exclude "test/integration/**"
+apps/dispatcher test$ vitest run --exclude "test/integration/**"
+apps/supervisor test$ vitest run --exclude "test/integration/**"
+apps/api test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/api
+apps/supervisor test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/supervisor
+apps/dispatcher test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/dispatcher
+apps/api test:  ✓ test/cursor.test.ts (6 tests) 12ms
+apps/dispatcher test:  ✓ test/config.test.ts (3 tests) 26ms
+apps/api test:  ✓ test/auth.test.ts (9 tests) 38ms
+apps/dispatcher test:  ✓ test/tasks.test.ts (2 tests) 4ms
+apps/dispatcher test:  Test Files  2 passed (2)
+apps/dispatcher test:       Tests  5 passed (5)
+apps/dispatcher test:    Start at  19:16:16
+apps/dispatcher test:    Duration  1.38s (transform 500ms, setup 0ms, collect 1.04s, tests 30ms, environment 0ms, prepare 436ms)
+apps/dispatcher test: Done
+apps/supervisor test:  ✓ test/review.test.ts (18 tests) 770ms
+apps/supervisor test:    ✓ supervisor check runs > terminates a hung command and records the timeout  325ms
+apps/supervisor test:  ✓ test/server-wake.test.ts (1 test) 99ms
+apps/api test:  ✓ test/health.test.ts (5 tests) 112ms
+apps/api test:  Test Files  3 passed (3)
+apps/api test:       Tests  20 passed (20)
+apps/api test:    Start at  19:16:16
+apps/api test:    Duration  2.86s (transform 916ms, setup 0ms, collect 2.70s, tests 162ms, environment 1ms, prepare 623ms)
+apps/api test: Done
+apps/supervisor test:  ✓ test/config.test.ts (3 tests) 18ms
+apps/supervisor test:  ✓ test/stop-proof.test.ts (4 tests) 2460ms
+apps/supervisor test:    ✓ supervisor cgroup stop proof > serializes independent processes with the kernel lock  2209ms
+apps/supervisor test:  ✓ test/resources.test.ts (8 tests) 8ms
+apps/supervisor test:  ✓ test/provision-env.test.ts (1 test) 4ms
+apps/supervisor test:  ✓ test/process.test.ts (21 tests) 6731ms
+apps/supervisor test:    ✓ supervisor process evidence > never signals a reused root PID whose start time does not match  342ms
+apps/supervisor test:    ✓ supervisor process evidence > does not signal a reused process group after the owned members exited  310ms
+apps/supervisor test:    ✓ supervisor process evidence > does not report stopped when the timeout expires before the child exits  1788ms
+apps/supervisor test:    ✓ supervisor process evidence > kills a child that ignores SIGTERM before reporting stopped  1674ms
+apps/supervisor test:    ✓ supervisor process evidence > retains a newly started service regardless of its age  361ms
+apps/supervisor test:    ✓ cgroup launcher only accepts a positive release > exits without executing when the parent dies before release  541ms
+apps/supervisor test:  Test Files  7 passed (7)
+apps/supervisor test:       Tests  56 passed (56)
+apps/supervisor test:    Start at  19:16:16
+apps/supervisor test:    Duration  7.93s (transform 824ms, setup 0ms, collect 1.98s, tests 10.09s, environment 1ms, prepare 811ms)
+apps/supervisor test: Done
+✔ verify-lock.sh gives the same result for plain, spaced, quoted and relative paths (5882.180346ms)
+✔ accepts a dedicated profile linked to the patched build (11.419726ms)
+✔ rejects the bootstrap home and profile (1.750294ms)
+✔ rejects an unpatched build and a wrong Bridge port (2.480771ms)
+✔ rejects an env file with broad permissions (1.310753ms)
+✔ rejects a target port that is already in use (11.389008ms)
+✔ rejects instance env keys that could override the validated home/profile (1.403839ms)
+✔ rejects an instance env pointing at the production API or a conflicting process env (2.273238ms)
+✔ rejects a symlinked state parent and leaves the other instance untouched (1.327987ms)
+✔ rejects state/<profile> linked to another profile in the same home (1.623329ms)
+✔ rejects sessions linked to another directory in the same home (1.376611ms)
+✔ rejects a cleanup target whose parent link stays inside the same home (1.223574ms)
+✔ rejects a profile containing path separators (0.977541ms)
+✔ the E2E script exits before any run directory for a bootstrap home or production API (806.318843ms)
+✔ refuses a runtime whose stateDir is not the expected isolated profile (0.648029ms)
+ℹ tests 15
+ℹ suites 0
+ℹ pass 15
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 5964.825182
+EXIT=0
+
+判定（绿）：18 条 review 测试全绿，supervisor 56 条全绿，全仓 `pnpm check` exit 0。
+
+## 3. 拒绝的类别与合法路径
+
+修复点：`locateTicketWorktree` 先 `realpath` 解析 `worktreeRoot` 与 `worktreeRoot/<profile>`，
+再用 `path.relative` 判断是否严格位于边界内（不用字符串 `startsWith`，因此 `/root/src/aaa-evil`
+不会被当成 `/root/src/aaa` 的子路径）；每个匹配候选同样先 `realpath` 再判边界，越界即拒绝，
+不会 `stat` 越界目标；返回的 `directory` 是解析后的真实路径。
+
+| 类别 | 测试 | 红 | 绿 |
+| --- | --- | --- | --- |
+| ticket 目录直接符号链接到边界外 | `refuses a ticket directory symlinked outside the worktree root` | available（失败） | unavailable + 边界原因 |
+| profile 目录符号链接到边界外（父目录） | `refuses a profile directory symlinked outside the worktree root` | available（失败） | unavailable + 边界原因 |
+| profile 用 `..` 爬出边界 | `refuses a profile path that climbs out of the worktree root with ..` | available（失败） | unavailable + 边界原因 |
+| 符号链接套符号链接再出界 | `refuses a symlink chain that reaches outside the worktree root` | available（失败） | unavailable + 边界原因 |
+| 正常 `WORKTREE_ROOT/<profile>/<ticket 前缀目录>` | `still locates a real directory inside the worktree root`（红段即绿） | available | available |
+
+「没读到边界外」的判据：边界外目录里放 `outside-sentinel.txt`（内容 `top secret`），四条拒绝用例都断言
+`JSON.stringify(result)` 不含哨兵文件名（也不含其内容），返回值只有 `state/directory/reason/profile`；
+不是只看返回值是否为空。
+
+## 4. 判定与边界
+
+- 生产路径：`apps/supervisor/src/review.ts` 的 `locateTicketWorktree`，`createReviewService.resolve/changes/checks`
+  都经由它拿到目录；浏览器自动采集走同一条路径。
+- 行为变化：可用时返回解析后的真实路径（原来是 join 出来的词法路径），后续 git 调用不会被中途改写的链接带偏。
+- 未动：P1-A 其余两刀（检查子进程最小环境 + 低权身份、超时按进程组回收）、并发门控竞态、P1-B/P1-C 等。
+- 未验证：推送后的 GitHub CI（本轮结束时尚未触发）；A1–A8 整套证据尚未在新 head 重跑。
+- 复现：`cd apps/supervisor && /opt/moyu-node24/bin/pnpm exec vitest run test/review.test.ts`。

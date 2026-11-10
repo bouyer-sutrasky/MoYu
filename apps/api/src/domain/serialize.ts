@@ -1,4 +1,5 @@
 import type {
+  AttachmentSummary,
   ConversationSummary,
   DeliverySummary,
   Message,
@@ -30,7 +31,11 @@ export function toDeliverySummary(delivery: Delivery | null): DeliverySummary | 
   };
 }
 
-export function toMessage(row: MessageRow, delivery: Delivery | null): Message {
+export function toMessage(
+  row: MessageRow,
+  delivery: Delivery | null,
+  attachments: AttachmentSummary[] = [],
+): Message {
   return {
     id: row.id,
     conversationId: row.conversationId,
@@ -42,6 +47,7 @@ export function toMessage(row: MessageRow, delivery: Delivery | null): Message {
     source: row.source,
     createdAt: row.createdAt.toISOString(),
     delivery: toDeliverySummary(delivery),
+    attachments,
   };
 }
 

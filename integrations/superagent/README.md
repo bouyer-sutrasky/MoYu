@@ -61,6 +61,12 @@ node --test integrations/superagent/tests/verify-lock.test.mjs
 构建与验证见 [`docs/M4-VERIFICATION.md`](../../docs/M4-VERIFICATION.md)；`0024` 的红→绿证据见
 [`docs/evidence/m5b/pause-before-start.log`](../../docs/evidence/m5b/pause-before-start.log)。
 
+## M6-A 补丁
+
+| 补丁 | 作用 |
+| --- | --- |
+| `0025-workspace-attachments.patch` | L113 附件送达执行器：Bridge 接收可选 `attachments` 元数据（无内容、无 URL），用实例的平台机器令牌下载并校验 size/sha256（422 拒绝 / 503 暂不可用），把字节暂存到 stateDir；executor 在 trigger card 里给出工作区相对路径，并在交付前把文件复制到 `<workspace>/.moyu/attachments/<id>/<name>`（0600、git exclude、幂等）；`/bridge/v1/capabilities` 增加 `attachments: true` |
+
 ## 约束
 
 - 不把 `/root/dsh-superagent` 当作可编辑发布物；补丁在固定 commit 的 checkout 上生成，并作为有序 patch 提交。

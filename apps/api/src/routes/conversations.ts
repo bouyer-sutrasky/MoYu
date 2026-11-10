@@ -16,16 +16,24 @@ import {
   messageListDataSchema,
   messageListQuerySchema,
   modelListDataSchema,
+  newTaskFromTaskDataSchema,
+  newTaskFromTaskInputSchema,
+  newTaskFromTaskPreviewDataSchema,
+  taskInheritanceSchema,
   uuidSchema,
+  type AttachmentSummary,
   type ConversationSummary,
+  type Message,
   type MessageListQuery,
   type ModelOption,
+  type TaskInheritance,
 } from '@moyu/contracts';
 import {
   artifacts,
   conversations,
   deliveries,
   messages,
+  repositories,
   taskLinks,
   taskOperations,
   type Database,
@@ -33,6 +41,7 @@ import {
   type Message as MessageRow,
   type TaskLink,
   type TaskOperation,
+  type Repository,
 } from '@moyu/db';
 
 import type { Authenticate } from '../auth/guards';
@@ -50,6 +59,7 @@ import { appendEvent, type DatabaseTransaction } from '../events/append';
 import { eventToWorkspaceEvent } from '../events/format';
 import type { AppEventBus } from '../events/bus';
 import { decodeCursorValue, encodeCursorValue } from '../lib/cursor';
+import { attachToMessage, attachmentsByMessage } from '../domain/attachments';
 import { ApiProblem } from '../lib/errors';
 import { parseInput, sendData } from '../lib/http';
 import { isUniqueViolation, postgresError } from '../lib/pg';
@@ -186,6 +196,19 @@ async function assertReplyTargetBelongsToConversation(
 }
 
 /**
+ * A single message with its delivery and attachments, used by the idempotent
+ * replay paths that return an already stored row.
+ */
+async function storedMessage(
+  database: Database,
+  row: MessageRow,
+  delivery: Delivery | null,
+): Promise<Message> {
+  const attachments = (await attachmentsByMessage(database, [row.id])).get(row.id) ?? [];
+  return toMessage(row, delivery, attachments);
+}
+
+/**
  * Renders the database timestamp with its full microsecond precision. The API
  * cursor must carry the exact boundary PostgreSQL compares against; a `Date`
  * would silently truncate to milliseconds and break ties inside one millisecond.
@@ -205,6 +228,7 @@ function messageCursor(conversationId: string, timestamp: string, id: string): s
 interface MessagePage {
   messages: MessageRow[];
   deliveriesById: Map<string, Delivery>;
+  attachmentsById: Map<string, AttachmentSummary[]>;
   nextCursor: string | null;
   newerCursor: string | null;
   hasMore: boolean;
@@ -275,11 +299,16 @@ async function loadMessages(
       deliveriesById.set(row.message.id, row.delivery);
     }
   }
+  const attachmentsById = await attachmentsByMessage(
+    database,
+    page.map((row) => row.message.id),
+  );
   const oldest = page[0] ?? null;
   const newest = page[page.length - 1] ?? null;
   return {
     messages: page.map((row) => row.message),
     deliveriesById,
+    attachmentsById,
     nextCursor:
       !newer && hasExtra && oldest
         ? messageCursor(conversationId, oldest.cursorTimestamp, oldest.message.id)
@@ -368,7 +397,12 @@ async function sendExistingConversation(
 async function insertInbound(
   transaction: DatabaseTransaction,
   conversation: typeof conversations.$inferSelect,
-  input: { clientMessageId: string; text: string; replyToMessageId?: string | null },
+  input: {
+    clientMessageId: string;
+    text: string;
+    replyToMessageId?: string | null;
+    attachmentIds?: string[];
+  },
 ): Promise<{ message: MessageRow; delivery: Delivery; event: unknown }> {
   const [message] = await transaction
     .insert(messages)
@@ -383,6 +417,7 @@ async function insertInbound(
     })
     .returning();
   if (!message) throw new Error('message insert returned no row');
+  await attachToMessage(transaction, conversation.id, message.id, input.attachmentIds ?? []);
   const [delivery] = await transaction
     .insert(deliveries)
     .values({ messageId: message.id, upstreamTriggerId: `workspace:${message.id}` })
@@ -604,6 +639,311 @@ export function registerConversationRoutes(
     }
   });
 
+  /** Builds the L117 response with the inherited facts and the new, independent execution identity. */
+  function newTaskResponse(
+    conversation: typeof conversations.$inferSelect,
+    task: TaskLink,
+    inheritance: TaskInheritance,
+  ) {
+    return newTaskFromTaskDataSchema.parse({
+      conversation: toConversationSummary(conversation, task, conversation.title),
+      inheritance,
+      executionIdentity: {
+        conversationId: conversation.id,
+        taskId: task.id,
+        upstreamTicketId: task.upstreamTicketId,
+        reusesSourceSession: false,
+        startsFromCommit: task.baseCommit,
+      },
+    });
+  }
+
+  /** Answers a retried creation with the first conversation and the inheritance snapshot stored beside it. */
+  async function existingNewTask(
+    database: Database,
+    reply: FastifyReply,
+    request: FastifyRequest,
+    existing: typeof conversations.$inferSelect,
+    fingerprint: string,
+  ) {
+    if (existing.requestFingerprint !== fingerprint) {
+      throw ApiProblem.conflict(
+        'clientRequestId was already used for a different new-task request',
+      );
+    }
+    const [task] = await database
+      .select()
+      .from(taskLinks)
+      .where(eq(taskLinks.conversationId, existing.id))
+      .limit(1);
+    if (!task) throw ApiProblem.conflict('The existing conversation has no task');
+    const [notice] = await database
+      .select({ body: messages.body })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.conversationId, existing.id),
+          sql`${messages.sourceEventId} like ${`${INHERITANCE_PREFIX}%`}`,
+        ),
+      )
+      .limit(1);
+    const inheritance = notice ? parseInheritance(notice.body) : null;
+    if (!inheritance)
+      throw ApiProblem.conflict('The existing new task has no inheritance snapshot');
+    return sendData(reply, request, newTaskResponse(existing, task, inheritance), 200);
+  }
+
+  /** States from which a person may start a new task based on an old one; a running task has no result yet. */
+  const NEW_TASK_SOURCE_STATES = new Set(['completed', 'closed_unmerged']);
+  /** Fence that stores the exact inheritance snapshot inside the new conversation's first notice. */
+  const INHERITANCE_PREFIX = 'new-task-from:';
+
+  async function loadOwnedTask(
+    database: Database,
+    ownerId: string,
+    taskId: string,
+  ): Promise<{
+    task: TaskLink;
+    conversation: typeof conversations.$inferSelect;
+    repository: Repository;
+  }> {
+    const [row] = await database
+      .select({ task: taskLinks, conversation: conversations, repository: repositories })
+      .from(taskLinks)
+      .innerJoin(conversations, eq(taskLinks.conversationId, conversations.id))
+      .innerJoin(repositories, eq(conversations.repositoryId, repositories.id))
+      .where(and(eq(taskLinks.id, taskId), eq(conversations.ownerId, ownerId)))
+      .limit(1);
+    if (!row) throw ApiProblem.notFound('Task not found');
+    return row;
+  }
+
+  /** Reads the delivery summary a finished task reported, bounded and safe to show. */
+  async function deliverySummaryOf(
+    database: Database,
+    conversationId: string,
+  ): Promise<string | null> {
+    const [row] = await database
+      .select({ body: messages.body })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.conversationId, conversationId),
+          inArray(messages.kind, ['result', 'notice', 'progress']),
+        ),
+      )
+      .orderBy(desc(messages.createdAt), desc(messages.id))
+      .limit(1);
+    if (!row?.body) return null;
+    const text = row.body.replace(/\s+/g, ' ').trim();
+    return text.length > 600 ? `${text.slice(0, 600)}…` : text || null;
+  }
+
+  /**
+   * Builds the explicit inheritance a "new task from this task" action shows and
+   * stores. Nothing is copied into the new task's execution identity: the old
+   * worktree, session and pull request stay with the old task.
+   */
+  async function taskInheritance(
+    database: Database,
+    task: TaskLink,
+    conversation: typeof conversations.$inferSelect,
+  ): Promise<TaskInheritance> {
+    if (!NEW_TASK_SOURCE_STATES.has(task.state)) {
+      throw ApiProblem.conflict('只有已完成或已关闭的任务可以基于此任务新建');
+    }
+    const deliverySummary = await deliverySummaryOf(database, conversation.id);
+    const closed = task.state === 'closed_unmerged';
+    return {
+      fromTaskId: task.id,
+      fromConversationId: conversation.id,
+      fromRepositoryId: conversation.repositoryId,
+      fromState: task.state,
+      pullRequest: task.prUrl ? { url: task.prUrl, number: task.prNumber } : null,
+      deliverySummary,
+      baseBranch: task.baseBranch,
+      baseCommit: task.baseCommit,
+      // The platform never hands the old worktree to the new task; a cleaned
+      // directory therefore cannot block creation.
+      worktreeRecoverable: false,
+      worktreeNote:
+        '原任务的工作目录不会复用（已清理或不再可信）；新任务从确认的 base 起点重新创建，旧现场不可恢复。',
+      recovery: closed ? 'closed_unmerged_new_task' : 'completed_new_task',
+      recoveryNote: closed
+        ? '原 PR 已关闭未合并：允许基于原起点新建任务；不会重新打开原 PR，也不是恢复原现场。前置条件：原任务已结束、你对目标仓库有权限、起点可解析。'
+        : '原任务已完成：允许基于原起点新建任务；不会重新打开原 PR，也不是恢复原现场。',
+      reopensPullRequest: false,
+      reusesSourceExecution: false,
+    };
+  }
+
+  /** Serializes the inheritance beside a human-readable notice so a retry can return the same snapshot. */
+  function inheritanceMessage(inheritance: TaskInheritance): string {
+    return [
+      `基于任务 ${inheritance.fromTaskId} 新建（不是原现场恢复）。`,
+      `- 原 PR：${inheritance.pullRequest ? inheritance.pullRequest.url : '无'}`,
+      `- 交付摘要：${inheritance.deliverySummary ?? '无'}`,
+      `- 起点：${inheritance.baseBranch}@${inheritance.baseCommit ?? '最新'}`,
+      `- 恢复语义：${inheritance.recoveryNote}`,
+      '',
+      '```json',
+      JSON.stringify(inheritance),
+      '```',
+    ].join('\n');
+  }
+
+  function parseInheritance(body: string): TaskInheritance | null {
+    const match = /```json\n([\s\S]*?)\n```/.exec(body);
+    if (!match) return null;
+    try {
+      const parsed = taskInheritanceSchema.safeParse(JSON.parse(match[1]!));
+      return parsed.success ? parsed.data : null;
+    } catch {
+      return null;
+    }
+  }
+
+  app.get(
+    '/api/v1/tasks/:id/new-task-preview',
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const auth = request.auth;
+      if (!auth) throw ApiProblem.unauthorized();
+      const params = request.params as { id?: string };
+      const { task, conversation, repository } = await loadOwnedTask(
+        database,
+        auth.owner.id,
+        params.id ?? '',
+      );
+      const inheritance = await taskInheritance(database, task, conversation);
+      return sendData(
+        reply,
+        request,
+        newTaskFromTaskPreviewDataSchema.parse({
+          inheritance,
+          suggestedTarget: {
+            repositoryId: repository.id,
+            baseBranch: task.baseBranch,
+            baseCommit: task.baseCommit,
+          },
+        }),
+      );
+    },
+  );
+
+  app.post('/api/v1/tasks/:id/new-task', { preHandler: authenticate }, async (request, reply) => {
+    const auth = request.auth;
+    if (!auth) throw ApiProblem.unauthorized();
+    const params = request.params as { id?: string };
+    const input = parseInput(newTaskFromTaskInputSchema, request.body);
+    const {
+      task,
+      conversation: sourceConversation,
+      repository: sourceRepository,
+    } = await loadOwnedTask(database, auth.owner.id, params.id ?? '');
+    const inheritance = await taskInheritance(database, task, sourceConversation);
+    const targetRepository = await findOwnedRepository(database, auth.owner.id, input.repositoryId);
+    if (!targetRepository) throw ApiProblem.notFound('Repository not found');
+    const baseCommit =
+      input.baseCommit ?? (targetRepository.id === sourceRepository.id ? task.baseCommit : null);
+    const modelId = encodeModel(input.model);
+    const reasoningEffort = input.model?.reasoningEffort ?? null;
+    const fingerprint = createHash('sha256')
+      .update(
+        JSON.stringify({
+          fromTaskId: task.id,
+          repositoryId: targetRepository.id,
+          baseBranch: input.baseBranch,
+          baseCommit,
+          model: input.model ?? null,
+        }),
+      )
+      .digest('hex');
+
+    // A second click reuses the first conversation; the unique owner key is
+    // the database boundary, so two concurrent requests still make one task.
+    const [existing] = await database
+      .select()
+      .from(conversations)
+      .where(
+        and(
+          eq(conversations.ownerId, auth.owner.id),
+          eq(conversations.clientRequestId, input.clientRequestId),
+        ),
+      )
+      .limit(1);
+    if (existing) return existingNewTask(database, reply, request, existing, fingerprint);
+
+    let created: { conversation: typeof conversations.$inferSelect; task: TaskLink };
+    try {
+      created = await database.transaction(async (transaction) => {
+        const [inserted] = await transaction
+          .insert(conversations)
+          .values({
+            ownerId: auth.owner.id,
+            repositoryId: targetRepository.id,
+            mode: 'work',
+            executionMode: 'execute',
+            baseBranch: input.baseBranch,
+            baseCommit,
+            modelId,
+            modelReasoningEffort: reasoningEffort,
+            clientRequestId: input.clientRequestId,
+            requestFingerprint: fingerprint,
+            title: sourceConversation.title
+              ? `基于「${sourceConversation.title}」新建`
+              : '基于已完成任务新建',
+          })
+          .returning();
+        if (!inserted) throw new Error('conversation insert returned no row');
+        const [insertedTask] = await transaction
+          .insert(taskLinks)
+          .values({
+            conversationId: inserted.id,
+            repositoryId: targetRepository.id,
+            state: 'pending_admission',
+            baseBranch: input.baseBranch,
+            baseCommit,
+            modelId,
+            modelReasoningEffort: reasoningEffort,
+            executionMode: 'execute',
+          })
+          .returning();
+        if (!insertedTask) throw new Error('task link insert returned no row');
+        await transaction.insert(messages).values({
+          conversationId: inserted.id,
+          direction: 'outbound',
+          kind: 'notice',
+          source: 'web',
+          sourceEventId: `${INHERITANCE_PREFIX}${task.id}`,
+          body: inheritanceMessage(inheritance),
+        });
+        return { conversation: inserted, task: insertedTask };
+      });
+    } catch (error) {
+      if (!isUniqueViolation(error, 'conversations_owner_client_request_uq')) throw error;
+      const [again] = await database
+        .select()
+        .from(conversations)
+        .where(
+          and(
+            eq(conversations.ownerId, auth.owner.id),
+            eq(conversations.clientRequestId, input.clientRequestId),
+          ),
+        )
+        .limit(1);
+      if (!again) throw error;
+      return existingNewTask(database, reply, request, again, fingerprint);
+    }
+    await requestWake(database, config, targetRepository, 'new_task', request.log);
+    return sendData(
+      reply,
+      request,
+      newTaskResponse(created.conversation, created.task, inheritance),
+      201,
+    );
+  });
+
   app.get('/api/v1/conversations/:id', { preHandler: authenticate }, async (request, reply) => {
     const auth = request.auth;
     if (!auth) {
@@ -642,7 +982,11 @@ export function registerConversationRoutes(
         request,
         messageListDataSchema.parse({
           messages: page.messages.map((row) =>
-            toMessage(row, page.deliveriesById.get(row.id) ?? null),
+            toMessage(
+              row,
+              page.deliveriesById.get(row.id) ?? null,
+              page.attachmentsById.get(row.id) ?? [],
+            ),
           ),
           nextCursor: page.nextCursor,
           newerCursor: page.newerCursor,
@@ -681,11 +1025,14 @@ export function registerConversationRoutes(
       if (!row) {
         throw ApiProblem.notFound('Message not found');
       }
+      const attachments = (await attachmentsByMessage(database, [row.message.id])).get(
+        row.message.id,
+      );
       return sendData(
         reply,
         request,
         messageDetailDataSchema.parse({
-          message: toMessage(row.message, row.delivery ?? null),
+          message: toMessage(row.message, row.delivery ?? null, attachments ?? []),
         }),
       );
     },
@@ -778,7 +1125,11 @@ export function registerConversationRoutes(
                 reply,
                 request,
                 createMessageDataSchema.parse({
-                  message: toMessage(existing.message, existing.delivery ?? null),
+                  message: await storedMessage(
+                    database,
+                    existing.message,
+                    existing.delivery ?? null,
+                  ),
                   duplicate: true,
                 }),
                 200,
@@ -867,6 +1218,16 @@ export function registerConversationRoutes(
                     'This GitHub requirement has ended; create a linked task or resume it explicitly',
                   );
                 }
+                // The source conversation becomes a hidden alias, so every
+                // conversation-scoped artifact (including the caller's unsent
+                // uploads) follows the message graph into the target. This runs
+                // before the binding below, so attachToMessage validates the
+                // ids against the target once they moved, and an id that never
+                // belonged to the source still refuses the whole send.
+                await transaction
+                  .update(artifacts)
+                  .set({ conversationId: targetConversion.id })
+                  .where(eq(artifacts.conversationId, source.id));
                 const created = await insertInbound(transaction, targetConversion, input);
                 if (!source.mergedIntoConversationId) {
                   // A supplementary message may have committed while this merge
@@ -1010,7 +1371,7 @@ export function registerConversationRoutes(
                 reply,
                 request,
                 createMessageDataSchema.parse({
-                  message: toMessage(merged.message, merged.delivery),
+                  message: await storedMessage(database, merged.message, merged.delivery),
                   duplicate: replayed,
                 }),
                 replayed ? 200 : 202,
@@ -1072,6 +1433,7 @@ export function registerConversationRoutes(
           if (!message) {
             throw new Error('message insert returned no row');
           }
+          await attachToMessage(transaction, target.id, message.id, input.attachmentIds ?? []);
           const upstreamTriggerId = `workspace:${message.id}`;
           const [delivery] = await transaction
             .insert(deliveries)
@@ -1130,7 +1492,7 @@ export function registerConversationRoutes(
           reply,
           request,
           createMessageDataSchema.parse({
-            message: toMessage(existing.message, existing.delivery ?? null),
+            message: await storedMessage(database, existing.message, existing.delivery ?? null),
             duplicate: true,
           }),
           200,
@@ -1152,7 +1514,7 @@ export function registerConversationRoutes(
         reply,
         request,
         createMessageDataSchema.parse({
-          message: toMessage(created.message, created.delivery),
+          message: await storedMessage(database, created.message, created.delivery),
           duplicate: false,
         }),
         202,

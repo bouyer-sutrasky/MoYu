@@ -18,9 +18,11 @@ export type IconName =
   | 'chevron-down'
   | 'cloud'
   | 'branch'
-  | 'task';
+  | 'task'
+  | 'file';
 
 const paths: Record<IconName, string[]> = {
+  file: ['M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z', 'M14 3v5h5'],
   menu: ['M3 6h18', 'M3 12h18', 'M3 18h18'],
   panel: ['M4 5h16v14H4z', 'M15 5v14'],
   bell: ['M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9', 'M10 21h4'],

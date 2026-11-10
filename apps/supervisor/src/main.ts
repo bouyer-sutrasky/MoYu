@@ -11,7 +11,7 @@ const logger = createConsoleLogger('moyu-supervisor', config.logLevel);
 const pool = createPool(config.databaseUrl, { max: 4 });
 const store = new SupervisorStore(pool);
 const manager = new InstanceManager(config, store, logger);
-const app = buildSupervisorServer({ config, manager, logger });
+const app = buildSupervisorServer({ config, manager, store, logger });
 
 let closing = false;
 async function shutdown(signal: string): Promise<void> {

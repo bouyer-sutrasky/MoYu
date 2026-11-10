@@ -5,6 +5,9 @@ import {
   authMeDataSchema,
   authStateDataSchema,
   bootstrapExchangeInputSchema,
+  bridgeAttachmentSchema,
+  bridgeCapabilitiesSchema,
+  bridgeTriggerInputSchema,
   ceremonyOptionsSchema,
   createMessageInputSchema,
   errorResponse,
@@ -163,5 +166,106 @@ describe('M2 authentication contracts', () => {
       ],
     });
     expect(list.repositories[0]?.status).toBe('provisioning');
+  });
+});
+
+describe('M6-A L113 bridge attachment contracts', () => {
+  const attachment = {
+    id: '00000000-0000-4000-8000-000000000010',
+    filename: 'l113-shot.png',
+    mimeType: 'image/png',
+    sizeBytes: 48_213,
+    sha256: 'a'.repeat(64),
+    kind: 'image',
+  };
+  const trigger = {
+    triggerId: 'workspace:00000000-0000-4000-8000-000000000011',
+    conversationId: '00000000-0000-4000-8000-000000000012',
+    messageId: '00000000-0000-4000-8000-000000000011',
+    replyToMessageId: null,
+    actor: { id: 'owner-1', name: 'MoYu Owner' },
+    text: 'Check the attachment before answering',
+    at: '2026-11-09T08:00:00.000Z',
+    executionSpec: {
+      repository: 'bouyer-sutrasky/MoYu',
+      baseBranch: 'main',
+      baseCommit: null,
+      model: { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash' },
+      mode: 'execute',
+    },
+  };
+  const capabilities = {
+    protocolVersion: 'moyu-bridge/1',
+    upstream: { package: 'dsh-superagent', version: '0.1.0' },
+    capabilities: {
+      trigger: true,
+      events: true,
+      tickets: true,
+      models: true,
+      pause: true,
+      resume: true,
+      retry: true,
+      readOnlyDiscussion: true,
+    },
+    source: { kind: 'workspace', enabled: true },
+  };
+
+  it('round-trips attachment references on a trigger', () => {
+    const parsed = bridgeTriggerInputSchema.parse({
+      ...trigger,
+      attachments: [attachment, { ...attachment, kind: 'text', mimeType: 'text/plain' }],
+    });
+    expect(parsed.attachments).toHaveLength(2);
+    expect(parsed.attachments?.[0]).toEqual(attachment);
+  });
+
+  it('keeps a trigger without attachments valid', () => {
+    expect(bridgeTriggerInputSchema.parse(trigger).attachments).toBeUndefined();
+  });
+
+  it('rejects content, URLs and other unknown attachment keys', () => {
+    expect(() =>
+      bridgeAttachmentSchema.parse({ ...attachment, content: 'base64-bytes' }),
+    ).toThrow();
+    expect(() =>
+      bridgeAttachmentSchema.parse({ ...attachment, downloadUrl: 'https://example.test/a' }),
+    ).toThrow();
+    expect(() =>
+      bridgeTriggerInputSchema.parse({
+        ...trigger,
+        attachments: [{ ...attachment, conversationId: trigger.conversationId }],
+      }),
+    ).toThrow();
+  });
+
+  it('rejects an empty, oversized or unverifiable attachment', () => {
+    expect(() => bridgeAttachmentSchema.parse({ ...attachment, filename: '' })).toThrow();
+    expect(() => bridgeAttachmentSchema.parse({ ...attachment, sizeBytes: 0 })).toThrow();
+    expect(() =>
+      bridgeAttachmentSchema.parse({ ...attachment, sizeBytes: 10 * 1024 * 1024 + 1 }),
+    ).toThrow();
+    expect(() => bridgeAttachmentSchema.parse({ ...attachment, sha256: 'A'.repeat(64) })).toThrow();
+    expect(() => bridgeAttachmentSchema.parse({ ...attachment, kind: 'binary' })).toThrow();
+  });
+
+  it('caps a trigger at ten attachments', () => {
+    expect(() =>
+      bridgeTriggerInputSchema.parse({ ...trigger, attachments: Array(11).fill(attachment) }),
+    ).toThrow();
+    expect(
+      bridgeTriggerInputSchema.parse({ ...trigger, attachments: Array(10).fill(attachment) })
+        .attachments,
+    ).toHaveLength(10);
+  });
+
+  it('reads capabilities with and without the optional attachments flag', () => {
+    // An old runtime omits the flag, which must stay valid and mean unsupported.
+    expect(bridgeCapabilitiesSchema.parse(capabilities).capabilities.attachments).toBeUndefined();
+    expect(
+      bridgeCapabilitiesSchema.parse({
+        ...capabilities,
+        capabilities: { ...capabilities.capabilities, attachments: true },
+      }).capabilities.attachments,
+    ).toBe(true);
   });
 });

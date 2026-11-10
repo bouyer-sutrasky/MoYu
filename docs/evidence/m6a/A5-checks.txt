@@ -1,0 +1,99 @@
+# A5 检查面板 — 2026-11-09T00:13:26+08:00
+$ git rev-parse HEAD
+55d9e2935baebd3f660c9753ca5621d9ef8a980d
+$ git -C /tmp/m6a-run-rerun/worktrees/probe1/m6a-review-t_m6a_55d9e2 rev-parse HEAD
+55d9e2935baebd3f660c9753ca5621d9ef8a980d
+环境：隔离 API http://127.0.0.1:4620，DB moyu_m6a_evidence，存储 /tmp/m6a-run-rerun/artifacts，supervisor http://127.0.0.1:4690
+
+## 1. 第一次运行：通过
+HTTP 200
+state: available | collectedAt: 2026-11-08T16:13:26.187Z
+command     : pnpm check
+exitCode    : 0 | passed: true | timedOut: false
+startedAt   : 2026-11-08T16:13:26.192Z | finishedAt: 2026-11-08T16:14:12.676Z | ms: 46483
+summary     : 通过
+output (末尾 20 行):
+✔ rejects a symlinked state parent and leaves the other instance untouched (1.364498ms)
+✔ rejects state/<profile> linked to another profile in the same home (1.341832ms)
+✔ rejects sessions linked to another directory in the same home (1.281336ms)
+✔ rejects a cleanup target whose parent link stays inside the same home (1.1647ms)
+✔ rejects a profile containing path separators (0.991522ms)
+✔ the E2E script exits before any run directory for a bootstrap home or production API (772.608435ms)
+✔ refuses a runtime whose stateDir is not the expected isolated profile (0.639141ms)
+ℹ tests 15
+ℹ suites 0
+ℹ pass 15
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 6122.85629
+$ pnpm lint && pnpm format:check && pnpm typecheck && pnpm test
+$ eslint .
+$ prettier --check "**/*.{ts,tsx,mjs,cjs,json,yml,yaml,css,html}"
+$ pnpm -r --if-present typecheck
+$ pnpm -r --if-present test && node --test scripts/m3/guard.test.mjs integrations/superagent/tests/verify-lock.test.mjs
+
+## 2. 故意改坏一个类型后运行：失败
+HTTP 200
+state: available | collectedAt: 2026-11-08T16:14:12.748Z
+command     : pnpm check
+exitCode    : 2 | passed: false | timedOut: false
+startedAt   : 2026-11-08T16:14:12.753Z | finishedAt: 2026-11-08T16:14:41.083Z | ms: 28330
+summary     : 失败（exit 2）
+output (末尾 20 行):
+apps/web typecheck$ tsc --noEmit
+packages/runtime-client typecheck$ tsc --noEmit
+packages/runtime-client typecheck: Done
+apps/web typecheck: Done
+apps/api typecheck$ tsc --noEmit
+apps/dispatcher typecheck$ tsc --noEmit
+apps/supervisor typecheck$ tsc --noEmit
+apps/supervisor typecheck: Done
+apps/dispatcher typecheck: Done
+apps/api typecheck: src/m6a-broken.ts(1,14): error TS2322: Type 'string' is not assignable to type 'number'.
+apps/api typecheck: Failed
+/tmp/m6a-run-rerun/worktrees/probe1/m6a-review-t_m6a_55d9e2/apps/api:
+[ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL] @moyu/api@0.1.0 typecheck: `tsc --noEmit`
+Exit status 2
+[ELIFECYCLE] Command failed with exit code 2.
+[ELIFECYCLE] Command failed with exit code 2.
+$ pnpm lint && pnpm format:check && pnpm typecheck && pnpm test
+$ eslint .
+$ prettier --check "**/*.{ts,tsx,mjs,cjs,json,yml,yaml,css,html}"
+$ pnpm -r --if-present typecheck
+
+   面板失败状态截图：
+failing check visible in the panel: yes
+## 3. 恢复文件后再次运行：通过
+HTTP 200
+state: available | collectedAt: 2026-11-08T16:14:47.301Z
+command     : pnpm check
+exitCode    : 0 | passed: true | timedOut: false
+startedAt   : 2026-11-08T16:14:47.305Z | finishedAt: 2026-11-08T16:15:34.179Z | ms: 46874
+summary     : 通过
+output (末尾 20 行):
+✔ rejects a symlinked state parent and leaves the other instance untouched (1.425927ms)
+✔ rejects state/<profile> linked to another profile in the same home (1.347358ms)
+✔ rejects sessions linked to another directory in the same home (1.478018ms)
+✔ rejects a cleanup target whose parent link stays inside the same home (1.281221ms)
+✔ rejects a profile containing path separators (1.055539ms)
+✔ the E2E script exits before any run directory for a bootstrap home or production API (835.194528ms)
+✔ refuses a runtime whose stateDir is not the expected isolated profile (0.633523ms)
+ℹ tests 15
+ℹ suites 0
+ℹ pass 15
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 6247.19405
+$ pnpm lint && pnpm format:check && pnpm typecheck && pnpm test
+$ eslint .
+$ prettier --check "**/*.{ts,tsx,mjs,cjs,json,yml,yaml,css,html}"
+$ pnpm -r --if-present typecheck
+$ pnpm -r --if-present test && node --test scripts/m3/guard.test.mjs integrations/superagent/tests/verify-lock.test.mjs
+
+## 面板截图
+- 失败状态：docs/evidence/m6a/after-desktop-light-checks-failed.png
+- 通过状态：docs/evidence/m6a/after-desktop-light-review-panel.png

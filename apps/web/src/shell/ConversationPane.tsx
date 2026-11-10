@@ -1,4 +1,5 @@
 import clsx from 'clsx';
+import { useState } from 'react';
 
 import type { ConversationSummary, Message, RepositorySummary } from '@moyu/contracts';
 
@@ -12,6 +13,9 @@ import {
   shortCommit,
   taskStateLabel,
 } from '../lib/format';
+import { MarkdownMessage } from './markdown';
+import './markdown.css';
+import { NewTaskFromTaskDialog } from './NewTaskFromTaskDialog';
 import { NewTaskPanel } from './NewTaskPanel';
 import styles from './WorkspaceShell.module.css';
 
@@ -27,6 +31,7 @@ export interface ProgressEntry {
 interface ConversationPaneProps {
   mode: Mode;
   repository: RepositorySummary | null;
+  repositories: RepositorySummary[];
   conversation: ConversationSummary | null;
   conversationStatus: LoadStatus;
   conversationError: string | null;
@@ -93,7 +98,34 @@ function MessageItem({ message }: { message: Message }) {
           <time dateTime={message.createdAt}>{formatMessageTime(message.createdAt)}</time>
           {inbound ? <DeliveryBadge message={message} /> : null}
         </header>
-        <p className={styles.messageBody}>{message.body}</p>
+        <div className={styles.messageBody} data-message-body="">
+          <MarkdownMessage source={message.body} />
+        </div>
+        {message.attachments.length > 0 ? (
+          <ul className={styles.messageAttachments} aria-label="附件">
+            {message.attachments.map((attachment) => (
+              <li key={attachment.id}>
+                <a
+                  className={styles.messageAttachment}
+                  href={attachment.downloadUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-kind={attachment.kind}
+                >
+                  <Icon name="file" size={13} />
+                  <span className={styles.messageAttachmentName}>{attachment.filename}</span>
+                  <span className={styles.messageAttachmentSize}>
+                    {attachment.sizeBytes < 1024
+                      ? `${attachment.sizeBytes} B`
+                      : attachment.sizeBytes < 1024 * 1024
+                        ? `${(attachment.sizeBytes / 1024).toFixed(1)} KiB`
+                        : `${(attachment.sizeBytes / (1024 * 1024)).toFixed(1)} MiB`}
+                  </span>
+                </a>
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </article>
     </div>
   );
@@ -116,6 +148,7 @@ export function ConversationPane({
   taskCommandBusy,
   taskCommandError,
   onTaskCommand,
+  repositories,
   onRetryConversation,
   onRetryMessages,
   onLoadOlderMessages,
@@ -254,6 +287,8 @@ export function ConversationPane({
   const canResume = taskState === 'stopped';
   const canRetry = taskState === 'failed' || taskState === 'blocked';
   const actionDisabled = taskCommandBusy || !!pendingOperation;
+  const [newTaskFromTaskOpen, setNewTaskFromTaskOpen] = useState(false);
+  const canStartFromTask = task?.state === 'completed' || task?.state === 'closed_unmerged';
   const operationLabel: Record<string, string> = {
     start: '启动执行',
     pause: '停止',
@@ -271,6 +306,16 @@ export function ConversationPane({
               <span className={styles.stateDot} aria-hidden="true" />
               {taskStateLabel(task?.state)}
             </span>
+            {canStartFromTask && task ? (
+              <button
+                type="button"
+                className={styles.secondaryButton}
+                onClick={() => setNewTaskFromTaskOpen(true)}
+                data-testid="new-task-from-task"
+              >
+                基于此任务新建
+              </button>
+            ) : null}
           </div>
           <div className={styles.conversationMeta}>
             <span className={styles.metaItem}>
@@ -458,6 +503,18 @@ export function ConversationPane({
           <MessageItem key={message.id} message={message} />
         ))}
       </section>
+      {newTaskFromTaskOpen && task ? (
+        <NewTaskFromTaskDialog
+          taskId={task.id}
+          repositories={repositories}
+          onCancel={() => setNewTaskFromTaskOpen(false)}
+          onCreated={(created) => {
+            setNewTaskFromTaskOpen(false);
+            onCreatedTask(created);
+          }}
+          onSessionLost={onSessionLost}
+        />
+      ) : null}
     </div>
   );
 }

@@ -1,0 +1,140 @@
+# L116 消息安全 Markdown / 代码块复制 / 长日志折叠
+
+刷新到 head（本轮重跑，作为最终提交证据）：
+$ git rev-parse HEAD
+4978dee443ce40d7dddb3df5f4d884168629cc68
+本 head 的 PR #44 必需检查：check pass；integration (real PostgreSQL) pass。
+
+原证据头（历史，保留）：d286323ceb8ea5794d3fff1a5aa02523dfde0011
+
+证据环境：隔离 PostgreSQL `127.0.0.1:55432`（每次重建 `moyu_l116_evidence`）、隔离 API `127.0.0.1:4631`、
+真实 Chromium（Playwright，桌面 1440×900 / 手机 390×844，浅色）。未重启 3082、未改 `/root/src/upstream/*`。
+脚本：`scripts/m6a/l116-evidence.sh`（起隔离栈、seed 消息、跑检查）与 `scripts/m6a/l116-markdown-check.mjs`。
+
+消息样例（真实入库）：XSS 串、Markdown 全要素、60 行长日志、普通多行文本。
+
+## 1. 红：先落测试（旧渲染仍是纯文本）
+
+构建旧 Web（HEAD 的 ConversationPane 原样）后跑同一检查：
+
+$ bash scripts/m6a/l116-evidence.sh
+PASS xss-window-not-set: {"pwn":"undefined","scripts":0,"iframes":0,"imgs":0}
+PASS xss-no-script-iframe-img: {"pwn":"undefined","scripts":0,"iframes":0,"imgs":0}
+FAIL xss-only-safe-anchor: []
+PASS xss-dangerous-shown-as-text: "执行器通知05:47L116-XSS 安全渲染：\n<img src=x onerror=\"window.__pwn=1\">\n<script>window.__pwn=2</script>\n<iframe src=\"javascript:alert(1)\"></iframe>\n[危险1](javascript:alert(1)) [危险2](data:text/html;base64,PHNjcml"
+FAIL markdown-semantic-elements: {"h1":0,"strong":0,"inlineCode":0,"ul":0,"ol":0,"tableHeaders":0,"tableCells":0,"preCode":0,"safeLink":null}
+FAIL copy-byte-identical: {"error":"TimeoutError: locator.click: Timeout 5000ms exceeded.\nCall log:\n  - waiting for locator('article[data-message-id]').filter({ hasText: 'L116-MD' }).first().locator('[data-testid=\"md-code-block\"]').first().locator('[data-testid=\"md-copy\"]')\n"}
+FAIL log-fold-groups: {"error":"TimeoutError: locator.evaluate: Timeout 30000ms exceeded.\nCall log:\n  - waiting for locator('article[data-message-id]').filter({ hasText: 'L116-LOG' }).first().locator('[data-testid=\"md-code-body\"]').first()\n"}
+PASS plain-text-preserved: {"plain":"执行器通知05:47L116-PLAIN 普通消息\n第一行\n第二行"}
+PASS mobile-no-page-overflow: {"scrollWidth":390,"clientWidth":390,"bodyScrollWidth":390}
+RESULT FAIL passed=4/8 failed=["xss-only-safe-anchor","markdown-semantic-elements","copy-byte-identical","log-fold-groups"]
+EXIT=1
+
+判定（红）：`RESULT FAIL passed=4/8`、`EXIT=1`。安全的两组（无执行、危险链接只是文本）在纯文本渲染下本就成立；
+Markdown 语义（h1/strong/code/ul/ol/table/pre/a 全为 0）、复制按钮、折叠、真实安全链接均失败。
+
+## 2. 绿：白名单渲染 + 复制 + 折叠
+
+同一命令，新构建：
+
+$ bash scripts/m6a/l116-evidence.sh
+PASS xss-window-not-set: {"pwn":"undefined","scripts":0,"iframes":0,"imgs":0}
+PASS xss-no-script-iframe-img: {"pwn":"undefined","scripts":0,"iframes":0,"imgs":0}
+PASS xss-only-safe-anchor: [{"href":"https://example.com/safe","text":"安全"}]
+PASS xss-dangerous-shown-as-text: "执行器通知05:48L116-XSS 安全渲染：\n<img src=x onerror=\"window.__pwn=1\">\n<script>window.__pwn=2</script>\n<iframe src=\"javascript:alert(1)\"></iframe>\n危险1 危险2 安全"
+PASS markdown-semantic-elements: {"h1":1,"strong":1,"inlineCode":1,"ul":2,"ol":2,"tableHeaders":2,"tableCells":4,"preCode":1,"safeLink":"https://example.com/page"}
+PASS copy-byte-identical: {"copied":"const total = 1 + 2;\n\tif (total > 2) {\n\t\tconsole.log(\"ok\");\n\t}","expected":"const total = 1 + 2;\n\tif (total > 2) {\n\t\tconsole.log(\"ok\");\n\t}"}
+PASS log-folded-bounded: {"folded":"true","height":260,"length":899}
+PASS log-expanded-content-identical: {"before":260,"after":1141,"sameText":true}
+PASS desktop-no-page-overflow: {"scrollWidth":1440,"clientWidth":1440}
+PASS plain-text-preserved: {"plain":"执行器通知05:48L116-PLAIN 普通消息\n第一行\n第二行"}
+PASS mobile-no-page-overflow: {"scrollWidth":390,"clientWidth":390,"bodyScrollWidth":390}
+RESULT PASS passed=8/8 failed=[]
+EXIT=0
+
+逐条原始值：
+
+| 组 | 原始证据 |
+| --- | --- |
+| XSS 不执行 | `pwn:"undefined"`、`scripts:0 iframes:0 imgs:0` |
+| 危险链接 | 唯一 `<a>` 是 `https://example.com/safe`；`javascript:`/`data:` 只留下文本 `危险1 危险2` |
+| Markdown 语义 | `h1:1 strong:1 inlineCode:1 ul:2 ol:2 th:2 td:4 pre>code:1 link:https://example.com/page` |
+| 复制逐字节 | 剪贴板读回值与 `expected` 完全相等（见上节 `copy-byte-identical` 原始输出，含制表符与换行） |
+| 长日志折叠 | 折叠态 `data-folded:"true"`、高度 `260`、文本长度 `899`；展开后高度 `1141`、`sameText:true` |
+| 手机无横向溢出 | `scrollWidth:390 clientWidth:390 bodyScrollWidth:390` |
+| 桌面无横向溢出 | `scrollWidth:1440 clientWidth:1440` |
+| 纯文本回归 | `第一行/第二行` 原样保留 |
+
+截图（同一 seed、同一视口/主题，before 为旧构建、after 为新构建）：
+
+| 场景 | before | after |
+| --- | --- | --- |
+| 桌面消息渲染 | `before-desktop-l116-messages.png` | `after-desktop-l116-markdown.png` |
+| 桌面 XSS 串 | `before-desktop-l116-xss.png` | `after-desktop-l116-xss.png` |
+| 长日志折叠 | —（旧渲染无折叠） | `after-desktop-l116-log-folded.png` |
+| 手机宽度 | `before-mobile-l116-overflow.png` | `after-mobile-l116-overflow.png` |
+
+## 3. 实现与默认拒绝
+
+- `apps/web/src/shell/markdown.tsx`：自写白名单解析（标题/段落/列表/代码块/表格/粗体/行内代码/链接），
+  全部走 React 文本节点，**没有 `dangerouslySetInnerHTML`**；原始 HTML（`<script>`/`<iframe>`/`<img onerror>`）
+  因此只能成为文本。
+- 链接：`safeHref` 只接受绝对 `http:`/`https:`/`mailto:`；`javascript:`、`data:`、相对/畸形目标返回 null，
+  只渲染标签文本，不生成 `<a>`（原始值见上）。
+- 代码块：复制按钮调用 `navigator.clipboard.writeText(code)`，`code` 是围栏之间的原文逐行拼接（含缩进/制表符/换行）；
+  >20 行时折叠到 `max-height:260px`，DOM 仍保留全文，展开后同一 `textContent`。
+- 约束：`.mdCodeBody`/`.mdTableScroll` 自身 `overflow-x:auto`、`max-width:100%`，表格 `width:max-content`；
+  页面 `scrollWidth <= clientWidth` 在桌面与手机都实测成立。
+
+## 4. 回归（既有测试不受影响）
+
+$ pnpm check
+packages/contracts test:       Tests  19 passed (19)
+packages/runtime-client test:       Tests  13 passed (13)
+apps/dispatcher test:       Tests  5 passed (5)
+apps/api test:       Tests  20 passed (20)
+apps/supervisor test:       Tests  59 passed (59)
+EXIT=0
+
+$ pnpm test:integration
+ Test Files  12 passed (12)
+      Tests  40 passed (40)
+ Test Files  15 passed (15)
+      Tests  93 passed (93)
+ Test Files  16 passed | 1 skipped (17)
+      Tests  82 passed | 1 skipped (83)
+EXIT=0
+
+单测/集成条数与上一 head（`d55c722`）完全一致（contracts 19、api 20、supervisor 59、db 40、api 93、dispatcher 82+1 skipped），
+`EXIT=0`；Web 包原本没有单测，本次以真实浏览器检查作为其红/绿证据。
+
+## 5. 未验证 / 已知缺口
+
+- 仅覆盖写好的白名单子集（标题/列表/粗体/行内代码/围栏代码/GFM 表格/链接）；引用块、图片、斜体、嵌套列表等未渲染，
+  会按普通文本显示（不是错误，是范围）。
+- 未做浏览器端“粘贴富文本”输入路径的检查；消息正文仍由平台以纯文本存储。
+- 手机证据为 390×844 浅色；深色主题未单独截图（样式使用继承色/主题变量）。
+
+
+## 6. 刷新重跑（head 4978dee443ce40d7dddb3df5f4d884168629cc68）
+
+$ M6A_L116_SKIP_BUILD=1 bash scripts/m6a/l116-evidence.sh
+PASS xss-window-not-set: {"pwn":"undefined","scripts":0,"iframes":0,"imgs":0}
+PASS xss-no-script-iframe-img: {"pwn":"undefined","scripts":0,"iframes":0,"imgs":0}
+PASS xss-only-safe-anchor: [{"href":"https://example.com/safe","text":"安全"}]
+PASS xss-dangerous-shown-as-text: "执行器通知16:17L116-XSS 安全渲染：\n<img src=x onerror=\"window.__pwn=1\">\n<script>window.__pwn=2</script>\n<iframe src=\"javascript:alert(1)\"></iframe>\n危险1 危险2 安全"
+PASS markdown-semantic-elements: {"h1":1,"strong":1,"inlineCode":1,"ul":2,"ol":2,"tableHeaders":2,"tableCells":4,"preCode":1,"safeLink":"https://example.com/page"}
+PASS copy-byte-identical: {"copied":"const total = 1 + 2;\n\tif (total > 2) {\n\t\tconsole.log(\"ok\");\n\t}","expected":"const total = 1 + 2;\n\tif (total > 2) {\n\t\tconsole.log(\"ok\");\n\t}"}
+PASS log-folded-bounded: {"folded":"true","height":260,"length":899}
+PASS log-expanded-content-identical: {"before":260,"after":1141,"sameText":true}
+PASS desktop-no-page-overflow: {"scrollWidth":1440,"clientWidth":1440}
+PASS plain-text-preserved: {"plain":"执行器通知16:17L116-PLAIN 普通消息\n第一行\n第二行"}
+PASS mobile-no-page-overflow: {"scrollWidth":390,"clientWidth":390,"bodyScrollWidth":390}
+RESULT PASS passed=8/8 failed=[]
+EXIT=0
+EXIT=0
+
+判定（期望 / 实际 / 结论）：
+- 期望：XSS 不执行、危险链接只作文本、Markdown 语义、复制逐字节一致、长日志折叠、桌面 1440 与手机 390 无横向溢出
+- 实际：见上面原始 `PASS`/`RESULT` 行与 `EXIT=0`。
+- 结论：通过；`L116 的 8/8 检查全部通过`。本轮未改产品代码，只重跑既有取证脚本。
