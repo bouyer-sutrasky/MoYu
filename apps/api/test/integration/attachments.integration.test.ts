@@ -555,7 +555,10 @@ describe('M6 attachment upload and download', () => {
     expect(short.statusCode).toBe(422);
     // Controls: a split at the 512-byte boundary is still text.
     for (const [filename, bytes] of [
-      ['crossing.md', Buffer.from(`${'a'.repeat(MIME_SNIFF_BYTES - 1)}中${'b'.repeat(200)}`, 'utf8')],
+      [
+        'crossing.md',
+        Buffer.from(`${'a'.repeat(MIME_SNIFF_BYTES - 1)}中${'b'.repeat(200)}`, 'utf8'),
+      ],
       ['late.md', Buffer.from(`${'a'.repeat(MIME_SNIFF_BYTES - 2)}中${'b'.repeat(200)}`, 'utf8')],
       ['bom.md', Buffer.from(`\ufeff${'中文'.repeat(200)}`, 'utf8')],
     ] as const) {
