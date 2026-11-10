@@ -112,6 +112,8 @@ M6-A 已交付的附件、diff/测试/PR 面板未在本单重做。HTTPS 端到
   均为 `skipped` 并给出真实原因。执行后仅干净目录消失，dirty / occupied / outside / unmerged
   目录仍在；重试同一预览返回 `duplicate:true` 且不再删除；跨所有者执行返回 404；审计记录可读。
 - 截图：`after-cleanup-confirm-desktop-light.png` 显示预览清单与二次确认面板。
+- supervisor 单测 `apps/supervisor/test/cleanup.test.ts` 注入一次删除失败：原 worktree 路径在删除前已
+  原子消失，失败只留下 `.cleanup-trash/` 隔离目录，验证不会出现"半删的原目录"。
 
 ### 未验证 / 限制
 

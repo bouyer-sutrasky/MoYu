@@ -39,13 +39,14 @@ function pushedRepository(root: string, ticketId: string): string {
   return directory;
 }
 
-function service(root: string, profile = 'probe1') {
+function service(root: string, profile = 'probe1', removeTree?: (path: string) => void) {
   const store = {
     getInstance: async () => ({ profile }),
   } as unknown as SupervisorStore;
   return createCleanupService({
     config: { worktreeRoot: root } as unknown as SupervisorConfig,
     store,
+    ...(removeTree ? { removeTree } : {}),
   });
 }
 
@@ -117,6 +118,19 @@ describe('supervisor worktree cleanup', () => {
     await expect(service(root).remove('repo-1', ticketId)).resolves.toMatchObject({
       state: 'already_cleaned',
     });
+  });
+
+  it('leaves a quarantine instead of a half-deleted worktree when removal fails', async () => {
+    const root = temporary('moyu-worktrees');
+    const ticketId = '6666666666666666';
+    const directory = pushedRepository(root, ticketId);
+    const removal = await service(root, 'probe1', () => {
+      throw new Error('simulated removal failure');
+    }).remove('repo-1', ticketId);
+    expect(removal.state).toBe('quarantined');
+    expect(existsSync(directory)).toBe(false);
+    expect(removal.trashPath).toBeTruthy();
+    expect(existsSync(removal.trashPath!)).toBe(true);
   });
 
   it('refuses a directory whose real path escapes the worktree root', async () => {

@@ -167,8 +167,15 @@ export interface CleanupService {
 export function createCleanupService(input: {
   config: SupervisorConfig;
   store: SupervisorStore;
+  /** Test seam: a failing tree removal must leave a quarantine, never a half-deleted worktree. */
+  removeTree?: (path: string) => void;
 }): CleanupService {
   const { config, store } = input;
+  const removeTree =
+    input.removeTree ??
+    ((path: string) => {
+      rmSync(path, { recursive: true, force: true, maxRetries: 2 });
+    });
 
   const profileFor = async (repositoryId: string): Promise<string | null> => {
     const instance = await store.getInstance(repositoryId);
@@ -389,7 +396,7 @@ export function createCleanupService(input: {
 
     const size = inspection.sizeBytes ?? 0;
     try {
-      rmSync(trashPath, { recursive: true, force: true, maxRetries: 2 });
+      removeTree(trashPath);
     } catch (error) {
       return {
         state: 'quarantined',
@@ -453,7 +460,7 @@ export function createCleanupService(input: {
         size = 0;
       }
       try {
-        rmSync(resolved, { recursive: true, force: true, maxRetries: 2 });
+        removeTree(resolved);
         removed += 1;
         bytesFreed += size;
       } catch (error) {
