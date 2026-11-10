@@ -1,4 +1,4 @@
-import { attachmentKindFor, ATTACHMENT_IMAGE_TYPES } from '@moyu/contracts';
+import { ATTACHMENT_IMAGE_TYPES } from '@moyu/contracts';
 
 /** The bytes we look at: 512 is enough for every signature and the leading markup. */
 export const MIME_SNIFF_BYTES = 512;
@@ -18,13 +18,10 @@ export type SniffedContent =
 export interface MimeDecision {
   ok: true;
   mimeType: string;
-  kind: 'image' | 'text';
-  sniffed: SniffedContent;
 }
 
 export interface MimeRefusal {
   ok: false;
-  sniffed: SniffedContent;
   reason: string;
 }
 
@@ -142,24 +139,25 @@ function isText(bytes: Buffer): boolean {
 export function decideUploadType(candidate: string, bytes: Buffer): MimeDecision | MimeRefusal {
   const sniffed = sniffContent(bytes);
   if (sniffed === 'executable' || sniffed === 'script') {
-    return { ok: false, sniffed, reason: '可执行文件或脚本不能作为附件上传' };
+    return { ok: false, reason: '可执行文件或脚本不能作为附件上传' };
   }
   if (sniffed === 'svg') {
-    return { ok: false, sniffed, reason: 'SVG 可以携带脚本，不能作为附件上传' };
+    return { ok: false, reason: 'SVG 可以携带脚本，不能作为附件上传' };
   }
   if (sniffed === 'html') {
-    if (candidate === 'text/html')
-      return { ok: true, sniffed, mimeType: 'text/html', kind: 'text' };
-    return { ok: false, sniffed, reason: '内容为 HTML，与声明的类型不符' };
+    // Kept as accepted text/html on purpose: A1/A2 already accept it, the
+    // summary is kind=text, and the download path neutralises the served type.
+    if (candidate === 'text/html') return { ok: true, mimeType: 'text/html' };
+    return { ok: false, reason: '内容为 HTML，与声明的类型不符' };
   }
   if (sniffed === 'png' || sniffed === 'jpeg' || sniffed === 'webp' || sniffed === 'gif') {
-    return { ok: true, sniffed, mimeType: IMAGE_MIME[sniffed], kind: 'image' };
+    return { ok: true, mimeType: IMAGE_MIME[sniffed] };
   }
   if (sniffed === 'text') {
     if ((ATTACHMENT_IMAGE_TYPES as readonly string[]).includes(candidate)) {
-      return { ok: false, sniffed, reason: '内容为文本，不是声明的图片类型' };
+      return { ok: false, reason: '内容为文本，不是声明的图片类型' };
     }
-    return { ok: true, sniffed, mimeType: candidate, kind: attachmentKindFor(candidate) as 'text' };
+    return { ok: true, mimeType: candidate };
   }
-  return { ok: false, sniffed, reason: '无法确认文件内容类型' };
+  return { ok: false, reason: '无法确认文件内容类型' };
 }

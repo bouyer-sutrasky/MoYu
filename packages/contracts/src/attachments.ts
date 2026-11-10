@@ -34,9 +34,11 @@ export const attachmentUploadDataSchema = z.object({
   attachment: attachmentSummarySchema,
 });
 
-export const attachmentRevokeDataSchema = z.object({
-  attachment: attachmentSummarySchema,
-});
+/**
+ * The revoke response has the same shape as the upload response; both semantic
+ * names stay exported so callers and docs keep reading clearly.
+ */
+export const attachmentRevokeDataSchema = attachmentUploadDataSchema;
 
 export type AttachmentRevokeData = z.infer<typeof attachmentRevokeDataSchema>;
 

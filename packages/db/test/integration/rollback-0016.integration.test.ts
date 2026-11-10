@@ -59,7 +59,7 @@ describe('0016 rollback script on real PostgreSQL', () => {
     const database = await createTestDatabase();
     databases.push(database);
     await database.pool.query(
-      `insert into drizzle.__drizzle_migrations (hash, created_at) values ('test-later-0017', 1)`,
+      `insert into drizzle.__drizzle_migrations (hash, created_at) values ('test-later-migration-fixture', 1)`,
     );
     await expect(database.pool.query(downSql)).rejects.toThrow(/later migration/);
     expect(await read(database)).toEqual({ column_present: true, ledger_present: true });

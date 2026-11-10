@@ -18,6 +18,7 @@ ADMIN=${PGURL%/*}
 dropdb --if-exists -h 127.0.0.1 -p 55432 -U moyu "$DB" 2>/dev/null || true
 createdb -h 127.0.0.1 -p 55432 -U moyu "$DB"
 DATABASE_URL="$DATABASE_URL" pnpm --filter @moyu/db db:migrate > "$RUN/migrate.log" 2>&1
+SUPERVISOR_TOKEN=$(head -c 40 /dev/urandom | base64 | tr -d '\n' | tr '/+' 'ab' | cut -c1-40)
 TOKEN=$(head -c 32 /dev/urandom | base64 | tr -d '\n' | tr '/+' 'ef' | cut -c1-43)
 DATABASE_URL="$DATABASE_URL" M6A_SESSION_TOKEN="$TOKEN" node "$HERE/l116-seed.mjs" > "$RUN/seed.json"
 [ "${M6A_L116_SKIP_BUILD:-}" = "1" ] || pnpm build > "$RUN/build.log" 2>&1
@@ -34,7 +35,7 @@ AUTH_COOKIE_SECURE=false
 ARTIFACT_STORAGE_DIR=$RUN/artifacts
 WEB_DIST_DIR=apps/web/dist
 SUPERVISOR_URL=http://127.0.0.1:4699
-SUPERVISOR_TOKEN=l116-supervisor-token
+SUPERVISOR_TOKEN=$SUPERVISOR_TOKEN
 GITHUB_CLI=gh
 ENV
 set -a; . "$RUN/api.env"; set +a

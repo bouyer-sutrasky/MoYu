@@ -9,7 +9,7 @@ REPO=$(cd "$HERE/../.." && pwd)
 NODE_BIN=${NODE_BIN:-/opt/moyu-node24/bin}
 export PATH="$NODE_BIN:$PATH"
 DOWN="$REPO/packages/db/migrations/rollback/0015_late_gateway.down.sql"
-FIXTURE="$REPO/packages/db/test/fixtures/0016_later_guard_fixture.sql"
+FIXTURE="$REPO/packages/db/test/fixtures/later_migration_fixture.sql"
 HASH=b50ad051f0dac6e0740722a345b64a0cdb3c0f392042d0858df75a295e729584
 PG="psql -X -v ON_ERROR_STOP=1 postgres://moyu@127.0.0.1:55432"
 
@@ -33,7 +33,7 @@ prepare() {
 
 echo '### RED: a later migration is applied, then the 0015 rollback runs'
 prepare moyu_0015_guard_red
-echo "\$ psql .../moyu_0015_guard_red -f packages/db/test/fixtures/0016_later_guard_fixture.sql"
+echo "\$ psql .../moyu_0015_guard_red -f packages/db/test/fixtures/later_migration_fixture.sql"
 psql -X -v ON_ERROR_STOP=1 "postgres://moyu@127.0.0.1:55432/moyu_0015_guard_red" -f "$FIXTURE" 2>&1
 echo "\$ ledger after fixture (id desc)"
 psql -X -tA "postgres://moyu@127.0.0.1:55432/moyu_0015_guard_red" -c "select id||'|'||hash from drizzle.__drizzle_migrations order by id desc limit 2" 2>&1

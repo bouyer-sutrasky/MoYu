@@ -14,6 +14,7 @@ rm -rf "$RUN"; mkdir -p "$RUN/artifacts"
 dropdb --if-exists -h 127.0.0.1 -p 55432 -U moyu "$DB" >/dev/null 2>&1 || true
 createdb -h 127.0.0.1 -p 55432 -U moyu "$DB"
 DATABASE_URL="$DATABASE_URL" pnpm --filter @moyu/db db:migrate > "$RUN/migrate.log" 2>&1
+SUPERVISOR_TOKEN=$(head -c 40 /dev/urandom | base64 | tr -d '\n' | tr '/+' 'ab' | cut -c1-40)
 TOKEN=$(head -c 32 /dev/urandom | base64 | tr -d '\n' | tr '/+' 'ef' | cut -c1-43)
 DATABASE_URL="$DATABASE_URL" M6A_SESSION_TOKEN="$TOKEN" node "$HERE/a2b-seed.mjs" > "$RUN/seed.json"
 [ "${M6A_A2B_SKIP_BUILD:-}" = "1" ] || pnpm build > "$RUN/build.log" 2>&1
@@ -30,7 +31,7 @@ AUTH_COOKIE_SECURE=false
 ARTIFACT_STORAGE_DIR=$RUN/artifacts
 WEB_DIST_DIR=apps/web/dist
 SUPERVISOR_URL=http://127.0.0.1:4699
-SUPERVISOR_TOKEN=a2b-supervisor-token
+SUPERVISOR_TOKEN=$SUPERVISOR_TOKEN
 GITHUB_CLI=gh
 ENV
 set -a; . "$RUN/api.env"; set +a

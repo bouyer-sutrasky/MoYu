@@ -1,5 +1,9 @@
 -- Reverse 0016: artifacts.revoked_at. Plain SQL, transactional, and it refuses
 -- when a later migration is applied or when 0016's own ledger row is missing.
+-- The 64-bit ledger hash appears both in the guard and in the final DELETE:
+-- the down script must stay self-contained plain SQL (psql and plain clients,
+-- no variables or meta-commands), so the literal is deliberately repeated here
+-- rather than factored out; see 0015's down script for the same pattern.
 BEGIN;
 DO $$
 DECLARE

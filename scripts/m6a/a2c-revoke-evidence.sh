@@ -30,6 +30,7 @@ DATABASE_URL="postgres://moyu@127.0.0.1:55432/$MIG" pnpm --filter @moyu/db db:mi
 echo '$ after re-migrate: revoked_at column count / 0016 ledger count'
 psql -X -tA "postgres://moyu@127.0.0.1:55432/$MIG" -c "select count(*) from information_schema.columns where table_name='artifacts' and column_name='revoked_at'" -c "select count(*) from drizzle.__drizzle_migrations where hash='ae9d04d5ebb0361124314e79e931bfcfda57237ca4508ee58820204c31701dbb'" 2>&1
 fi
+SUPERVISOR_TOKEN=$(head -c 40 /dev/urandom | base64 | tr -d '\n' | tr '/+' 'ab' | cut -c1-40)
 TOKEN=$(head -c 32 /dev/urandom | base64 | tr -d '\n' | tr '/+' 'ef' | cut -c1-43)
 OTHER_TOKEN=$(head -c 32 /dev/urandom | base64 | tr -d '\n' | tr '/+' 'ef' | cut -c1-43)
 DATABASE_URL="$DATABASE_URL" M6A_SESSION_TOKEN="$TOKEN" M6A_OTHER_TOKEN="$OTHER_TOKEN" node "$HERE/a2c-seed.mjs" > "$RUN/seed.json"
@@ -47,7 +48,7 @@ AUTH_COOKIE_SECURE=false
 ARTIFACT_STORAGE_DIR=$RUN/artifacts
 WEB_DIST_DIR=apps/web/dist
 SUPERVISOR_URL=http://127.0.0.1:4699
-SUPERVISOR_TOKEN=a2c-supervisor-token
+SUPERVISOR_TOKEN=$SUPERVISOR_TOKEN
 GITHUB_CLI=gh
 ENV
 set -a; . "$RUN/api.env"; set +a
