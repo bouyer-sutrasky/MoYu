@@ -49,6 +49,40 @@ interface CommandResult {
 
 const GIT_TIMEOUT_MS = 20_000;
 
+/**
+ * The separate identity a check command runs as. `setpriv` applies it before
+ * exec: the supervisor is unprivileged and its unit grants only CAP_SETUID and
+ * CAP_SETGID, so the child ends up as this uid/gid and cannot use the caps
+ * again. `home` is the check user's writable HOME, not the supervisor's.
+ */
+export interface CheckIdentity {
+  uid: number;
+  gid: number;
+  home: string;
+  setpriv: string;
+}
+
+/**
+ * Why this identity cannot isolate a check child from the supervisor, or null
+ * when it can. uid/gid 0 and the supervisor's own uid/gid are refused: either
+ * one would let repository-controlled code read the supervisor's environment
+ * and credentials, which is the point of the separate identity.
+ */
+export function checkIdentityProblem(identity: CheckIdentity): string | null {
+  if (identity.uid === 0 || identity.gid === 0) {
+    return '检查子进程不能以 root 身份运行';
+  }
+  const uid = process.getuid?.();
+  const gid = process.getgid?.();
+  if (uid !== undefined && identity.uid === uid) {
+    return '检查子进程 uid 必须不同于 supervisor';
+  }
+  if (gid !== undefined && identity.gid === gid) {
+    return '检查子进程 gid 必须不同于 supervisor';
+  }
+  return null;
+}
+
 /** Runs a command without a shell, bounded in time and output, and never throws. */
 export async function runCommand(
   argv: string[],
@@ -59,11 +93,31 @@ export async function runCommand(
     env?: NodeJS.ProcessEnv;
     /** Start the child as its own process-group leader, so a timeout can kill the tree. */
     ownProcessGroup?: boolean;
+    /** Run through setpriv as this uid/gid; failures surface as a non-zero command. */
+    identity?: CheckIdentity;
   },
 ): Promise<CommandResult> {
   const maxBytes = options.maxBytes ?? 4 * 1024 * 1024;
+  const command = options.identity
+    ? [
+        options.identity.setpriv,
+        '--reuid',
+        String(options.identity.uid),
+        '--regid',
+        String(options.identity.gid),
+        '--init-groups',
+        '--no-new-privs',
+        // The supervisor's ambient caps are inherited across this exec; without
+        // these the child keeps CAP_SETUID/CAP_SETGID after the uid switch and
+        // could become another user (including the supervisor) again.
+        '--inh-caps=-all',
+        '--ambient-caps=-all',
+        '--',
+        ...argv,
+      ]
+    : argv;
   return new Promise((resolve) => {
-    const child = spawn(argv[0]!, argv.slice(1), {
+    const child = spawn(command[0]!, command.slice(1), {
       cwd: options.cwd,
       env: options.env ?? process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -496,33 +550,88 @@ const OUTPUT_TAIL_BYTES = 8 * 1024;
  */
 const CHECK_ENV_KEYS = ['PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL'] as const;
 
-function checkEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+function checkEnvironment(
+  source: NodeJS.ProcessEnv = process.env,
+  identity?: CheckIdentity,
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const key of CHECK_ENV_KEYS) {
     const value = source[key];
     if (typeof value === 'string' && value.length > 0) env[key] = value;
   }
+  if (identity) env.HOME = identity.home;
   env.LANG ??= 'C';
   env.LC_ALL ??= 'C';
   return env;
 }
 
 /**
+ * Proves, as the check identity itself, that the two paths it must write are
+ * writable. Without this, a missing shared-group grant shows up as an opaque
+ * EACCES deep inside a build; with it, the supervisor reports the exact uid and
+ * path before spending a timeout on a check that cannot succeed.
+ */
+async function assertCheckRuntime(identity: CheckIdentity, directory: string): Promise<void> {
+  const access = await runCommand(
+    ['/bin/sh', '-c', 'test -w "$1" && test -x "$1"', 'check-worktree', directory],
+    {
+      cwd: '/',
+      timeoutMs: 5_000,
+      env: checkEnvironment(process.env, identity),
+      identity,
+    },
+  );
+  if (access.code !== 0) {
+    throw new Error(
+      `检查身份 ${identity.uid}:${identity.gid} 无法写入工作目录 ${directory}：${
+        access.stderr.trim() || `exit ${access.code ?? 'unknown'}`
+      }`,
+    );
+  }
+  const home = await runCommand(['/bin/sh', '-c', 'test -w "$HOME" && test -x "$HOME"'], {
+    cwd: '/',
+    timeoutMs: 5_000,
+    env: checkEnvironment(process.env, identity),
+    identity,
+  });
+  if (home.code !== 0) {
+    throw new Error(`检查身份 ${identity.uid}:${identity.gid} 的 HOME 不可写：${identity.home}`);
+  }
+}
+
+/**
  * Runs the configured check commands in the ticket worktree, one by one.
  *
- * The child gets the check whitelist and owns its process group, so a timeout
- * kills the whole tree and not just the shell. The identity is not switched:
- * the supervisor unit runs as its own unprivileged user with
- * `NoNewPrivileges=yes`, so it cannot change uid/gid. A dedicated check user
- * needs a privileged launcher (its own systemd unit or socket), which is not
- * part of this change; the environment and the working directory are the
- * isolation this path applies.
+ * Each child gets the whitelist environment, its own process group and — when
+ * an identity is configured — a `setpriv` exec into that uid/gid. The uid/gid
+ * switch needs the supervisor unit's bounded CAP_SETUID/CAP_SETGID; without it
+ * `setpriv` exits non-zero and the check fails instead of falling back to the
+ * supervisor's identity. Production refuses to run a check without an identity
+ * (`requireIsolated`), and a preflight proves the check user can write the
+ * worktree and its HOME before the first command runs.
  */
 export async function runChecks(input: {
   directory: string;
   commands: readonly string[];
   timeoutMs: number;
+  identity?: CheckIdentity;
+  requireIsolated?: boolean;
 }): Promise<ReviewCheckRun[]> {
+  const identity = input.identity;
+  if (!identity) {
+    if (input.requireIsolated) {
+      throw new Error(
+        '检查子进程身份未配置（REVIEW_CHECK_UID/GID/HOME）；拒绝以 supervisor 身份运行',
+      );
+    }
+  } else {
+    const problem = checkIdentityProblem(identity);
+    if (problem) throw new Error(problem);
+    if (!existsSync(identity.setpriv)) {
+      throw new Error(`检查身份切换程序不存在：${identity.setpriv}`);
+    }
+    await assertCheckRuntime(identity, input.directory);
+  }
   const runs: ReviewCheckRun[] = [];
   for (const command of input.commands) {
     const startedAt = new Date();
@@ -531,8 +640,9 @@ export async function runChecks(input: {
       cwd: input.directory,
       timeoutMs: input.timeoutMs,
       maxBytes: 4 * 1024 * 1024,
-      env: checkEnvironment(),
+      env: checkEnvironment(process.env, identity),
       ownProcessGroup: true,
+      ...(identity ? { identity } : {}),
     });
     const finishedAt = new Date();
     const durationMs = Number((process.hrtime.bigint() - started) / 1_000_000n);
@@ -627,10 +737,23 @@ export function createReviewService(input: {
             statusCode: 409,
           });
         }
+        const identity =
+          config.reviewCheckUid !== undefined &&
+          config.reviewCheckGid !== undefined &&
+          config.reviewCheckHome !== undefined
+            ? {
+                uid: config.reviewCheckUid,
+                gid: config.reviewCheckGid,
+                home: config.reviewCheckHome,
+                setpriv: config.reviewCheckSetpriv ?? '/usr/bin/setpriv',
+              }
+            : undefined;
         const runs = await runChecks({
           directory: worktree.directory,
           commands: config.reviewCheckCommands,
           timeoutMs: config.reviewCheckTimeoutMs,
+          ...(identity ? { identity } : {}),
+          requireIsolated: config.nodeEnv === 'production',
         });
         logger.info(
           {
@@ -638,6 +761,7 @@ export function createReviewService(input: {
             repositoryId,
             ticketId,
             commands: config.reviewCheckCommands,
+            identity: identity ? { uid: identity.uid, gid: identity.gid } : null,
             results: runs.map((run) => ({
               command: run.command,
               exitCode: run.exitCode,

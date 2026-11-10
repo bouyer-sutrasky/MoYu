@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 
 import { z } from 'zod';
 
@@ -74,6 +74,17 @@ const environmentSchema = z.object({
       }
     }, 'must be a non-empty JSON array of command strings'),
   REVIEW_CHECK_TIMEOUT_MS: z.coerce.number().int().min(1000).max(3_600_000).default(900_000),
+  /**
+   * Review checks run as this separate, unprivileged identity. The supervisor
+   * itself is unprivileged with `NoNewPrivileges=yes`, so it can only switch
+   * through the unit's bounded CAP_SETUID/CAP_SETGID and `setpriv`. All three
+   * values are required together; production refuses to run checks without
+   * them instead of silently using the supervisor's own uid.
+   */
+  REVIEW_CHECK_UID: z.coerce.number().int().min(1).optional(),
+  REVIEW_CHECK_GID: z.coerce.number().int().min(1).optional(),
+  REVIEW_CHECK_HOME: z.string().min(1).optional(),
+  REVIEW_CHECK_SETPRIV: z.string().min(1).default('/usr/bin/setpriv'),
 
   /** Aggregate memory policy, in MiB unless noted. These are one system-wide budget. */
   MEMORY_TARGET_MB: z.coerce.number().int().min(256).default(4096),
@@ -158,6 +169,10 @@ export interface SupervisorConfig {
   reviewMaxFiles: number;
   reviewCheckCommands: string[];
   reviewCheckTimeoutMs: number;
+  reviewCheckUid?: number;
+  reviewCheckGid?: number;
+  reviewCheckHome?: string;
+  reviewCheckSetpriv: string;
 }
 
 export function loadSupervisorConfig(
@@ -192,6 +207,19 @@ export function loadSupervisorConfig(
   }
   if (file.portRange.start >= file.portRange.end) {
     throw new Error('INSTANCES_CONFIG portRange.start must be below portRange.end');
+  }
+  const checkIdentityParts = [
+    data.REVIEW_CHECK_UID,
+    data.REVIEW_CHECK_GID,
+    data.REVIEW_CHECK_HOME,
+  ].filter((value) => value !== undefined).length;
+  if (checkIdentityParts !== 0 && checkIdentityParts !== 3) {
+    throw new Error(
+      'REVIEW_CHECK_UID, REVIEW_CHECK_GID and REVIEW_CHECK_HOME must be set together',
+    );
+  }
+  if (data.REVIEW_CHECK_HOME && !isAbsolute(data.REVIEW_CHECK_HOME)) {
+    throw new Error('REVIEW_CHECK_HOME must be an absolute path');
   }
   return {
     nodeEnv: data.NODE_ENV,
@@ -235,6 +263,14 @@ export function loadSupervisorConfig(
     reviewMaxFiles: data.REVIEW_MAX_FILES,
     reviewCheckCommands: JSON.parse(data.REVIEW_CHECK_COMMANDS) as string[],
     reviewCheckTimeoutMs: data.REVIEW_CHECK_TIMEOUT_MS,
+    ...(data.REVIEW_CHECK_UID !== undefined && data.REVIEW_CHECK_GID !== undefined
+      ? {
+          reviewCheckUid: data.REVIEW_CHECK_UID,
+          reviewCheckGid: data.REVIEW_CHECK_GID,
+          reviewCheckHome: resolve(data.REVIEW_CHECK_HOME!),
+        }
+      : {}),
+    reviewCheckSetpriv: data.REVIEW_CHECK_SETPRIV,
     executorModel: data.EXECUTOR_MODEL,
     ...(data.EXECUTOR_REASONING_EFFORT
       ? { executorReasoningEffort: data.EXECUTOR_REASONING_EFFORT }

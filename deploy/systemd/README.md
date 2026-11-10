@@ -64,3 +64,90 @@ Read-only check: `bash scripts/m5b/aggregate-cgroup-check.sh`.
 Rollback of the test service is `systemctl stop` of the M5-B units followed by
 removal of the slice; no production unit or shared cgroup configuration is
 changed by this repository.
+
+## Review check identity
+
+Review checks are repository-controlled code, so they do not run as the
+supervisor. The supervisor stays as `moyu-m5b` with `NoNewPrivileges=yes`; the
+unit gets only `CAP_SETUID`/`CAP_SETGID`, and `runChecks` wraps each command in
+`setpriv --reuid=<uid> --regid=<gid> --init-groups --no-new-privs`. A check
+without the identity is refused in production instead of falling back to the
+supervisor's uid.
+
+Provision once (owner action; the unit fails to start if the group is missing):
+
+```bash
+groupadd --system moyu-check
+useradd --system --gid moyu-check --home-dir /var/lib/moyu-check \
+  --shell /usr/sbin/nologin moyu-check
+install -m 0644 deploy/systemd/moyu-check.tmpfiles.conf /etc/tmpfiles.d/moyu-check.conf
+systemd-tmpfiles --create /etc/tmpfiles.d/moyu-check.conf
+usermod -aG moyu-check moyu-m5b
+```
+
+The worktree root is shared through a group instead of a recursive chown: new
+files are created with the supervisor unit's `UMask=0002`, and the root is
+setgid so the runtime's worktrees inherit `moyu-check`:
+
+```bash
+install -d -o moyu-m5b -g moyu-check -m 2775 "$WORKTREE_ROOT"
+chgrp -R moyu-check "$WORKTREE_ROOT"   # only for trees created before this change
+chgrp moyu-check "$(dirname "$WORKTREE_ROOT")"
+chmod 0750 "$(dirname "$WORKTREE_ROOT")"
+```
+
+The supervisor env file then carries the identity:
+
+```dotenv
+REVIEW_CHECK_UID=<id -u moyu-check>
+REVIEW_CHECK_GID=<id -g moyu-check>
+REVIEW_CHECK_HOME=/var/lib/moyu-check/home
+# REVIEW_CHECK_SETPRIV=/usr/bin/setpriv
+```
+
+`REVIEW_CHECK_HOME` is the check user's HOME (`/var/lib/moyu-check/home`), not
+the supervisor's. `pnpm` writes its cache there; the check user's HOME stays
+mode 700 and the supervisor cannot read it. `TMPDIR` remains the unit's private
+`/tmp`, which is writable by the check user.
+
+Verify from the supervisor log (`review.checks_finished` carries `identity`) and
+from the raw process table while a check is running:
+
+```bash
+ps -o pid,ppid,uid,gid,cmd -C bash
+```
+
+The child's uid/gid must differ from the supervisor's; a same-uid or root
+identity is refused before the first command.
+
+## Production web shell identity
+
+`moyu.service` is the web shell (API + built Web) behind nginx. Install the
+non-root unit only after the owner has staged the build, created the user and
+moved the env file; the live unit is not changed by this repository.
+
+```bash
+useradd --system --home-dir /var/lib/moyu --shell /usr/sbin/nologin moyu-web
+install -d -m 0755 /opt/moyu/web
+rsync -a --delete /root/src/widgets/ /opt/moyu/web/
+chmod -R a+rX /opt/moyu/web
+install -d -m 0750 -o moyu-web -g moyu-web /var/lib/moyu /var/lib/moyu/artifacts
+install -d -m 0750 -o moyu-web -g moyu-web /var/log/moyu
+install -d -m 0750 /etc/moyu
+install -m 0600 -o root -g root /root/.moyu.env /etc/moyu/moyu.env
+# In /etc/moyu/moyu.env: ARTIFACT_STORAGE_DIR=/var/lib/moyu/artifacts
+install -m 0644 deploy/systemd/moyu.service /etc/systemd/system/moyu.service
+systemctl daemon-reload
+systemctl restart moyu.service
+curl -fsS http://127.0.0.1:4300/readyz
+```
+
+`ProtectSystem=strict` leaves only `StateDirectory=moyu` and `LogsDirectory=moyu`
+writable. A relative `ARTIFACT_STORAGE_DIR` (the development default
+`.local/artifacts`) would point inside the read-only build and fail; set it in
+the env file. `ProtectHome=yes` also means the old `/root/src/widgets` path is
+not usable: the staged copy is the deployment.
+
+Rollback: reinstall the previous unit, `systemctl daemon-reload`, then
+`systemctl restart moyu.service`. The live unit before this change and its
+health output are recorded in `docs/evidence/m6a/P1A3b-check-identity.txt`.

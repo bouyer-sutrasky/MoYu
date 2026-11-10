@@ -1,0 +1,52 @@
+# Production unit for the MoYu web shell (API + built Web) behind nginx.
+#
+# This file is the requested change, not an installed fact: the live unit still
+# runs as root. Install it only after the service user, the staged build and the
+# env file exist (see deploy/systemd/README.md). Rollback is the previous unit
+# plus `systemctl daemon-reload && systemctl restart moyu.service`.
+[Unit]
+Description=MoYu web shell (Passkey) behind nginx
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=moyu-web
+Group=moyu-web
+# A non-root user cannot traverse /root, so the build is staged here; the tree
+# is read-only to the service and the repository is never the writable state.
+WorkingDirectory=/opt/moyu/web
+EnvironmentFile=/etc/moyu/moyu.env
+Environment=HOME=/var/lib/moyu
+Environment=ARTIFACT_STORAGE_DIR=/var/lib/moyu/artifacts
+StateDirectory=moyu
+LogsDirectory=moyu
+
+# The process has no privileged operation of its own: no setuid helper, no
+# capability, no writable system path outside its state and log directories.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+ExecStart=/usr/bin/node apps/api/dist/server.js
+Restart=on-failure
+RestartSec=3
+StandardOutput=append:/var/log/moyu/moyu.log
+StandardError=append:/var/log/moyu/moyu.log
+
+[Install]
+WantedBy=multi-user.target
