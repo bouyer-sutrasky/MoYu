@@ -494,6 +494,66 @@ describe('M6 attachment upload and download', () => {
     }
   });
 
+  it('accepts multi-byte text whose UTF-8 sequence crosses the sniff window', async () => {
+    const conversationId = await createConversation(harness);
+    const crossing = Buffer.from(`${'a'.repeat(511)}中${'b'.repeat(200)}`, 'utf8');
+    expect(crossing.byteLength).toBe(714);
+    const markdown = await uploadedAttachment(harness, conversationId, {
+      filename: 'notes.md',
+      contentType: 'text/markdown',
+      bytes: crossing,
+    });
+    expect(markdown.mimeType).toBe('text/markdown');
+    expect(markdown.kind).toBe('text');
+    // Controls: an aligned 512-byte window and a short pure-Chinese file stay text.
+    const aligned = await uploadedAttachment(harness, conversationId, {
+      filename: 'aligned.md',
+      contentType: 'text/markdown',
+      bytes: Buffer.from(`${'a'.repeat(509)}中`, 'utf8'),
+    });
+    expect(aligned.kind).toBe('text');
+    const short = await uploadedAttachment(harness, conversationId, {
+      filename: 'short.md',
+      contentType: 'text/markdown',
+      bytes: Buffer.from('中文'.repeat(7), 'utf8'),
+    });
+    expect(short.kind).toBe('text');
+    const png = await uploadedAttachment(harness, conversationId, {
+      filename: 'control.png',
+      contentType: 'image/png',
+      bytes: PNG_BYTES,
+    });
+    expect(png.kind).toBe('image');
+  });
+
+  it('refuses SVG behind leading comments or a doctype, but keeps mid-text mentions', async () => {
+    const conversationId = await createConversation(harness);
+    const commented = await upload(harness, conversationId, {
+      filename: 'commented.svg',
+      contentType: 'image/svg+xml',
+      bytes: Buffer.from(
+        '<!-- harmless -->\n<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
+        'utf8',
+      ),
+    });
+    expect(commented.statusCode).toBe(422);
+    const withDoctype = await upload(harness, conversationId, {
+      filename: 'doctype.svg',
+      contentType: 'image/svg+xml',
+      bytes: Buffer.from(
+        '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd"><svg><script>alert(1)</script></svg>',
+        'utf8',
+      ),
+    });
+    expect(withDoctype.statusCode).toBe(422);
+    const inline = await uploadedAttachment(harness, conversationId, {
+      filename: 'notes.md',
+      contentType: 'text/markdown',
+      bytes: Buffer.from('This document mentions <svg> and </svg> in prose.\n', 'utf8'),
+    });
+    expect(inline.kind).toBe('text');
+  });
+
   it('refuses SVG bytes even when declared image/svg+xml', async () => {
     const conversationId = await createConversation(harness);
     const response = await upload(harness, conversationId, {
