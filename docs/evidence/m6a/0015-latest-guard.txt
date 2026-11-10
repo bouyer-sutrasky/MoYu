@@ -388,3 +388,30 @@ apps/supervisor test:       Tests  59 passed (59)
 EXIT=0
 
 `EXIT=0`；工作树在提交本证据前干净（本轮只有上述 down 文件、测试 fixture、证据脚本与本文档）。
+
+
+## 补充：LEGAL 段（0015 为最新）在 0016 入链后的覆盖
+
+本文件生成时 0015 是最新迁移，0016 入链后该场景已不能直接复现；现由集成测试在最终 head 覆盖
+（先回滚 0016，再回滚 0015，再重新迁移）。旧 fixture 已由
+`packages/db/test/fixtures/0016_later_guard_fixture.sql` 改名为 `later_migration_fixture.sql`，
+旧原始输出保留不改。
+
+$ cd packages/db && TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm exec vitest run test/integration/rollback-0015.integration.test.ts test/integration/rollback-0016.integration.test.ts
+
+ RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/packages/db
+
+ ✓ test/integration/rollback-0016.integration.test.ts (2 tests) 969ms
+   ✓ 0016 rollback script on real PostgreSQL > drops revoked_at, refuses a second rollback, and re-applies cleanly  501ms
+   ✓ 0016 rollback script on real PostgreSQL > refuses to roll back underneath a later migration and leaves the column in place  464ms
+ ✓ test/integration/rollback-0015.integration.test.ts (2 tests) 987ms
+   ✓ 0015 rollback script on real PostgreSQL > refuses a second rollback instead of silently deleting nothing  507ms
+   ✓ 0015 rollback script on real PostgreSQL > re-applies the attachment link and rejects an unknown message id  476ms
+
+ Test Files  2 passed (2)
+      Tests  4 passed (4)
+   Start at  20:55:59
+   Duration  2.16s (transform 248ms, setup 0ms, collect 1.78s, tests 1.96s, environment 0ms, prepare 166ms)
+
+判定：期望 0015/0016 的回滚、拒绝重复回滚与重新迁移都通过；实际 `Test Files 2 passed`、`Tests 4 passed`、
+`EXIT=0`；结论：通过（LEGAL 场景由集成测试覆盖）。

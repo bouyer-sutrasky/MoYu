@@ -8,7 +8,7 @@ c01900bd06b5bfe38045b0359eafafedd1cab595
 - 按**前 512 字节**（`MIME_SNIFF_BYTES`）嗅探：PNG/JPEG/WebP/GIF 魔数、HTML/SVG 起始标记、`#!` 脚本、
   ELF（`\x7fELF`）与 PE（`MZ`）、UTF-8 文本。
 - 图片字节 → 以嗅探出的图片类型入库（即使客户端声明 `text/plain`）；文本字节 → 保留白名单内声明类型。
-- 可执行/脚本/SVG → **422**；HTML 只有显式声明 `text/html` 才收下（下载侧仍中和，A1/A2 既有行为）；
+- 可执行/脚本/SVG → **422**；**口径裁决**：显式声明 `text/html` 的 HTML 收下，`kind=text`，下载侧中和成 `octet-stream`（A1/A2 既有行为）；其他声明下的 HTML 一律 422；
   声明为图片但内容不是图片、或无法识别内容 → **422**。拒绝发生在 `storeUpload` 之前，不落盘、不增行。
 - 未改动大小上限与 `ATTACHMENT_ALLOWED_TYPES` 白名单；`safeMimeType`（下载兜底）不作为上传守卫。
 
