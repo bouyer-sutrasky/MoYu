@@ -1,29 +1,29 @@
-# B1-green — 2026-11-10T15:59:32.024Z
+# B1-green — 2026-11-10T16:08:28.540Z
 $ git rev-parse HEAD
-c45f64040b45c9105f6b7b8e9cd87f6a93262ac6
+50f392577d08dec0aec5ed46c62940b727fea2aa
 # baseline for the red side
 $ git rev-parse 68c01e50d69a075183a0a175c57611fa77e1163a
 68c01e50d69a075183a0a175c57611fa77e1163a
 
 $ insert a real task.question event, then read window.__m6b from two Chromium tabs
 {
-  "eventQuestion": "M6-B 通知去重事件 2c795ae8",
+  "eventQuestion": "M6-B 通知去重事件 a7ff6a0b",
   "tabA": {
-    "sseReceived": 8,
-    "notifications": []
-  },
-  "tabB": {
     "sseReceived": 8,
     "notifications": [
       {
         "title": "bouyer-sutrasky/MoYu · 需要回复",
-        "body": "M6-B 通知去重事件 2c795ae8",
-        "tag": "moyu:be2c62a4-5696-4732-a3e6-18489949a854"
+        "body": "M6-B 通知去重事件 a7ff6a0b",
+        "tag": "moyu:d0f7f204-5443-47a3-b5b3-93f509a8ae91"
       }
     ]
   },
+  "tabB": {
+    "sseReceived": 8,
+    "notifications": []
+  },
   "rawNotificationTotal": 1,
-  "dedupeKey": "moyu:be2c62a4-5696-4732-a3e6-18489949a854"
+  "dedupeKey": "moyu:d0f7f204-5443-47a3-b5b3-93f509a8ae91"
 }
 exit code: 0
 
@@ -31,10 +31,10 @@ $ click window.__m6b.instances[0].onclick(), read the selected sidebar row
 {
   "notification": {
     "title": "bouyer-sutrasky/MoYu · 需要回复",
-    "body": "M6-B 通知去重事件 2c795ae8"
+    "body": "M6-B 通知去重事件 a7ff6a0b"
   },
-  "activeConversation": "6858dc23-c7ef-4a88-a69b-cdca6c638972",
-  "expectedConversation": "6858dc23-c7ef-4a88-a69b-cdca6c638972"
+  "activeConversation": "6593b847-6d7d-4a5d-b34e-5941cfbb191f",
+  "expectedConversation": "6593b847-6d7d-4a5d-b34e-5941cfbb191f"
 }
 exit code: 0
 
@@ -42,7 +42,7 @@ $ reload the first tab, read window.__m6b after SSE replay
 {
   "sseReceivedAfterReload": 8,
   "notificationsAfterReload": [],
-  "dedupeKey": "moyu:be2c62a4-5696-4732-a3e6-18489949a854"
+  "dedupeKey": "moyu:d0f7f204-5443-47a3-b5b3-93f509a8ae91"
 }
 exit code: 0
 

@@ -1,7 +1,7 @@
-# B3-red — 2026-11-10T15:59:32.024Z
+# B3-red — 2026-11-10T16:08:28.540Z
 # Red-side result semantics: exit code 0 = the baseline lacks or fails this acceptance item (the expected red); exit code 1 = the feature unexpectedly exists on the baseline.
 $ git rev-parse HEAD
-c45f64040b45c9105f6b7b8e9cd87f6a93262ac6
+50f392577d08dec0aec5ed46c62940b727fea2aa
 # baseline for the red side
 $ git rev-parse 68c01e50d69a075183a0a175c57611fa77e1163a
 68c01e50d69a075183a0a175c57611fa77e1163a
@@ -9,12 +9,12 @@ $ git rev-parse 68c01e50d69a075183a0a175c57611fa77e1163a
 $ curl -s -o /dev/null -w '%{http_code}' -b 'moyu_session=<session>' http://127.0.0.1:4626/api/v1/cleanup/runs
 HTTP 404
 The baseline build has no M6-B endpoint; the not-found handler is the raw output.
-{"error":{"code":"not_found","message":"Route not found","retryable":false},"requestId":"37d0a742-ad22-4fd1-9ae3-088aef80bb86"}
+{"error":{"code":"not_found","message":"Route not found","retryable":false},"requestId":"b580fb32-157c-4022-9dd0-a50dc2242e93"}
 exit code: 0
 
 $ curl -s -X POST -H 'content-type: application/json' -d '{}' -b 'moyu_session=<session>' http://127.0.0.1:4626/api/v1/cleanup/preview
 HTTP 404
 The baseline build has no M6-B endpoint; the not-found handler is the raw output.
-{"error":{"code":"not_found","message":"Route not found","retryable":false},"requestId":"166052dd-eb5d-4192-9592-49c0f725f5b1"}
+{"error":{"code":"not_found","message":"Route not found","retryable":false},"requestId":"48b40c42-44a7-4f1c-93c1-7d381e3c1b2f"}
 exit code: 0
 

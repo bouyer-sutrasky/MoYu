@@ -1,7 +1,7 @@
-# B1-red — 2026-11-10T15:59:32.023Z
+# B1-red — 2026-11-10T16:08:28.540Z
 # Red-side result semantics: exit code 0 = the baseline lacks or fails this acceptance item (the expected red); exit code 1 = the feature unexpectedly exists on the baseline.
 $ git rev-parse HEAD
-c45f64040b45c9105f6b7b8e9cd87f6a93262ac6
+50f392577d08dec0aec5ed46c62940b727fea2aa
 # baseline for the red side
 $ git rev-parse 68c01e50d69a075183a0a175c57611fa77e1163a
 68c01e50d69a075183a0a175c57611fa77e1163a
@@ -9,7 +9,7 @@ $ git rev-parse 68c01e50d69a075183a0a175c57611fa77e1163a
 $ curl -s -o /dev/null -w '%{http_code}' -b 'moyu_session=<session>' http://127.0.0.1:4626/api/v1/activity
 HTTP 404
 The baseline build has no M6-B endpoint; the not-found handler is the raw output.
-{"error":{"code":"not_found","message":"Route not found","retryable":false},"requestId":"15bfc229-58bb-460e-bb56-3f9d048fe514"}
+{"error":{"code":"not_found","message":"Route not found","retryable":false},"requestId":"d7a82f52-d645-4ff1-b10b-22616552d6d6"}
 exit code: 0
 
 $ playwright open http://127.0.0.1:4626 (desktop-light); 点击「活动中心」
