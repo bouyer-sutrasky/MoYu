@@ -106,16 +106,20 @@ function leadingMarkup(input: string): 'html' | 'svg' | 'unknown' | null {
 function isText(bytes: Buffer): boolean {
   if (bytes.length === 0) return false;
   let end = bytes.length;
-  let back = 0;
-  while (back < 3 && end - back - 1 >= 0 && (bytes[end - back - 1]! & 0xc0) === 0x80) {
-    back += 1;
-  }
-  const leadIndex = end - back - 1;
-  const lead = bytes[leadIndex];
-  if (lead === undefined) return false;
-  if ((lead & 0xc0) === 0xc0) {
-    const need = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : 2;
-    if (need > back + 1) end = leadIndex;
+  // Only a window cut at the limit can have been split through a character; a
+  // short file whose own bytes end mid-sequence is not text.
+  if (bytes.length === MIME_SNIFF_BYTES) {
+    let back = 0;
+    while (back < 3 && end - back - 1 >= 0 && (bytes[end - back - 1]! & 0xc0) === 0x80) {
+      back += 1;
+    }
+    const leadIndex = end - back - 1;
+    const lead = bytes[leadIndex];
+    if (lead === undefined) return false;
+    if ((lead & 0xc0) === 0xc0) {
+      const need = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : 2;
+      if (need > back + 1) end = leadIndex;
+    }
   }
   if (end === 0) return false;
   try {

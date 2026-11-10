@@ -544,6 +544,29 @@ describe('M6 attachment upload and download', () => {
     expect(ordinary.kind).toBe('text');
   });
 
+  it('only trims an incomplete trailing character when the window is full', async () => {
+    const conversationId = await createConversation(harness);
+    const short = await upload(harness, conversationId, {
+      filename: 'short.txt',
+      contentType: 'text/plain',
+      bytes: Buffer.concat([Buffer.from('abc', 'utf8'), Buffer.from([0xe4])]),
+    });
+    expect(short.statusCode).toBe(422);
+    // Controls: a split at the 512-byte boundary is still text.
+    for (const [filename, bytes] of [
+      ['crossing.md', Buffer.from(`${'a'.repeat(511)}中${'b'.repeat(200)}`, 'utf8')],
+      ['late.md', Buffer.from(`${'a'.repeat(510)}中${'b'.repeat(200)}`, 'utf8')],
+      ['bom.md', Buffer.from(`\ufeff${'中文'.repeat(200)}`, 'utf8')],
+    ] as const) {
+      const attachment = await uploadedAttachment(harness, conversationId, {
+        filename,
+        contentType: 'text/markdown',
+        bytes,
+      });
+      expect(attachment.kind).toBe('text');
+    }
+  });
+
   it('refuses SVG behind leading comments or a doctype, but keeps mid-text mentions', async () => {
     const conversationId = await createConversation(harness);
     const commented = await upload(harness, conversationId, {
