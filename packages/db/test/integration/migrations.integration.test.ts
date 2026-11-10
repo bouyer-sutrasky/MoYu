@@ -8,6 +8,8 @@ const EXPECTED_TABLES = [
   'artifacts',
   'auth_challenges',
   'bootstrap_codes',
+  'cleanup_items',
+  'cleanup_runs',
   'conversations',
   'deferred_bridge_events',
   'deliveries',
@@ -33,6 +35,9 @@ const EXPECTED_ENUMS = [
   'artifact_type',
   'auth_challenge_kind',
   'bootstrap_code_purpose',
+  'cleanup_item_state',
+  'cleanup_run_mode',
+  'cleanup_run_status',
   'conversation_mode',
   'conversation_source',
   'delivery_state',
@@ -80,6 +85,9 @@ const EXPECTED_INDEXES = [
   'repository_preferences_owner_repository_uq',
   'repository_instances_state_idx',
   'repository_instances_wake_idx',
+  'cleanup_items_run_repository_ticket_uq',
+  'cleanup_runs_owner_created_idx',
+  'cleanup_runs_preview_uq',
 ];
 
 async function stringColumn(database: TestDatabase, query: ReturnType<typeof sql>, column: string) {

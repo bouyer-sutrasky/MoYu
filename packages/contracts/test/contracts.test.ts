@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  activityDataSchema,
   apiErrorResponseSchema,
   authMeDataSchema,
   authStateDataSchema,
@@ -9,11 +10,13 @@ import {
   bridgeCapabilitiesSchema,
   bridgeTriggerInputSchema,
   ceremonyOptionsSchema,
+  cleanupPreviewDataSchema,
   createMessageInputSchema,
   errorResponse,
   eventSeqSchema,
   healthDataSchema,
   healthResponseSchema,
+  historySearchDataSchema,
   repositoryListDataSchema,
   successResponse,
   uuidSchema,
@@ -267,5 +270,93 @@ describe('M6-A L113 bridge attachment contracts', () => {
         capabilities: { ...capabilities.capabilities, attachments: true },
       }).capabilities.attachments,
     ).toBe(true);
+  });
+});
+
+describe('M6-B activity, history and cleanup contracts', () => {
+  const notification = {
+    id: '11111111-1111-4111-8111-111111111111',
+    seq: '42',
+    category: 'needs_reply',
+    state: 'waiting_input',
+    repositoryId: '22222222-2222-4222-8222-222222222222',
+    repositoryName: 'Bouyer12/MoYu',
+    conversationId: '33333333-3333-4333-8333-333333333333',
+    taskId: '44444444-4444-4444-8444-444444444444',
+    title: '任务',
+    summary: '请确认是否继续',
+    occurredAt: '2026-11-10T00:00:00.000Z',
+  };
+
+  it('parses an activity feed and rejects an unknown category', () => {
+    const data = activityDataSchema.parse({
+      notifications: [notification],
+      running: [],
+      nextCursor: null,
+      hasMore: false,
+    });
+    expect(data.notifications[0]?.category).toBe('needs_reply');
+    expect(() =>
+      activityDataSchema.parse({
+        notifications: [{ ...notification, category: 'progress' }],
+        running: [],
+        nextCursor: null,
+        hasMore: false,
+      }),
+    ).toThrow();
+  });
+
+  it('parses a history page and rejects a malformed cursor position', () => {
+    const data = historySearchDataSchema.parse({ items: [], nextCursor: null, hasMore: false });
+    expect(data.items).toEqual([]);
+  });
+
+  it('parses a cleanup preview with a real path, size and reason', () => {
+    const data = cleanupPreviewDataSchema.parse({
+      run: {
+        id: '55555555-5555-4555-8555-555555555555',
+        mode: 'preview',
+        status: 'preview',
+        retentionDays: 7,
+        previewOfRunId: null,
+        summary: {
+          candidates: 1,
+          eligible: 1,
+          skipped: 0,
+          removed: 0,
+          alreadyCleaned: 0,
+          failed: 0,
+          totalBytes: 2048,
+          bytesFreed: 0,
+        },
+        error: null,
+        createdAt: '2026-11-10T00:00:00.000Z',
+        expiresAt: '2026-11-10T00:15:00.000Z',
+        finishedAt: null,
+        items: [
+          {
+            id: '66666666-6666-4666-8666-666666666666',
+            ticketId: 't_1',
+            conversationId: notification.conversationId,
+            repositoryId: notification.repositoryId,
+            repositoryName: notification.repositoryName,
+            profile: 'probe1',
+            directory: '/worktrees/probe1/task-abcdef123456',
+            state: 'planned',
+            eligible: true,
+            reason: 'PR #7 已合并；已完成 8 天（≥ 7 天）；无未保存修改',
+            sizeBytes: 2048,
+            modifiedAt: '2026-11-01T00:00:00.000Z',
+            detail: {},
+          },
+        ],
+      },
+    });
+    expect(data.run.items[0]?.eligible).toBe(true);
+    expect(() =>
+      cleanupPreviewDataSchema.parse({
+        run: { ...data.run, retentionDays: 0 },
+      }),
+    ).toThrow();
   });
 });

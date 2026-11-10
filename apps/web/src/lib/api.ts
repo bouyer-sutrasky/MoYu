@@ -1,6 +1,10 @@
 import {
+  activityDataSchema,
   apiSuccessResponseSchema,
   attachmentUploadDataSchema,
+  cleanupExecuteDataSchema,
+  cleanupPreviewDataSchema,
+  cleanupRunsDataSchema,
   authMeDataSchema,
   authStateDataSchema,
   bootstrapExchangeDataSchema,
@@ -21,13 +25,18 @@ import {
   repositoryListDataSchema,
   repositoryRuntimeDataSchema,
   githubRepositoryListDataSchema,
+  historySearchDataSchema,
   repositoryPreferencesDataSchema,
   revokeSessionDataSchema,
   sessionListDataSchema,
   taskCommandDataSchema,
   taskReviewDataSchema,
+  type ActivityData,
   type AttachmentUploadData,
   type AuthMeData,
+  type CleanupExecuteData,
+  type CleanupPreviewData,
+  type CleanupRunsData,
   type AuthStateData,
   type BootstrapExchangeData,
   type CeremonyOptions,
@@ -44,6 +53,7 @@ import {
   type NewTaskFromTaskPreviewData,
   type PasskeyCredentialSummary,
   type GithubRepositoryListData,
+  type HistorySearchData,
   type RepositoryActionData,
   type RepositoryBranchListData,
   type RepositoryPreferencesData,
@@ -332,6 +342,46 @@ export const api = {
       createMessageDataSchema,
       { method: 'POST', body: input },
     );
+  },
+  activity(options: { beforeSeq?: string; limit?: number } = {}): Promise<ActivityData> {
+    const query = new URLSearchParams();
+    if (options.beforeSeq) query.set('beforeSeq', options.beforeSeq);
+    if (options.limit) query.set('limit', String(options.limit));
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    return request(`/api/v1/activity${suffix}`, activityDataSchema);
+  },
+  searchHistory(
+    input: {
+      q?: string;
+      repositoryId?: string;
+      state?: string;
+      cursor?: string;
+      limit?: number;
+    } = {},
+  ): Promise<HistorySearchData> {
+    const query = new URLSearchParams();
+    if (input.q) query.set('q', input.q);
+    if (input.repositoryId) query.set('repositoryId', input.repositoryId);
+    if (input.state) query.set('state', input.state);
+    if (input.cursor) query.set('cursor', input.cursor);
+    if (input.limit) query.set('limit', String(input.limit));
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    return request(`/api/v1/history/search${suffix}`, historySearchDataSchema);
+  },
+  cleanupPreview(repositoryId?: string): Promise<CleanupPreviewData> {
+    return request('/api/v1/cleanup/preview', cleanupPreviewDataSchema, {
+      method: 'POST',
+      body: repositoryId ? { repositoryId } : {},
+    });
+  },
+  cleanupExecute(runId: string): Promise<CleanupExecuteData> {
+    return request('/api/v1/cleanup/execute', cleanupExecuteDataSchema, {
+      method: 'POST',
+      body: { runId },
+    });
+  },
+  cleanupRuns(): Promise<CleanupRunsData> {
+    return request('/api/v1/cleanup/runs', cleanupRunsDataSchema);
   },
   uploadAttachment(conversationId: string, file: File): Promise<AttachmentUploadData> {
     return uploadRequest(

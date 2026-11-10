@@ -138,8 +138,8 @@ export async function projectReview(
  */
 export async function pullRequestState(
   config: ApiConfig,
-  repository: Repository,
-  task: TaskLink,
+  repository: Pick<Repository, 'fullName'>,
+  task: Pick<TaskLink, 'prNumber' | 'prUrl'>,
 ): Promise<ReviewPullRequest | null> {
   if (!task.prNumber) return null;
   const number = task.prNumber;

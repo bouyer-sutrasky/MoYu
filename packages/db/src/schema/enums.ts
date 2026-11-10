@@ -87,3 +87,22 @@ export const artifactType = pgEnum('artifact_type', [
   'log',
   'other',
 ]);
+
+/** Worktree cleanup audit: a preview run or the execution confirmed from one. */
+export const cleanupRunMode = pgEnum('cleanup_run_mode', ['preview', 'execute']);
+
+export const cleanupRunStatus = pgEnum('cleanup_run_status', [
+  'preview',
+  'running',
+  'completed',
+  'partial',
+  'failed',
+]);
+
+export const cleanupItemState = pgEnum('cleanup_item_state', [
+  'planned',
+  'removed',
+  'skipped',
+  'failed',
+  'already_cleaned',
+]);
