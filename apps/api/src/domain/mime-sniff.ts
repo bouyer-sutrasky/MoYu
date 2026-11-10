@@ -70,6 +70,7 @@ export function sniffContent(bytes: Buffer): SniffedContent {
  */
 function leadingMarkup(input: string): 'html' | 'svg' | 'unknown' | null {
   let rest = input;
+  let htmlDoctype = false;
   for (;;) {
     rest = rest.replace(/^\s+/, '');
     if (rest.startsWith('<!--')) {
@@ -87,12 +88,16 @@ function leadingMarkup(input: string): 'html' | 'svg' | 'unknown' | null {
     if (/^<!doctype\b/i.test(rest)) {
       const end = rest.indexOf('>');
       if (end < 0) return 'unknown';
+      if (/^<!doctype\s+html\b/i.test(rest)) htmlDoctype = true;
       rest = rest.slice(end + 1);
       continue;
     }
     break;
   }
   if (/^<svg\b/i.test(rest)) return 'svg';
+  // A consumed HTML doctype already establishes the document type even when the
+  // next tag is a paragraph; an <svg> after it is still SVG (handled above).
+  if (htmlDoctype) return 'html';
   if (/^<(!doctype\s+html|html|head|body|script)\b/i.test(rest)) return 'html';
   return null;
 }

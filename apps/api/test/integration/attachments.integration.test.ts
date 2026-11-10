@@ -567,6 +567,34 @@ describe('M6 attachment upload and download', () => {
     }
   });
 
+  it('treats a consumed HTML doctype as HTML, not as free text', async () => {
+    const conversationId = await createConversation(harness);
+    const asText = await upload(harness, conversationId, {
+      filename: 'page.txt',
+      contentType: 'text/plain',
+      bytes: Buffer.from('<!DOCTYPE html><p>hi</p>', 'utf8'),
+    });
+    expect(asText.statusCode).toBe(422);
+    const asHtml = await uploadedAttachment(harness, conversationId, {
+      filename: 'page.html',
+      contentType: 'text/html',
+      bytes: Buffer.from('<!DOCTYPE html><p>hi</p>', 'utf8'),
+    });
+    expect(asHtml.kind).toBe('text');
+    const svgDoctype = await upload(harness, conversationId, {
+      filename: 'vector.svg',
+      contentType: 'image/svg+xml',
+      bytes: Buffer.from('<!DOCTYPE svg><svg></svg>', 'utf8'),
+    });
+    expect(svgDoctype.statusCode).toBe(422);
+    const plain = await uploadedAttachment(harness, conversationId, {
+      filename: 'plain.txt',
+      contentType: 'text/plain',
+      bytes: Buffer.from('plain text\n', 'utf8'),
+    });
+    expect(plain.kind).toBe('text');
+  });
+
   it('refuses SVG behind leading comments or a doctype, but keeps mid-text mentions', async () => {
     const conversationId = await createConversation(harness);
     const commented = await upload(harness, conversationId, {
