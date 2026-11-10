@@ -159,3 +159,8 @@ after = 本分支构建）。桌面 1440×900、手机 390×844，浅色与深�
    `NoNewPrivileges=yes` 运行，进程内无法切换 uid/gid；A1/A5 的检查命令仍以 supervisor 身份运行。
    需要一次特权启动器改造，等所有者决定是否另立一项。
 6. **投递到 runtime 的 Trigger 仍只有 text**（见 A3）：worker 拿不到附件内容，归 L113。
+7. **2026-11-10 补证（head `9a60fb2`）**：L113 的两项缺口已补——
+   [`docs/evidence/m6a/L113-image-reading.txt`](evidence/m6a/L113-image-reading.txt) 在隔离
+   `DSH_HOME` + 隔离库里跑通真实截图任务：Bridge 能力协商 `attachments: true`、trigger 带附件元数据、
+   执行器 `read_image` 成功返回 1360×900 图像、模型返回的 token/Row/尺寸/颜色与真值一致。
+   第 3、6 项针对的是本轮 A 系列 fixture；L113 的运行时投递与模型执行由该补证覆盖。

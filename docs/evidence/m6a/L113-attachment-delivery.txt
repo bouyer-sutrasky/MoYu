@@ -413,8 +413,8 @@ for (const attachment of sent?.attachments ?? []) {
 | 字节取用走机器令牌，不落明文/日志 | 通过（Bearer 只从实例 env 读，URL 由 `MOYU_PLATFORM_URL`+id 拼；日志只记 id/sha/字节数） |
 | 下载后立即校验 sha256 + size，失败删暂存并拒绝 trigger | 通过（422 硬失败 / 503 平台暂不可用；单元测试覆盖） |
 | 复制到 `<workspace>/.moyu/attachments/<id>/<filename>`，0600，幂等 | 通过（单元测试：权限、exclude、重复 materialize 不改 mtime） |
-| 真实截图任务证明执行器「看到」图像 | **未通过/未验证**，见 §4 |
-| 文本附件「按需读取」 | 交付链路已实现（card 只给相对路径，不内联内容）；**未做真实 worker 会话**，见 §4 |
+| 真实截图任务证明执行器「看到」图像 | **通过（2026-11-10 补证）**：见 [`L113-image-reading.txt`](L113-image-reading.txt) |
+| 文本附件「按需读取」 | 交付链路已实现（card 只给相对路径，不内联内容）；真实 worker 会话见 [`L113-image-reading.txt`](L113-image-reading.txt) §3（同一会话里读的是图片） |
 
 ## 4. 未验证 / 已知缺口
 
@@ -429,3 +429,17 @@ for (const attachment of sent?.attachments ?? []) {
 3. 设计 §3.1 原写"错误仓库令牌 → 404"，实现为 **401**：`verifyCallbackToken` 无法从令牌反查仓库，
    与 runtime-events 一致；设计文档已同步。
 4. 运行时整套测试的 3 条 Feishu/shim 失败是环境相关的既有失败（基线与改动后相同），不是本补丁引入。
+
+## 5. 后续补证（2026-11-10，head `9a60fb2`）
+
+§4 的第 1 项已由 [`L113-image-reading.txt`](L113-image-reading.txt) 关闭：在隔离 `DSH_HOME` +
+隔离库里，给同一模型补上 `input: [text, image]` 后，能力协商为 true 的投递路径把截图送到 Bridge，
+执行器真实调用 `read_image` 成功返回 1360×900 的图像，模型读出 token、两行 Row、像素尺寸与两个
+色块颜色，全部与真值一致（原始会话 JSON 行在同目录 `L113-image-reading-session.jsonl`）。
+
+两点修正：profile 的字段名是 `input`（LLM 插件 schema 用 `input`，解析后暴露为 `inputModalities`），
+不是 YAML 里直接写 `inputModalities`；共享 profile（`/root/.dsh/profiles/superagent`、
+`/root/.dsh-m5/profiles/m5b`）本轮按边界未改，所有者把同一行加进去并重启实例后即生效。
+
+§4 的第 2 项（真实 worker 会话）同一份证据已给出：worker 会话、`read_image` 工具调用/结果、
+runtime 返回平台的 result 消息都是真实事件。

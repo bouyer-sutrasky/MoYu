@@ -17,6 +17,10 @@
 | `A7-restart.txt` | 重启 API 前后同一任务投影 digest、库表行、附件下载对照、已清理状态 |
 | `A8-regression.txt` | before/after 的 `pnpm check` 与真实 PostgreSQL 集成测试条数 |
 | `0014-scope.txt` | 0014 脚本未改的 `git diff`；0015 带来的反例与支持的回滚顺序；守卫归 #37 |
+| `L113-attachment-delivery.txt` | 附件元数据门控、机器令牌下载与 sha256 校验、workspace 复制；图像读证据见下 |
+| `L113-image-reading.txt` | 2026-11-10 补证：真实截图任务的 `read_image`、模型结果与真值对照（head `9a60fb2`） |
+| `L113-image-reading-session.jsonl` | 上述任务的 worker 会话原始 JSON 行（10 行，含 trigger card、`read_image` 调用/结果、模型报告） |
+| `l113-image-reading-screenshot.png` | 上传的 1360×900 Chromium 截图（sha256 `704034a6…`） |
 | `before-*.png` / `after-*.png` | 同一 DB、同一任务、桌面 1440×900 与手机 390×844、浅/深主题 |
 | `after-desktop-light-checks-failed.png` | 失败运行期间截取的检查失败状态 |
 | `after-desktop-light-cleaned.png` | worktree 已清理的任务 |
