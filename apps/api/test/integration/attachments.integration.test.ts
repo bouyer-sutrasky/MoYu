@@ -526,6 +526,24 @@ describe('M6 attachment upload and download', () => {
     expect(png.kind).toBe('image');
   });
 
+  it('refuses an unclosed comment in the sniff window instead of calling it text', async () => {
+    const conversationId = await createConversation(harness);
+    for (const padding of [508, 600]) {
+      const response = await upload(harness, conversationId, {
+        filename: 'unclosed.svg',
+        contentType: 'image/svg+xml',
+        bytes: Buffer.from(`<!--${'x'.repeat(padding)}--><svg></svg>`, 'utf8'),
+      });
+      expect(response.statusCode).toBe(422);
+    }
+    const ordinary = await uploadedAttachment(harness, conversationId, {
+      filename: 'notes.md',
+      contentType: 'text/markdown',
+      bytes: Buffer.from('# note\n<!-- a complete comment -->\ntext\n', 'utf8'),
+    });
+    expect(ordinary.kind).toBe('text');
+  });
+
   it('refuses SVG behind leading comments or a doctype, but keeps mid-text mentions', async () => {
     const conversationId = await createConversation(harness);
     const commented = await upload(harness, conversationId, {

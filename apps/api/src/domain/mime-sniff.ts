@@ -57,6 +57,7 @@ export function sniffContent(bytes: Buffer): SniffedContent {
   while (start < head.length && [0x20, 0x09, 0x0a, 0x0d].includes(head[start]!)) start += 1;
   const text = head.subarray(start).toString('utf8');
   const markup = leadingMarkup(text);
+  if (markup === 'unknown') return 'unknown';
   if (markup) return markup;
   if (isText(head)) return 'text';
   return 'unknown';
@@ -67,25 +68,25 @@ export function sniffContent(bytes: Buffer): SniffedContent {
  * instructions and a doctype. Only the start of the file counts: prose that
  * mentions `<svg` later is still text.
  */
-function leadingMarkup(input: string): 'html' | 'svg' | null {
+function leadingMarkup(input: string): 'html' | 'svg' | 'unknown' | null {
   let rest = input;
   for (;;) {
     rest = rest.replace(/^\s+/, '');
     if (rest.startsWith('<!--')) {
       const end = rest.indexOf('-->');
-      if (end < 0) return null;
+      if (end < 0) return 'unknown';
       rest = rest.slice(end + 3);
       continue;
     }
     if (rest.startsWith('<?')) {
       const end = rest.indexOf('?>');
-      if (end < 0) return null;
+      if (end < 0) return 'unknown';
       rest = rest.slice(end + 2);
       continue;
     }
     if (/^<!doctype\b/i.test(rest)) {
       const end = rest.indexOf('>');
-      if (end < 0) return null;
+      if (end < 0) return 'unknown';
       rest = rest.slice(end + 1);
       continue;
     }
