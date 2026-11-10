@@ -28,6 +28,7 @@ import { buildApp } from '../../src/app';
 import { hashSecret, randomToken } from '../../src/auth/crypto';
 import { sessionCookieName } from '../../src/auth/cookies';
 import { loadConfig, type ApiConfig } from '../../src/config';
+import { MIME_SNIFF_BYTES } from '../../src/domain/mime-sniff';
 import { createTestDatabase, type TestDatabase } from './helpers';
 
 interface Harness {
@@ -496,8 +497,8 @@ describe('M6 attachment upload and download', () => {
 
   it('accepts multi-byte text whose UTF-8 sequence crosses the sniff window', async () => {
     const conversationId = await createConversation(harness);
-    const crossing = Buffer.from(`${'a'.repeat(511)}中${'b'.repeat(200)}`, 'utf8');
-    expect(crossing.byteLength).toBe(714);
+    const crossing = Buffer.from(`${'a'.repeat(MIME_SNIFF_BYTES - 1)}中${'b'.repeat(200)}`, 'utf8');
+    expect(crossing.byteLength).toBe(MIME_SNIFF_BYTES - 1 + 3 + 200);
     const markdown = await uploadedAttachment(harness, conversationId, {
       filename: 'notes.md',
       contentType: 'text/markdown',
@@ -509,7 +510,7 @@ describe('M6 attachment upload and download', () => {
     const aligned = await uploadedAttachment(harness, conversationId, {
       filename: 'aligned.md',
       contentType: 'text/markdown',
-      bytes: Buffer.from(`${'a'.repeat(509)}中`, 'utf8'),
+      bytes: Buffer.from(`${'a'.repeat(MIME_SNIFF_BYTES - 3)}中`, 'utf8'),
     });
     expect(aligned.kind).toBe('text');
     const short = await uploadedAttachment(harness, conversationId, {
@@ -554,8 +555,8 @@ describe('M6 attachment upload and download', () => {
     expect(short.statusCode).toBe(422);
     // Controls: a split at the 512-byte boundary is still text.
     for (const [filename, bytes] of [
-      ['crossing.md', Buffer.from(`${'a'.repeat(511)}中${'b'.repeat(200)}`, 'utf8')],
-      ['late.md', Buffer.from(`${'a'.repeat(510)}中${'b'.repeat(200)}`, 'utf8')],
+      ['crossing.md', Buffer.from(`${'a'.repeat(MIME_SNIFF_BYTES - 1)}中${'b'.repeat(200)}`, 'utf8')],
+      ['late.md', Buffer.from(`${'a'.repeat(MIME_SNIFF_BYTES - 2)}中${'b'.repeat(200)}`, 'utf8')],
       ['bom.md', Buffer.from(`\ufeff${'中文'.repeat(200)}`, 'utf8')],
     ] as const) {
       const attachment = await uploadedAttachment(harness, conversationId, {
@@ -606,6 +607,7 @@ describe('M6 attachment upload and download', () => {
       ),
     });
     expect(commented.statusCode).toBe(422);
+    expect((commented.json() as { error: { message: string } }).error.message).toContain('SVG');
     const withDoctype = await upload(harness, conversationId, {
       filename: 'doctype.svg',
       contentType: 'image/svg+xml',
@@ -615,6 +617,7 @@ describe('M6 attachment upload and download', () => {
       ),
     });
     expect(withDoctype.statusCode).toBe(422);
+    expect((withDoctype.json() as { error: { message: string } }).error.message).toContain('SVG');
     const inline = await uploadedAttachment(harness, conversationId, {
       filename: 'notes.md',
       contentType: 'text/markdown',
@@ -631,6 +634,7 @@ describe('M6 attachment upload and download', () => {
       bytes: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>', 'utf8'),
     });
     expect(response.statusCode).toBe(422);
+    expect((response.json() as { error: { message: string } }).error.message).toContain('SVG');
   });
 
   it('revokes an attachment softly and idempotently, and blocks its download', async () => {
