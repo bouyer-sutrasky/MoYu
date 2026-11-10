@@ -21,11 +21,12 @@ BEGIN
   IF later <> 0 THEN
     RAISE EXCEPTION '0015 rollback refused: % later migration(s) are already applied; roll them back first', later;
   END IF;
+  -- Drop the applied-migration ledger row in the same block so the 64-bit hash
+  -- is written once; PL/pgSQL can reference `expected` here (a DO block's
+  -- DECLARE scope), while the statements outside cannot.
+  DELETE FROM drizzle.__drizzle_migrations WHERE hash = expected;
 END $$;
 DROP INDEX IF EXISTS "artifacts_message_idx";
 ALTER TABLE "artifacts" DROP CONSTRAINT IF EXISTS "artifacts_message_id_messages_id_fk";
 ALTER TABLE "artifacts" DROP COLUMN IF EXISTS "message_id";
--- Drop the applied-migration ledger row too; without it migrateDatabase still
--- believes 0015 is applied and never recreates the column.
-DELETE FROM drizzle.__drizzle_migrations WHERE hash = 'b50ad051f0dac6e0740722a345b64a0cdb3c0f392042d0858df75a295e729584';
 COMMIT;
