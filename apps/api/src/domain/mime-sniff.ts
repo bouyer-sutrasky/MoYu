@@ -58,11 +58,45 @@ export function sniffContent(bytes: Buffer): SniffedContent {
   // Skip a UTF-8 BOM and leading whitespace so markup is not missed.
   if (head.length >= 3 && head[0] === 0xef && head[1] === 0xbb && head[2] === 0xbf) start = 3;
   while (start < head.length && [0x20, 0x09, 0x0a, 0x0d].includes(head[start]!)) start += 1;
-  const text = head.subarray(start).toString('utf8').toLowerCase();
-  if (/^<(!doctype\s+html|html|head|body|script)\b/.test(text)) return 'html';
-  if (/^(<\?xml[^>]*>\s*)?<svg\b/.test(text)) return 'svg';
+  const text = head.subarray(start).toString('utf8');
+  const markup = leadingMarkup(text);
+  if (markup) return markup;
   if (isText(head)) return 'text';
   return 'unknown';
+}
+
+/**
+ * Classifies leading markup after skipping whitespace, comments, processing
+ * instructions and a doctype. Only the start of the file counts: prose that
+ * mentions `<svg` later is still text.
+ */
+function leadingMarkup(input: string): 'html' | 'svg' | null {
+  let rest = input;
+  for (;;) {
+    rest = rest.replace(/^\s+/, '');
+    if (rest.startsWith('<!--')) {
+      const end = rest.indexOf('-->');
+      if (end < 0) return null;
+      rest = rest.slice(end + 3);
+      continue;
+    }
+    if (rest.startsWith('<?')) {
+      const end = rest.indexOf('?>');
+      if (end < 0) return null;
+      rest = rest.slice(end + 2);
+      continue;
+    }
+    if (/^<!doctype\b/i.test(rest)) {
+      const end = rest.indexOf('>');
+      if (end < 0) return null;
+      rest = rest.slice(end + 1);
+      continue;
+    }
+    break;
+  }
+  if (/^<svg\b/i.test(rest)) return 'svg';
+  if (/^<(!doctype\s+html|html|head|body|script)\b/i.test(rest)) return 'html';
+  return null;
 }
 
 /**
