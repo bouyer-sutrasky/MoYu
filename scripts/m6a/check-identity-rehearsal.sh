@@ -147,6 +147,13 @@ SUP_GID=$(id -g moyu-m5b)
 log_section '0.1 隔离目录（worktree 共享组 + 独立 HOME；不是递归 chown 到检查用户）'
 rm -rf -- "$RUN"
 install -d -m 0755 "$RUN"
+# The service users cannot read /opt/moyu-node24 (0750 root:m5bmatrix), so give
+# the rehearsal a world-readable copy of the same toolchain. A production
+# deployment must provide an equivalent readable Node/pnpm path.
+cp -a /opt/moyu-node24 "$RUN/node24"
+chmod -R a+rX "$RUN/node24"
+SERVICE_NODE_BIN="$RUN/node24/bin"
+run setpriv --reuid=moyu-check --regid=moyu-check --init-groups "$SERVICE_NODE_BIN/node" -v
 install -d -m 0755 "$RUN/app"
 cp -a "$REPO/." "$RUN/app/"
 rm -f "$RUN/app/.git"
@@ -222,7 +229,7 @@ INSTANCE_ENV_DIR=$RUN/env
 INSTANCE_LOG_DIR=$RUN/logs
 WORKTREE_ROOT=$RUN/worktrees
 HOME=$RUN/sup-home
-PATH=$NODE_BIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PATH=$SERVICE_NODE_BIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 REVIEW_CHECK_TIMEOUT_MS=900000
 REVIEW_CHECK_COMMANDS=$commands
 $extra
@@ -284,7 +291,7 @@ run systemd-run --unit="$SUP_RED_UNIT" \
   --description='MoYu #58 red: root supervisor without a check identity' \
   --property=WorkingDirectory="$RUN/app" \
   --property=EnvironmentFile="$RUN/sup-red.env" \
-  "$NODE_BIN/node" "$RUN/app/apps/supervisor/dist/main.js"
+  "$SERVICE_NODE_BIN/node" "$RUN/app/apps/supervisor/dist/main.js"
 if ! wait_supervisor "$SUP_RED_PORT"; then
   journalctl -u "$SUP_RED_UNIT" -n 50 --no-pager >>"$EVIDENCE" 2>&1 || true
   echo 'red supervisor did not start' >&2
@@ -304,7 +311,8 @@ set -e
 printf '[exit code: %s]\n\n' "$code" >>"$EVIDENCE"
 node -e '
 const payload = require(process.argv[1]);
-const runs = payload?.data?.runs ?? [];
+const runs = payload?.data?.runs;
+if (!Array.isArray(runs)) { console.log(JSON.stringify(payload, null, 2)); process.exit(0); }
 for (const run of runs) {
   console.log("command     :", run.command);
   console.log("exitCode    :", run.exitCode, "| passed:", run.passed, "| timedOut:", run.timedOut, "| ms:", run.durationMs);
@@ -319,6 +327,9 @@ stop_unit "$SUP_RED_UNIT"
 # 3. Green: the same supervisor as moyu-m5b, checks as moyu-check
 # ---------------------------------------------------------------------------
 log_section '3. 绿段：supervisor 非 root，仅 CAP_SETUID/CAP_SETGID，检查子进程切到专用 uid'
+# The red supervisor ran as root and created its DSH directories owned by root;
+# hand them to the green supervisor before it starts.
+chown -R moyu-m5b:moyu-m5b "$RUN/dsh" "$RUN/logs" "$RUN/creds" "$RUN/env"
 stop_unit "$SUP_UNIT"
 run systemd-run --unit="$SUP_UNIT" \
   --description='MoYu #58 green: unprivileged supervisor with a dedicated check identity' \
@@ -335,7 +346,7 @@ run systemd-run --unit="$SUP_UNIT" \
   --property='AmbientCapabilities=CAP_SETUID CAP_SETGID' \
   --property=UMask=0002 \
   --property="ReadWritePaths=$RUN/worktrees $RUN/check-home $RUN/sup-home $RUN/logs $RUN/dsh $RUN/creds $RUN/env" \
-  "$NODE_BIN/node" "$RUN/app/apps/supervisor/dist/main.js"
+  "$SERVICE_NODE_BIN/node" "$RUN/app/apps/supervisor/dist/main.js"
 if ! wait_supervisor "$SUP_GREEN_PORT"; then
   journalctl -u "$SUP_UNIT" -n 50 --no-pager >>"$EVIDENCE" 2>&1 || true
   echo 'green supervisor did not start' >&2
@@ -356,7 +367,8 @@ set -e
 printf '[exit code: %s]\n\n' "$code" >>"$EVIDENCE"
 node -e '
 const payload = require(process.argv[1]);
-const runs = payload?.data?.runs ?? [];
+const runs = payload?.data?.runs;
+if (!Array.isArray(runs)) { console.log(JSON.stringify(payload, null, 2)); process.exit(0); }
 for (const run of runs) {
   console.log("command     :", run.command);
   console.log("exitCode    :", run.exitCode, "| passed:", run.passed, "| timedOut:", run.timedOut, "| ms:", run.durationMs);
@@ -385,7 +397,7 @@ run systemd-run --unit="$SUP_UNIT" \
   --property='AmbientCapabilities=CAP_SETUID CAP_SETGID' \
   --property=UMask=0002 \
   --property="ReadWritePaths=$RUN/worktrees $RUN/check-home $RUN/sup-home $RUN/logs $RUN/dsh $RUN/creds $RUN/env" \
-  "$NODE_BIN/node" "$RUN/app/apps/supervisor/dist/main.js"
+  "$SERVICE_NODE_BIN/node" "$RUN/app/apps/supervisor/dist/main.js"
 if ! wait_supervisor "$SUP_GREEN_PORT"; then
   journalctl -u "$SUP_UNIT" -n 50 --no-pager >>"$EVIDENCE" 2>&1 || true
   echo 'green supervisor did not start' >&2
@@ -434,7 +446,7 @@ run systemd-run --unit="$API_UNIT" \
   --property='RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6' \
   --property=RestrictNamespaces=yes --property=RestrictSUIDSGID=yes --property=LockPersonality=yes \
   --property=CapabilityBoundingSet= --property=AmbientCapabilities= --property=UMask=0077 \
-  "$NODE_BIN/node" apps/api/dist/server.js
+  "$SERVICE_NODE_BIN/node" apps/api/dist/server.js
 if ! wait_api; then
   journalctl -u "$API_UNIT" -n 80 --no-pager >>"$EVIDENCE" 2>&1 || true
   echo 'rehearsal API did not start' >&2
@@ -488,6 +500,9 @@ for (const run of checks.runs ?? []) {
 
 run_checks_api '5.1 通过' "$RUN/panel-pass1.json"
 printf "export const broken: number = 'm6a deliberate type failure';\n" >"$WORKTREE/apps/api/src/m6a-broken.ts"
+# The operator creates this file as root; the check user must be able to read
+# it, or the run fails on EACCES before reaching the deliberate type error.
+chmod 0644 "$WORKTREE/apps/api/src/m6a-broken.ts"
 run_checks_api '5.2 失败（故意改坏类型）' "$RUN/panel-fail.json"
 rm -f "$WORKTREE/apps/api/src/m6a-broken.ts"
 run_checks_api '5.3 恢复后通过' "$RUN/panel-pass2.json"

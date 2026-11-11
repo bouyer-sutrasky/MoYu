@@ -110,6 +110,13 @@ the supervisor's. `pnpm` writes its cache there; the check user's HOME stays
 mode 700 and the supervisor cannot read it. `TMPDIR` remains the unit's private
 `/tmp`, which is writable by the check user.
 
+The check user must also be able to execute the Node/pnpm toolchain the
+worktree's `node_modules` shebangs resolve through `PATH`. On the current host
+`/opt/moyu-node24` is `0750 root:m5bmatrix`; either make that tree readable by
+the service users or add `moyu-m5b` and `moyu-check` to its group. The
+rehearsal in `scripts/m6a/check-identity-rehearsal.sh` uses a world-readable
+copy of the same toolchain for this reason.
+
 Verify from the supervisor log (`review.checks_finished` carries `identity`) and
 from the raw process table while a check is running:
 
@@ -146,7 +153,15 @@ curl -fsS http://127.0.0.1:4300/readyz
 writable. A relative `ARTIFACT_STORAGE_DIR` (the development default
 `.local/artifacts`) would point inside the read-only build and fail; set it in
 the env file. `ProtectHome=yes` also means the old `/root/src/widgets` path is
-not usable: the staged copy is the deployment.
+not usable: the staged copy is the deployment. The log path moves from
+`/var/log/moyu.log` to `/var/log/moyu/moyu.log`; update any logrotate rule to
+match before switching.
+
+The unit keeps the live `/usr/bin/node`. If the staged build requires the
+repository's pinned Node 24, point `ExecStart=` at a Node 24 binary the service
+user can execute (the host's `/opt/moyu-node24` is currently `0750
+root:m5bmatrix`, so it is not usable as-is); the check identity note above
+applies the same requirement to the supervisor and check users.
 
 Rollback: reinstall the previous unit, `systemctl daemon-reload`, then
 `systemctl restart moyu.service`. The live unit before this change and its
