@@ -345,6 +345,17 @@
   font: var(--dsw-font-xxxs-11);
 }
 
+.navBadge {
+  margin-left: auto;
+  min-width: 18px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--dsw-alias-state-error-primary);
+  color: var(--dsw-alias-label-primary-foreground);
+  font: var(--dsw-font-xxxs-strong-11);
+  text-align: center;
+}
+
 .sidebarFooter {
   display: flex;
   align-items: center;
@@ -510,11 +521,15 @@
   height: 14px;
   padding: 0 3px;
   border-radius: 999px;
-  background: var(--dsw-alias-bg-layer-1);
-  color: var(--dsw-alias-label-tertiary);
+  background: var(--dsw-alias-state-error-primary);
+  color: var(--dsw-alias-label-primary-foreground);
   font-size: 9px;
   line-height: 14px;
   text-align: center;
+}
+
+.topbarBadge[data-empty='true'] {
+  display: none;
 }
 
 .main {

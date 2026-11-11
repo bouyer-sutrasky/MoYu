@@ -2,7 +2,7 @@
 
 **MoYu** —— 个人智能体工作台（内部概念名 Superagent Workspace）：ChatGPT 式布局，DeepSeek Harness 视觉变量；Work 接入 superagent，Chat 预留接口。
 
-仓库当前处于 **M2「Passkey 与页面外壳」**：在 M1 的 monorepo、共享契约、Drizzle schema 与 CI 之上，实现单所有者 Passkey 首次绑定、登录、会话/凭据管理、一次性服务器绑定码，以及桌面三栏 / 手机抽屉界面与固定 Harness 视觉变量。消息闭环、任务执行与多仓库调度尚未实现，页面不会把它们伪装为可用。
+仓库当前处于 **M6-B「通知与历史清理」**：在 M1–M6-A 的 monorepo、Passkey、消息闭环、执行控制、多仓库调度与附件/审阅面板之上，实现由持久 SSE 事件驱动的浏览器通知、历史搜索与按 7 天规则清理 worktree。HTTPS 端到端部署、备份恢复与回滚手册属于 M6-C；页面不会把未实现能力伪装为可用。
 
 - [用户如何发任务](docs/ISSUE-PLAN.md)：新仓库权限、独立实例引导、可复制 Issue。
 - [开发指南](docs/DEVELOPMENT-GUIDE.md)：环境依据、仓库结构、阶段与验收。
@@ -10,6 +10,9 @@
 - [管理员引导步骤](docs/BOOTSTRAP-RUNBOOK.md)：现有 agent 不能跨仓库或管理服务时的并列入口。
 - [产品决策](docs/DESIGN.md)：已经确认的范围和行为。
 - [部署与验收事实](docs/DEPLOYMENT.md)：现行域名、端口、反代、分支保护与截图规范。
+- [M6-B 验证记录](docs/M6-B-VERIFICATION.md)：通知去重、历史搜索、7 天清理的红→绿证据与未验证项。
+- [M6-B 证据索引](docs/evidence/m6b/README.md)：原始命令/输出/exit code 与 Before/After 截图。
+- [M6-A 验证记录](docs/M6-A-VERIFICATION.md)：附件、diff/测试/PR 面板。
 - [M4-UX 验证记录](docs/M4-UX-VERIFICATION.md)：历史分页、草稿/发送一致性、仓库偏好与浏览器证据。
 - [M2 验证记录](docs/M2-VERIFICATION.md)：Passkey、会话撤销、SSE/附件保护与浏览器验收的实际命令和结果。
 - [M2 视觉证据](docs/evidence/m2/README.md)：桌面/手机、浅色/深色的 Before/After 截图与复现命令。
@@ -199,4 +202,4 @@ M2 的认证接口、SSE 与附件保护已实现；仓库添加、任务与消�
 
 ## 验证
 
-本地与 CI 的实际命令、结果、环境、未验证项见 [docs/M2-VERIFICATION.md](docs/M2-VERIFICATION.md)；M1 记录保留在 [docs/M1-VERIFICATION.md](docs/M1-VERIFICATION.md)。
+本地与 CI 的实际命令、结果、环境、未验证项见各阶段验证记录：M6-B 在 [docs/M6-B-VERIFICATION.md](docs/M6-B-VERIFICATION.md)，M6-A 在 [docs/M6-A-VERIFICATION.md](docs/M6-A-VERIFICATION.md)，M5-B 在 [docs/M5-B-VERIFICATION.md](docs/M5-B-VERIFICATION.md)，M4 在 [docs/M4-VERIFICATION.md](docs/M4-VERIFICATION.md) 与 [docs/M4-UX-VERIFICATION.md](docs/M4-UX-VERIFICATION.md)，M3 在 [docs/M3-VERIFICATION.md](docs/M3-VERIFICATION.md)，M2 在 [docs/M2-VERIFICATION.md](docs/M2-VERIFICATION.md)，M1 在 [docs/M1-VERIFICATION.md](docs/M1-VERIFICATION.md)。

@@ -59,6 +59,11 @@ M2 实际 Cookie：https origin 使用 `__Host-moyu_session` 与 `__Host-moyu_bo
 | GET /api/v1/repositories/:id/models | Harness已配置且可用的模型标识，不返回API Key |
 | POST /api/v1/conversations | **M4 已实现**：`{repositoryId,mode:'work',executionMode:'execute'\|'discuss',baseBranch,model:{provider,model,reasoningEffort?}\|null,clientRequestId}`；同一 `clientRequestId` 相同 payload 返回原会话，不同 payload 409；`discuss` 创建只读讨论任务 |
 | GET /api/v1/conversations | **M3 已实现**：按仓库列出会话与任务投影；M4-UX 增加 `cursor` 分页与 `nextCursor`/`hasMore`，游标绑定仓库，跨仓库复用返回 422 |
+| GET /api/v1/activity | **M6-B 已实现**：`limit`/`beforeSeq` 读取当前所有者的持久活动提醒（需要回复、待审阅、已完成、失败）及正在执行的任务；提醒 `id` 是持久事件 id，客户端以它作为浏览器通知去重键；`nextCursor` 为更早页的 `beforeSeq` |
+| GET /api/v1/history/search | **M6-B 已实现**：`q`（最长 2000，参与检索的前 200 字）、`repositoryId`、`state`（任务状态或 `none`）、`cursor`、`limit`；标题与消息正文按字面 `ILIKE` 匹配（`%`/`_`/`\\` 转义），结果按 `(updated_at,id)` 倒序；游标绑定关键词、仓库、状态与所有者，跨查询复用 422；只返回当前所有者会话 |
+| POST /api/v1/cleanup/preview | **M6-B 已实现**：干跑 7 天清理，返回 `run`（路径、真实原因、大小、可删除/跳过统计）并持久化审计；候选必须 `state=completed`、持久完成事件早于保留期，PR 状态由真实 `gh` 读取为 `merged` |
+| POST /api/v1/cleanup/execute | **M6-B 已实现**：`{runId}` 只接受同一所有者的未过期预览；执行前再次核对任务状态、合并状态、保留期与 supervisor 的真实 worktree 状态；重复执行返回原结果；每项独立记录 removed/skipped/failed/already_cleaned |
+| GET /api/v1/cleanup/runs | **M6-B 已实现**：当前所有者最近的预览/执行审计，含每项路径、原因、大小与结果 |
 | GET /api/v1/conversations/:id | **M3 已实现**：会话、冻结字段与任务投影 |
 | POST /api/v1/conversations/:id/messages | **M3 已实现**：`{clientMessageId,text,replyToMessageId?}` → 202 `{message,duplicate:false}`；相同幂等键与 payload 返回 200 原结果，不同 payload 409；message 与 delivery 同事务写入 |
 | GET /api/v1/conversations/:id/messages | **M3 已实现**：游标分页，包含方向/kind、回复关联、来源与投递状态；M4-UX 使用 `(createdAt,id)` 不透明游标，支持 `before`（更早）与 `after`（更新），返回 `nextCursor`、`newerCursor`、`hasMore`、`hasNewer`；同时间戳由 id 决胜，游标不匹配返回 422 |
@@ -72,6 +77,7 @@ M2 实际 Cookie：https origin 使用 `__Host-moyu_session` 与 `__Host-moyu_bo
 | POST /api/v1/tasks/:id/review/changes | **M6-A 已实现**：经宿主 supervisor 读取任务 worktree 的真实 `git status` / `git diff`（含未跟踪文件）与 HEAD，一并查询 GitHub PR 状态，写入 `diff` 产物后返回同一投影；worktree 已清理返回 `state:'cleaned'` |
 | POST /api/v1/tasks/:id/review/checks | **M6-A 已实现**：经宿主 supervisor 在任务 worktree 运行配置的检查命令（默认 `pnpm check`），记录每个命令的 exit code、起止时间、耗时与输出末尾，写入 `check_report` 产物 |
 | 宿主 supervisor review | **M6-A 已实现**：`POST /control/v1/instances/:repositoryId/review/{worktree,changes,checks}`，请求只带 `ticketId`；目录由 supervisor 自己的 `WORKTREE_ROOT`/profile 解析，命令来自 supervisor 配置，浏览器与 API 都不传路径或命令 |
+| 宿主 supervisor cleanup | **M6-B 已实现**：`POST /control/v1/instances/:repositoryId/cleanup/{inspect,delete,trash}`，请求只带 `ticketId`；supervisor 用 `realpath` 校验目标严格位于 `WORKTREE_ROOT/<profile>` 内，拒绝非 git 顶层、有未提交/未推送改动、被进程占用或 `index.lock` 存在的目录；删除先把目录原子重命名到 `.cleanup-trash/` 再递归删除，失败只留下隔离目录；linked worktree 在重命名后对其 common git dir 执行 `git worktree prune`，结果记录为 `worktreePruned`/`worktreePruneError` |
 | GitHub 汇入 | **M4 已实现**：Bridge `ticket.imported` 事件按 `(repository, source='github', external_id)` 建立/复用 Work conversation，并按 `(repository, upstream_ticket_id)` 绑定唯一 task；重复事件不重复建单 |
 | POST /api/v1/conversations/:id/attachments | **M6-A 已实现**：multipart 单文件字段 `file`；单文件 ≤10 MiB，只接受图片（PNG/JPEG/WebP/GIF）与文本类（txt/log/md/json/yaml/csv/源码等）；超限 413、类型不符 422、空文件 422、未登录 401、他人会话 404，且拒绝时不落库也不落盘；返回 `{attachment}`，含 `id`、文件名、MIME、字节数、sha256 与下载地址，不自动执行 |
 | GET /api/v1/attachments/:id | **M2 已实现、M6-A 收紧**：鉴权下载；`Content-Disposition: attachment`、`nosniff`、`CSP sandbox`，HTML/SVG 以 `application/octet-stream` 下发，不内联执行 |
@@ -80,6 +86,17 @@ M2 实际 Cookie：https origin 使用 `__Host-moyu_session` 与 `__Host-moyu_bo
 | 附件与执行器 | **M6-A 明确未传**：上游 Source 的 Trigger 没有附件字段，平台不把附件内容塞进消息正文，也不伪造已投递；附件保存在平台存储并随消息展示，投递到 runtime 属于后续单（需要上游 Bridge 补丁与能力协商） |
 
 建会话返回pending直到任务接单；task_links在接单后填upstreamTicketId，不能把Trigger stored视为Ticket已创建。conversation创建时锁仓库/分支选择，正式执行前解析并记录baseCommit；为避免讨论期间分支移动，执行同一已记录快照或显式要求刷新计划，禁止悄悄换起点。
+
+## M6-B 通知、历史与清理实现边界
+
+- **通知固定为浏览器 Web Notification + 站内活动中心**，不实现 Service Worker/Web Push。系统通知只消费 `GET /api/v1/events` 的 `workspaceEvent`；不轮询伪造。活动中心从 `GET /api/v1/activity` 读取持久事件，网页关闭后重新打开仍可补看未读。
+- 通知类别映射：`task.question` / `waiting_input` → 需要回复；`awaiting_review` → 待审阅；`completed` → 已完成；`failed` / `blocked` / `closed_unmerged` → 失败/受阻；`task.progress` 与普通消息不弹系统通知。
+- 去重键是持久事件 `id`（也是 SSE 的稳定事件 id）。去重记录保存在浏览器 `localStorage`（7 天/1000 条上限），跨标签页用 Web Locks 串行化“检查并占用”，因此同一事件在重连、刷新、多标签页下最多弹出一次；活动未读状态另以本机已读 id 记录。
+- 通知权限只在设置页由所有者显式点击申请；未授权/拒绝时给出可操作提示，不阻塞主流程，也不在拒绝后重复请求。默认“仅后台”，可切换“从不/总是”并逐类别开关。
+- 通知点击携带 `{conversationId,repositoryId}`，前端切仓库并定位会话；若目标在当前仓库则直接选中。
+- 历史搜索是只读查询：先按 `conversations.owner_id` 限定所有者，再按仓库、任务状态与关键词过滤；关键词按字面 ILIKE（转义 `%`、`_`、`\`），空/超长/特殊字符均返回正常结果而非 500。游标复用 `conversation` keyset 编码，scope 含全部过滤条件与关键词哈希，保证同一游标不重不漏且不能跨查询复用。
+- 清理的 7 天保留期从**持久完成事件** `task.state_changed` 且 `payload.task.state='completed'` 的 `occurred_at` 起算；不是 PR `mergedAt`，也不是文件 mtime。没有该事件时回退 `task_links.updated_at`。预览 `reason` 与界面文案统一使用「已完成 N 天」/「保留 7 天（自任务完成）」。只有 `state=completed` 且真实 PR `merged` 的任务进入候选。平台先干跑生成审计与 `runId`，所有者确认后才执行。执行时重新读取 PR 状态与 supervisor 真实目录，未合并、有未提交/未推送改动、被进程占用、非 git 顶层或解析后越界的一律跳过。路径只由 supervisor 解析，浏览器与 API 不传路径；删除采用“先原子移入隔离区再删除”，失败只留下隔离目录，重复执行幂等并返回原结果。
+- 清理不删除会话、消息、报告、附件、PR 或远端分支；只删除本地 worktree。预览 15 分钟内有效（可配置），过期需重新预览确认。
 
 ## 事件协议
 
@@ -106,7 +123,7 @@ M4-UX 不新增事件类型；历史分页与草稿都在既有消息/投递投�
 
 M3 实际映射：`stored`=平台消息与 delivery 同事务写入；`delivering`=dispatcher 已领取租约；`delivered`=Bridge `POST /bridge/v1/triggers` 返回 `stored|duplicate`（执行器已接收 Trigger）；`read`=worker Session 的 `user/message` 已落盘且 `Ticket.inputs[].readAt` 经 `message.read` 回报；`failed`=平台侧永久拒绝。HTTP 202 与 Trigger 入库都不会推进到 `read`。
 
-`GET /api/v1/events` 在 M3 已实现：先按 `Last-Event-ID`/`after` 回放持久事件，再以 PostgreSQL 轮询（1 秒）补齐跨进程事件，进程内 bus 只用于即时唤醒；每 15 秒心跳。断线重连按 event id 补齐，不依赖进程内 EventEmitter 作为唯一存储。SSE 失效时重新校验登录；服务端主动撤销会立即中断流，不只依赖首次连接检查。M2 尚无任务事件生产者，主要验证连接、回放边界与撤销关闭；浏览器通知消费同一事件，按eventId去重，正文展示默认适度摘要，点击定位任务（M3/M6）。
+`GET /api/v1/events` 在 M3 已实现：先按 `Last-Event-ID`/`after` 回放持久事件，再以 PostgreSQL 轮询（1 秒）补齐跨进程事件，进程内 bus 只用于即时唤醒；每 15 秒心跳。断线重连按 event id 补齐，不依赖进程内 EventEmitter 作为唯一存储。SSE 失效时重新校验登录；服务端主动撤销会立即中断流，不只依赖首次连接检查。M6-B 的浏览器通知消费同一事件，以事件 `id` 去重，正文是固定类别摘要，点击定位会话；`GET /api/v1/activity` 提供持久活动补看。
 
 ## Bridge 机器协议
 
