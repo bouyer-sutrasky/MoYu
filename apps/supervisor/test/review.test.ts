@@ -1,5 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import {
+  chmodSync,
+  chownSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -436,6 +438,76 @@ describe('supervisor check runs', () => {
       }
     }
   });
+});
+
+describe('supervisor check identity', () => {
+  const setpriv = '/usr/bin/setpriv';
+
+  it('refuses root, the supervisor own uid/gid, and a missing setpriv', async () => {
+    const directory = repository();
+    const ownUid = process.getuid?.() ?? 1;
+    const ownGid = process.getgid?.() ?? 1;
+    const run = (identity: { uid: number; gid: number; home: string; setpriv: string }) =>
+      runChecks({ directory, commands: ['true'], timeoutMs: 5_000, identity });
+
+    await expect(run({ uid: 0, gid: ownGid + 1, home: directory, setpriv })).rejects.toThrow(
+      'root',
+    );
+    // Root already hit the root refusal above; the same-as-supervisor rule is
+    // only observable for a non-root test process (CI runners are non-root).
+    if (ownUid !== 0) {
+      await expect(run({ uid: ownUid, gid: ownGid + 1, home: directory, setpriv })).rejects.toThrow(
+        'uid 必须不同',
+      );
+    }
+    if (ownGid !== 0) {
+      await expect(run({ uid: 1, gid: ownGid, home: directory, setpriv })).rejects.toThrow(
+        'gid 必须不同',
+      );
+    }
+    await expect(
+      run({ uid: 1, gid: 1, home: directory, setpriv: '/nonexistent/setpriv' }),
+    ).rejects.toThrow('不存在');
+  });
+
+  it('refuses to run checks in production without a configured identity', async () => {
+    await expect(
+      runChecks({
+        directory: repository(),
+        commands: ['true'],
+        timeoutMs: 5_000,
+        requireIsolated: true,
+      }),
+    ).rejects.toThrow('身份未配置');
+  });
+
+  it.skipIf(process.getuid?.() !== 0)(
+    'runs a check as the configured uid and cannot read a root-owned 0600 sentinel',
+    async () => {
+      const directory = temporary('moyu-check-worktree');
+      chmodSync(directory, 0o777);
+      const home = temporary('moyu-check-home');
+      chownSync(home, 65_534, 65_534);
+      const sentinelDirectory = temporary('moyu-check-sentinel');
+      chmodSync(sentinelDirectory, 0o755);
+      const sentinel = join(sentinelDirectory, 'secret');
+      writeFileSync(sentinel, 'supervisor-secret\n', { mode: 0o600 });
+
+      const runs = await runChecks({
+        directory,
+        commands: [
+          `id -u; id -g; grep -E 'CapEff' /proc/self/status; cat '${sentinel}'; echo sentinel-exit=$?`,
+        ],
+        timeoutMs: 10_000,
+        identity: { uid: 65_534, gid: 65_534, home, setpriv },
+      });
+
+      expect(runs[0]?.output).toMatch(/^65534$/m);
+      expect(runs[0]?.output).toMatch(/CapEff:\s*0+\s*$/m);
+      expect(runs[0]?.output).toMatch(/sentinel-exit=[1-9]/);
+      expect(runs[0]?.output).not.toContain('supervisor-secret');
+    },
+  );
 });
 
 describe('review service', () => {

@@ -81,4 +81,27 @@ describe('supervisor config', () => {
     delete values.SUPERVISOR_TOKEN;
     expect(() => loadSupervisorConfig(values)).toThrow(/SUPERVISOR_TOKEN/);
   });
+
+  it('loads the review check identity only when all three values are present', () => {
+    const path = configFile({ instances: [] });
+    const values = {
+      ...env(path),
+      REVIEW_CHECK_UID: '1002',
+      REVIEW_CHECK_GID: '1003',
+      REVIEW_CHECK_HOME: '/var/lib/moyu-check/home',
+    };
+    const config = loadSupervisorConfig(values);
+    expect(config.reviewCheckUid).toBe(1002);
+    expect(config.reviewCheckGid).toBe(1003);
+    expect(config.reviewCheckHome).toBe('/var/lib/moyu-check/home');
+    expect(config.reviewCheckSetpriv).toBe('/usr/bin/setpriv');
+
+    const partial: Record<string, string> = { ...values };
+    delete partial.REVIEW_CHECK_GID;
+    expect(() => loadSupervisorConfig(partial)).toThrow(/set together/);
+
+    expect(() =>
+      loadSupervisorConfig({ ...values, REVIEW_CHECK_HOME: 'relative/check-home' }),
+    ).toThrow(/absolute/);
+  });
 });

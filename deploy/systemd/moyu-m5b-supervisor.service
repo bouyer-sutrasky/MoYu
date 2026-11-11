@@ -10,6 +10,9 @@ Wants=network-online.target
 Type=simple
 User=moyu-m5b
 Group=moyu-m5b
+# The review check child drops to REVIEW_CHECK_UID/GID; this group carries the
+# shared worktree permission the check user and the supervisor both need.
+SupplementaryGroups=moyu-check
 WorkingDirectory=/opt/moyu/m5b
 EnvironmentFile=/etc/moyu/m5b/supervisor.env
 Slice=moyu-m5b.slice
@@ -19,7 +22,16 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/lib/moyu-m5b /run/moyu-m5b
+# The supervisor itself is unprivileged. These two capabilities are the whole
+# launcher: setpriv drops each check child to REVIEW_CHECK_UID/GID. The bounding
+# set removes every other capability, and NoNewPrivileges stays on; without the
+# setpriv switch a check fails closed instead of running as the supervisor.
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID
+AmbientCapabilities=CAP_SETUID CAP_SETGID
+# The runtime creates worktrees as moyu-m5b; the group and umask let the
+# dedicated check user read and write the same tree without a recursive chown.
+UMask=0002
+ReadWritePaths=/var/lib/moyu-m5b /run/moyu-m5b /var/lib/moyu-check
 ExecStart=/opt/moyu/m5b/node_modules/.bin/tsx apps/supervisor/src/main.ts
 Restart=on-failure
 RestartSec=3

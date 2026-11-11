@@ -45,6 +45,13 @@ remote: - 2 of 2 required status checks are expected.
 | WebSocket/SSE | 升级头已配；`proxy_read_timeout 3600s` |
 | 健康检查 | 应用起来前 `https://moyu.sutrasky.com` 返回 502，属预期 |
 
+**服务身份（#58，待所有者切换）**：线上 `moyu.service` 目前仍是 root。仓库已交付
+`deploy/systemd/moyu.service`（`User=moyu-web`、`NoNewPrivileges=yes`、
+`ProtectSystem=strict`、`PrivateTmp=yes`、空 capability 集）与 supervisor 的检查身份
+（`moyu-check` + 仅 `CAP_SETUID/CAP_SETGID` 的 `setpriv`）。用户/目录准备、切换与回滚见
+[`deploy/systemd/README.md`](../deploy/systemd/README.md) 与
+`docs/evidence/m6a/P1A3b-check-identity.txt`；切换由所有者执行。
+
 ## 4. 不得触碰
 
 - 其它 nginx 站点：`ui.sutrasky.com`、`preview.sutrasky.com`、`spring-boot-lab-*`、`default`
