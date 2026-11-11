@@ -1,5 +1,7 @@
 import type pg from 'pg';
 
+import { appendLeaseEvent } from './leases';
+
 export interface ExecutionReservation {
   ticketId: string;
   assignmentId: string;
@@ -103,6 +105,88 @@ export async function reserveExecution(
   } finally {
     client.release();
   }
+}
+
+/**
+ * Adopts the Assignment the runtime re-issued under the same lease. A host
+ * restart ends the running Assignment and starts another under the same lease
+ * and fencing token, so the platform's generation identity — Ticket, lease and
+ * token — still names one execution: this is a supersession, not a stale
+ * generation. Leaving the reservation on the ended Assignment would make every
+ * later snapshot and claim look like a mismatch, and the lost-response recovery
+ * could never conclude. The replaced Assignment stays on the lease ledger.
+ *
+ * Returns the superseded Assignment id, or null when nothing had to change.
+ */
+export async function supersedeReservationAssignmentOn(
+  client: pg.PoolClient,
+  input: {
+    repositoryId: string;
+    requestKey: string;
+    ticketId: string;
+    assignmentId: string;
+    leaseId: string;
+    fencingToken: string;
+    sourceEventId?: string;
+  },
+): Promise<string | null> {
+  // Same lock order as reserveExecution and claimExecution: the lease first, then
+  // the reservation. The ledger row this function appends references the lease,
+  // so taking the reservation first could deadlock against a concurrent claim.
+  const lease = await client.query<{ fencing_token: string; state: string }>(
+    `select fencing_token, state from runtime_leases
+      where id = $1 and repository_id = $2
+      for update`,
+    [input.leaseId, input.repositoryId],
+  );
+  if (
+    lease.rows[0]?.state !== 'active' ||
+    String(lease.rows[0].fencing_token) !== input.fencingToken
+  ) {
+    return null;
+  }
+  const current = await client.query<{
+    id: string;
+    assignment_id: string;
+    lease_id: string;
+    fencing_token: string;
+    state: string;
+  }>(
+    `select id, assignment_id, lease_id, fencing_token, state
+       from execution_reservations
+      where repository_id = $1 and request_key = $2 and ticket_id = $3
+      for update`,
+    [input.repositoryId, input.requestKey, input.ticketId],
+  );
+  const reservation = current.rows[0];
+  if (
+    !reservation ||
+    reservation.assignment_id === input.assignmentId ||
+    reservation.lease_id !== input.leaseId ||
+    String(reservation.fencing_token) !== input.fencingToken ||
+    (reservation.state !== 'reserved' && reservation.state !== 'claimed')
+  ) {
+    return null;
+  }
+  await client.query(
+    `update execution_reservations set assignment_id = $2, updated_at = now() where id = $1`,
+    [reservation.id, input.assignmentId],
+  );
+  await appendLeaseEvent(client, {
+    leaseId: input.leaseId,
+    repositoryId: input.repositoryId,
+    fencingToken: input.fencingToken,
+    type: 'assignment_superseded',
+    detail: {
+      ticketId: input.ticketId,
+      requestKey: input.requestKey,
+      fromAssignmentId: reservation.assignment_id,
+      toAssignmentId: input.assignmentId,
+      reservationState: reservation.state,
+      ...(input.sourceEventId ? { bridgeEventId: input.sourceEventId } : {}),
+    },
+  });
+  return reservation.assignment_id;
 }
 
 /** Read the authoritative identity for an idempotency key, if one exists. */
