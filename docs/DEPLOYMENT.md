@@ -66,3 +66,20 @@ remote: - 2 of 2 required status checks are expected.
 - 管理面板的 executor 设置 `discussCommand=/usr/local/bin/m4-discuss-sandbox`。
 - 脚本把 ticket worktree 复制成 root 所有的只读快照（目录 555、文件 444），`setpriv` 到 `moyu-discuss` 后启动 headless DSH；讨论进程不可访问 `/root`、GitHub/Bridge token 或 worktree 写权限。
 - 负向证据写入 `/tmp/m4-discuss-evidence.log`：host/discuss UID、快照 owner/mode、`root_env_readable`、`worktree_write`、`ssh_key_readable`。
+
+## M5-B 现场矩阵（隔离验收环境）
+
+现场矩阵使用专用系统身份 `m5bmatrix`（无登录 shell）和专用探测凭据，与宿主配置分开：
+
+- **测试身份只读宿主配置**：`/root`、`/root/src` 0710 遍历，仓库树/上游构建只读；`/root/.dsh`、
+  `/root/.dsh-m5`、`/root/.config/gh-agent`、SSH 私钥对 `m5bmatrix` 不可写、不可读。
+- **专用凭据**：`/root/.config/m5bmatrix/probe_ssh_key`（0600）与
+  `/root/.config/m5bmatrix/gh`（0750 root:m5bmatrix，`hosts.yml` 0640），只授权探测仓库；
+  禁止复用 `/root/.ssh/sa_agent*` 或共享 gh token。gh 经 `scripts/m5b/matrix/gh-m5b.sh` 固定
+  `HOME`/`GH_CONFIG_DIR`。
+- **运行分区**：`/tmp/m5bmatrix` 由 root 拥有（0755），`protected/`（root 0700）放 supervisor
+  token、seeded 会话 token 和 `state.env`，`config/`（root:matrix 0750）放 `instances.json`，
+  其余临时状态由 `m5bmatrix` 0700 拥有。`down` 删 token，`up` 清空 Bridge 凭据。
+- **前置检查**：`node scripts/m5b/matrix/precheck.mjs [--online]`；`stack.sh up` 在宿主写边界或
+  凭据不满足时拒绝启动。旧授权收敛、共享凭据轮换、专用凭据创建是所有者动作，命令见
+  `docs/evidence/m5b/matrix/HARNESS-ISOLATION.md` §4。
