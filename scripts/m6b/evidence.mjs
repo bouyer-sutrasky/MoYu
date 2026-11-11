@@ -263,6 +263,33 @@ function setupWorktrees(seed) {
   rmSync(remote, { recursive: true, force: true });
   runOrThrow('git', ['init', '-q', '--bare', '-b', 'main', remote]);
 
+  // A source repository with a real linked worktree is used for the clean
+  // ticket, so `git worktree list` has an administrative record that cleanup
+  // must prune. The other tickets use independent clones.
+  const source = path.join(RUN, 'task-source');
+  rmSync(source, { recursive: true, force: true });
+  ensureDir(source);
+  runOrThrow('git', ['init', '-q', '-b', 'main'], { cwd: source });
+  runOrThrow('git', ['config', 'user.email', 'm6b@example.invalid'], { cwd: source });
+  runOrThrow('git', ['config', 'user.name', 'M6B Evidence'], { cwd: source });
+  writeFileSync(path.join(source, 'keep.txt'), 'm6b evidence source\n');
+  runOrThrow('git', ['add', '.'], { cwd: source });
+  runOrThrow('git', ['commit', '-q', '-m', 'M6-B evidence source'], { cwd: source });
+  runOrThrow('git', ['remote', 'add', 'origin', remote], { cwd: source });
+  runOrThrow('git', ['push', '-q', '-u', 'origin', 'main'], { cwd: source });
+
+  const addLinked = (ticketId) => {
+    const directory = path.join(profile, `task-${ticketId.slice(0, 12)}`);
+    rmSync(directory, { recursive: true, force: true });
+    runOrThrow(
+      'git',
+      ['worktree', 'add', '-q', '-b', `agent/m6b-${ticketId.slice(0, 12)}`, directory, 'main'],
+      { cwd: source },
+    );
+    runOrThrow('git', ['push', '-q', '-u', 'origin', 'HEAD'], { cwd: directory });
+    return directory;
+  };
+
   const clone = (ticketId) => {
     const directory = path.join(profile, `task-${ticketId.slice(0, 12)}`);
     rmSync(directory, { recursive: true, force: true });
@@ -280,11 +307,10 @@ function setupWorktrees(seed) {
   };
   const push = (directory) => {
     runOrThrow('git', ['remote', 'set-url', 'origin', remote], { cwd: directory });
-    runOrThrow('git', ['push', '-q', '-u', 'origin', 'main'], { cwd: directory });
+    runOrThrow('git', ['push', '-q', '-u', 'origin', 'HEAD'], { cwd: directory });
   };
 
-  const clean = clone(seed.tickets.clean);
-  push(clean);
+  const clean = addLinked(seed.tickets.clean);
 
   const dirty = clone(seed.tickets.dirty);
   push(dirty);
@@ -323,7 +349,7 @@ function setupWorktrees(seed) {
   rmSync(outsideLink, { recursive: true, force: true });
   symlinkSync(outside, outsideLink);
 
-  return { root, profile, clean, dirty, unmerged, occupied, outside, outsideLink };
+  return { root, profile, source, clean, dirty, unmerged, occupied, outside, outsideLink };
 }
 
 function buildBaseline() {
@@ -969,6 +995,9 @@ async function main() {
   }
 
   const cleanExistedBefore = existsSync(worktrees.clean);
+  const worktreeListBefore = runOrThrow('git', ['worktree', 'list', '--porcelain'], {
+    cwd: worktrees.source,
+  });
   const execute = await api(HEAD_URL, SESSION_TOKEN, '/api/v1/cleanup/execute', {
     method: 'POST',
     body: { runId: previewRun?.id },
@@ -979,6 +1008,10 @@ async function main() {
     body: { runId: previewRun?.id },
   });
   const retryData = retry.body?.data;
+  const worktreeListAfter = runOrThrow('git', ['worktree', 'list', '--porcelain'], {
+    cwd: worktrees.source,
+  });
+  const removedItem = executeRun?.items?.find((item) => item.ticketId === seed.tickets.clean);
   const survived = {
     dirty: existsSync(worktrees.dirty),
     occupied: existsSync(worktrees.occupied),
@@ -995,6 +1028,9 @@ async function main() {
         duplicateOnRetry: retryData?.duplicate,
         cleanExistedBefore,
         survived,
+        worktreePruned: removedItem?.detail?.worktreePruned ?? null,
+        worktreePruneError: removedItem?.detail?.worktreePruneError ?? null,
+        cleanRecordGone: !worktreeListAfter.output.includes(worktrees.clean),
         items: executeRun?.items?.map((item) => ({
           ticket: item.ticketId,
           state: item.state,
@@ -1012,9 +1048,16 @@ async function main() {
       survived.dirty &&
       survived.occupied &&
       survived.outside &&
-      survived.unmerged
+      survived.unmerged &&
+      removedItem?.detail?.worktreePruned === true &&
+      !worktreeListAfter.output.includes(worktrees.clean)
         ? 0
         : 1,
+  });
+  record('B3-green', 'green', {
+    command: `git -C ${worktrees.source} worktree list --porcelain (before and after cleanup)`,
+    output: `--- before ---\n${worktreeListBefore.output}--- after ---\n${worktreeListAfter.output}clean directory record pruned: ${!worktreeListAfter.output.includes(worktrees.clean)}`,
+    exitCode: !worktreeListAfter.output.includes(worktrees.clean) ? 0 : 1,
   });
   const runs = await api(HEAD_URL, SESSION_TOKEN, '/api/v1/cleanup/runs');
   record('B3-green', 'green', {

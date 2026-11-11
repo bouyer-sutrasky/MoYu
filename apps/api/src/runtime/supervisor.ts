@@ -89,6 +89,8 @@ export interface SupervisorCleanupRemoval {
   trashPath: string | null;
   bytesFreed: number;
   reason: string;
+  pruned: boolean;
+  pruneError: string | null;
 }
 
 export interface SupervisorTrashResult {

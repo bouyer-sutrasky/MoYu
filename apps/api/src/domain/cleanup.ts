@@ -622,6 +622,8 @@ async function executeItem(input: {
       detail: {
         trashRemoved: trash?.removed ?? 0,
         trashFailures: trash?.failures ?? [],
+        worktreePruned: removed.pruned,
+        worktreePruneError: removed.pruneError,
         inspection: inspectionDetail(inspection),
       },
     };
@@ -644,6 +646,8 @@ async function executeItem(input: {
       trashPath: removed.trashPath,
       trashRemoved: trash?.removed ?? 0,
       trashFailures: trash?.failures ?? [],
+      worktreePruned: removed.pruned,
+      worktreePruneError: removed.pruneError,
     },
   };
 }

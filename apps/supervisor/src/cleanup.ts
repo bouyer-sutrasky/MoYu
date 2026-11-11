@@ -9,12 +9,11 @@ import {
   renameSync,
   rmSync,
 } from 'node:fs';
-import { isAbsolute, join, sep } from 'node:path';
+import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 
 import type { SupervisorConfig } from './config';
 import type { SupervisorStore } from './store';
-import { git, isStrictlyInside } from './review';
-import { locateTicketWorktree } from './review';
+import { git, gitEnvironment, isStrictlyInside, locateTicketWorktree, runCommand } from './review';
 
 /**
  * Host-side worktree cleanup.
@@ -58,6 +57,9 @@ export interface CleanupRemoval {
   trashPath: string | null;
   bytesFreed: number;
   reason: string;
+  /** True when a linked worktree's administrative record was pruned from the source repository. */
+  pruned: boolean;
+  pruneError: string | null;
 }
 
 export interface TrashEmptyResult {
@@ -350,6 +352,8 @@ export function createCleanupService(input: {
         trashPath: null,
         bytesFreed: 0,
         reason: inspection.reason ?? '执行目录已经不存在',
+        pruned: false,
+        pruneError: null,
       };
     }
     if (inspection.state !== 'available' || !inspection.directory) {
@@ -357,6 +361,29 @@ export function createCleanupService(input: {
     }
     if (!inspection.eligible) {
       throw Object.assign(new Error(inspection.reasons.join('；')), { statusCode: 409 });
+    }
+
+    const directory = inspection.directory;
+
+    // A linked worktree leaves an administrative record in the source
+    // repository's .git/worktrees even after its directory is gone. Capture the
+    // common git dir now; after the atomic rename, `git worktree prune` removes
+    // the stale record. A plain clone has no such record, so it is skipped.
+    let linkedCommonGitDir: string | null = null;
+    {
+      const gitDir = await git(directory, ['rev-parse', '--absolute-git-dir']);
+      const commonDir = await git(directory, ['rev-parse', '--git-common-dir']);
+      if (gitDir.code === 0 && commonDir.code === 0) {
+        try {
+          const resolvedGitDir = realpathSync(gitDir.stdout.trim());
+          const resolvedCommon = realpathSync(resolve(directory, commonDir.stdout.trim()));
+          if (resolvedGitDir !== resolvedCommon) {
+            linkedCommonGitDir = resolvedCommon;
+          }
+        } catch {
+          linkedCommonGitDir = null;
+        }
+      }
     }
 
     const root = realpathSync(config.worktreeRoot);
@@ -369,7 +396,6 @@ export function createCleanupService(input: {
       });
     }
 
-    const directory = inspection.directory;
     const trashPath = join(
       resolvedTrash,
       `${inspection.profile ?? 'profile'}-${ticketId.slice(0, 12)}-${randomUUID()}`,
@@ -394,6 +420,26 @@ export function createCleanupService(input: {
       );
     }
 
+    // The worktree path is gone after the rename, so prune can drop its
+    // administrative record now, even if the recursive removal still fails.
+    let pruned = false;
+    let pruneError: string | null = null;
+    if (linkedCommonGitDir) {
+      const result = await runCommand(
+        ['git', '--git-dir', linkedCommonGitDir, 'worktree', 'prune'],
+        {
+          cwd: dirname(linkedCommonGitDir),
+          timeoutMs: 20_000,
+          env: gitEnvironment(),
+        },
+      );
+      if (result.code === 0) {
+        pruned = true;
+      } else {
+        pruneError = (result.stderr || 'git worktree prune failed').trim().slice(0, 500);
+      }
+    }
+
     const size = inspection.sizeBytes ?? 0;
     try {
       removeTree(trashPath);
@@ -404,6 +450,8 @@ export function createCleanupService(input: {
         trashPath,
         bytesFreed: 0,
         reason: `目录已移出工作区但删除失败：${error instanceof Error ? error.message : String(error)}`,
+        pruned,
+        pruneError,
       };
     }
     return {
@@ -412,6 +460,8 @@ export function createCleanupService(input: {
       trashPath: null,
       bytesFreed: size,
       reason: '已删除',
+      pruned,
+      pruneError,
     };
   };
 

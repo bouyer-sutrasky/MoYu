@@ -39,6 +39,33 @@ function pushedRepository(root: string, ticketId: string): string {
   return directory;
 }
 
+/** A real linked worktree (`.git` file + source repository record), pushed to a bare remote. */
+function linkedRepository(
+  root: string,
+  ticketId: string,
+): {
+  source: string;
+  directory: string;
+} {
+  const source = temporary('moyu-cleanup-source');
+  const remote = temporary('moyu-cleanup-remote');
+  const branch = `task-${ticketId.slice(0, 12)}`;
+  git(remote, ['init', '-q', '--bare', '-b', 'main']);
+  git(source, ['init', '-q', '-b', 'main']);
+  git(source, ['config', 'user.email', 'cleanup@example.invalid']);
+  git(source, ['config', 'user.name', 'Cleanup Test']);
+  writeFileSync(join(source, 'keep.txt'), 'linked worktree\n');
+  git(source, ['add', '.']);
+  git(source, ['commit', '-q', '-m', 'source commit']);
+  git(source, ['remote', 'add', 'origin', remote]);
+  git(source, ['push', '-q', '-u', 'origin', 'main']);
+  mkdirSync(join(root, 'probe1'), { recursive: true });
+  const directory = join(root, 'probe1', `task-${ticketId.slice(0, 12)}`);
+  git(source, ['worktree', 'add', '-q', '-b', branch, directory, 'main']);
+  git(directory, ['push', '-q', '-u', 'origin', branch]);
+  return { source, directory };
+}
+
 function service(root: string, profile = 'probe1', removeTree?: (path: string) => void) {
   const store = {
     getInstance: async () => ({ profile }),
@@ -118,6 +145,18 @@ describe('supervisor worktree cleanup', () => {
     await expect(service(root).remove('repo-1', ticketId)).resolves.toMatchObject({
       state: 'already_cleaned',
     });
+  });
+
+  it('prunes a linked worktree record from its source repository after removal', async () => {
+    const root = temporary('moyu-worktrees');
+    const ticketId = '7777777777777777';
+    const { source, directory } = linkedRepository(root, ticketId);
+    expect(git(source, ['worktree', 'list', '--porcelain'])).toContain(directory);
+    const removal = await service(root).remove('repo-1', ticketId);
+    expect(removal.state).toBe('removed');
+    expect(removal.pruned).toBe(true);
+    expect(removal.pruneError).toBeNull();
+    expect(git(source, ['worktree', 'list', '--porcelain'])).not.toContain(directory);
   });
 
   it('leaves a quarantine instead of a half-deleted worktree when removal fails', async () => {
