@@ -115,7 +115,7 @@ export async function runCommand(
  * read-only inspection at a helper or a different repository, and the global
  * and system git config are dropped so only this process decides behaviour.
  */
-function gitEnvironment(): NodeJS.ProcessEnv {
+export function gitEnvironment(): NodeJS.ProcessEnv {
   return {
     PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
     TMPDIR: process.env.TMPDIR ?? '/tmp',
@@ -138,7 +138,7 @@ function gitEnvironment(): NodeJS.ProcessEnv {
  */
 const DIFF_ISOLATION_FLAGS = ['--no-ext-diff', '--no-textconv'] as const;
 
-async function git(directory: string, args: string[]): Promise<CommandResult> {
+export async function git(directory: string, args: string[]): Promise<CommandResult> {
   // `core.fsmonitor` may name a program the task repository provides, and both
   // `status` and `diff` refresh the index; a plain scan is all this needs.
   return runCommand(['git', '-c', 'core.fsmonitor=false', ...args], {
@@ -164,7 +164,7 @@ async function gitDiff(directory: string, args: string[]): Promise<CommandResult
  * Comparing `relative` segments, rather than string prefixes, keeps
  * `/root/src/aaa-evil` from counting as a child of `/root/src/aaa`.
  */
-function isStrictlyInside(parent: string, child: string): boolean {
+export function isStrictlyInside(parent: string, child: string): boolean {
   const rel = relative(parent, child);
   return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }

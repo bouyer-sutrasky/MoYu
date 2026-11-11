@@ -1,0 +1,102 @@
+[
+  {
+    "name": "before-activity-desktop-light",
+    "file": "docs/evidence/m6b/before-activity-desktop-light.png",
+    "base": "before",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "theme": "light"
+  },
+  {
+    "name": "before-settings-desktop-light",
+    "file": "docs/evidence/m6b/before-settings-desktop-light.png",
+    "base": "before",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "theme": "light"
+  },
+  {
+    "name": "before-activity-mobile-dark",
+    "file": "docs/evidence/m6b/before-activity-mobile-dark.png",
+    "base": "before",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "theme": "dark"
+  },
+  {
+    "name": "before-settings-mobile-dark",
+    "file": "docs/evidence/m6b/before-settings-mobile-dark.png",
+    "base": "before",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "theme": "dark"
+  },
+  {
+    "name": "after-cleanup-confirm-desktop-light",
+    "file": "docs/evidence/m6b/after-cleanup-confirm-desktop-light.png",
+    "base": "after",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "theme": "light"
+  },
+  {
+    "name": "after-activity-desktop-light",
+    "file": "docs/evidence/m6b/after-activity-desktop-light.png",
+    "base": "after",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "theme": "light"
+  },
+  {
+    "name": "after-settings-desktop-light",
+    "file": "docs/evidence/m6b/after-settings-desktop-light.png",
+    "base": "after",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "theme": "light"
+  },
+  {
+    "name": "after-activity-mobile-dark",
+    "file": "docs/evidence/m6b/after-activity-mobile-dark.png",
+    "base": "after",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "theme": "dark"
+  },
+  {
+    "name": "after-settings-mobile-dark",
+    "file": "docs/evidence/m6b/after-settings-mobile-dark.png",
+    "base": "after",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "theme": "dark"
+  },
+  {
+    "name": "after-history-desktop-light",
+    "file": "docs/evidence/m6b/after-history-desktop-light.png",
+    "base": "after",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "theme": "light"
+  }
+]

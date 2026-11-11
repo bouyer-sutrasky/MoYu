@@ -95,7 +95,7 @@ describe('0009 rollback script on real PostgreSQL', () => {
       table: 1,
       index: 1,
       count: 1,
-      total: 17,
+      total: 18,
     });
   }, 30_000);
 

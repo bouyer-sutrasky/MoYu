@@ -52,6 +52,13 @@ const environmentSchema = z
     SUPERVISOR_TOKEN: z.string().min(16).optional(),
     RUNTIME_CREDENTIALS_DIR: z.string().min(1).optional(),
     GITHUB_CLI: z.string().min(1).default('gh'),
+
+    // Worktree cleanup (M6-B). Only merged, untouched worktrees older than the
+    // retention window are proposed; the preview stays executable for a short
+    // time so an explicit confirmation cannot be replayed days later.
+    CLEANUP_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(7),
+    CLEANUP_PREVIEW_TTL_MINUTES: z.coerce.number().int().min(1).max(120).default(15),
+    CLEANUP_MAX_CANDIDATES: z.coerce.number().int().min(1).max(200).default(50),
   })
   .superRefine((value, context) => {
     if (value.BRIDGE_URL && !value.BRIDGE_TOKEN) {
@@ -107,6 +114,9 @@ export type ApiConfig = {
   supervisorToken?: string;
   runtimeCredentialsDir?: string;
   githubCli: string;
+  cleanupRetentionDays: number;
+  cleanupPreviewTtlMs: number;
+  cleanupMaxCandidates: number;
 };
 
 /**
@@ -152,5 +162,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     supervisorToken: data.SUPERVISOR_TOKEN,
     runtimeCredentialsDir: data.RUNTIME_CREDENTIALS_DIR,
     githubCli: data.GITHUB_CLI,
+    cleanupRetentionDays: data.CLEANUP_RETENTION_DAYS,
+    cleanupPreviewTtlMs: data.CLEANUP_PREVIEW_TTL_MINUTES * 60 * 1000,
+    cleanupMaxCandidates: data.CLEANUP_MAX_CANDIDATES,
   };
 }

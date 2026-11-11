@@ -19,10 +19,14 @@ export type IconName =
   | 'cloud'
   | 'branch'
   | 'task'
+  | 'search'
+  | 'trash'
   | 'file';
 
 const paths: Record<IconName, string[]> = {
   file: ['M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z', 'M14 3v5h5'],
+  search: ['M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z', 'M21 21l-4.35-4.35'],
+  trash: ['M4 7h16', 'M9 7V5h6v2', 'M6 7l1 13h10l1-13', 'M10 11v6', 'M14 11v6'],
   menu: ['M3 6h18', 'M3 12h18', 'M3 18h18'],
   panel: ['M4 5h16v14H4z', 'M15 5v14'],
   bell: ['M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9', 'M10 21h4'],

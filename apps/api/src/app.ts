@@ -18,11 +18,14 @@ import type { ApiConfig } from './config';
 import { createAppEventBus, type AppEventBus } from './events/bus';
 import { ApiProblem } from './lib/errors';
 import { createLoggerOptions } from './logger';
+import { registerActivityRoutes } from './routes/activity';
 import { registerAttachmentRoutes } from './routes/attachments';
+import { registerCleanupRoutes } from './routes/cleanup';
 import { ensureConfiguredRepository } from './domain/repositories';
 import { registerAuthRoutes } from './routes/auth';
 import { registerConversationRoutes } from './routes/conversations';
 import { registerEventRoutes } from './routes/events';
+import { registerHistoryRoutes } from './routes/history';
 import { registerPreferenceRoutes } from './routes/preferences';
 import { registerRuntimeRoutes } from './routes/runtime';
 import { registerRepositoryRoutes } from './routes/repositories';
@@ -137,6 +140,9 @@ export function buildApp({
       authenticate,
     });
     registerConversationRoutes(app, { config, database, authenticate, events: eventBus });
+    registerActivityRoutes(app, { database, authenticate });
+    registerHistoryRoutes(app, { database, authenticate });
+    registerCleanupRoutes(app, { config, database, authenticate });
     registerTaskRoutes(app, { config, database, authenticate, events: eventBus });
     registerRuntimeRoutes(app, {
       config,
