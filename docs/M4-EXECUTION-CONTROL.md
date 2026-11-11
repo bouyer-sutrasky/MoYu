@@ -60,28 +60,51 @@ runtime：`ticket.paused = { at, by:'human', operationId, stoppedAt?, evidence?,
 
 ### 2.3 停止完成证据
 
-至少包含：
+暂停事务先落 `ticket.paused`（带 `operationId`），Executor 收尾后再写 `stoppedAt` 与 `evidence`。证据至少包含：
 
 ```jsonc
 {
-  "ticketId": "…", "assignmentId": "…", "sessionId": "worker-…",
+  "ticketId": "…", "operationId": "…", "sessionId": "worker-…",
+  "assignmentId": "…", // 仅当暂停时有 Assignment
   "harnessPid": 12345, "cgroup": "0::/system.slice/dsh-superagent.service",
   "startedAt": "…", "stoppedAt": "…",
   "agentStatus": "idle",
   "jobsBefore": [{ "id": "bash-…", "name": "npm test" }],
   "jobsAfter": [],
   "subagentsAfter": 0,
+  "launch": "none", // none|aborted|timed-out
   "cancelledTurn": true
 }
 ```
 
+- `assignmentId` 只在有 Assignment 时出现。GitHub 入口的票在 `pending_admission` 被暂停时还没有 Assignment，证据用
+  `ticketId` + `paused.operationId` 说明是哪一次暂停，不编造 Assignment。收尾落库时以「`paused` 仍是这次请求的那一条」
+  为身份（`paused` 在、没有 `stoppedAt`、没有 `error`；resume 会清掉 `paused`），而不是靠 Assignment id 相比。
+- `launch` 是这次暂停对「仍在飞的启动」的处置：`none` 表示暂停时没有启动在飞；`aborted` 表示暂停结束了仍在 prepare 的
+  启动（内部 `PrepareAborted`，不报失败、不提示 worker）；`timed-out` 表示启动在 `PAUSE_LAUNCH_MS`（10 s）内没有收尾。
+- **整棵 harness 进程树只作证据、不作判定边界。** `harnessPid`、`cgroup`、`processesBefore`、`processesAfter` 记录的树与
+  其它票、其它启动和 provider 共享；判定只看本票自己的 Session 状态、后台 job 集合、subagent，以及这次启动
+  （`launch !== 'timed-out'`）。
+- 原先的 `lingeringPids`（暂停前最多 20×100 ms 等待 pre-pause 进程退出的残留名单）已从证据里删除，且这一步对**每一次**
+  暂停都生效：暂停不再等待、也不再报告暂停前就存在、由本票自己取消回合留下的短命子进程（例如 `git`/`gh` 调用）。本来
+  通过的后台 job / subagent 维度不变。
+
 DSH 的 worker 是同进程内的 Agent Session，不产生独立 worker PID；证据用 harness PID + cgroup + Session 状态 +
 后台 job 集合前后对比表示。不得把「不再投递消息」当成进程已结束。
 
+`launch: timed-out` 是**有记录的设计边界**，当前没有平台侧出口：票留在 `stopping`，平台按
+`apps/dispatcher/src/sync.ts` 的 `applyPausedEvent` 落 `blocked`，把原因（`error` 与 `problem`）写进 `stop_evidence`，
+Bridge 的 pause operation 标成 `failed`；`resume` 被拒（`apps/api/src/routes/tasks.ts` 只允许 `stopped` 恢复），
+平台「停止」也发不出第二次（`STOPPABLE` 不含 `stopping`/`blocked`），runtime 的 `retry` 又被 `canRetry`（要求
+`!ticket.paused`）拒绝；租约按 `blocked` 保留，仓库的执行名额继续被占。要给它退出路径，须先给这个分支一条可失败测试，
+再改 `STOPPABLE`/`canRetry` 或补一条重发 pause 的引导。
+
 ### 2.4 继续
 
-`POST /bridge/v1/tickets/:id/resume` 要求 Ticket 已 `paused` 且已有 `stoppedAt`；runtime 复查模型、仓库、Policy 与
-工作目录仍在，然后清除 `paused`，新建 Assignment。平台在调用 resume 前必须重新取得仓库执行租约
+`POST /bridge/v1/tickets/:id/resume` 要求 Ticket 已 `paused` 且已有 `stoppedAt`；runtime 复查模型、仓库与 Policy，
+并复查工作目录：只要有 Assignment 真的启动过（有 `startedAt`），被 worker 用过的目录不在时仍然返回 409
+`worktreeMissing` 并保留暂停；从来没启动过（例如暂停结束了仍在 prepare 的启动）的票不被当成「目录丢失」，由 resume
+重新 prepare 工作区。复查通过后清除 `paused`，新建 Assignment。平台在调用 resume 前必须重新取得仓库执行租约
 （`runtime_leases` 一条 `active` 行，带 fencing token），并把 `{leaseId, fencingToken}` 作为 admission 传给 Bridge。
 没有租约或现场核验失败时平台置 `blocked`，不调用 resume。
 
