@@ -1,6 +1,6 @@
 # M6-B 证据索引
 
-被测代码提交：见本目录 `run.json` 的 `head`（本轮为 `c7945bf2167611a84d37e3cf165ecbfaa54ccd9f`）；基线：
+被测代码提交：见本目录 `run.json` 的 `head`（本轮为 `92b01d1436f0802ca16846d697ceba7e4bda2232`）；基线：
 `main@68c01e50d69a075183a0a175c57611fa77e1163a`（M6-A 合并提交）。每条原始输出第 2 行是产出时的
 `git rev-parse HEAD` 原文。证据产出后只有一个仅含本目录文件的提交（PR head）；用
 `git diff --name-status <evidence-head>..<pr-head>` 核对，输出应只列出 `docs/` 下的证据与验证记录文件。
