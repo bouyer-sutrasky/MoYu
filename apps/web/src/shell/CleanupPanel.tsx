@@ -119,8 +119,9 @@ export function CleanupPanel({ onSessionLost }: CleanupPanelProps) {
       <div className={styles.sectionHeading}>
         <h3 id="cleanup-heading">清理</h3>
         <p>
-          仅清理「已合并且无未保存修改」的 worktree，默认保留 7 天。先干跑预览路径、原因与大小，
-          再显式确认；未合并、有未提交/未推送改动、被进程占用或超出工作区的目录一律跳过。
+          仅清理「已合并且无未保存修改」的 worktree，默认保留 7 天（从任务完成事件起算， 不是 PR
+          合并时间）。先干跑预览路径、原因与大小，再显式确认；未合并、有未提交/未推送改动、
+          被进程占用或超出工作区的目录一律跳过。
         </p>
       </div>
 
@@ -147,7 +148,7 @@ export function CleanupPanel({ onSessionLost }: CleanupPanelProps) {
             </strong>
             <span>
               共 {formatBytes(preview.summary.totalBytes) ?? '0 B'} · 跳过 {preview.summary.skipped}{' '}
-              个 · 保留 {preview.retentionDays} 天
+              个 · 保留 {preview.retentionDays} 天（自任务完成）
             </span>
           </div>
 

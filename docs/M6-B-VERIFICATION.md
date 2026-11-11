@@ -89,7 +89,7 @@ M6-A 已交付的附件、diff/测试/PR 面板未在本单重做。HTTPS 端到
 | 规则 | 实现 |
 | --- | --- |
 | 只清理已合并 | 任务 `state=completed`，且执行时用真实 `gh` 读取 PR 状态必须为 `merged`；open / closed / 读取失败一律跳过 |
-| 7 天保留期 | 从持久完成事件 `task.state_changed(payload.task.state=completed)` 的 `occurred_at` 起算（无事件时回退 `task_links.updated_at`），小于保留期不进入候选；预览与执行都重新核对 |
+| 7 天保留期（年龄锚点） | 从持久完成事件 `task.state_changed` 且 `payload.task.state='completed'` 的 `occurred_at` 起算；**不是 PR `mergedAt`，也不是文件 mtime**。无该事件时回退 `task_links.updated_at`。小于保留期不进入候选；预览与执行都重新核对。预览 reason 与界面文案使用同一口径（「已完成 N 天」/「保留 7 天（自任务完成）」） |
 | 无未保存修改 | supervisor 在真实 worktree 运行 `git status --porcelain=v1 -z`，有未提交/未跟踪改动即拒绝 |
 | 未推送也跳过 | 读取 upstream 的 ahead 数；无 upstream 时用 `git branch -r --contains HEAD` 证明已推送，不能证明则拒绝 |
 | 被工作占用跳过 | supervisor 扫描 `/proc/*/cwd`，有进程工作目录在目标内即拒绝；`git index.lock` 存在也拒绝 |
@@ -124,6 +124,21 @@ M6-A 已交付的附件、diff/测试/PR 面板未在本单重做。HTTPS 端到
 - 未对其它文件系统（跨设备 rename）做专门处理；当前部署的 worktree 与隔离区在同一 `WORKTREE_ROOT`
   下，rename 为同文件系统原子操作。
 
+## 4.1 B4 端到端覆盖判断
+
+B4 要求真实 PostgreSQL + 真实 API + 真实 Chromium，每项红→绿各一份原始输出。**本单认为
+B1/B2/B3 三份证据已经覆盖 B4**：
+
+- B1 从真实 API 的 `GET /api/v1/events`（`text/event-stream`）接收真实持久事件，在真实 Chromium
+  中触发/去重/点击通知；`B1-green.txt` 同时记录每页 SSE 原始计数。
+- B2 直接请求真实 API 的搜索路由，验证分页、越权、特殊字符与超长词；真实 PostgreSQL 数据。
+- B3 直接请求真实 API 的预览/执行路由，由真实宿主 supervisor 操作真实 worktree 并真实删除。
+- 三份证据都有 `main@68c01e5` 基线的红侧和本单 head 的绿侧。
+
+「新建任务 → 提问/回答 → PR」这条完整链路属于 M3/M6-A 的验收范围，M6-B 从该链路产生的持久
+事件开始消费；在本单重跑它只会重复 M3/M6-A 的检查，不能增加 M6-B 代码的覆盖。因此未另造一条
+合成旅程。HTTPS 端到端与部署属 M6-C，不在本单。
+
 ## 5. 代码与数据变更
 
 - 契约：`packages/contracts/src/{activity,history,cleanup}.ts` 与导出。
@@ -150,6 +165,20 @@ M6-A 已交付的附件、diff/测试/PR 面板未在本单重做。HTTPS 端到
 
 Before 由 `main@68c01e5` 的独立构建（端口 4626）拍摄，After 由本单构建（端口 4625）拍摄；
 `records.json` / `ui-records.json` 记录每张图的 base、theme、viewport。
+
+## 6.1 证据头与 PR head 的对应关系
+
+证据日志头部的 `git rev-parse HEAD` 是**产出证据的代码提交**（具体值见 `docs/evidence/m6b/run.json` 与每份日志第 2 行）。该提交之后只有一个仅含 `docs/evidence/m6b/` 的证据提交（PR head）；代码没有再变化。
+可用以下命令核对：
+
+```bash
+# <evidence-head> = 证据日志头部记录的提交；<pr-head> = PR 当前 head
+git diff --name-status <evidence-head>..<pr-head>
+# 输出只应列出 docs/ 下的证据与验证记录文件，不应出现代码、迁移或配置
+```
+
+本次交付的 PR 描述中也贴出了该命令在最终 head 上的原始输出；证据文件本身记录了产出时的
+`git rev-parse HEAD`，不把证据提交误写成代码提交。
 
 ## 7. 实际命令与结果
 

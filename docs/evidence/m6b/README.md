@@ -1,7 +1,9 @@
 # M6-B 证据索引
 
-被测代码提交：见本目录 `run.json` 的 `head`；基线：`main@68c01e50d69a075183a0a175c57611fa77e1163a`
-（M6-A 合并提交）。每条原始输出第 2 行是产出时的 `git rev-parse HEAD` 原文。
+被测代码提交：见本目录 `run.json` 的 `head`（本轮为 `c7945bf2167611a84d37e3cf165ecbfaa54ccd9f`）；基线：
+`main@68c01e50d69a075183a0a175c57611fa77e1163a`（M6-A 合并提交）。每条原始输出第 2 行是产出时的
+`git rev-parse HEAD` 原文。证据产出后只有一个仅含本目录文件的提交（PR head）；用
+`git diff --name-status <evidence-head>..<pr-head>` 核对，输出应只列出 `docs/` 下的证据与验证记录文件。
 
 环境：隔离 PostgreSQL 16（数据库 `moyu_m6b_evidence`）、真实 API `127.0.0.1:4625`（本单）
 与基线 API `127.0.0.1:4626`（`main@68c01e5` 独立构建）、真实宿主 supervisor
@@ -15,7 +17,7 @@
 | `B2-red.txt` | 基线 `/api/v1/history/search` 404 |
 | `B2-green.txt` | 关键词分页无重复、跨所有者空结果、特殊字符、1500 字关键词、空关键词、跨查询游标 422 |
 | `B3-red.txt` | 基线 `/api/v1/cleanup/runs` 与 `/preview` 404 |
-| `B3-green.txt` | 真实 supervisor/worktree 的预览清单、四类跳过原因、仅干净已合并目录删除、重试幂等、审计记录 |
+| `B3-green.txt` | 真实 supervisor/worktree 的预览清单、四类跳过原因、仅干净已合并目录删除、重试幂等、审计记录；linked worktree 删除前后 `git worktree list --porcelain` 原始输出与 `worktreePruned` 结果 |
 | `before-*.png` / `after-*.png` | 同一数据库、同一任务、桌面 1440×900 / 手机 390×844、浅色/深色的 Before/After |
 | `after-history-desktop-light.png` | 历史搜索实际结果 |
 | `after-cleanup-confirm-desktop-light.png` | 清理预览 + 二次确认面板 |
