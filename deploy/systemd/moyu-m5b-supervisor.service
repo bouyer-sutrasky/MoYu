@@ -16,8 +16,21 @@ SupplementaryGroups=moyu-check
 WorkingDirectory=/opt/moyu/m5b
 EnvironmentFile=/etc/moyu/m5b/supervisor.env
 Slice=moyu-m5b.slice
-# Let the supervisor create instance cgroups inside the delegated subtree.
+# Let the supervisor create, enable and remove its own instance cgroups.
+#
+# DelegateSubgroup keeps the service's own processes one level down
+# (<unit>/payload), so the unit cgroup itself is empty and may hand the memory
+# and pids controllers down to the instance cgroups. Without it the kernel
+# refuses the hand-down with EBUSY and the supervisor fails the start with an
+# explicit `cgroup_unavailable` reason instead of running unmetered.
 Delegate=yes
+DelegateSubgroup=payload
+# The supervisor creates this directory itself, so a blank delegated subtree is
+# enough: no operator has to pre-create or enable anything. Keep it inside the
+# unit cgroup (verify with `systemctl show -p ControlGroup <unit>`); a directory
+# owned by root inside the slice cannot be delegated to this unprivileged user.
+# It may instead be set in the EnvironmentFile; do not define it in both.
+Environment=MOYU_CGROUP_ROOT=/sys/fs/cgroup/moyu.slice/moyu-m5b.slice/moyu-m5b-supervisor.service/instances
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict

@@ -1,0 +1,84 @@
+# 说明：修复后（本分支 head 见 head=）同一个委托单元场景的输出。
+# 退出码 0 = 全部判定通过，unit_result=success，单元结束、其 cgroup 已被 systemd 移除。
+# M5-B 委托单元探针（非 root + 空白委托目录）
+recorded=2026-11-08T14:39:16+08:00
+head=723cca9465f647f63f90ef0e59112b71aa999f0c
+unit=moyu-cgroup-probe-2859435.service user=nobody group=nogroup
+delegation=Delegate=yes DelegateSubgroup=payload
+
+$ systemd-run --unit=moyu-cgroup-probe-2859435 -p User=nobody -p Group=nogroup -p Delegate=yes -p DelegateSubgroup=payload \
+    -p Environment=MOYU_CGROUP_ROOT=/sys/fs/cgroup/system.slice/moyu-cgroup-probe-2859435.service/instances \
+    /usr/bin/node probe.mjs
+unit_cgroup_while_active=/system.slice/moyu-cgroup-probe-2859435.service
+unit_cgroup_own_procs=[]
+unit_cgroup_subtree=[]
+Started moyu-cgroup-probe-2859435.service - /usr/bin/node /tmp/moyu-cgroup-unit-1KKiQX/probe.mjs.
+## 1. 空白委托目录冷启动（MOYU_CGROUP_ROOT=/sys/fs/cgroup/system.slice/moyu-cgroup-probe-2859435.service/instances）
+parent.exists_before=true
+parent.controllers_before=cpuset cpu io memory pids
+parent.subtree_control_before=
+root.exists_before=false
+setup={"ok":true,"root":"/sys/fs/cgroup/system.slice/moyu-cgroup-probe-2859435.service/instances","path":"/sys/fs/cgroup/system.slice/moyu-cgroup-probe-2859435.service/instances/probe-2859455-1794119956534","inode":871893,"controllers":["memory","pids"],"step":null,"error":null}
+root.created=true
+parent.subtree_control_after=memory pids
+verdict cold_start_ok=pass root created and instance bound
+instance.controllers=["memory","pids"]
+verdict cold_start_enables_controllers=pass controllers=[memory pids]
+verdict cold_start_binds_metering=pass memory.current and memory.max exist in the instance cgroup
+instance.limit_applied={"ok":true,"error":null}
+verdict cold_start_applies_limit=pass memory.max/high written
+sibling.controllers=["memory","pids"]
+verdict cold_start_hands_controllers_down=pass a later sibling cgroup under the created root is metered too
+## gen1（/sys/fs/cgroup/system.slice/moyu-cgroup-probe-2859435.service/instances/probe-2859455-1794119956534）
+gen1.launched={"pid":2859473,"started":true}
+gen1.identity={"pid":2859473,"startTime":"240992968","cgroup":"/sys/fs/cgroup/system.slice/moyu-cgroup-probe-2859435.service/instances/probe-2859455-1794119956534","cgroupInode":871893,"boundary":{"state":"ok","path":"/sys/fs/cgroup/system.slice/moyu-cgroup-probe-2859435.service/instances/probe-2859455-1794119956534","inode":871893}}
+gen1.members=["2859473:240992968","2859474:240992968","2859475:240992968","2859476:240992968"]
+gen1.unknown=false
+gen1.memory_current=454656
+verdict gen1_binds_descendants=pass descendants inside the instance cgroup: [2859474 2859475 2859476]
+verdict gen1_metered=pass memory.current > 0
+verdict gen1_inode_matches=pass recorded inode 871893 vs boundary 871893
+gen1.port_owners=[{"pid":2859477,"cgroup":"/sys/fs/cgroup/system.slice/moyu-cgroup-probe-2859435.service/instances/probe-2859455-1794119956534"}]
+verdict gen1_port_owner_identified=pass port 43263 owner resolved from /proc (expected pid 2859477)
+verdict gen1_port_owner_is_managed=pass port 43263 owner is inside the boundary
+verdict gen1_foreign_owner_not_managed=pass a listener outside the root is never treated as ours
+gen1.stop={"stopped":true,"unknown":false,"boundary":"ok","remaining":0}
+gen1.remaining_alive=[]
+gen1.after_stop={"pids":[],"tree":{"ok":false,"empty":false},"removed":true}
+verdict gen1_recursive_empty=pass the instance cgroup was removed after the last member exited
+verdict gen1_port_released=pass port 43263 is free after the stop
+gen1.after_stop_ownership={"unknown":false,"cgroup":"missing"}
+verdict gen1_not_wedged=pass a dissolved boundary with no live member is not "unknown ownership" that blocks capacity
+gen2.setup={"ok":true,"root":"/sys/fs/cgroup/system.slice/moyu-cgroup-probe-2859435.service/instances","path":"/sys/fs/cgroup/system.slice/moyu-cgroup-probe-2859435.service/instances/gen2-2859455-1794119956839","inode":871977,"controllers":["memory","pids"],"step":null,"error":null}
+## gen2（/sys/fs/cgroup/system.slice/moyu-cgroup-probe-2859435.service/instances/gen2-2859455-1794119956839）
+gen2.launched={"pid":2859491,"started":true}
+gen2.identity={"pid":2859491,"startTime":"240992997","cgroup":"/sys/fs/cgroup/system.slice/moyu-cgroup-probe-2859435.service/instances/gen2-2859455-1794119956839","cgroupInode":871977,"boundary":{"state":"ok","path":"/sys/fs/cgroup/system.slice/moyu-cgroup-probe-2859435.service/instances/gen2-2859455-1794119956839","inode":871977}}
+gen2.members=["2859491:240992997","2859492:240992998","2859493:240992998","2859494:240992998"]
+gen2.unknown=false
+gen2.memory_current=569344
+verdict gen2_binds_descendants=pass descendants inside the instance cgroup: [2859492 2859493 2859494]
+verdict gen2_metered=pass memory.current > 0
+verdict gen2_inode_matches=pass recorded inode 871977 vs boundary 871977
+gen2.port_owners=[{"pid":2859495,"cgroup":"/sys/fs/cgroup/system.slice/moyu-cgroup-probe-2859435.service/instances/gen2-2859455-1794119956839"}]
+verdict gen2_port_owner_identified=pass port 43629 owner resolved from /proc (expected pid 2859495)
+verdict gen2_port_owner_is_managed=pass port 43629 owner is inside the boundary
+verdict gen2_foreign_owner_not_managed=pass a listener outside the root is never treated as ours
+gen2.stop={"stopped":true,"unknown":false,"boundary":"ok","remaining":0}
+gen2.remaining_alive=[]
+gen2.after_stop={"pids":[],"tree":{"ok":false,"empty":false},"removed":true}
+verdict gen2_recursive_empty=pass the instance cgroup was removed after the last member exited
+verdict gen2_port_released=pass port 43629 is free after the stop
+gen2.after_stop_ownership={"unknown":false,"cgroup":"missing"}
+verdict gen2_not_wedged=pass a dissolved boundary with no live member is not "unknown ownership" that blocks capacity
+## 4. 重启后的边界核对（对象仍在 / 路径被复用）
+restart.recorded_inode=872019
+restart.boundary={"state":"ok","path":"/sys/fs/cgroup/system.slice/moyu-cgroup-probe-2859435.service/instances/restart-2859455-1794119957130","inode":872019}
+verdict restart_inode_matches=pass a restart that finds the same inode keeps the boundary proven
+restart.replacement_inode=872061
+restart.replaced_ownership={"unknown":true,"cgroup":"ok"}
+verdict restart_replacement_detected=pass a different inode at the same path is unknown ownership, never the old boundary
+## 判定：全部通过
+moyu-cgroup-probe-2859435.service: Deactivated successfully.
+
+unit_result=success
+unit_cgroup_removed=true

@@ -99,3 +99,60 @@
 - `projectionBranches` 记录每事件分支：`return-no-ticket-id`、`return-task-missing`、`return-stale-generation`、`return-stale-cursor`、`projected`。
 - 回归：`apps/dispatcher/test/integration/recovery-projection-branches.integration.test.ts`（2/2）。
 - 外部真实 HTTP/PG：`tests/moyu-review-cedcb82-current-projection.spec.ts` 与 `...pid-barrier-1039.spec.ts` 4/4。
+
+## cgroup 冷启动与重启归属（Issue #41，M5B-D02F07F-CGROUP-LIFECYCLE）
+
+现场矩阵的两条产品缺陷（`docs/evidence/m5b/matrix/SUMMARY.md`「现场发现」1、5）在这里
+闭合：空白委托目录无法首次使用，以及停止/重启后实例仍占端口或一直报
+`ownership_unverified`。基线 `1001c25`，命令与原始输出见
+`docs/evidence/m5b/cgroup-coldstart-{before,after}.txt` 与
+`docs/evidence/m5b/cgroup-unit-delegation-{before,after}.txt`。
+
+### 根因
+
+1. `ensureCgroup` 先调 `enableSubtreeControllers(CGROUP_ROOT)` 再 `mkdir`：根目录不存在时
+   那次启用失败且返回值被忽略，新建的实例子组没有 `memory.current`/`memory.max`，
+   `applyInstanceMemoryLimit` 必然 `EACCES/ENOENT`，实例以 `memory_limit_unavailable`
+   起不来。现场夹具因此预建根目录规避，缺口仍在。
+2. 归属只记 cgroup 路径，不记对象身份。路径被移除或复用（例如单元 cgroup 被重建）后，
+   记录与进程对不上，`collectOwnership` 只能报 `unknown`；而 `tick`/`reconcileRestart`
+   对 `unknown` 只写 `stopping`/`stop_failed` 或 `ownership_unverified`，不再尝试停止，
+   也没有清空路径，于是名字与容量一直卡住，只能人工处理。
+3. 停止只等 Bridge 端口，且端口被占时只看 TCP：无法区分“我们自己上一代的残留”和
+   “别人的服务”，前者只能人工清理，后者必须保持不动。
+4. 采用（adoption）标记 `adoptedUnproven` 只写不清，一旦接管过一个已在运行的 runtime，
+   该实例永远无法被证明为空。
+
+### 修复后的语义
+
+- **委托**：单元 cgroup 必须能把 `memory`/`pids` 交给 supervisor（`Delegate=yes` +
+  `DelegateSubgroup=payload`，服务自身进程在 `<unit>/payload`，单元 cgroup 保持无进程）。
+  `ensureCgroup` 依次：建根（含缺失层级）→ 在根上启用 `+memory +pids` → 根还没有控制器时
+  向**上一层**（单元 cgroup）请求一次 → 检查子组真的有 `memory.current`/`memory.max`/
+  `pids.current`。任一步失败返回 `cgroup_unavailable` 的具体步骤与 OS 错误，绝不 spawn
+  一个未计量的实例。`/sys/fs/cgroup` 根与挂载点之外的路径被直接拒绝。
+- **只在自己被委托的层级下发控制器**：需要向上一层请求控制器时，只有该层属于本进程身份
+  （非 root 时由 systemd 委托 chown）才会写；root 身份下若该层仍含 `.service`/`.scope`/
+  `.slice` 子组（共享 systemd 层级）则拒绝，错误里点名目录并指向委托单元 cgroup，绝不改写
+  宿主其他服务的控制器。
+- **逐代次对象身份**：每代次记录 `cgroup` 路径 + `cgroupInode`。重启后 inode 不符即视为
+  对象已被替换，按“边界消失/被替换”处理，而不是拿旧路径冒充同一对象。
+- **边界证明**：停止只在“可读且递归为空”或“边界对象已不存在且本代次无存活成员”时
+  返回 `stopped`；不可读仍按未知归属保守占用容量。残留风险（接管前逃逸的后代）通过
+  `unknown` 与日志 `supervisor.stop_proven_with_residual` 保留，不再永久 veto 空树。
+- **边界消失即重绑**：`tick`/`reconcileRestart` 发现根活着但边界不可用/被替换时，用
+  校验过 PID+starttime 的身份把它绑进新的 cgroup（`adoptedUnproven`），恢复计量与可停止性；
+  身份对不上（PID 复用）不会把陌生进程挪进我们的 cgroup。
+- **端口归属**：`portOwners` 用 `/proc/net/tcp{,6}` 的 socket inode 反查监听进程，按
+  `MOYU_CGROUP_ROOT` 判断是否为我们自己的实例 cgroup；只有能证明是自己的残留才停止，
+  其他情况写清 pid/cgroup 后保持不动。停止同时等 panel 与 Bridge 两个端口。
+
+### 已验证 / 未验证
+
+- 已验证（真实 cgroup v2、真实进程、真实 systemd 委托单元）：空白目录冷启动、控制器
+  下发、`memory.max/high` 写入、runtime 与 setsid 后代同组、`memory.current>0`、停止后
+  递归空树并移除、端口释放、inode 匹配与被替换的判定、非 root 权限不足时的明确失败。
+  单元：`apps/supervisor/test/process.test.ts`、`test/lifecycle.test.ts`。
+- 未验证：真实 DSH runtime 的完整 wake→online→sleep 现场（依赖 Issue #36 的隔离身份与
+  凭据）；真实 dispatcher/Bridge 的租约代次（本 PR 未改租约路径，仍由既有
+  `apps/dispatcher/test/integration/leases.integration.test.ts` 覆盖）。
