@@ -58,9 +58,6 @@ M2 实际 Cookie：https origin 使用 `__Host-moyu_session` 与 `__Host-moyu_bo
 | POST /api/v1/repositories/:id/wake | 返回调度operationId，忙时queued，不承诺立即在线 |
 | GET /api/v1/repositories/:id/branches | 分页分支列表 |
 | GET /api/v1/repositories/:id/models | Harness已配置且可用的模型标识，不返回API Key |
-
-**仓库检查命令（ISS-63）**：命令存在 `repositories.check_commands`（JSONB，`null` = 继承）。宿主 supervisor 用现有数据库连接直接读取该列，**不接受控制接口传入的命令**；仓库值非法或为空时检查 fail-closed（422），不会回退到默认命令，也不会静默跳过。`REVIEW_CHECK_TOTAL_TIMEOUT_MS`（默认 900s）约束一次检查所有命令的总时长，平台到 supervisor 的客户端超时为 960s。
-
 | POST /api/v1/conversations | **M4 已实现**：`{repositoryId,mode:'work',executionMode:'execute'\|'discuss',baseBranch,model:{provider,model,reasoningEffort?}\|null,clientRequestId}`；同一 `clientRequestId` 相同 payload 返回原会话，不同 payload 409；`discuss` 创建只读讨论任务 |
 | GET /api/v1/conversations | **M3 已实现**：按仓库列出会话与任务投影；M4-UX 增加 `cursor` 分页与 `nextCursor`/`hasMore`，游标绑定仓库，跨仓库复用返回 422 |
 | GET /api/v1/activity | **M6-B 已实现**：`limit`/`beforeSeq` 读取当前所有者的持久活动提醒（需要回复、待审阅、已完成、失败）及正在执行的任务；提醒 `id` 是持久事件 id，客户端以它作为浏览器通知去重键；`nextCursor` 为更早页的 `beforeSeq` |
@@ -80,7 +77,7 @@ M2 实际 Cookie：https origin 使用 `__Host-moyu_session` 与 `__Host-moyu_bo
 | GET /api/v1/tasks/:id/review | **M6-A 已实现**：读取已持久化的 `diff` / `check_report` 产物，返回变更（文件、增删行、逐文件 patch）、检查运行（命令、exit code、时间戳、输出末尾）、提交（完整 SHA、分支、提交说明）与 PR 号 + 状态；未采集时返回 `state:'unavailable'` 与原因，不用推断值 |
 | POST /api/v1/tasks/:id/review/changes | **M6-A 已实现**：经宿主 supervisor 读取任务 worktree 的真实 `git status` / `git diff`（含未跟踪文件）与 HEAD，一并查询 GitHub PR 状态，写入 `diff` 产物后返回同一投影；worktree 已清理返回 `state:'cleaned'` |
 | POST /api/v1/tasks/:id/review/checks | **M6-A 已实现**：经宿主 supervisor 在任务 worktree 运行配置的检查命令（默认 `pnpm check`），记录每个命令的 exit code、起止时间、耗时与输出末尾，写入 `check_report` 产物 |
-| 宿主 supervisor review | **M6-A 已实现**：`POST /control/v1/instances/:repositoryId/review/{worktree,changes,checks}`，请求只带 `ticketId`；目录由 supervisor 自己的 `WORKTREE_ROOT`/profile 解析，命令来自 supervisor 配置，浏览器与 API 都不传路径或命令 |
+| 宿主 supervisor review | **M6-A 已实现，ISS-63 扩展**：`POST /control/v1/instances/:repositoryId/review/{worktree,changes,checks}`，请求只带 `ticketId`；目录由 supervisor 自己的 `WORKTREE_ROOT`/profile 解析，检查命令来自该仓库的 `repositories.check_commands` 或 supervisor 的 `REVIEW_CHECK_COMMANDS` 默认值，浏览器与 API 都不传路径或命令 |
 | 宿主 supervisor cleanup | **M6-B 已实现**：`POST /control/v1/instances/:repositoryId/cleanup/{inspect,delete,trash}`，请求只带 `ticketId`；supervisor 用 `realpath` 校验目标严格位于 `WORKTREE_ROOT/<profile>` 内，拒绝非 git 顶层、有未提交/未推送改动、被进程占用或 `index.lock` 存在的目录；删除先把目录原子重命名到 `.cleanup-trash/` 再递归删除，失败只留下隔离目录；linked worktree 在重命名后对其 common git dir 执行 `git worktree prune`，结果记录为 `worktreePruned`/`worktreePruneError` |
 | GitHub 汇入 | **M4 已实现**：Bridge `ticket.imported` 事件按 `(repository, source='github', external_id)` 建立/复用 Work conversation，并按 `(repository, upstream_ticket_id)` 绑定唯一 task；重复事件不重复建单 |
 | POST /api/v1/conversations/:id/attachments | **M6-A 已实现**：multipart 单文件字段 `file`；单文件 ≤10 MiB，只接受图片（PNG/JPEG/WebP/GIF）与文本类（txt/log/md/json/yaml/csv/源码等）；超限 413、类型不符 422、空文件 422、未登录 401、他人会话 404，且拒绝时不落库也不落盘；返回 `{attachment}`，含 `id`、文件名、MIME、字节数、sha256 与下载地址，不自动执行 |
@@ -88,6 +85,8 @@ M2 实际 Cookie：https origin 使用 `__Host-moyu_session` 与 `__Host-moyu_bo
 | POST /api/v1/conversations/:id/messages `attachmentIds` | **M6-A 已实现**：引用本会话尚未发送的附件，最多 20 个、总量 ≤25 MiB；跨会话或已发送的 id 返回 422 且整条消息不落库；消息与附件在同一事务内绑定，消息列表与详情返回 `attachments` |
 | GET /api/v1/conversations/:id/attachments | **M6-A 已实现**：本会话尚未随消息发送的草稿附件列表，供重新打开输入框时恢复；只返回本人仓库下的会话 |
 | 附件与执行器 | **M6-A 明确未传**：上游 Source 的 Trigger 没有附件字段，平台不把附件内容塞进消息正文，也不伪造已投递；附件保存在平台存储并随消息展示，投递到 runtime 属于后续单（需要上游 Bridge 补丁与能力协商） |
+
+**仓库检查命令（ISS-63）**：命令存在 `repositories.check_commands`（JSONB，`null` = 继承）。宿主 supervisor 用现有数据库连接直接读取该列，**不接受控制接口传入的命令**；仓库值非法或为空时检查 fail-closed（422），不会回退到默认命令，也不会静默跳过。`REVIEW_CHECK_TOTAL_TIMEOUT_MS`（默认 900s）约束一次检查所有命令的总时长，平台到 supervisor 的客户端超时为 960s；`REVIEW_CHECK_TIMEOUT_MS` 不得大于总预算，配置阶段就会拒绝。
 
 建会话返回pending直到任务接单；task_links在接单后填upstreamTicketId，不能把Trigger stored视为Ticket已创建。conversation创建时锁仓库/分支选择，正式执行前解析并记录baseCommit；为避免讨论期间分支移动，执行同一已记录快照或显式要求刷新计划，禁止悄悄换起点。
 

@@ -30,6 +30,7 @@ interface Harness {
   app: FastifyInstance;
   database: Database;
   cookie: string;
+  cookieName: string;
   ownerId: string;
   repositoryAId: string;
   repositoryBId: string;
@@ -232,6 +233,7 @@ describe('multi-repository lifecycle API on real PostgreSQL', () => {
       app,
       database,
       cookie: `${sessionCookieName(config)}=${token}`,
+      cookieName: sessionCookieName(config),
       ownerId: owner.id,
       repositoryAId: repositoryA.id,
       repositoryBId: repositoryB.id,
@@ -487,5 +489,27 @@ describe('multi-repository lifecycle API on real PostgreSQL', () => {
       .from(repositories)
       .where(eq(repositories.id, repositoryId));
     expect(stored?.checkCommands).toEqual(chained?.to);
+  });
+
+  it('does not let another owner change a repository check-command override', async () => {
+    const [otherOwner] = await harness.database
+      .insert(owners)
+      .values({ displayName: 'Other Owner' })
+      .returning();
+    if (!otherOwner) throw new Error('other owner insert returned no row');
+    const token = randomToken(32);
+    await harness.database.insert(sessions).values({
+      ownerId: otherOwner.id,
+      tokenHash: hashSecret(token),
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+
+    const response = await request(
+      'PATCH',
+      `/api/v1/repositories/${harness.repositoryAId}`,
+      { checkCommands: ['echo other-owner'] },
+      `${harness.cookieName}=${token}`,
+    );
+    expect(response.statusCode).toBe(404);
   });
 });

@@ -104,4 +104,23 @@ describe('supervisor config', () => {
       loadSupervisorConfig({ ...values, REVIEW_CHECK_HOME: 'relative/check-home' }),
     ).toThrow(/absolute/);
   });
+
+  it('rejects a per-command timeout larger than the total budget', () => {
+    const path = configFile({ instances: [] });
+    expect(() =>
+      loadSupervisorConfig({
+        ...env(path),
+        REVIEW_CHECK_TIMEOUT_MS: '901000',
+        REVIEW_CHECK_TOTAL_TIMEOUT_MS: '900000',
+      }),
+    ).toThrow(/REVIEW_CHECK_TIMEOUT_MS/);
+
+    const config = loadSupervisorConfig({
+      ...env(path),
+      REVIEW_CHECK_TIMEOUT_MS: '600000',
+      REVIEW_CHECK_TOTAL_TIMEOUT_MS: '900000',
+    });
+    expect(config.reviewCheckTimeoutMs).toBe(600000);
+    expect(config.reviewCheckTotalTimeoutMs).toBe(900000);
+  });
 });

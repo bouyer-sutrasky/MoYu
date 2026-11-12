@@ -2421,7 +2421,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
+          "onDelete": "restrict",
           "onUpdate": "no action"
         },
         "repository_audit_events_actor_owner_id_owners_id_fk": {

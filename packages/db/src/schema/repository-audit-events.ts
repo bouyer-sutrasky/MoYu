@@ -16,7 +16,7 @@ export const repositoryAuditEvents = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     repositoryId: uuid('repository_id')
       .notNull()
-      .references(() => repositories.id, { onDelete: 'cascade' }),
+      .references(() => repositories.id, { onDelete: 'restrict' }),
     /** The owner who performed the change. */
     actorOwnerId: uuid('actor_owner_id')
       .notNull()

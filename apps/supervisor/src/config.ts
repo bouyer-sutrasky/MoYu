@@ -29,94 +29,104 @@ const instancesFileSchema = z
   })
   .strict();
 
-const environmentSchema = z.object({
-  NODE_ENV: z.enum(['development', 'test', 'production']).default('production'),
-  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
-  SUPERVISOR_HOST: z.string().min(1).default('127.0.0.1'),
-  SUPERVISOR_PORT: z.coerce.number().int().min(1).max(65_535).default(4490),
-  SUPERVISOR_TOKEN: z.string().min(32),
-  DATABASE_URL: postgresUrlSchema,
-  INSTANCES_CONFIG: z.string().min(1),
-  DSH_BIN: z.string().min(1).default('/usr/bin/dsh'),
-  DSH_HOME: z.string().min(1),
-  PLATFORM_URL: z.string().url(),
-  RUNTIME_CREDENTIALS_DIR: z.string().min(1),
-  INSTANCE_ENV_DIR: z.string().min(1),
-  INSTANCE_LOG_DIR: z.string().min(1),
-  WORKTREE_ROOT: z.string().min(1),
-  /** Optional profile template cloned for a repository with no pinned mapping. */
-  PROFILE_TEMPLATE_DIR: z.string().min(1).optional(),
-  PROFILE_PREFIX: z
-    .string()
-    .regex(/^[A-Za-z0-9-]+$/)
-    .default('m5'),
-  MAX_ONLINE: z.coerce.number().int().min(1).max(8).default(2),
-  /** Review inspection: bounded worktree diff and the fixed check commands. */
-  REVIEW_DIFF_MAX_BYTES: z.coerce
-    .number()
-    .int()
-    .min(4096)
-    .max(8 * 1024 * 1024)
-    .default(512 * 1024),
-  REVIEW_MAX_FILES: z.coerce.number().int().min(1).max(5000).default(400),
-  REVIEW_CHECK_COMMANDS: z
-    .string()
-    .default('["pnpm check"]')
-    .refine((value) => {
-      try {
-        return repositoryCheckCommandsSchema.safeParse(JSON.parse(value)).success;
-      } catch {
-        return false;
-      }
-    }, 'must be a non-empty JSON array of 1-8 single-line command strings'),
-  REVIEW_CHECK_TIMEOUT_MS: z.coerce.number().int().min(1000).max(3_600_000).default(900_000),
-  /**
-   * Total budget across every command in one check run. It is capped at 900s so
-   * it always fits inside the platform's 960s HTTP client to the supervisor; a
-   * repository cannot turn a long command list into a request that outlives it.
-   */
-  REVIEW_CHECK_TOTAL_TIMEOUT_MS: z.coerce.number().int().min(1000).max(900_000).default(900_000),
-  /**
-   * Review checks run as this separate, unprivileged identity. The supervisor
-   * itself is unprivileged with `NoNewPrivileges=yes`, so it can only switch
-   * through the unit's bounded CAP_SETUID/CAP_SETGID and `setpriv`. All three
-   * values are required together; production refuses to run checks without
-   * them instead of silently using the supervisor's own uid.
-   */
-  REVIEW_CHECK_UID: z.coerce.number().int().min(1).optional(),
-  REVIEW_CHECK_GID: z.coerce.number().int().min(1).optional(),
-  REVIEW_CHECK_HOME: z.string().min(1).optional(),
-  REVIEW_CHECK_SETPRIV: z.string().min(1).default('/usr/bin/setpriv'),
+const environmentSchema = z
+  .object({
+    NODE_ENV: z.enum(['development', 'test', 'production']).default('production'),
+    LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+    SUPERVISOR_HOST: z.string().min(1).default('127.0.0.1'),
+    SUPERVISOR_PORT: z.coerce.number().int().min(1).max(65_535).default(4490),
+    SUPERVISOR_TOKEN: z.string().min(32),
+    DATABASE_URL: postgresUrlSchema,
+    INSTANCES_CONFIG: z.string().min(1),
+    DSH_BIN: z.string().min(1).default('/usr/bin/dsh'),
+    DSH_HOME: z.string().min(1),
+    PLATFORM_URL: z.string().url(),
+    RUNTIME_CREDENTIALS_DIR: z.string().min(1),
+    INSTANCE_ENV_DIR: z.string().min(1),
+    INSTANCE_LOG_DIR: z.string().min(1),
+    WORKTREE_ROOT: z.string().min(1),
+    /** Optional profile template cloned for a repository with no pinned mapping. */
+    PROFILE_TEMPLATE_DIR: z.string().min(1).optional(),
+    PROFILE_PREFIX: z
+      .string()
+      .regex(/^[A-Za-z0-9-]+$/)
+      .default('m5'),
+    MAX_ONLINE: z.coerce.number().int().min(1).max(8).default(2),
+    /** Review inspection: bounded worktree diff and the fixed check commands. */
+    REVIEW_DIFF_MAX_BYTES: z.coerce
+      .number()
+      .int()
+      .min(4096)
+      .max(8 * 1024 * 1024)
+      .default(512 * 1024),
+    REVIEW_MAX_FILES: z.coerce.number().int().min(1).max(5000).default(400),
+    REVIEW_CHECK_COMMANDS: z
+      .string()
+      .default('["pnpm check"]')
+      .refine((value) => {
+        try {
+          return repositoryCheckCommandsSchema.safeParse(JSON.parse(value)).success;
+        } catch {
+          return false;
+        }
+      }, 'must be a non-empty JSON array of 1-8 single-line command strings'),
+    REVIEW_CHECK_TIMEOUT_MS: z.coerce.number().int().min(1000).max(3_600_000).default(900_000),
+    /**
+     * Total budget across every command in one check run. It is capped at 900s so
+     * it always fits inside the platform's 960s HTTP client to the supervisor; a
+     * repository cannot turn a long command list into a request that outlives it.
+     */
+    REVIEW_CHECK_TOTAL_TIMEOUT_MS: z.coerce.number().int().min(1000).max(900_000).default(900_000),
+    /**
+     * Review checks run as this separate, unprivileged identity. The supervisor
+     * itself is unprivileged with `NoNewPrivileges=yes`, so it can only switch
+     * through the unit's bounded CAP_SETUID/CAP_SETGID and `setpriv`. All three
+     * values are required together; production refuses to run checks without
+     * them instead of silently using the supervisor's own uid.
+     */
+    REVIEW_CHECK_UID: z.coerce.number().int().min(1).optional(),
+    REVIEW_CHECK_GID: z.coerce.number().int().min(1).optional(),
+    REVIEW_CHECK_HOME: z.string().min(1).optional(),
+    REVIEW_CHECK_SETPRIV: z.string().min(1).default('/usr/bin/setpriv'),
 
-  /** Aggregate memory policy, in MiB unless noted. These are one system-wide budget. */
-  MEMORY_TARGET_MB: z.coerce.number().int().min(256).default(4096),
-  MEMORY_BUDGET_MB: z.coerce.number().int().min(512).default(6144),
-  MEMORY_HARD_LIMIT_MB: z.coerce.number().int().min(512).default(8192),
-  MEMORY_RESERVE_MB: z.coerce.number().int().min(0).default(1024),
-  MEMORY_HYSTERESIS_MB: z.coerce.number().int().min(0).default(256),
-  INSTANCE_MEMORY_MAX_MB: z.coerce.number().int().min(256).default(3072),
-  INSTANCE_MEMORY_HIGH_MB: z.coerce.number().int().min(128).default(2560),
-  MEMORY_PRESSURE_AVG10: z.coerce.number().min(0).max(100).default(10),
-  /** Optional cgroups whose memory belongs to the system aggregate (read-only). */
-  PLATFORM_CGROUP: z.string().min(1).optional(),
-  POSTGRES_CGROUP: z.string().min(1).optional(),
-  /** The single systemd slice with an enforceable MemoryMax for the whole system. */
-  AGGREGATE_CGROUP: z.string().min(1).optional(),
-  RESOURCE_SAMPLE_INTERVAL_MS: z.coerce.number().int().min(1000).max(600_000).default(15_000),
-  MAX_START_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(3),
-  TICK_INTERVAL_MS: z.coerce.number().int().min(250).max(60_000).default(2000),
-  START_TIMEOUT_MS: z.coerce.number().int().min(5000).max(600_000).default(120_000),
-  STOP_TIMEOUT_MS: z.coerce.number().int().min(100).max(120_000).default(30_000),
-  EXECUTOR_MODEL: z
-    .string()
-    .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+$/)
-    .default('commandcode/deepseek/deepseek-v4.1-flash'),
-  EXECUTOR_REASONING_EFFORT: z.string().min(1).optional(),
-  GITHUB_CLI: z.string().min(1).default('/root/.local/bin/gh-agent'),
-  GITHUB_ALLOWED_USERS: z.string().min(1).default('sutrasky'),
-  GITHUB_ACCOUNT: z.string().min(1).default('Bouyer12'),
-  GITHUB_COMMIT_EMAIL: z.string().email().default('202233540+Bouyer12@users.noreply.github.com'),
-});
+    /** Aggregate memory policy, in MiB unless noted. These are one system-wide budget. */
+    MEMORY_TARGET_MB: z.coerce.number().int().min(256).default(4096),
+    MEMORY_BUDGET_MB: z.coerce.number().int().min(512).default(6144),
+    MEMORY_HARD_LIMIT_MB: z.coerce.number().int().min(512).default(8192),
+    MEMORY_RESERVE_MB: z.coerce.number().int().min(0).default(1024),
+    MEMORY_HYSTERESIS_MB: z.coerce.number().int().min(0).default(256),
+    INSTANCE_MEMORY_MAX_MB: z.coerce.number().int().min(256).default(3072),
+    INSTANCE_MEMORY_HIGH_MB: z.coerce.number().int().min(128).default(2560),
+    MEMORY_PRESSURE_AVG10: z.coerce.number().min(0).max(100).default(10),
+    /** Optional cgroups whose memory belongs to the system aggregate (read-only). */
+    PLATFORM_CGROUP: z.string().min(1).optional(),
+    POSTGRES_CGROUP: z.string().min(1).optional(),
+    /** The single systemd slice with an enforceable MemoryMax for the whole system. */
+    AGGREGATE_CGROUP: z.string().min(1).optional(),
+    RESOURCE_SAMPLE_INTERVAL_MS: z.coerce.number().int().min(1000).max(600_000).default(15_000),
+    MAX_START_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(3),
+    TICK_INTERVAL_MS: z.coerce.number().int().min(250).max(60_000).default(2000),
+    START_TIMEOUT_MS: z.coerce.number().int().min(5000).max(600_000).default(120_000),
+    STOP_TIMEOUT_MS: z.coerce.number().int().min(100).max(120_000).default(30_000),
+    EXECUTOR_MODEL: z
+      .string()
+      .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+$/)
+      .default('commandcode/deepseek/deepseek-v4.1-flash'),
+    EXECUTOR_REASONING_EFFORT: z.string().min(1).optional(),
+    GITHUB_CLI: z.string().min(1).default('/root/.local/bin/gh-agent'),
+    GITHUB_ALLOWED_USERS: z.string().min(1).default('sutrasky'),
+    GITHUB_ACCOUNT: z.string().min(1).default('Bouyer12'),
+    GITHUB_COMMIT_EMAIL: z.string().email().default('202233540+Bouyer12@users.noreply.github.com'),
+  })
+  .superRefine((value, context) => {
+    if (value.REVIEW_CHECK_TIMEOUT_MS > value.REVIEW_CHECK_TOTAL_TIMEOUT_MS) {
+      context.addIssue({
+        code: 'custom',
+        path: ['REVIEW_CHECK_TIMEOUT_MS'],
+        message: 'must not exceed REVIEW_CHECK_TOTAL_TIMEOUT_MS',
+      });
+    }
+  });
 
 export interface PinnedInstance {
   repository: string;

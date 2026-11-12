@@ -5,7 +5,7 @@
 BEGIN;
 DO $$
 DECLARE
-  expected constant text := 'a3fc0de169de4849dced9df21e230b4f9a66157b98baa80fc8abe0806a7e9858';
+  expected constant text := '65111ba11520ad79accc93fbe4b00ff38683c830d5c0e3dc1486bf97cbdcb377';
   present integer;
   applied_id integer;
   later integer;

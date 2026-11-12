@@ -95,6 +95,9 @@ export async function setRepositoryCheckCommands(input: {
     if (!current) {
       throw new Error('repository disappeared during update');
     }
+    if (sameCommands(current.checkCommands, commands)) {
+      return current;
+    }
     const [updated] = await transaction
       .update(repositories)
       .set({ checkCommands: commands, updatedAt: new Date() })
@@ -103,14 +106,12 @@ export async function setRepositoryCheckCommands(input: {
     if (!updated) {
       throw new Error('repository update returned no row');
     }
-    if (!sameCommands(current.checkCommands, commands)) {
-      await transaction.insert(repositoryAuditEvents).values({
-        repositoryId: repository.id,
-        actorOwnerId,
-        type: 'check_commands_updated',
-        detail: { from: current.checkCommands, to: commands },
-      });
-    }
+    await transaction.insert(repositoryAuditEvents).values({
+      repositoryId: repository.id,
+      actorOwnerId,
+      type: 'check_commands_updated',
+      detail: { from: current.checkCommands, to: commands },
+    });
     return updated;
   });
 }

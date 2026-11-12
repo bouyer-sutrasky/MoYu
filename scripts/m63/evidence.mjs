@@ -143,6 +143,27 @@ try {
 
   database = new Client({ connectionString: dbUrl });
   await database.connect();
+  const column = await database.query(
+    `select exists (
+       select 1 from information_schema.columns
+        where table_schema = 'public' and table_name = 'repositories'
+          and column_name = 'check_commands'
+     ) as present`,
+  );
+  const columnPresent = column.rows[0]?.present === true;
+  if (label === 'base') {
+    assert(
+      !columnPresent,
+      'base tree unexpectedly has repositories.check_commands; point --tree at the pre-change commit',
+    );
+    log('schema: repositories.check_commands absent (pre-change)');
+  } else {
+    assert(
+      columnPresent,
+      'branch tree is missing repositories.check_commands; migration 0018 not applied',
+    );
+    log('schema: repositories.check_commands present (0018 applied)');
+  }
   await database.query(
     `insert into owners (id, display_name) values ($1, 'ISS-63 evidence owner')`,
     [ownerId],
@@ -233,12 +254,16 @@ try {
     log(JSON.stringify(second.body));
     assert(first.status === 200 && second.status === 200, 'base checks did not return 200');
     assert(
-      first.body.data?.runs?.[0]?.command === 'printf global',
-      'base repo-a did not use the global command',
+      first.body.data?.runs?.[0]?.command === 'printf global' &&
+        first.body.data?.runs?.[0]?.exitCode === 0 &&
+        first.body.data?.runs?.[0]?.passed === true,
+      'base repo-a did not run the global command successfully',
     );
     assert(
-      second.body.data?.runs?.[0]?.command === 'printf global',
-      'base repo-b did not use the global command',
+      second.body.data?.runs?.[0]?.command === 'printf global' &&
+        second.body.data?.runs?.[0]?.exitCode === 0 &&
+        second.body.data?.runs?.[0]?.passed === true,
+      'base repo-b did not run the global command successfully',
     );
     log('BASE-MATCH: both repositories used the supervisor-wide command');
     log('RESULT PASS');
@@ -251,12 +276,16 @@ try {
     log(JSON.stringify(second.body));
     assert(first.status === 200 && second.status === 200, 'branch checks did not return 200');
     assert(
-      first.body.data?.runs?.[0]?.command === 'printf repo-a',
-      'repo-a did not run its own command',
+      first.body.data?.runs?.[0]?.command === 'printf repo-a' &&
+        first.body.data?.runs?.[0]?.exitCode === 0 &&
+        first.body.data?.runs?.[0]?.passed === true,
+      'repo-a did not run its own command successfully',
     );
     assert(
-      second.body.data?.runs?.[0]?.command === 'printf global',
-      'repo-b did not fall back to the global command',
+      second.body.data?.runs?.[0]?.command === 'printf global' &&
+        second.body.data?.runs?.[0]?.exitCode === 0 &&
+        second.body.data?.runs?.[0]?.passed === true,
+      'repo-b did not fall back to the global command successfully',
     );
 
     await database.query(`update repositories set check_commands = '[""]'::jsonb where id = $1`, [
