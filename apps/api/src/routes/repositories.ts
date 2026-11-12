@@ -6,15 +6,21 @@ import {
   githubRepositoryListDataSchema,
   githubRepositoryListQuerySchema,
   repositoryActionDataSchema,
+  repositoryDataSchema,
   repositoryListDataSchema,
   repositoryRuntimeDataSchema,
+  updateRepositoryInputSchema,
   type RepositorySummary,
 } from '@moyu/contracts';
-import { repositories, type Database, type Repository } from '@moyu/db';
+import { repositories, repositoryAuditEvents, type Database, type Repository } from '@moyu/db';
 
 import type { Authenticate } from '../auth/guards';
 import type { ApiConfig } from '../config';
-import { ensureConfiguredRepository, findOwnedRepository } from '../domain/repositories';
+import {
+  ensureConfiguredRepository,
+  findOwnedRepository,
+  setRepositoryCheckCommands,
+} from '../domain/repositories';
 import {
   createSupervisorClient,
   projectRuntime,
@@ -43,6 +49,7 @@ async function summarize(
     githubRepositoryId: repository.githubRepositoryId,
     defaultBranch: repository.defaultBranch,
     status: repository.status,
+    checkCommands: repository.checkCommands ?? null,
     runtime: await projectRuntime(database, config, repository),
     createdAt: repository.createdAt.toISOString(),
     updatedAt: repository.updatedAt.toISOString(),
@@ -117,18 +124,29 @@ export function registerRepositoryRoutes(
 
     let repository: Repository;
     try {
-      const [created] = await database
-        .insert(repositories)
-        .values({
-          ownerId: auth.owner.id,
-          fullName: github.fullName,
-          githubRepositoryId: github.githubRepositoryId,
-          defaultBranch: github.defaultBranch,
-          status: 'provisioning',
-        })
-        .returning();
-      if (!created) throw new Error('repository insert returned no row');
-      repository = created;
+      repository = await database.transaction(async (transaction) => {
+        const [created] = await transaction
+          .insert(repositories)
+          .values({
+            ownerId: auth.owner.id,
+            fullName: github.fullName,
+            githubRepositoryId: github.githubRepositoryId,
+            defaultBranch: github.defaultBranch,
+            checkCommands: input.checkCommands ?? null,
+            status: 'provisioning',
+          })
+          .returning();
+        if (!created) throw new Error('repository insert returned no row');
+        if (input.checkCommands) {
+          await transaction.insert(repositoryAuditEvents).values({
+            repositoryId: created.id,
+            actorOwnerId: auth.owner.id,
+            type: 'check_commands_updated',
+            detail: { from: null, to: input.checkCommands },
+          });
+        }
+        return created;
+      });
     } catch (error) {
       if (
         isUniqueViolation(error, 'repositories_full_name_uq') ||
@@ -172,6 +190,33 @@ export function registerRepositoryRoutes(
         runtime: await projectRuntime(database, config, refreshed ?? repository),
       }),
       201,
+    );
+  });
+
+  /**
+   * Changes only this repository's check-command override. The supervisor reads
+   * the column directly; the platform does not forward commands to it. `null`
+   * restores the process-wide REVIEW_CHECK_COMMANDS default.
+   */
+  app.patch('/api/v1/repositories/:id', { preHandler: authenticate }, async (request, reply) => {
+    const auth = request.auth;
+    if (!auth) throw ApiProblem.unauthorized();
+    const params = request.params as { id?: string };
+    const input = parseInput(updateRepositoryInputSchema, request.body);
+    const repository = await findOwnedRepository(database, auth.owner.id, params.id ?? '');
+    if (!repository) throw ApiProblem.notFound('Repository not found');
+    const updated = await setRepositoryCheckCommands({
+      database,
+      repository,
+      actorOwnerId: auth.owner.id,
+      commands: input.checkCommands,
+    });
+    return sendData(
+      reply,
+      request,
+      repositoryDataSchema.parse({
+        repository: await summarize(database, config, updated),
+      }),
     );
   });
 

@@ -6,12 +6,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { FastifyInstance } from 'fastify';
+import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   conversations,
   owners,
   repositories,
+  repositoryAuditEvents,
   repositoryInstances,
   sessions,
   taskLinks,
@@ -138,6 +140,7 @@ case "$*" in
   *repos/Bouyer12/m5a-alpha*) echo '{"id":101,"full_name":"Bouyer12/m5a-alpha","default_branch":"main","private":true,"permissions":{"admin":true,"push":true}}' ;;
   *repos/Bouyer12/m5a-beta*) echo '{"id":102,"full_name":"Bouyer12/m5a-beta","default_branch":"trunk","private":true,"permissions":{"admin":false,"push":true}}' ;;
   *repos/Bouyer12/m5a-gamma*) echo '{"id":104,"full_name":"Bouyer12/m5a-gamma","default_branch":"main","private":true,"permissions":{"admin":false,"push":true}}' ;;
+  *repos/Bouyer12/m5a-delta*) echo '{"id":105,"full_name":"Bouyer12/m5a-delta","default_branch":"main","private":true,"permissions":{"admin":false,"push":true}}' ;;
   *) echo 'gh: Not Found (HTTP 404)' >&2; exit 1 ;;
 esac
 `,
@@ -245,7 +248,7 @@ describe('multi-repository lifecycle API on real PostgreSQL', () => {
   });
 
   async function request(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'PATCH',
     path: string,
     body?: Record<string, unknown>,
     cookie = harness.cookie,
@@ -378,5 +381,73 @@ describe('multi-repository lifecycle API on real PostgreSQL', () => {
     });
     expect(duplicate.statusCode).toBe(200);
     expect(duplicate.json().data.duplicate).toBe(true);
+  });
+
+  it('stores per-repository check commands and audits every accepted change', async () => {
+    const created = await request('POST', '/api/v1/repositories', {
+      fullName: 'Bouyer12/m5a-delta',
+      checkCommands: ['npm ci --no-audit --no-fund', 'npm test'],
+    });
+    expect(created.statusCode).toBe(201);
+    const repositoryId = created.json().data.repositoryId as string;
+
+    const listed = await request('GET', '/api/v1/repositories');
+    expect(listed.statusCode).toBe(200);
+    const row = listed
+      .json()
+      .data.repositories.find((item: { id: string }) => item.id === repositoryId);
+    expect(row.checkCommands).toEqual(['npm ci --no-audit --no-fund', 'npm test']);
+
+    const auditRows = () =>
+      harness.database
+        .select()
+        .from(repositoryAuditEvents)
+        .where(eq(repositoryAuditEvents.repositoryId, repositoryId))
+        .orderBy(repositoryAuditEvents.createdAt);
+
+    expect(await auditRows()).toMatchObject([
+      {
+        actorOwnerId: harness.ownerId,
+        type: 'check_commands_updated',
+        detail: { from: null, to: ['npm ci --no-audit --no-fund', 'npm test'] },
+      },
+    ]);
+
+    const updated = await request('PATCH', `/api/v1/repositories/${repositoryId}`, {
+      checkCommands: ['pnpm check'],
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json().data.repository.checkCommands).toEqual(['pnpm check']);
+    expect((await auditRows()).at(-1)).toMatchObject({
+      actorOwnerId: harness.ownerId,
+      detail: { from: ['npm ci --no-audit --no-fund', 'npm test'], to: ['pnpm check'] },
+    });
+
+    // The same value is a no-op and does not add another audit row.
+    const same = await request('PATCH', `/api/v1/repositories/${repositoryId}`, {
+      checkCommands: ['pnpm check'],
+    });
+    expect(same.statusCode).toBe(200);
+    expect(await auditRows()).toHaveLength(2);
+
+    const cleared = await request('PATCH', `/api/v1/repositories/${repositoryId}`, {
+      checkCommands: null,
+    });
+    expect(cleared.statusCode).toBe(200);
+    expect(cleared.json().data.repository.checkCommands).toBeNull();
+    expect((await auditRows()).at(-1)).toMatchObject({
+      detail: { from: ['pnpm check'], to: null },
+    });
+
+    const rejected = await request('PATCH', `/api/v1/repositories/${repositoryId}`, {
+      checkCommands: [],
+    });
+    expect(rejected.statusCode).toBe(422);
+    expect(await auditRows()).toHaveLength(3);
+
+    const missing = await request('PATCH', `/api/v1/repositories/${randomUUID()}`, {
+      checkCommands: ['true'],
+    });
+    expect(missing.statusCode).toBe(404);
   });
 });

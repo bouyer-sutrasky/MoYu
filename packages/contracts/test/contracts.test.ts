@@ -12,13 +12,17 @@ import {
   ceremonyOptionsSchema,
   cleanupPreviewDataSchema,
   createMessageInputSchema,
+  createRepositoryInputSchema,
   errorResponse,
   eventSeqSchema,
   healthDataSchema,
   healthResponseSchema,
   historySearchDataSchema,
+  repositoryCheckCommandsSchema,
   repositoryListDataSchema,
+  repositorySummarySchema,
   successResponse,
+  updateRepositoryInputSchema,
   uuidSchema,
   workspaceEventSchema,
 } from '../src/index';
@@ -163,6 +167,7 @@ describe('M2 authentication contracts', () => {
           githubRepositoryId: 123,
           defaultBranch: 'main',
           status: 'provisioning',
+          checkCommands: null,
           createdAt: '2026-11-03T08:00:00.000Z',
           updatedAt: '2026-11-03T08:00:00.000Z',
         },
@@ -358,5 +363,64 @@ describe('M6-B activity, history and cleanup contracts', () => {
         run: { ...data.run, retentionDays: 0 },
       }),
     ).toThrow();
+  });
+});
+
+describe('repository check commands contract', () => {
+  it('accepts one to eight single-line commands', () => {
+    expect(repositoryCheckCommandsSchema.parse(['pnpm check'])).toEqual(['pnpm check']);
+    expect(
+      repositoryCheckCommandsSchema.parse([
+        'npm ci --no-audit --no-fund',
+        'npm run build',
+        'npm test',
+      ]),
+    ).toHaveLength(3);
+  });
+
+  it('trims lines and rejects blank, multi-line, NUL and oversized values', () => {
+    expect(repositoryCheckCommandsSchema.parse(['  npm test  '])).toEqual(['npm test']);
+    for (const invalid of [
+      [],
+      ['   '],
+      ['npm ci\nnpm test'],
+      ['npm \u0000 test'],
+      ['x'.repeat(2001)],
+      Array.from({ length: 9 }, (_, index) => `echo ${index}`),
+    ]) {
+      expect(() => repositoryCheckCommandsSchema.parse(invalid)).toThrow();
+    }
+  });
+
+  it('keeps create optional and update explicit', () => {
+    expect(createRepositoryInputSchema.parse({ fullName: 'owner/repo' })).toEqual({
+      fullName: 'owner/repo',
+    });
+    expect(
+      createRepositoryInputSchema.parse({
+        fullName: 'owner/repo',
+        checkCommands: ['npm test'],
+      }).checkCommands,
+    ).toEqual(['npm test']);
+    expect(updateRepositoryInputSchema.parse({ checkCommands: null })).toEqual({
+      checkCommands: null,
+    });
+    expect(() => updateRepositoryInputSchema.parse({ fullName: 'owner/repo' })).toThrow();
+  });
+
+  it('requires an explicit checkCommands value in the repository summary', () => {
+    const summary = {
+      id: '11111111-1111-4111-8111-111111111111',
+      fullName: 'owner/repo',
+      githubRepositoryId: 1,
+      defaultBranch: 'main',
+      status: 'provisioning',
+      createdAt: '2026-11-12T00:00:00.000Z',
+      updatedAt: '2026-11-12T00:00:00.000Z',
+    };
+    expect(repositorySummarySchema.parse({ ...summary, checkCommands: null }).checkCommands).toBe(
+      null,
+    );
+    expect(() => repositorySummarySchema.parse(summary)).toThrow();
   });
 });

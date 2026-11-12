@@ -7,6 +7,11 @@ export interface RepositoryRow {
   defaultBranch: string;
   bridgeUrl: string | null;
   bridgeCredentialRef: string | null;
+  /**
+   * Raw JSONB value from `repositories.check_commands`: null means the global
+   * default, anything else is validated by the review service before execution.
+   */
+  checkCommands: unknown;
   status: 'provisioning' | 'active' | 'sleeping' | 'error';
 }
 
@@ -77,9 +82,11 @@ export class SupervisorStore {
       default_branch: string;
       bridge_url: string | null;
       bridge_credential_ref: string | null;
+      check_commands: unknown;
       status: RepositoryRow['status'];
     }>(
-      `select id, owner_id, full_name, default_branch, bridge_url, bridge_credential_ref, status
+      `select id, owner_id, full_name, default_branch, bridge_url, bridge_credential_ref,
+              check_commands, status
          from repositories where id = $1 limit 1`,
       [repositoryId],
     );
@@ -92,6 +99,7 @@ export class SupervisorStore {
           defaultBranch: row.default_branch,
           bridgeUrl: row.bridge_url,
           bridgeCredentialRef: row.bridge_credential_ref,
+          checkCommands: row.check_commands,
           status: row.status,
         }
       : null;

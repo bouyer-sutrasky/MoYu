@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 
+import { repositoryCheckCommandsSchema } from '@moyu/contracts';
 import { z } from 'zod';
 
 const postgresUrlSchema = z.string().refine((value) => /^postgres(ql)?:\/\//.test(value), {
@@ -63,17 +64,18 @@ const environmentSchema = z.object({
     .default('["pnpm check"]')
     .refine((value) => {
       try {
-        const parsed: unknown = JSON.parse(value);
-        return (
-          Array.isArray(parsed) &&
-          parsed.length > 0 &&
-          parsed.every((item) => typeof item === 'string' && item.trim().length > 0)
-        );
+        return repositoryCheckCommandsSchema.safeParse(JSON.parse(value)).success;
       } catch {
         return false;
       }
-    }, 'must be a non-empty JSON array of command strings'),
+    }, 'must be a non-empty JSON array of 1-8 single-line command strings'),
   REVIEW_CHECK_TIMEOUT_MS: z.coerce.number().int().min(1000).max(3_600_000).default(900_000),
+  /**
+   * Total budget across every command in one check run. It is capped at 900s so
+   * it always fits inside the platform's 960s HTTP client to the supervisor; a
+   * repository cannot turn a long command list into a request that outlives it.
+   */
+  REVIEW_CHECK_TOTAL_TIMEOUT_MS: z.coerce.number().int().min(1000).max(900_000).default(900_000),
   /**
    * Review checks run as this separate, unprivileged identity. The supervisor
    * itself is unprivileged with `NoNewPrivileges=yes`, so it can only switch
@@ -169,6 +171,7 @@ export interface SupervisorConfig {
   reviewMaxFiles: number;
   reviewCheckCommands: string[];
   reviewCheckTimeoutMs: number;
+  reviewCheckTotalTimeoutMs: number;
   reviewCheckUid?: number;
   reviewCheckGid?: number;
   reviewCheckHome?: string;
@@ -261,8 +264,11 @@ export function loadSupervisorConfig(
     stopTimeoutMs: data.STOP_TIMEOUT_MS,
     reviewDiffMaxBytes: data.REVIEW_DIFF_MAX_BYTES,
     reviewMaxFiles: data.REVIEW_MAX_FILES,
-    reviewCheckCommands: JSON.parse(data.REVIEW_CHECK_COMMANDS) as string[],
+    reviewCheckCommands: repositoryCheckCommandsSchema.parse(
+      JSON.parse(data.REVIEW_CHECK_COMMANDS),
+    ),
     reviewCheckTimeoutMs: data.REVIEW_CHECK_TIMEOUT_MS,
+    reviewCheckTotalTimeoutMs: data.REVIEW_CHECK_TOTAL_TIMEOUT_MS,
     ...(data.REVIEW_CHECK_UID !== undefined && data.REVIEW_CHECK_GID !== undefined
       ? {
           reviewCheckUid: data.REVIEW_CHECK_UID,

@@ -26,6 +26,7 @@ import { ConversationPane } from './ConversationPane';
 import { DetailsPanel } from './DetailsPanel';
 import { SettingsDialog } from './SettingsDialog';
 import { AddRepositoryDialog } from './AddRepositoryDialog';
+import { RepositorySettingsDialog } from './RepositorySettingsDialog';
 import { Sidebar } from './Sidebar';
 import styles from './WorkspaceShell.module.css';
 
@@ -164,6 +165,7 @@ export function WorkspaceShell({
   const [unreadCount, setUnreadCount] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [addRepositoryOpen, setAddRepositoryOpen] = useState(false);
+  const [repositorySettingsOpen, setRepositorySettingsOpen] = useState(false);
   const [repositoryActionBusy, setRepositoryActionBusy] = useState(false);
   const [repositoryActionError, setRepositoryActionError] = useState<string | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
@@ -1241,6 +1243,10 @@ export function WorkspaceShell({
             setAddRepositoryOpen(true);
             setSidebarOpen(false);
           }}
+          onOpenRepositorySettings={() => {
+            setRepositorySettingsOpen(true);
+            setSidebarOpen(false);
+          }}
           onRepositoryAction={(action) => void handleRepositoryAction(action)}
           repositoryActionBusy={repositoryActionBusy}
           repositoryActionError={repositoryActionError}
@@ -1440,6 +1446,16 @@ export function WorkspaceShell({
           onAdded={async (repositoryId) => {
             await loadRepositories();
             setSelectedRepositoryId(repositoryId);
+          }}
+        />
+      ) : null}
+
+      {repositorySettingsOpen && selectedRepository ? (
+        <RepositorySettingsDialog
+          repository={selectedRepository}
+          onClose={() => setRepositorySettingsOpen(false)}
+          onSaved={(updated) => {
+            setRepositories((rows) => rows.map((row) => (row.id === updated.id ? updated : row)));
           }}
         />
       ) : null}
