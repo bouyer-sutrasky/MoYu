@@ -1,28 +1,30 @@
 # ISS-63 按仓库配置检查命令 · 红绿证据
-# 生成时间：2026-11-12T12:36:09+08:00
+# 生成时间：2026-11-12T13:04:52+08:00
 # node：v24.22.2 / pnpm：11.7.0
 # base tree：/root/src/m63-base @ 115d43d166465f211ba0a8d177fad3712e9162a0
-# branch tree：/root/src/repository-check-commands-63 @ a4ea85018fce4a4e0c9c2e596368e28125447294
+# branch tree：/root/src/repository-check-commands-63 @ 4a2bddb34516c87bd59714c0d02f959cc0ff5b7a
 # 隔离库：postgres://moyu@127.0.0.1:55432/postgres（脚本内随机库名）
 
 ## ISS-63 base evidence
 tree: /root/src/m63-base
 HEAD: 115d43d166465f211ba0a8d177fad3712e9162a0
 migrate: ok
+schema: repositories.check_commands absent (pre-change)
 repo-a (no per-repository config): HTTP 200
-{"data":{"worktree":{"state":"available","directory":"/tmp/m63-base-c2It9V/worktrees/probeA/probe-feedfacecafe","reason":null,"profile":"probeA"},"runs":[{"id":"1794458183205-1","command":"printf global","exitCode":0,"passed":true,"timedOut":false,"startedAt":"2026-11-12T04:36:23.205Z","finishedAt":"2026-11-12T04:36:23.213Z","durationMs":7,"summary":"通过","output":"global","outputTruncated":false}]}}
+{"data":{"worktree":{"state":"available","directory":"/tmp/m63-base-jrQkAh/worktrees/probeA/probe-feedfacecafe","reason":null,"profile":"probeA"},"runs":[{"id":"1794459906440-1","command":"printf global","exitCode":0,"passed":true,"timedOut":false,"startedAt":"2026-11-12T05:05:06.440Z","finishedAt":"2026-11-12T05:05:06.448Z","durationMs":7,"summary":"通过","output":"global","outputTruncated":false}]}}
 repo-b (no per-repository config): HTTP 200
-{"data":{"worktree":{"state":"available","directory":"/tmp/m63-base-c2It9V/worktrees/probeB/probe-deadbeefcafe","reason":null,"profile":"probeB"},"runs":[{"id":"1794458183221-1","command":"printf global","exitCode":0,"passed":true,"timedOut":false,"startedAt":"2026-11-12T04:36:23.221Z","finishedAt":"2026-11-12T04:36:23.227Z","durationMs":5,"summary":"通过","output":"global","outputTruncated":false}]}}
+{"data":{"worktree":{"state":"available","directory":"/tmp/m63-base-jrQkAh/worktrees/probeB/probe-deadbeefcafe","reason":null,"profile":"probeB"},"runs":[{"id":"1794459906456-1","command":"printf global","exitCode":0,"passed":true,"timedOut":false,"startedAt":"2026-11-12T05:05:06.456Z","finishedAt":"2026-11-12T05:05:06.461Z","durationMs":5,"summary":"通过","output":"global","outputTruncated":false}]}}
 BASE-MATCH: both repositories used the supervisor-wide command
 RESULT PASS
 ## ISS-63 branch evidence
 tree: /root/src/repository-check-commands-63
-HEAD: a4ea85018fce4a4e0c9c2e596368e28125447294
+HEAD: 4a2bddb34516c87bd59714c0d02f959cc0ff5b7a
 migrate: ok
+schema: repositories.check_commands present (0018 applied)
 repo-a (custom ["printf repo-a"]): HTTP 200
-{"data":{"worktree":{"state":"available","directory":"/tmp/m63-branch-cq4NvT/worktrees/probeA/probe-feedfacecafe","reason":null,"profile":"probeA"},"runs":[{"id":"1794458185925-1","command":"printf repo-a","exitCode":0,"passed":true,"timedOut":false,"startedAt":"2026-11-12T04:36:25.925Z","finishedAt":"2026-11-12T04:36:25.933Z","durationMs":7,"summary":"通过","output":"repo-a","outputTruncated":false}]}}
+{"data":{"worktree":{"state":"available","directory":"/tmp/m63-branch-Mf76UE/worktrees/probeA/probe-feedfacecafe","reason":null,"profile":"probeA"},"runs":[{"id":"1794459909275-1","command":"printf repo-a","exitCode":0,"passed":true,"timedOut":false,"startedAt":"2026-11-12T05:05:09.275Z","finishedAt":"2026-11-12T05:05:09.283Z","durationMs":7,"summary":"通过","output":"repo-a","outputTruncated":false}]}}
 repo-b (null = default): HTTP 200
-{"data":{"worktree":{"state":"available","directory":"/tmp/m63-branch-cq4NvT/worktrees/probeB/probe-deadbeefcafe","reason":null,"profile":"probeB"},"runs":[{"id":"1794458185942-1","command":"printf global","exitCode":0,"passed":true,"timedOut":false,"startedAt":"2026-11-12T04:36:25.942Z","finishedAt":"2026-11-12T04:36:25.947Z","durationMs":5,"summary":"通过","output":"global","outputTruncated":false}]}}
+{"data":{"worktree":{"state":"available","directory":"/tmp/m63-branch-Mf76UE/worktrees/probeB/probe-deadbeefcafe","reason":null,"profile":"probeB"},"runs":[{"id":"1794459909291-1","command":"printf global","exitCode":0,"passed":true,"timedOut":false,"startedAt":"2026-11-12T05:05:09.291Z","finishedAt":"2026-11-12T05:05:09.297Z","durationMs":5,"summary":"通过","output":"global","outputTruncated":false}]}}
 repo-a (stored invalid [""]): HTTP 422
 {"error":{"code":"invalid_request","message":"仓库检查命令配置无效，拒绝执行：must not be blank"}}
 RESULT PASS

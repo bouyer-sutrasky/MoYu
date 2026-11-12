@@ -1,8 +1,8 @@
 # ISS-63 验证记录：按仓库配置检查命令
 
 日期：2026-11-12。基线：`main@115d43d166465f211ba0a8d177fad3712e9162a0`。
-被测代码：分支 `agent/repository-check-commands-63`，最终 head 以 PR #64 为准；实现提交 `6eb8500`，迁移回归修正 `ea7cf27`，红绿脚本 `a4ea850`，脚本 lint `9a1eca3`，审计行锁 `629fafa`，文档与证据 `0dc138c` 及其后的 docs 提交。
-红绿证据：`docs/evidence/m63/ISS63-check-commands.txt`（脚本 `scripts/m63/evidence.sh` 生成，运行于 `a4ea850`；后续 `9a1eca3` 只改脚本的 ESLint 全局声明、`629fafa` 只给审计更新加行锁，均未改变被证据覆盖的 `review/checks` 路径）。
+被测代码：分支 `agent/repository-check-commands-63`，最终 head 以 PR #64 为准；实现提交 `6eb8500`，迁移回归修正 `ea7cf27`，红绿脚本 `a4ea850`，脚本 lint `9a1eca3`，审计行锁 `629fafa`，并发审计测试 `d2a406f`，评审修复与证据加固 `4a2bddb`，文档提交在其后。
+红绿证据：`docs/evidence/m63/ISS63-check-commands.txt`（脚本 `scripts/m63/evidence.sh` 生成，运行于 `4a2bddb`；日志内还断言 base 树没有 `check_commands`、branch 树有该列，避免「用错树」造成假红）。
 
 ## 1. 范围
 
@@ -50,8 +50,8 @@ repo-a (stored invalid [""]): HTTP 422
 
 | 命令 | 结果 |
 | --- | --- |
-| `pnpm check` | **EXIT=0**；`apps/supervisor` 78 tests / 8 files（含新增 3 个 resolver 用例、1 个总预算用例、1 个 service 用例），`packages/contracts` 26 tests；lint/format/typecheck 全通过 |
-| `pnpm test:integration`（`TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres`） | **EXIT=0**；db `47 passed`，api `123 passed`，dispatcher `82 passed / 1 skipped` |
+| `pnpm check` | **EXIT=0**；`apps/supervisor` 79 tests / 8 files（含新增 resolver、总预算、配置交叉校验、service 用例），`packages/contracts` 26 tests；lint/format/typecheck 全通过 |
+| `pnpm test:integration`（`TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres`） | **EXIT=0**；db `47 passed`，api `126 passed`，dispatcher `82 passed / 1 skipped` |
 | `db` 集成中的 `rollback-0018` | 3 个用例通过：up/down/re-up、二次回滚拒绝、更晚迁移存在时拒绝、旧库升级保留行、`[]`/9 条越界被 CHECK 拒绝、正常 1 条可写 |
 | `pnpm build`（证据脚本内） | 两棵树均成功，supervisor `dist/main.js` 可启动并监听回环端口 |
 
@@ -71,9 +71,10 @@ repo-a (stored invalid [""]): HTTP 422
 
 - 命令字段只在 owner 认证后可见/可写；PATCH 与 POST 都走 `authenticate`。
 - supervisor 控制接口仍只收 `repositoryId + ticketId`；命令不经过 HTTP，避免「平台传任意 shell」这条面。
-- supervisor 用共享 `repositoryCheckCommandsSchema` 校验：1–8 条、单条 ≤2000 字符、拒绝 NUL/换行/空白；非法即 422。
+- supervisor 用共享 `repositoryCheckCommandsSchema` 校验：1–8 条、单条 ≤2000 字符、拒绝 NUL/换行/空白；非法即 422。配置阶段还拒绝「单条超时 > 总预算」，避免运行时静默截断。
+- 审计更新在事务内 `FOR UPDATE` 重读当前值；并发 PATCH 的审计行形成 `null → A → B` 链（API 集成测试覆盖）。同值 PATCH 不再写 `updated_at` 或审计行。
 - 检查子进程仍按 #58 的身份与白名单环境执行；本单只改「跑什么命令」，不改 `REVIEW_CHECK_UID/GID/HOME`、`setpriv`、cwd 或 env 白名单。
-- 审计表只追加；`actor_owner_id` 为 `restrict`，删除 owner 不会静默抹掉审计。
+- 审计表只追加；`repository_id` 与 `actor_owner_id` 都是 `restrict`，删除仓库/owner 不会静默抹掉审计（当前也没有删除入口）。
 - DB CHECK 拒绝 `[]`、>8 条和非数组；即使有人手改 DB，也不能把「空数组」变成跳过检查。
 
 ## 6. 未验证 / 已知限制
