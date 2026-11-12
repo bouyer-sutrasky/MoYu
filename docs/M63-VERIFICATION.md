@@ -1,13 +1,13 @@
 # ISS-63 验证记录：按仓库配置检查命令
 
 日期：2026-11-12。基线：`main@115d43d166465f211ba0a8d177fad3712e9162a0`。
-被测代码：分支 `agent/repository-check-commands-63`，代码提交 `6eb8500`（实现）、`ea7cf27`（迁移回归修正）、`a4ea850`（红绿脚本）；本文档提交只增加文档与证据。
-红绿证据：`docs/evidence/m63/ISS63-check-commands.txt`（脚本 `scripts/m63/evidence.sh` 生成）。
+被测代码：分支 `agent/repository-check-commands-63`，最终 head 以 PR #64 为准；实现提交 `6eb8500`，迁移回归修正 `ea7cf27`，红绿脚本 `a4ea850`，脚本 lint `9a1eca3`，审计行锁 `629fafa`，文档与证据 `0dc138c` 及其后的 docs 提交。
+红绿证据：`docs/evidence/m63/ISS63-check-commands.txt`（脚本 `scripts/m63/evidence.sh` 生成，运行于 `a4ea850`；后续 `9a1eca3` 只改脚本的 ESLint 全局声明、`629fafa` 只给审计更新加行锁，均未改变被证据覆盖的 `review/checks` 路径）。
 
 ## 1. 范围
 
 - 新增 `repositories.check_commands jsonb null`：`null` = 使用 supervisor 的 `REVIEW_CHECK_COMMANDS`，非空数组 = 该仓库自己的命令。
-- 新增 `repository_audit_events`：每次被接受的命令变更记录 actor、from、to；与更新同一事务。
+- 新增 `repository_audit_events`：每次被接受的命令变更记录 actor、from、to；与更新同一事务，并在事务内 `FOR UPDATE` 重读当前值，避免并发修改把同一旧值写成两条审计。
 - 新增 `PATCH /api/v1/repositories/:id`，`POST /api/v1/repositories` 接受可选 `checkCommands`，`GET` 返回 `checkCommands`。
 - supervisor 用现有 `DATABASE_URL` 直接读取该列；共享契约校验；非法/空值 **fail-closed 422**；`REVIEW_CHECK_TOTAL_TIMEOUT_MS` 约束一次检查的总预算。
 - 最小 UI：侧栏选中仓库后的「检查命令设置」，可继承全局默认或按仓库自定义。

@@ -141,6 +141,7 @@ case "$*" in
   *repos/Bouyer12/m5a-beta*) echo '{"id":102,"full_name":"Bouyer12/m5a-beta","default_branch":"trunk","private":true,"permissions":{"admin":false,"push":true}}' ;;
   *repos/Bouyer12/m5a-gamma*) echo '{"id":104,"full_name":"Bouyer12/m5a-gamma","default_branch":"main","private":true,"permissions":{"admin":false,"push":true}}' ;;
   *repos/Bouyer12/m5a-delta*) echo '{"id":105,"full_name":"Bouyer12/m5a-delta","default_branch":"main","private":true,"permissions":{"admin":false,"push":true}}' ;;
+  *repos/Bouyer12/m5a-epsilon*) echo '{"id":106,"full_name":"Bouyer12/m5a-epsilon","default_branch":"main","private":true,"permissions":{"admin":false,"push":true}}' ;;
   *) echo 'gh: Not Found (HTTP 404)' >&2; exit 1 ;;
 esac
 `,
@@ -449,5 +450,42 @@ describe('multi-repository lifecycle API on real PostgreSQL', () => {
       checkCommands: ['true'],
     });
     expect(missing.statusCode).toBe(404);
+  });
+
+  it('serializes concurrent changes so the audit rows form a chain', async () => {
+    const created = await request('POST', '/api/v1/repositories', {
+      fullName: 'Bouyer12/m5a-epsilon',
+    });
+    expect(created.statusCode).toBe(201);
+    const repositoryId = created.json().data.repositoryId as string;
+
+    const [first, second] = await Promise.all([
+      request('PATCH', `/api/v1/repositories/${repositoryId}`, {
+        checkCommands: ['echo first'],
+      }),
+      request('PATCH', `/api/v1/repositories/${repositoryId}`, {
+        checkCommands: ['echo second'],
+      }),
+    ]);
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+
+    const rows = await harness.database
+      .select()
+      .from(repositoryAuditEvents)
+      .where(eq(repositoryAuditEvents.repositoryId, repositoryId));
+    expect(rows).toHaveLength(2);
+    const details = rows.map((row) => row.detail as { from: unknown; to: unknown });
+    const startsFromNull = details.find((detail) => detail.from === null);
+    const chained = details.find((detail) => detail !== startsFromNull);
+    expect(startsFromNull).toBeDefined();
+    expect(chained).toBeDefined();
+    expect(chained?.from).toEqual(startsFromNull?.to);
+
+    const [stored] = await harness.database
+      .select()
+      .from(repositories)
+      .where(eq(repositories.id, repositoryId));
+    expect(stored?.checkCommands).toEqual(chained?.to);
   });
 });
