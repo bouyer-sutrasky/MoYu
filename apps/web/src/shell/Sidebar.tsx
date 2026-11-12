@@ -37,6 +37,7 @@ interface SidebarProps {
   onReloadConversations: () => void;
   onNewTask: () => void;
   onOpenAddRepository: () => void;
+  onOpenRepositorySettings: () => void;
   onRepositoryAction: (action: 'wake' | 'sleep' | 'retry' | 'retry_stop') => void;
   repositoryActionBusy: boolean;
   repositoryActionError: string | null;
@@ -73,6 +74,7 @@ export function Sidebar({
   onReloadConversations,
   onNewTask,
   onOpenAddRepository,
+  onOpenRepositorySettings,
   onRepositoryAction,
   repositoryActionBusy,
   repositoryActionError,
@@ -219,6 +221,12 @@ export function Sidebar({
               {waiting ? <span>{waiting}</span> : null}
               {resource ? <span>{resource}</span> : null}
               {runtime.lease ? <span>执行代次 {runtime.lease.fencingToken}</span> : null}
+              <span>
+                检查命令：
+                {selectedRepository.checkCommands
+                  ? `自定义 ${selectedRepository.checkCommands.length} 条`
+                  : '全局默认'}
+              </span>
               {runtime.lastProgressAt ? (
                 <span>最后进展 {formatUpdatedAt(runtime.lastProgressAt)}</span>
               ) : (
@@ -238,6 +246,14 @@ export function Sidebar({
                   {repositoryActionBusy ? '处理中…' : action.label}
                 </button>
               ))}
+              <button
+                type="button"
+                className={styles.textButton}
+                onClick={onOpenRepositorySettings}
+                title="配置该仓库的检查命令"
+              >
+                检查命令设置
+              </button>
             </div>
             {repositoryActionError ? (
               <p className={styles.runtimeError} role="alert">

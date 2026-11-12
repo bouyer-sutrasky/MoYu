@@ -87,12 +87,39 @@ export const repositoryRuntimeSchema = z.object({
 
 export type RepositoryRuntime = z.infer<typeof repositoryRuntimeSchema>;
 
+/**
+ * One review check command line. A command is deliberately a single line and
+ * bounded in length: it is executed by the host supervisor as a shell, so the
+ * contract must not let a value silently turn into an unbounded script.
+ */
+export const repositoryCheckCommandSchema = z
+  .string()
+  .trim()
+  .min(1, 'must not be blank')
+  .max(2000, 'must be at most 2000 characters')
+  .refine((value) => !value.includes('\u0000'), 'must not contain NUL')
+  .refine((value) => !/[\r\n]/.test(value), 'must be a single command line');
+
+/**
+ * Repository-specific review check commands. `null` on the repository means the
+ * supervisor's process-wide REVIEW_CHECK_COMMANDS default applies; an empty array
+ * is rejected everywhere so "no commands" can never silently skip a check.
+ */
+export const repositoryCheckCommandsSchema = z
+  .array(repositoryCheckCommandSchema)
+  .min(1, 'must contain at least one command')
+  .max(8, 'must contain at most 8 commands');
+
+export type RepositoryCheckCommands = z.infer<typeof repositoryCheckCommandsSchema>;
+
 export const repositorySummarySchema = z.object({
   id: uuidSchema,
   fullName: z.string().min(1),
   githubRepositoryId: z.number().int().nullable(),
   defaultBranch: z.string().min(1),
   status: repositoryStatusSchema,
+  /** null means the supervisor's global default applies. */
+  checkCommands: z.array(z.string()).nullable(),
   /** Present on M5 responses; older responses may omit it. */
   runtime: repositoryRuntimeSchema.nullable().optional(),
   createdAt: isoTimestampSchema,
@@ -188,10 +215,29 @@ export const createRepositoryInputSchema = z
       .string()
       .trim()
       .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, 'must be owner/name'),
+    checkCommands: repositoryCheckCommandsSchema.optional(),
   })
   .strict();
 
 export type CreateRepositoryInput = z.infer<typeof createRepositoryInputSchema>;
+
+/**
+ * Only the per-repository check commands can be updated. `null` clears the
+ * repository override so the supervisor default applies again.
+ */
+export const updateRepositoryInputSchema = z
+  .object({
+    checkCommands: repositoryCheckCommandsSchema.nullable(),
+  })
+  .strict();
+
+export type UpdateRepositoryInput = z.infer<typeof updateRepositoryInputSchema>;
+
+export const repositoryDataSchema = z.object({
+  repository: repositorySummarySchema,
+});
+
+export type RepositoryData = z.infer<typeof repositoryDataSchema>;
 
 export const repositoryRuntimeDataSchema = z.object({
   repositoryId: uuidSchema,

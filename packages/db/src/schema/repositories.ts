@@ -1,5 +1,14 @@
 import { sql } from 'drizzle-orm';
-import { bigint, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import {
+  bigint,
+  check,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from 'drizzle-orm/pg-core';
 
 import { repositoryStatus } from './enums';
 import { owners } from './owners';
@@ -24,6 +33,14 @@ export const repositories = pgTable(
      * rejected even though the platform route itself is shared.
      */
     bridgeCallbackTokenHash: text('bridge_callback_token_hash'),
+    /**
+     * Repository-specific review check commands, or null to use the host
+     * supervisor's REVIEW_CHECK_COMMANDS default. The supervisor reads this
+     * column directly; the platform never forwards commands through the control
+     * API. Keeping the shape check in PostgreSQL means a manually edited row
+     * cannot silently become an empty (skip checks) configuration.
+     */
+    checkCommands: jsonb('check_commands').$type<string[]>(),
     status: repositoryStatus('status').notNull().default('provisioning'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -33,6 +50,10 @@ export const repositories = pgTable(
     uniqueIndex('repositories_github_id_uq')
       .on(table.githubRepositoryId)
       .where(sql`${table.githubRepositoryId} is not null`),
+    check(
+      'repositories_check_commands_shape',
+      sql`${table.checkCommands} is null or (jsonb_typeof(${table.checkCommands}) = 'array' and jsonb_array_length(${table.checkCommands}) between 1 and 8)`,
+    ),
   ],
 );
 

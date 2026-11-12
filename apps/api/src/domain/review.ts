@@ -28,7 +28,7 @@ import {
 
 import type { ApiConfig } from '../config';
 import { ApiProblem } from '../lib/errors';
-import { createSupervisorClient } from '../runtime/supervisor';
+import { createSupervisorClient, SupervisorRequestError } from '../runtime/supervisor';
 
 const execFileAsync = promisify(execFile);
 
@@ -309,6 +309,17 @@ export async function runChecks(
     const result = await supervisor.reviewChecks(repository.id, task.upstreamTicketId);
     runs = result.runs.map((run) => reviewCheckRunSchema.parse(run));
   } catch (error) {
+    if (error instanceof SupervisorRequestError) {
+      if (error.statusCode === 422) {
+        throw ApiProblem.invalid(error.message);
+      }
+      if (error.statusCode === 409) {
+        throw ApiProblem.conflict(error.message);
+      }
+      if (error.statusCode === 404) {
+        throw ApiProblem.notFound(error.message);
+      }
+    }
     throw ApiProblem.unavailable(
       `无法在运行时执行目录中运行检查：${error instanceof Error ? error.message.slice(0, 300) : 'unknown error'}`,
     );
