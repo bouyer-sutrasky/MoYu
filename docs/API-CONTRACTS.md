@@ -45,9 +45,10 @@ M2 实际 Cookie：https origin 使用 `__Host-moyu_session` 与 `__Host-moyu_bo
 | --- | --- |
 | GET /api/v1/github/repositories | 专用账号当前可访问仓库，分页；没有全量可见性时支持输入owner/name检查 |
 | POST /api/v1/repositories | `{fullName}` → repositoryId；校验repo存在与所需读写权限，异步准备配置 |
-| GET /api/v1/repositories | **M2 已实现只读列表**；M5 每项增加 `runtime`（生命周期、原因、等待对象、监听、执行名额、动作）；M3 兼容行仍可按 `BRIDGE_REPOSITORY` 绑定（不存秘密） |
+| GET /api/v1/repositories | **M2 已实现只读列表**；M5 每项增加 `runtime`（生命周期、原因、等待对象、监听、执行名额、动作）；M6 每项再增加 `checkCommands`（`null` = 使用 supervisor 全局默认）；M3 兼容行仍可按 `BRIDGE_REPOSITORY` 绑定（不存秘密） |
 | GET /api/v1/github/repositories | **M5-A 已实现**：专用 GitHub 账号查询可见仓库（`q`/`limit`），返回默认分支、私有标记与 push/admin 权限 |
-| POST /api/v1/repositories | **M5-A 已实现**：`{fullName}`；真实权限校验、重复 409、创建后由 supervisor prepare/wake；不可访问 403 |
+| POST /api/v1/repositories | **M5-A 已实现**：`{fullName, checkCommands?}`；真实权限校验、重复 409、创建后由 supervisor prepare/wake；不可访问 403。`checkCommands` 为 1–8 条单行命令，省略 = 继承 supervisor 默认 |
+| PATCH /api/v1/repositories/:id | **M6（ISS-63）已实现**：只接受 `{checkCommands: string[] \| null}`；`null` 清除仓库覆盖、回到 supervisor 的 `REVIEW_CHECK_COMMANDS`；仅 owner 可改；变更写 `repository_audit_events`（actor、from、to）；空数组/非法值 422 |
 | GET /api/v1/repositories/:id/runtime | **M5-A 已实现**：单仓库生命周期投影与允许动作 |
 | POST /api/v1/repositories/:id/wake | **M5-A 已实现**：只提交 repositoryId；忙时返回排队状态，不承诺立即在线 |
 | POST /api/v1/repositories/:id/sleep | **M5-A 已实现**：有活动任务/命令或保留后台服务时返回 200 + `accepted:false` 与原因；停止未证明全部进程退出时保持 `stopping/stop_failed` 并返回 `accepted:false`，动作 `retry_stop` 可重试；不伪报停止 |
@@ -57,6 +58,9 @@ M2 实际 Cookie：https origin 使用 `__Host-moyu_session` 与 `__Host-moyu_bo
 | POST /api/v1/repositories/:id/wake | 返回调度operationId，忙时queued，不承诺立即在线 |
 | GET /api/v1/repositories/:id/branches | 分页分支列表 |
 | GET /api/v1/repositories/:id/models | Harness已配置且可用的模型标识，不返回API Key |
+
+**仓库检查命令（ISS-63）**：命令存在 `repositories.check_commands`（JSONB，`null` = 继承）。宿主 supervisor 用现有数据库连接直接读取该列，**不接受控制接口传入的命令**；仓库值非法或为空时检查 fail-closed（422），不会回退到默认命令，也不会静默跳过。`REVIEW_CHECK_TOTAL_TIMEOUT_MS`（默认 900s）约束一次检查所有命令的总时长，平台到 supervisor 的客户端超时为 960s。
+
 | POST /api/v1/conversations | **M4 已实现**：`{repositoryId,mode:'work',executionMode:'execute'\|'discuss',baseBranch,model:{provider,model,reasoningEffort?}\|null,clientRequestId}`；同一 `clientRequestId` 相同 payload 返回原会话，不同 payload 409；`discuss` 创建只读讨论任务 |
 | GET /api/v1/conversations | **M3 已实现**：按仓库列出会话与任务投影；M4-UX 增加 `cursor` 分页与 `nextCursor`/`hasMore`，游标绑定仓库，跨仓库复用返回 422 |
 | GET /api/v1/activity | **M6-B 已实现**：`limit`/`beforeSeq` 读取当前所有者的持久活动提醒（需要回复、待审阅、已完成、失败）及正在执行的任务；提醒 `id` 是持久事件 id，客户端以它作为浏览器通知去重键；`nextCursor` 为更早页的 `beforeSeq` |

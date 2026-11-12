@@ -194,14 +194,20 @@ try {
 
   const healthUrl = `http://127.0.0.1:${servicePort}/control/v1/health`;
   const deadline = Date.now() + 20_000;
+  let lastHealthError = 'timeout';
   for (;;) {
     try {
-      const response = await fetch(healthUrl);
+      const response = await fetch(healthUrl, {
+        headers: { authorization: `Bearer ${token}` },
+      });
       if (response.ok) break;
-    } catch {
-      /* not up yet */
+      lastHealthError = `HTTP ${response.status}`;
+    } catch (error) {
+      lastHealthError = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
     }
-    if (Date.now() > deadline) throw new Error(`supervisor did not become healthy at ${healthUrl}`);
+    if (Date.now() > deadline) {
+      throw new Error(`supervisor did not become healthy at ${healthUrl} (${lastHealthError})`);
+    }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
 
