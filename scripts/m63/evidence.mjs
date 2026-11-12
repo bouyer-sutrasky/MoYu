@@ -1,3 +1,4 @@
+/* global fetch, setTimeout, clearTimeout, URL */
 import { execFileSync, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from 'node:fs';
