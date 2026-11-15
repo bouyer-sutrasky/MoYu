@@ -106,3 +106,43 @@ Two real defects were found and fixed on the way:
    `recovery_state` never becomes `recovered`, so nothing could clear it. `failed` is terminal
    and the runtime has already ended the assignment, so it was added to the release set.
    After the fix the stuck lease was released and the retry delivered on the next pass.
+
+## 2026-11-15 18:44 (+08:00) — formal cutover to moyu.sutrasky.com (owner authorised)
+
+The owner explicitly instructed "切换候选". `moyu.sutrasky.com` now serves the isolated
+candidate stack.
+
+Pre-change snapshot: `/root/m6c-cutover-pre-20261115T104312Z.txt`.
+Candidate database dump taken before the owner reset:
+`/root/m6c-candidate-20261115T104312Z.dump`
+(sha256 `2e19a5912bbc872929cf2199e079a20967c1ba247b2a2281a47a6bb8da1f0432`).
+
+| item | before | after |
+| --- | --- | --- |
+| nginx upstream for `moyu.sutrasky.com` | `127.0.0.1:4300` (production stack) | `127.0.0.1:4310` (candidate stack) |
+| `moyu.service` | active, `User` unset (root), `WorkingDirectory=/root/src/widgets-m6` | stopped (unit kept, still enabled) |
+| WebAuthn RP ID / origin | `moyu-m6c.117-72-211-55.sslip.io` | `moyu.sutrasky.com` / `https://moyu.sutrasky.com` |
+| `WEB_DIST_DIR` | `/opt/moyu-m6c/app/apps/web/dist` (pre-merge build) | `/opt/moyu-m6c/current/apps/web/dist` |
+| production database `moyu` | owners 0 / repositories 0 / task_links 0 | **unchanged** (never pointed at) |
+| candidate database | owners 1 / repositories 3 / conversations 2 / tasks 2 | owner kept, previous credential revoked |
+
+Verification: `https://moyu.sutrasky.com/` 200, `/healthz` 200, `/setup` 200,
+`/api/v1/auth/state` returns `rpId=moyu.sutrasky.com`, `origin=https://moyu.sutrasky.com`,
+`initialized=true`, `activeCredentialCount=0`, `recoveryOpen=true`. The candidate API on
+`127.0.0.1:4310` reports a fresh uptime while `127.0.0.1:4300` was the 336058-second
+production process, which proves nginx reached the candidate and not the old stack.
+
+Only one line of `/etc/nginx/sites-available/moyu.conf` changed (verified with `diff`
+against `/root/m6c-backup-20261115/`); no other vhost was modified and `nginx -t` passed.
+
+The previous passkey was registered under the old RP ID and cannot authenticate at the new
+origin, so it was revoked (`revoked_at` set, row kept) and the instance moved to the
+recovery flow. A one-time recovery code was minted from the operator CLI; the owner registers
+the real-device passkey at `https://moyu.sutrasky.com/setup`.
+
+**Rollback (two commands):**
+
+```bash
+sed -i 's|proxy_pass http://127.0.0.1:4310;|proxy_pass http://127.0.0.1:4300;|' /etc/nginx/sites-available/moyu.conf
+nginx -t && systemctl reload nginx && systemctl start moyu.service
+```
