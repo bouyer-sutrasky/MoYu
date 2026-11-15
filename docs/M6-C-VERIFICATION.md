@@ -285,3 +285,98 @@ outstanding.
 
 Also note: `/var/lib/moyu-m6c` had to become `0751` so the check identity can traverse into
 `worktrees/` without being able to list it.
+
+## 2026-11-15 22:50 (+08:00) — drills: backup/restore, migrations, platform and plugin rollback
+
+All drills ran against the isolated candidate. The production database `moyu` was not opened,
+written, or migrated.
+
+### Backup and restore
+
+`pg_dump -Fc` of `moyu_m6c` (12 MB, 25 tables) → 279 KB dump → restored into a throwaway database
+`moyu_m6c_restore_*` created by the postgres superuser (`moyu_m6c` has no CREATEDB, which is correct).
+
+| check | source | restored |
+| --- | --- | --- |
+| tables | 25 | 25 |
+| owners / repositories / conversations / tasks / messages / events | 1 / 3 / 4 / 4 / 12 / 37 | identical |
+| `drizzle.__drizzle_migrations` | 19 | 19 |
+| indexes | 85 | 85 |
+| `repositories_check_commands_shape` | present | present |
+
+The restore was then proven **app-usable**, not merely present: a throwaway API process
+(`apps/api/dist/server.js`, same release, `API_PORT=4399`, run as `moyu-m6c`) booted against the
+restored database and answered `GET /readyz` 200 and `GET /api/v1/auth/state` with the real owner
+state `{"initialized":true,"activeCredentialCount":1,"setupOpen":false,"recoveryOpen":false,
+"rpId":"moyu.sutrasky.com"}`; `GET /api/v1/repositories` returned 401, so the auth gate is live on
+the restored data too. Port released afterwards.
+
+### Migrations, up and rollback
+
+| step | observed |
+| --- | --- |
+| empty database + `pnpm db:migrate` | `migrate.completed`, 25 tables, 19 migrations |
+| API on that fresh schema | `/readyz` 200, `{"initialized":false,"activeCredentialCount":0,"setupOpen":true}` — a genuine first-run state |
+| rollback = restore the pre-drill dump into the same database | 19 migrations, 1 owner, 3 repositories, 2 credentials, `/readyz` 200, `{"initialized":true,"activeCredentialCount":1,"setupOpen":false}` |
+
+The rollback story is restore-from-backup; this run proves that path returns the database to a
+schema and data state the current release boots on. There are no down-migrations to apply, and no
+attempt was made to invent them.
+
+### Platform rollback
+
+`/opt/moyu-m6c/current` repointed from `b6fa35bb5394-home` to the previous release
+`e3a677e03b4d-kill`, API restarted: `/readyz` 200, served bundle changed
+`index-BCMyha2F.js → index-BhUd1-FJ.js`, `auth/state` unchanged. Repointed back: bundle returned to
+`index-BCMyha2F.js`, `/readyz` 200. The whole rollback is a symlink swap plus a service restart.
+
+### Plugin rollback
+
+Each profile loads the runtime through `profiles/<profile>/node_modules/dsh-superagent`, a symlink
+into `/opt/moyu-m6c/artifacts/`. Rollback is that symlink plus a restart of the instance.
+
+The drill staged a second artifact (`superagent-rollback-<ts>`, byte-identical `lib/index.js`
+`07f46473…d49b`), repointed profile `m6c-b` at it, and forced a real reload with
+`sleep` → `wake`. Observed: `sleep` 200 (`{}` is the schema; `{"reason":…}` is rejected 422),
+`wake` 200, instance back `online` with **pid 4018258 → 4094447**, `policyVersion` unchanged
+(`cda2cc40…`) and Deployment revision `1883730372` with `promptMaxChars=200000` intact. Repointed
+back to `superagent-ad9650631bc3`, reloaded again: pid `4094447 → 4094763`, same settings. The
+staged copy was deleted; only the real artifact remains.
+
+This verifies the swap procedure and that a plugin rollback preserves the owner's settings. It does
+**not** verify a downgrade to an older plugin build, because only one artifact exists.
+
+### Dual-entrance de-duplication
+
+Duplicate keys are enforced in the schema, and each was exercised against real rows:
+
+| duplicate attempt | result |
+| --- | --- |
+| second delivery row for the same message | rejected — `deliveries_message_uq` |
+| second task for the same conversation (web-first repeat) | rejected — `task_links_conversation_uq` |
+| same upstream ticket linked from another conversation (GitHub-first repeat) | rejected — `task_links_repository_upstream_ticket_uq` |
+| second event with the same `(source, source_event_id)` | rejected — `events_source_event_uq` |
+
+Row counts were unchanged afterwards. Note the fourth index has no repository dimension, so the same
+source event id cannot exist in two repositories at all: stronger de-duplication, but it is the
+repository-isolation gap already recorded under the isolation findings.
+
+**Not verified end to end.** The GitHub-first entrance needs a second GitHub actor: an issue created
+by the agent's own account produced no notification and the runtime's GitHub source stayed
+`received=0` for the whole observation window (the probe issue was closed afterwards). The web-first
+entrance needs the owner's session. Only the de-duplication invariants above are proven.
+
+### Dependency install and checks under the check identity
+
+The outstanding #64 row asked for a real dependency install in a fresh worktree. Done at the
+identity and toolchain level: a fresh copy of this repository (783 files, lockfile present, no
+`node_modules`) owned by `moyu-m6c:moyu-m6c-check`, installed and tested **as `moyu-m6c-check`**:
+
+```
+pnpm install --frozen-lockfile  → 392 packages, 1m53.6s, exit 0
+pnpm --filter @moyu/supervisor test → 10 passed | 1 skipped (11 files), 100 passed | 5 skipped (105 tests), 8s, exit 0
+```
+
+This exercises the parts that used to fail: the check identity's own HOME as the pnpm store, network
+access, and a real build/test toolchain resolving from a lockfile. It is **not** the review API path
+on `lessons`: that still needs a real lessons ticket, which needs the owner to create the task.
