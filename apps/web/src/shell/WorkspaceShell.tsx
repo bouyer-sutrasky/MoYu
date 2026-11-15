@@ -1416,6 +1416,8 @@ export function WorkspaceShell({
         <SettingsDialog
           me={me}
           authState={authState}
+          repositories={repositories}
+          selectedRepositoryId={selectedRepositoryId}
           onClose={() => setSettingsOpen(false)}
           onRefreshMe={onRefreshMe}
           onLoggedOut={onLoggedOut}
