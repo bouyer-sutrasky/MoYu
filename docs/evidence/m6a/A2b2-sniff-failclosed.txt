@@ -1,0 +1,325 @@
+# A2b2 嗅探 fail-closed 修复
+
+代码 head（本文件据其产出；其后一个 docs-only 提交入库）：
+$ git rev-parse HEAD
+ce71ed51c4421f5b8ed93800ae51c9096d7b50bb
+
+最终推送 head 的 PR #44 两项必需检查见交付评论；本地 `pnpm check` 与 `pnpm test:integration` 均 EXIT=0。
+
+## 1. 未闭合的注释 / 处理指令 / doctype（fail-closed）
+
+RED（修复前，`e40d372` 之上先加的测试）：
+
+$ cd apps/api && TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm exec vitest run test/integration/attachments.integration.test.ts
+
+ RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/api
+
+ ❯ test/integration/attachments.integration.test.ts (23 tests | 1 failed) 1009ms
+   ✓ M6 attachment upload and download > stores a real multipart upload and serves the identical bytes back 58ms
+   ✓ M6 attachment upload and download > round-trips a text attachment byte for byte 18ms
+   ✓ M6 attachment upload and download > never serves an uploaded HTML file inline 17ms
+   ✓ M6 attachment upload and download > refuses an oversized file with 413 and stores nothing 30ms
+   ✓ M6 attachment upload and download > refuses a disallowed content type with 422 and stores nothing 11ms
+   ✓ M6 attachment upload and download > requires an authenticated session 6ms
+   ✓ M6 attachment upload and download > refuses an upload into another owner conversation and a foreign download 26ms
+   ✓ M6 attachment upload and download > binds attachments to the sent message and lists them with it 54ms
+   ✓ M6 attachment upload and download > refuses attachment ids from another conversation and already-sent attachments 27ms
+   ✓ M6 attachment upload and download > refuses an empty file 8ms
+   ✓ M6 attachment upload and download > refuses HTML declared as image/png without writing a row or a file 10ms
+   ✓ M6 attachment upload and download > refuses ELF and shebang bytes declared as image/png 10ms
+   ✓ M6 attachment upload and download > records a real PNG declared as text/plain as image/png 10ms
+   ✓ M6 attachment upload and download > keeps valid images, text, source and explicit text/html uploads 33ms
+   ✓ M6 attachment upload and download > accepts multi-byte text whose UTF-8 sequence crosses the sniff window 25ms
+   × M6 attachment upload and download > refuses an unclosed comment in the sniff window instead of calling it text 19ms
+     → expected 201 to be 422 // Object.is equality
+   ✓ M6 attachment upload and download > refuses SVG behind leading comments or a doctype, but keeps mid-text mentions 17ms
+   ✓ M6 attachment upload and download > refuses SVG bytes even when declared image/svg+xml 9ms
+   ✓ M6 attachment upload and download > revokes an attachment softly and idempotently, and blocks its download 22ms
+   ✓ M6 attachment upload and download > refuses to send a revoked attachment without creating a message or delivery 23ms
+   ✓ M6 attachment upload and download > keeps an unrevoked attachment downloadable and sendable 24ms
+   ✓ M6 attachment upload and download > answers 404 for another owner and 401 without a session, leaving the row unchanged 13ms
+   ✓ M6 attachment upload and download > does not accept a new attachment once the task has ended 15ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/integration/attachments.integration.test.ts > M6 attachment upload and download > refuses an unclosed comment in the sniff window instead of calling it text
+AssertionError: expected 201 to be 422 // Object.is equality
+
+- Expected
++ Received
+
+- 422
++ 201
+
+ ❯ test/integration/attachments.integration.test.ts:537:35
+    535|         bytes: Buffer.from(`<!--${'x'.repeat(padding)}--><svg></svg>`,…
+    536|       });
+    537|       expect(response.statusCode).toBe(422);
+       |                                   ^
+    538|     }
+    539|     const ordinary = await uploadedAttachment(harness, conversationId,…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 22 passed (23)
+   Start at  22:19:12
+   Duration  2.85s (transform 485ms, setup 0ms, collect 1.57s, tests 1.01s, environment 0ms, prepare 82ms)
+
+判定（期望 / 实际 / 结论）：`<!--` + 508 或 600 个 `x` 使 `-->` 落在 512 窗口外，期望 422；实际 201
+（`expected 201 to be 422`）；结论：缺口成立。修复 `fbc0118`：`leadingMarkup` 对未闭合构造返回 `unknown`，
+`sniffContent` 映射为 unknown，上传按口径 A 422。
+
+GREEN（同一命令）：
+
+$ cd apps/api && TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm exec vitest run test/integration/attachments.integration.test.ts
+
+ RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/api
+
+ ✓ test/integration/attachments.integration.test.ts (23 tests) 1004ms
+
+ Test Files  1 passed (1)
+      Tests  23 passed (23)
+   Start at  22:19:24
+   Duration  2.91s (transform 516ms, setup 0ms, collect 1.64s, tests 1.00s, environment 0ms, prepare 76ms)
+
+判定：`Tests 23 passed (23)`、`EXIT=0`；完整注释的普通 markdown、正常中文与 PNG 仍 201。
+
+## 2. 短文件的不完整 UTF-8 不得回退
+
+RED（修复前）：
+
+$ cd apps/api && TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm exec vitest run test/integration/attachments.integration.test.ts
+
+ RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/api
+
+ ❯ test/integration/attachments.integration.test.ts (24 tests | 1 failed) 1038ms
+   ✓ M6 attachment upload and download > stores a real multipart upload and serves the identical bytes back 58ms
+   ✓ M6 attachment upload and download > round-trips a text attachment byte for byte 17ms
+   ✓ M6 attachment upload and download > never serves an uploaded HTML file inline 16ms
+   ✓ M6 attachment upload and download > refuses an oversized file with 413 and stores nothing 29ms
+   ✓ M6 attachment upload and download > refuses a disallowed content type with 422 and stores nothing 10ms
+   ✓ M6 attachment upload and download > requires an authenticated session 6ms
+   ✓ M6 attachment upload and download > refuses an upload into another owner conversation and a foreign download 26ms
+   ✓ M6 attachment upload and download > binds attachments to the sent message and lists them with it 55ms
+   ✓ M6 attachment upload and download > refuses attachment ids from another conversation and already-sent attachments 29ms
+   ✓ M6 attachment upload and download > refuses an empty file 8ms
+   ✓ M6 attachment upload and download > refuses HTML declared as image/png without writing a row or a file 10ms
+   ✓ M6 attachment upload and download > refuses ELF and shebang bytes declared as image/png 10ms
+   ✓ M6 attachment upload and download > records a real PNG declared as text/plain as image/png 10ms
+   ✓ M6 attachment upload and download > keeps valid images, text, source and explicit text/html uploads 31ms
+   ✓ M6 attachment upload and download > accepts multi-byte text whose UTF-8 sequence crosses the sniff window 23ms
+   ✓ M6 attachment upload and download > refuses an unclosed comment in the sniff window instead of calling it text 16ms
+   × M6 attachment upload and download > only trims an incomplete trailing character when the window is full 18ms
+     → expected 201 to be 422 // Object.is equality
+   ✓ M6 attachment upload and download > refuses SVG behind leading comments or a doctype, but keeps mid-text mentions 15ms
+   ✓ M6 attachment upload and download > refuses SVG bytes even when declared image/svg+xml 7ms
+   ✓ M6 attachment upload and download > revokes an attachment softly and idempotently, and blocks its download 20ms
+   ✓ M6 attachment upload and download > refuses to send a revoked attachment without creating a message or delivery 24ms
+   ✓ M6 attachment upload and download > keeps an unrevoked attachment downloadable and sendable 27ms
+   ✓ M6 attachment upload and download > answers 404 for another owner and 401 without a session, leaving the row unchanged 19ms
+   ✓ M6 attachment upload and download > does not accept a new attachment once the task has ended 8ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/integration/attachments.integration.test.ts > M6 attachment upload and download > only trims an incomplete trailing character when the window is full
+AssertionError: expected 201 to be 422 // Object.is equality
+
+- Expected
++ Received
+
+- 422
++ 201
+
+ ❯ test/integration/attachments.integration.test.ts:554:30
+    552|       bytes: Buffer.concat([Buffer.from('abc', 'utf8'), Buffer.from([0…
+    553|     });
+    554|     expect(short.statusCode).toBe(422);
+       |                              ^
+    555|     // Controls: a split at the 512-byte boundary is still text.
+    556|     for (const [filename, bytes] of [
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 23 passed (24)
+   Start at  22:19:45
+   Duration  3.02s (transform 532ms, setup 0ms, collect 1.70s, tests 1.04s, environment 0ms, prepare 79ms)
+
+判定：4 字节 `'abc' + 0xE4` 期望 422，实际 201（`expected 201 to be 422`）；结论：缺口成立。
+修复 `46e91af`：仅当输入恰为 `MIME_SNIFF_BYTES`（窗口被切满）时才回退尾部不完整字符。
+
+GREEN（同一命令）：
+
+$ cd apps/api && TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm exec vitest run test/integration/attachments.integration.test.ts
+
+ RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/api
+
+ ✓ test/integration/attachments.integration.test.ts (24 tests) 1037ms
+
+ Test Files  1 passed (1)
+      Tests  24 passed (24)
+   Start at  22:20:00
+   Duration  2.88s (transform 503ms, setup 0ms, collect 1.57s, tests 1.04s, environment 0ms, prepare 76ms)
+
+判定：`Tests 24 passed (24)`、`EXIT=0`；714 B 跨边界、510a+中、BOM+长中文仍 text/201。
+
+## 3. 已消费 HTML doctype 后的判型
+
+RED（修复前）：
+
+$ cd apps/api && TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm exec vitest run test/integration/attachments.integration.test.ts
+
+ RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/api
+
+ ❯ test/integration/attachments.integration.test.ts (25 tests | 1 failed) 1067ms
+   ✓ M6 attachment upload and download > stores a real multipart upload and serves the identical bytes back 59ms
+   ✓ M6 attachment upload and download > round-trips a text attachment byte for byte 19ms
+   ✓ M6 attachment upload and download > never serves an uploaded HTML file inline 17ms
+   ✓ M6 attachment upload and download > refuses an oversized file with 413 and stores nothing 31ms
+   ✓ M6 attachment upload and download > refuses a disallowed content type with 422 and stores nothing 12ms
+   ✓ M6 attachment upload and download > requires an authenticated session 6ms
+   ✓ M6 attachment upload and download > refuses an upload into another owner conversation and a foreign download 27ms
+   ✓ M6 attachment upload and download > binds attachments to the sent message and lists them with it 56ms
+   ✓ M6 attachment upload and download > refuses attachment ids from another conversation and already-sent attachments 29ms
+   ✓ M6 attachment upload and download > refuses an empty file 8ms
+   ✓ M6 attachment upload and download > refuses HTML declared as image/png without writing a row or a file 10ms
+   ✓ M6 attachment upload and download > refuses ELF and shebang bytes declared as image/png 10ms
+   ✓ M6 attachment upload and download > records a real PNG declared as text/plain as image/png 10ms
+   ✓ M6 attachment upload and download > keeps valid images, text, source and explicit text/html uploads 31ms
+   ✓ M6 attachment upload and download > accepts multi-byte text whose UTF-8 sequence crosses the sniff window 25ms
+   ✓ M6 attachment upload and download > refuses an unclosed comment in the sniff window instead of calling it text 15ms
+   ✓ M6 attachment upload and download > only trims an incomplete trailing character when the window is full 22ms
+   × M6 attachment upload and download > treats a consumed HTML doctype as HTML, not as free text 19ms
+     → expected 201 to be 422 // Object.is equality
+   ✓ M6 attachment upload and download > refuses SVG behind leading comments or a doctype, but keeps mid-text mentions 16ms
+   ✓ M6 attachment upload and download > refuses SVG bytes even when declared image/svg+xml 8ms
+   ✓ M6 attachment upload and download > revokes an attachment softly and idempotently, and blocks its download 21ms
+   ✓ M6 attachment upload and download > refuses to send a revoked attachment without creating a message or delivery 21ms
+   ✓ M6 attachment upload and download > keeps an unrevoked attachment downloadable and sendable 34ms
+   ✓ M6 attachment upload and download > answers 404 for another owner and 401 without a session, leaving the row unchanged 12ms
+   ✓ M6 attachment upload and download > does not accept a new attachment once the task has ended 8ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/integration/attachments.integration.test.ts > M6 attachment upload and download > treats a consumed HTML doctype as HTML, not as free text
+AssertionError: expected 201 to be 422 // Object.is equality
+
+- Expected
++ Received
+
+- 422
++ 201
+
+ ❯ test/integration/attachments.integration.test.ts:577:31
+    575|       bytes: Buffer.from('<!DOCTYPE html><p>hi</p>', 'utf8'),
+    576|     });
+    577|     expect(asText.statusCode).toBe(422);
+       |                               ^
+    578|     const asHtml = await uploadedAttachment(harness, conversationId, {
+    579|       filename: 'page.html',
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 24 passed (25)
+   Start at  22:20:17
+   Duration  2.91s (transform 505ms, setup 0ms, collect 1.58s, tests 1.07s, environment 0ms, prepare 79ms)
+
+判定：`<!DOCTYPE html><p>hi</p>` 声明 `text/plain` 期望 422，实际 201（`expected 201 to be 422`）；
+结论：缺口成立。修复 `2226e73`：消费到 HTML doctype 后，后续 `<svg` 仍判 SVG，否则判 HTML。
+
+GREEN（同一命令）：
+
+$ cd apps/api && TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm exec vitest run test/integration/attachments.integration.test.ts
+
+ RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/api
+
+ ✓ test/integration/attachments.integration.test.ts (25 tests) 1031ms
+
+ Test Files  1 passed (1)
+      Tests  25 passed (25)
+   Start at  22:20:30
+   Duration  2.94s (transform 541ms, setup 0ms, collect 1.64s, tests 1.03s, environment 0ms, prepare 79ms)
+
+判定：`Tests 25 passed (25)`、`EXIT=0`；`text/html` 声明仍 201，`<!DOCTYPE svg><svg>` 仍 422，普通文本仍 text。
+
+## 4. 测试质量（`cb14b66`，格式化 `ce71ed5`）
+
+- 边界用例改用导出的 `MIME_SNIFF_BYTES`：`MIME_SNIFF_BYTES - 1`、`- 2`、`- 3`，不再写死 511/509/510/714。
+- 三个 SVG 用例除 422 外断言错误信息包含 `SVG`，避免被误判成 HTML 仍绿。
+
+## 5. L113 探针脚本卫生（`92ee1f9`）
+
+$ python3 scripts/m6a/l113-vision-probe.py --help
+usage: l113-vision-probe.py [-h] [--key-file KEY_FILE] png [model]
+
+Ask a chat-completions route to read a PNG.
+
+positional arguments:
+  png                  image file to send
+  model
+
+options:
+  -h, --help           show this help message and exit
+  --key-file KEY_FILE  credentials YAML used when the env var is unset
+                       (default: /root/.dsh-m5/.credentials.yaml)
+exit=0
+
+$ env -u COMMAND_CODE_API_KEY python3 scripts/m6a/l113-vision-probe.py /tmp/does-not-exist.png --key-file /tmp/no-such-key.yaml
+COMMAND_CODE_API_KEY is not set and /tmp/no-such-key.yaml has no COMMAND_CODE_API_KEY entry
+MISSING_EXIT=1
+
+- UA 改为 `moyu-m6a-evidence/1.0`（不再伪装 curl）；密钥解析顺序 env → `--key-file` → 默认
+  `/root/.dsh-m5/.credentials.yaml`（与 L113 证据一致）；补 `URLError`/timeout/非 JSON 兜底，
+  `errors='replace'`，三处读取均用 `with`。L113 证据未重跑（按所有者要求）。
+
+## 6. 0015/0016 down 的 ledger 删除移入 DO（`25be38d`）
+
+$ grep -c "b50ad051\|ae9d04d5" packages/db/migrations/rollback/0015_late_gateway.down.sql packages/db/migrations/rollback/0016_attachment_revoke.down.sql
+packages/db/migrations/rollback/0015_late_gateway.down.sql:1
+packages/db/migrations/rollback/0016_attachment_revoke.down.sql:1
+
+$ cd packages/db && TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm exec vitest run test/integration/rollback-0015.integration.test.ts test/integration/rollback-0016.integration.test.ts test/integration/rollback-0014.integration.test.ts
+
+ RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/packages/db
+
+ ✓ test/integration/rollback-0016.integration.test.ts (2 tests) 1117ms
+   ✓ 0016 rollback script on real PostgreSQL > drops revoked_at, refuses a second rollback, and re-applies cleanly  568ms
+   ✓ 0016 rollback script on real PostgreSQL > refuses to roll back underneath a later migration and leaves the column in place  547ms
+ ✓ test/integration/rollback-0015.integration.test.ts (2 tests) 1132ms
+   ✓ 0015 rollback script on real PostgreSQL > refuses a second rollback instead of silently deleting nothing  582ms
+   ✓ 0015 rollback script on real PostgreSQL > re-applies the attachment link and rejects an unknown message id  545ms
+ ✓ test/integration/rollback-0014.integration.test.ts (2 tests) 1132ms
+   ✓ 0014 rollback script on real PostgreSQL > refuses a second rollback instead of silently deleting nothing  583ms
+   ✓ 0014 rollback script on real PostgreSQL > removes the reservation schema and re-applies it with 0015  544ms
+
+ Test Files  3 passed (3)
+      Tests  6 passed (6)
+   Start at  22:21:55
+   Duration  2.38s (transform 322ms, setup 0ms, collect 2.96s, tests 3.38s, environment 1ms, prepare 240ms)
+
+判定：PL/pgSQL `DECLARE` 作用域允许 `DELETE ... WHERE hash = expected` 放在 DO 块内，哈希每文件只出现一次；
+rollback 测试 `3 files / 6 tests`、`EXIT=0`。
+
+## 7. 回归（本 head）
+
+$ pnpm check
+packages/contracts test:       Tests  19 passed (19)
+packages/runtime-client test:       Tests  13 passed (13)
+apps/dispatcher test:       Tests  5 passed (5)
+apps/api test:       Tests  20 passed (20)
+apps/supervisor test:       Tests  59 passed (59)
+
+$ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm test:integration
+ Test Files  13 passed (13)
+      Tests  42 passed (42)
+ Test Files  16 passed (16)
+      Tests  114 passed (114)
+ Test Files  16 passed | 1 skipped (17)
+      Tests  82 passed | 1 skipped (83)
+
+判定：check EXIT=0；集成 db 42、api 114（新增 3 条本文件用例）、dispatcher 82+1 skipped，EXIT=0。

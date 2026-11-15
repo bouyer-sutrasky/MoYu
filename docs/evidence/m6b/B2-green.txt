@@ -1,0 +1,123 @@
+# B2-green — 2026-11-11T07:54:22.233Z
+$ git rev-parse HEAD
+92b01d1436f0802ca16846d697ceba7e4bda2232
+# baseline for the red side
+$ git rev-parse 68c01e50d69a075183a0a175c57611fa77e1163a
+68c01e50d69a075183a0a175c57611fa77e1163a
+
+$ GET /api/v1/history/search?q=星河&limit=1, then the returned cursor
+HTTP 200
+{
+  "items": [
+    {
+      "conversation": {
+        "id": "fe8c4739-3b7e-49e8-af6f-c88d11b33ef4",
+        "repositoryId": "58f16f3a-b983-460c-8c95-107b6d8cd675",
+        "mode": "work",
+        "executionMode": "execute",
+        "source": "web",
+        "externalKey": null,
+        "externalUrl": null,
+        "planRevision": null,
+        "baseBranch": "main",
+        "baseCommit": "68c01e50d69a075183a0a175c57611fa77e1163a",
+        "model": null,
+        "title": "有未保存修改的清理任务",
+        "createdAt": "2026-11-11T07:53:38.817Z",
+        "updatedAt": "2026-11-11T07:53:38.817Z",
+        "task": {
+          "id": "2c3b2751-50b4-4779-b274-d2c7a08736a0",
+          "conversationId": "fe8c4739-3b7e-49e8-af6f-c88d11b33ef4",
+          "repositoryId": "58f16f3a-b983-460c-8c95-107b6d8cd675",
+          "state": "completed",
+          "upstreamTicketId": "t_dirty_a1b2c3d4e5f6",
+          "upstreamThreadId": null,
+          "baseBranch": "main",
+          "baseCommit": "68c01e50d69a075183a0a175c57611fa77e1163a",
+          "model": null,
+          "executionMode": "execute",
+          "question": null,
+          "questionMessageId": null,
+          "prUrl": "https://github.com/bouyer-sutrasky/MoYu/pull/44",
+          "prNumber": 44,
+          "planRevision": null,
+          "stopRequestedAt": null,
+          "stoppedAt": null,
+          "stopEvidence": {},
+          "lastOperation": null,
+          "version": 0,
+          "createdAt": "2026-11-11T07:53:38.817Z",
+          "updatedAt": "2026-11-11T07:53:38.817Z"
+        }
+      },
+      "repository": {
+        "id": "58f16f3a-b983-460c-8c95-107b6d8cd675",
+        "fullName": "bouyer-sutrasky/MoYu"
+      },
+      "matched": "message",
+      "snippet": "这个任务也包含 星河，但工作目录有未提交改动。"
+    }
+  ],
+  "nextCursor": "eyJ2IjoxLCJrIjoiY29udmVyc2F0aW9uIiwicyI6Imhpc3Rvcnk6SXF0M1RaZ0pJcmNzN2xqNEF3anRZOTd1b1Btb2N5YndVMkg0WjdiQWkzUSIsInQiOiIyMDI2LTExLTExVDA3OjUzOjM4LjgxNzQ0M1oiLCJpIjoiZmU4YzQ3MzktM2I3ZS00OWU4LWFmNmYtYzg4ZDExYjMzZWY0In0",
+  "hasMore": true
+}
+HTTP 200
+{
+  "items": [
+    {
+      "conversation": {
+        "id": "594eeea0-8479-4532-b88d-03844062aa9d",
+        "repositoryId": "58f16f3a-b983-460c-8c95-107b6d8cd675",
+        "mode": "work",
+        "executionMode": "execute",
+        "source": "web",
+        "externalKey": null,
+        "externalUrl": null,
+        "planRevision": null,
+        "baseBranch": "main",
+        "baseCommit": "68c01e50d69a075183a0a175c57611fa77e1163a",
+        "model": null,
+        "title": "已合并且干净的清理任务",
+        "createdAt": "2026-11-11T07:53:38.817Z",
+        "updatedAt": "2026-11-11T07:53:38.817Z",
+        "task": {
+          "id": "f2643a0f-3026-44e2-bbff-3bc7e4cd5b89",
+          "conversationId": "594eeea0-8479-4532-b88d-03844062aa9d",
+          "repositoryId": "58f16f3a-b983-460c-8c95-107b6d8cd675",
+          "state": "completed",
+          "upstreamTicketId": "t_clean_a1b2c3d4e5f6",
+          "upstreamThreadId": null,
+          "baseBranch": "main",
+          "baseCommit": "68c01e50d69a075183a0a175c57611fa77e1163a",
+          "model": null,
+          "executionMode": "execute",
+          "question": null,
+          "questionMessageId": null,
+          "prUrl": "https://github.com/bouyer-sutrasky/MoYu/pull/44",
+          "prNumber": 44,
+          "planRevision": null,
+          "stopRequestedAt": null,
+          "stoppedAt": null,
+          "stopEvidence": {},
+          "lastOperation": null,
+          "version": 0,
+          "createdAt": "2026-11-11T07:53:38.817Z",
+          "updatedAt": "202
+exit code: 0
+
+$ GET /api/v1/history/search?q=cross owner secret
+HTTP 200
+{
+  "items": [],
+  "nextCursor": null,
+  "hasMore": false
+}
+exit code: 0
+
+$ special / overlong / empty keyword and a cursor from another query
+special HTTP 200: "这个任务包含关键字 星河，也包含特殊字符 100%_safe。"
+overlong HTTP 200: []
+empty HTTP 200: 7 recent items
+cursor-reuse HTTP 422: {"code":"invalid_request","message":"Pagination cursor belongs to a different list","retryable":false}
+exit code: 0
+

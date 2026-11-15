@@ -1,0 +1,391 @@
+# P1-B：附件跨会话串号（Composer 附件绑定）
+
+依据：#56 复审 P1-B（复审报告 L28）；动作键 `M6A-REWORK-ISS57-P1B`。
+分支：本地 `agent/review-isolation-m6a-fa8ec916012c` 指向 `origin/agent/attachments-review-panel-4bd4aae33eac`（沿用 PR #44）。
+基线：`0378cd87a699cef92fcdf25a9570fb667b092f96`（P1-C 验收通过时的 head）。
+环境：隔离 PostgreSQL `127.0.0.1:55432`、隔离 API `127.0.0.1:4630`、真实 Chromium（Playwright）、`/opt/moyu-node24/bin`（Node v24.22.2）。
+未改 `/root/src/upstream/*`，未重启 3082，未合并 PR。
+
+刷新到 head（after 侧本轮重跑，作为最终提交证据）：
+$ git rev-parse HEAD
+4978dee443ce40d7dddb3df5f4d884168629cc68
+本 head 的 PR #44 必需检查：check pass；integration (real PostgreSQL) pass。
+
+原证据头（历史，保留；before 反例取自该 head）：2792450a99a4b4d4441893ec549591e27b546642
+
+$ git log --oneline 0378cd8..HEAD
+2792450 fix(web): bind composer attachments to their own conversation and send version
+58f4cc1 test(m6a): prove the composer uploads A's attachment into the conversation open at send time
+
+## 0. 测试形态：端到端，不是组件替身
+
+`scripts/m6a/p1b-composer-check.sh` 构建当前 checkout、重建隔离数据库、用 `seed-fixture.mjs` 播下
+同一个 owner 的仓库和两个会话，启动真实 API（`apps/api/dist/server.js` 提供 `apps/web/dist`），
+再由 `scripts/m6a/p1b-composer-check.mjs` 驱动真实 Chromium：**真实 API + 真实 PostgreSQL + 真实浏览器**，
+没有用 stub 假接口。脚本在两种构建上各跑一次：pre-fix（`58f4cc1`）作为红段，fixed（本 head）作为绿段。
+两个会话：A = `7ab608fd-0c26-484f-a0a0-ed79ef276484`，B = `4aa2940b-e0b2-40e0-be46-3a4862fe420a`（红段 seed）。
+
+## 1. 红段：pre-fix 构建（HEAD = 58f4cc1）
+
+$ cd /tmp/p1b-red && P1B_SIDE=before bash scripts/m6a/p1b-composer-check.sh
+==> side=before head=58f4cc1e490233b6f599ef2171ef6ff3312d9d42
+==> build this checkout
+$ pnpm -r --if-present build
+==> recreate isolated database moyu_p1b_evidence
+$ tsx src/cli/migrate.ts
+==> seed owner, repository and two conversations
+conversation A=7ab608fd-0c26-484f-a0a0-ed79ef276484
+conversation B=4aa2940b-e0b2-40e0-be46-3a4862fe420a
+==> start the after API on 127.0.0.1:4630 (serves apps/web/dist)
+==> browser check (side=before)
+
+## scenario 1: select in A, switch to B, send in B
+SHOT /tmp/p1b-red/docs/evidence/m6a/p1b/before-a-selected.png
+SHOT /tmp/p1b-red/docs/evidence/m6a/p1b/before-switch-to-b.png
+UPLOAD http://127.0.0.1:4630/api/v1/conversations/4aa2940b-e0b2-40e0-be46-3a4862fe420a/attachments
+MESSAGE http://127.0.0.1:4630/api/v1/conversations/4aa2940b-e0b2-40e0-be46-3a4862fe420a/messages attachmentIds=["60a0ea20-2768-4efb-9095-26aefd4abf11"] text="P1-B switch scenario"
+PASS A shows the selected attachment before switching :: count=1
+FAIL B does not show A's selected attachment after switching :: count=1
+FAIL no attachment upload for B after the switch (raw URLs: ["http://127.0.0.1:4630/api/v1/conversations/4aa2940b-e0b2-40e0-be46-3a4862fe420a/attachments"]) :: uploads=1
+FAIL B's message carries no attachmentIds (raw body: [{"clientMessageId":"78743bb1-f84a-4473-9b6c-5189afdb43e5","text":"P1-B switch scenario","attachmentIds":["60a0ea20-2768-4efb-9095-26aefd4abf11"]}]) :: messages=1
+
+## scenario 2: slow upload started in A, switch to B before it completes
+UPLOAD http://127.0.0.1:4630/api/v1/conversations/7ab608fd-0c26-484f-a0a0-ed79ef276484/attachments
+MESSAGE http://127.0.0.1:4630/api/v1/conversations/7ab608fd-0c26-484f-a0a0-ed79ef276484/messages attachmentIds=["890e68c5-7136-48ee-8cd3-ff8ba156e844"] text="P1-B late response scenario"
+SHOT /tmp/p1b-red/docs/evidence/m6a/p1b/before-late-response-in-b.png
+FAIL B does not show A's in-flight upload indicator :: count=1
+FAIL B's attachment list does not receive A's late response :: count=1
+PASS the late upload stays on A and the message goes to A (raw URLs) :: {"uploads":["http://127.0.0.1:4630/api/v1/conversations/7ab608fd-0c26-484f-a0a0-ed79ef276484/attachments"],"messages":["http://127.0.0.1:4630/api/v1/conversations/7ab608fd-0c26-484f-a0a0-ed79ef276484/messages"]}
+
+## scenario 3: same conversation still uploads and binds
+SHOT /tmp/p1b-red/docs/evidence/m6a/p1b/before-same-conversation-selected.png
+UPLOAD http://127.0.0.1:4630/api/v1/conversations/4aa2940b-e0b2-40e0-be46-3a4862fe420a/attachments
+MESSAGE http://127.0.0.1:4630/api/v1/conversations/4aa2940b-e0b2-40e0-be46-3a4862fe420a/messages attachmentIds=["680e9360-fd8a-4a15-94d1-efb09c289980"] text="P1-B same conversation scenario"
+PASS the upload target is the open conversation (raw URL) :: ["http://127.0.0.1:4630/api/v1/conversations/4aa2940b-e0b2-40e0-be46-3a4862fe420a/attachments"]
+PASS the message in the same conversation carries the uploaded attachment :: [{"clientMessageId":"e472a9e8-884b-4fd0-9c8d-85e54a63fdad","text":"P1-B same conversation scenario","attachmentIds":["680e9360-fd8a-4a15-94d1-efb09c289980"]}]
+
+## scenario 4: remove the selected file before sending
+MESSAGE http://127.0.0.1:4630/api/v1/conversations/4aa2940b-e0b2-40e0-be46-3a4862fe420a/messages attachmentIds=null text="P1-B deleted attachment scenario"
+PASS removing the file prevents its upload :: uploads=0
+PASS the message carries no attachmentIds :: [{"clientMessageId":"549e9f9e-17a4-4977-878e-8cddee86a335","text":"P1-B deleted attachment scenario"}]
+
+## scenario 5: failed upload retries only in the same conversation
+UPLOAD http://127.0.0.1:4630/api/v1/conversations/4aa2940b-e0b2-40e0-be46-3a4862fe420a/attachments
+SHOT /tmp/p1b-red/docs/evidence/m6a/p1b/before-upload-failed.png
+UPLOAD http://127.0.0.1:4630/api/v1/conversations/4aa2940b-e0b2-40e0-be46-3a4862fe420a/attachments
+MESSAGE http://127.0.0.1:4630/api/v1/conversations/4aa2940b-e0b2-40e0-be46-3a4862fe420a/messages attachmentIds=["f7e7fb41-e46d-48fe-8d56-d5d66c88059b"] text="P1-B retry scenario"
+PASS the failed upload reports an attachment error :: count=1
+PASS both upload attempts target the same conversation (raw URLs) :: ["http://127.0.0.1:4630/api/v1/conversations/4aa2940b-e0b2-40e0-be46-3a4862fe420a/attachments","http://127.0.0.1:4630/api/v1/conversations/4aa2940b-e0b2-40e0-be46-3a4862fe420a/attachments"]
+PASS the retried message carries exactly the retried attachment :: [{"clientMessageId":"51e6bd5b-3a26-4e89-aed8-aa81cf29f15f","text":"P1-B retry scenario","attachmentIds":["f7e7fb41-e46d-48fe-8d56-d5d66c88059b"]}]
+
+## scenario 6: editing text and switching back keep the conversation binding
+FAIL the other conversation does not show A's attachment :: count=1
+PASS returning to A restores its own attachment selection :: count=1
+PASS editing the text does not disturb the selected attachment :: count=1
+
+## verdict: 11/17 checks passed
+failed checks:
+- B does not show A's selected attachment after switching
+- no attachment upload for B after the switch (raw URLs: ["http://127.0.0.1:4630/api/v1/conversations/4aa2940b-e0b2-40e0-be46-3a4862fe420a/attachments"])
+- B's message carries no attachmentIds (raw body: [{"clientMessageId":"78743bb1-f84a-4473-9b6c-5189afdb43e5","text":"P1-B switch scenario","attachmentIds":["60a0ea20-2768-4efb-9095-26aefd4abf11"]}])
+- B does not show A's in-flight upload indicator
+- B's attachment list does not receive A's late response
+- the other conversation does not show A's attachment
+browser check exit=1
+records: /tmp/p1b-red/docs/evidence/m6a/p1b/before-records.json
+EXIT=1
+
+判定（红）：17 项里 6 项失败，exit 1。核心证据是请求原文：
+在 A 选文件、切到 B、在 B 发送后，上传请求的 URL 是
+`http://127.0.0.1:4630/api/v1/conversations/4aa2940b-…/attachments` —— 这个 conversationId 就是 **B**，
+消息体 `attachmentIds` 也非空；迟到上传时 B 还显示了 A 的「正在上传…」并把 A 的文件带进 B。
+同会话发送、删除后发送、上传失败重试三条在红段已经通过（证明没有把功能改死）。
+
+## 2. 绿段：fixed 构建（HEAD = 2792450）
+
+$ cd /root/src/review-isolation-m6a-fa8ec916012c && P1B_SIDE=after bash scripts/m6a/p1b-composer-check.sh
+==> side=after head=2792450a99a4b4d4441893ec549591e27b546642
+==> build this checkout
+$ pnpm -r --if-present build
+==> recreate isolated database moyu_p1b_evidence
+$ tsx src/cli/migrate.ts
+==> seed owner, repository and two conversations
+conversation A=57386e6a-99e6-4884-ac65-8235df100e7d
+conversation B=405e0858-6762-4f1f-aab6-78cf915b335c
+==> start the after API on 127.0.0.1:4630 (serves apps/web/dist)
+==> browser check (side=after)
+
+## scenario 1: select in A, switch to B, send in B
+SHOT /root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/p1b/after-a-selected.png
+SHOT /root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/p1b/after-switch-to-b.png
+MESSAGE http://127.0.0.1:4630/api/v1/conversations/405e0858-6762-4f1f-aab6-78cf915b335c/messages attachmentIds=null text="P1-B switch scenario"
+PASS A shows the selected attachment before switching :: count=1
+PASS B does not show A's selected attachment after switching :: count=0
+PASS no attachment upload for B after the switch (raw URLs: []) :: uploads=0
+PASS B's message carries no attachmentIds (raw body: [{"clientMessageId":"8c6d6452-2178-48cd-9f65-6d67bc6c44d2","text":"P1-B switch scenario"}]) :: messages=1
+
+## scenario 2: slow upload started in A, switch to B before it completes
+UPLOAD http://127.0.0.1:4630/api/v1/conversations/57386e6a-99e6-4884-ac65-8235df100e7d/attachments
+MESSAGE http://127.0.0.1:4630/api/v1/conversations/57386e6a-99e6-4884-ac65-8235df100e7d/messages attachmentIds=["a938f14a-47d7-4822-9341-88b2b9d38e61"] text="P1-B late response scenario"
+SHOT /root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/p1b/after-late-response-in-b.png
+PASS B does not show A's in-flight upload indicator :: count=0
+PASS B's attachment list does not receive A's late response :: count=0
+PASS the late upload stays on A and the message goes to A (raw URLs) :: {"uploads":["http://127.0.0.1:4630/api/v1/conversations/57386e6a-99e6-4884-ac65-8235df100e7d/attachments"],"messages":["http://127.0.0.1:4630/api/v1/conversations/57386e6a-99e6-4884-ac65-8235df100e7d/messages"]}
+
+## scenario 3: same conversation still uploads and binds
+SHOT /root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/p1b/after-same-conversation-selected.png
+UPLOAD http://127.0.0.1:4630/api/v1/conversations/405e0858-6762-4f1f-aab6-78cf915b335c/attachments
+MESSAGE http://127.0.0.1:4630/api/v1/conversations/405e0858-6762-4f1f-aab6-78cf915b335c/messages attachmentIds=["218319a5-39a6-4d61-8413-76078667b618"] text="P1-B same conversation scenario"
+PASS the upload target is the open conversation (raw URL) :: ["http://127.0.0.1:4630/api/v1/conversations/405e0858-6762-4f1f-aab6-78cf915b335c/attachments"]
+PASS the message in the same conversation carries the uploaded attachment :: [{"clientMessageId":"a982afb2-01e8-4725-a6c5-c33e690498a7","text":"P1-B same conversation scenario","attachmentIds":["218319a5-39a6-4d61-8413-76078667b618"]}]
+
+## scenario 4: remove the selected file before sending
+MESSAGE http://127.0.0.1:4630/api/v1/conversations/405e0858-6762-4f1f-aab6-78cf915b335c/messages attachmentIds=null text="P1-B deleted attachment scenario"
+PASS removing the file prevents its upload :: uploads=0
+PASS the message carries no attachmentIds :: [{"clientMessageId":"d7556ac6-b78c-4f41-b55f-fd1dfca50228","text":"P1-B deleted attachment scenario"}]
+
+## scenario 5: failed upload retries only in the same conversation
+UPLOAD http://127.0.0.1:4630/api/v1/conversations/405e0858-6762-4f1f-aab6-78cf915b335c/attachments
+SHOT /root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/p1b/after-upload-failed.png
+UPLOAD http://127.0.0.1:4630/api/v1/conversations/405e0858-6762-4f1f-aab6-78cf915b335c/attachments
+MESSAGE http://127.0.0.1:4630/api/v1/conversations/405e0858-6762-4f1f-aab6-78cf915b335c/messages attachmentIds=["9528a0e2-6c3e-4a7b-a163-cd314b620b0c"] text="P1-B retry scenario"
+PASS the failed upload reports an attachment error :: count=1
+PASS both upload attempts target the same conversation (raw URLs) :: ["http://127.0.0.1:4630/api/v1/conversations/405e0858-6762-4f1f-aab6-78cf915b335c/attachments","http://127.0.0.1:4630/api/v1/conversations/405e0858-6762-4f1f-aab6-78cf915b335c/attachments"]
+PASS the retried message carries exactly the retried attachment :: [{"clientMessageId":"d0ef8e71-9fe9-46fa-9919-b669b3bdb5da","text":"P1-B retry scenario","attachmentIds":["9528a0e2-6c3e-4a7b-a163-cd314b620b0c"]}]
+
+## scenario 6: editing text and switching back keep the conversation binding
+PASS the other conversation does not show A's attachment :: count=0
+PASS returning to A restores its own attachment selection :: count=1
+PASS editing the text does not disturb the selected attachment :: count=1
+
+## verdict: 17/17 checks passed
+browser check exit=0
+records: /root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/p1b/after-records.json
+EXIT=0
+
+判定（绿）：17/17 全过，exit 0。切到 B 后没有任何附件上传、B 的消息没有 `attachmentIds`；
+迟到的上传只落在 A；同会话上传并绑定、删除后不传、失败后只重试同一会话、编辑与切回保留各自附件都成立。
+
+## 3. 实现判定
+
+| 状态 | 旧 | 新 |
+| --- | --- | --- |
+| `File[]` / 上传 id / 错误 / 重试 | 组件级单一状态，切换会话不清 | 按 `owner + repository + conversation` 分桶（`AttachmentBucket`） |
+| 迟到响应 | `setUploading(false)` / `setAttachmentError` 直接写全局状态 | 上传开始时记录桶版本；`settleAttachments(scope, version, …)` 只在版本未变时写回，进度标记只作用于该桶 |
+| 上传目标 | 发送时用 `conversationIdRef.current`（切到 B 后是 B） | 发送开始时锁定当前会话的桶与 conversationId，上传与消息都用它 |
+| 重试 | 每次重新上传 | 桶里记录 `uploaded`（文件键 → attachment id），重试复用已上传 id |
+| 删除已选文件 | 只删 `File` | 同时移除该文件的已上传 id |
+| 编辑/草稿 | 文本草稿与附件互不影响 | 不变；切回原会话能看到该会话自己的附件选择 |
+
+代码位置：`apps/web/src/shell/Composer.tsx`（`AttachmentBucket`、`attachmentScopeKey`、
+`changeAttachments`、`settleAttachments`、`patchAttachments`、`submit`）。
+
+## 4. Before / After 可视证据
+
+同一脚本、同一次 seed、同一视口（1440×900）、浅色主题，均为真实应用构建截图：
+
+- Before（pre-fix `58f4cc1` 构建）：`docs/evidence/m6a/p1b/before-switch-to-b.png`
+  在 A 选好文件后切到 B，B 的输入区**仍显示 A 的文件**。
+- After（fixed 构建）：`docs/evidence/m6a/p1b/after-switch-to-b.png`
+  切到 B 后 B 的输入区**不显示** A 的文件。
+- 对照组：`before-a-selected.png` / `after-a-selected.png`（切走之前 A 的选中态）、
+  `after-same-conversation-selected.png`、`after-upload-failed.png`。
+- DOM 与网络原始事实：`before-records.json` / `after-records.json`。
+
+限制说明：本轮执行模型不支持图像输入，因此截图由真实 Chromium 生成、行为由 DOM/网络断言核对，
+未做「人眼查看截图」这一步；图片文件与记录一并入库。
+
+## 5. 回归与未验证
+
+$ /opt/moyu-node24/bin/pnpm check   # lint + format:check + typecheck + 全仓单测
+$ pnpm lint && pnpm format:check && pnpm typecheck && pnpm test
+$ eslint .
+
+/root/src/review-isolation-m6a-fa8ec916012c/apps/dispatcher/test/integration/dispatcher.integration.test.ts
+  716:7  warning  Unused eslint-disable directive (no problems were reported from 'no-console')
+
+✖ 1 problem (0 errors, 1 warning)
+  0 errors and 1 warning potentially fixable with the `--fix` option.
+
+$ prettier --check "**/*.{ts,tsx,mjs,cjs,json,yml,yaml,css,html}"
+Checking formatting...
+All matched files use Prettier code style!
+$ pnpm -r --if-present typecheck
+Scope: 8 of 9 workspace projects
+packages/contracts typecheck$ tsc --noEmit
+packages/db typecheck$ tsc --noEmit
+packages/theme typecheck$ tsc --noEmit
+packages/theme typecheck: Done
+packages/contracts typecheck: Done
+packages/db typecheck: Done
+apps/web typecheck$ tsc --noEmit
+packages/runtime-client typecheck$ tsc --noEmit
+packages/runtime-client typecheck: Done
+apps/web typecheck: Done
+apps/api typecheck$ tsc --noEmit
+apps/dispatcher typecheck$ tsc --noEmit
+apps/supervisor typecheck$ tsc --noEmit
+apps/dispatcher typecheck: Done
+apps/supervisor typecheck: Done
+apps/api typecheck: Done
+$ pnpm -r --if-present test && node --test scripts/m3/guard.test.mjs integrations/superagent/tests/verify-lock.test.mjs
+Scope: 8 of 9 workspace projects
+packages/contracts test$ vitest run
+packages/contracts test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/packages/contracts
+packages/contracts test:  ✓ test/contracts.test.ts (13 tests) 21ms
+packages/contracts test:  Test Files  1 passed (1)
+packages/contracts test:       Tests  13 passed (13)
+packages/contracts test:    Start at  22:24:59
+packages/contracts test:    Duration  498ms (transform 122ms, setup 0ms, collect 227ms, tests 21ms, environment 0ms, prepare 77ms)
+packages/contracts test: Done
+packages/runtime-client test$ vitest run
+packages/runtime-client test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/packages/runtime-client
+packages/runtime-client test:  ✓ test/credentials.test.ts (5 tests) 7ms
+packages/runtime-client test:  ✓ test/client.test.ts (8 tests) 27ms
+packages/runtime-client test:  Test Files  2 passed (2)
+packages/runtime-client test:       Tests  13 passed (13)
+packages/runtime-client test:    Start at  22:25:00
+packages/runtime-client test:    Duration  551ms (transform 188ms, setup 0ms, collect 339ms, tests 34ms, environment 0ms, prepare 153ms)
+packages/runtime-client test: Done
+apps/api test$ vitest run --exclude "test/integration/**"
+apps/dispatcher test$ vitest run --exclude "test/integration/**"
+apps/supervisor test$ vitest run --exclude "test/integration/**"
+apps/supervisor test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/supervisor
+apps/api test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/api
+apps/dispatcher test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/dispatcher
+apps/api test:  ✓ test/cursor.test.ts (6 tests) 15ms
+apps/dispatcher test:  ✓ test/config.test.ts (3 tests) 10ms
+apps/api test:  ✓ test/auth.test.ts (9 tests) 56ms
+apps/dispatcher test:  ✓ test/tasks.test.ts (2 tests) 8ms
+apps/dispatcher test:  Test Files  2 passed (2)
+apps/dispatcher test:       Tests  5 passed (5)
+apps/dispatcher test:    Start at  22:25:01
+apps/dispatcher test:    Duration  1.39s (transform 439ms, setup 0ms, collect 966ms, tests 18ms, environment 0ms, prepare 448ms)
+apps/dispatcher test: Done
+apps/api test:  ✓ test/health.test.ts (5 tests) 110ms
+apps/api test:  Test Files  3 passed (3)
+apps/api test:       Tests  20 passed (20)
+apps/api test:    Start at  22:25:01
+apps/api test:    Duration  2.95s (transform 1.03s, setup 0ms, collect 2.94s, tests 182ms, environment 3ms, prepare 447ms)
+apps/api test: Done
+apps/supervisor test:  ✓ test/review.test.ts (21 tests) 1866ms
+apps/supervisor test:    ✓ supervisor check runs > terminates a hung command and records the timeout  327ms
+apps/supervisor test:    ✓ supervisor check runs > kills a timed-out check command's whole process group  728ms
+apps/supervisor test:    ✓ review service > rejects a second check for the same repository instead of running two  309ms
+apps/supervisor test:  ✓ test/stop-proof.test.ts (4 tests) 2535ms
+apps/supervisor test:    ✓ supervisor cgroup stop proof > serializes independent processes with the kernel lock  2241ms
+apps/supervisor test:  ✓ test/server-wake.test.ts (1 test) 88ms
+apps/supervisor test:  ✓ test/config.test.ts (3 tests) 19ms
+apps/supervisor test:  ✓ test/resources.test.ts (8 tests) 8ms
+apps/supervisor test:  ✓ test/provision-env.test.ts (1 test) 4ms
+apps/supervisor test:  ✓ test/process.test.ts (21 tests) 6734ms
+apps/supervisor test:    ✓ supervisor process evidence > lists a real child process and stops its detached process group  303ms
+apps/supervisor test:    ✓ supervisor process evidence > never signals a reused root PID whose start time does not match  344ms
+apps/supervisor test:    ✓ supervisor process evidence > does not signal a reused process group after the owned members exited  310ms
+apps/supervisor test:    ✓ supervisor process evidence > does not report stopped when the timeout expires before the child exits  1795ms
+apps/supervisor test:    ✓ supervisor process evidence > kills a child that ignores SIGTERM before reporting stopped  1666ms
+apps/supervisor test:    ✓ supervisor process evidence > retains a newly started service regardless of its age  359ms
+apps/supervisor test:    ✓ cgroup launcher only accepts a positive release > exits without executing when the parent dies before release  546ms
+apps/supervisor test:  Test Files  7 passed (7)
+apps/supervisor test:       Tests  59 passed (59)
+apps/supervisor test:    Start at  22:25:01
+apps/supervisor test:    Duration  7.92s (transform 1.01s, setup 0ms, collect 2.10s, tests 11.25s, environment 6ms, prepare 959ms)
+apps/supervisor test: Done
+✔ verify-lock.sh gives the same result for plain, spaced, quoted and relative paths (5966.902637ms)
+✔ accepts a dedicated profile linked to the patched build (11.598293ms)
+✔ rejects the bootstrap home and profile (1.653158ms)
+✔ rejects an unpatched build and a wrong Bridge port (2.526951ms)
+✔ rejects an env file with broad permissions (1.241603ms)
+✔ rejects a target port that is already in use (11.484101ms)
+✔ rejects instance env keys that could override the validated home/profile (1.527678ms)
+✔ rejects an instance env pointing at the production API or a conflicting process env (2.34698ms)
+✔ rejects a symlinked state parent and leaves the other instance untouched (1.352886ms)
+✔ rejects state/<profile> linked to another profile in the same home (1.342549ms)
+✔ rejects sessions linked to another directory in the same home (1.359444ms)
+✔ rejects a cleanup target whose parent link stays inside the same home (1.25443ms)
+✔ rejects a profile containing path separators (1.008173ms)
+✔ the E2E script exits before any run directory for a bootstrap home or production API (785.109197ms)
+✔ refuses a runtime whose stateDir is not the expected isolated profile (0.586292ms)
+ℹ tests 15
+ℹ suites 0
+ℹ pass 15
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 6050.122065
+EXIT=0
+
+判定：`pnpm check` exit 0（含新增的 `.mjs` 端到端脚本被 eslint/prettier 覆盖）。
+
+- 未做组件级测试：`apps/web` 没有测试基础设施，本轮按所有者给的备选路径做端到端。
+- 未跑完整 A1–A8（会重写既有证据与截图），留待复验时一并确认。
+- 未验证：推送后的 GitHub CI（本轮结束时尚未触发）。
+
+
+## 刷新重跑（head 4978dee443ce40d7dddb3df5f4d884168629cc68，after 侧）
+
+$ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres P1B_SIDE=after bash scripts/m6a/p1b-composer-check.sh
+==> side=after head=4978dee443ce40d7dddb3df5f4d884168629cc68
+==> build this checkout
+$ pnpm -r --if-present build
+==> recreate isolated database moyu_p1b_evidence
+$ tsx src/cli/migrate.ts
+==> seed owner, repository and two conversations
+conversation A=abbbf8f9-c5f1-46e5-83f7-f6775b520d9a
+conversation B=c464abb1-aba9-4d6f-819b-4427d23c2b4f
+==> start the after API on 127.0.0.1:4630 (serves apps/web/dist)
+==> browser check (side=after)
+
+## scenario 1: select in A, switch to B, send in B
+SHOT /root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/p1b/after-a-selected.png
+SHOT /root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/p1b/after-switch-to-b.png
+MESSAGE http://127.0.0.1:4630/api/v1/conversations/c464abb1-aba9-4d6f-819b-4427d23c2b4f/messages attachmentIds=null text="P1-B switch scenario"
+PASS A shows the selected attachment before switching :: count=1
+PASS B does not show A's selected attachment after switching :: count=0
+PASS no attachment upload for B after the switch (raw URLs: []) :: uploads=0
+PASS B's message carries no attachmentIds (raw body: [{"clientMessageId":"171aff53-368c-437b-baae-ce21176be805","text":"P1-B switch scenario"}]) :: messages=1
+
+## scenario 2: slow upload started in A, switch to B before it completes
+UPLOAD http://127.0.0.1:4630/api/v1/conversations/abbbf8f9-c5f1-46e5-83f7-f6775b520d9a/attachments
+MESSAGE http://127.0.0.1:4630/api/v1/conversations/abbbf8f9-c5f1-46e5-83f7-f6775b520d9a/messages attachmentIds=["364dffec-ba4d-4d34-a272-146e0f369c4a"] text="P1-B late response scenario"
+SHOT /root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/p1b/after-late-response-in-b.png
+PASS B does not show A's in-flight upload indicator :: count=0
+PASS B's attachment list does not receive A's late response :: count=0
+PASS the late upload stays on A and the message goes to A (raw URLs) :: {"uploads":["http://127.0.0.1:4630/api/v1/conversations/abbbf8f9-c5f1-46e5-83f7-f6775b520d9a/attachments"],"messages":["http://127.0.0.1:4630/api/v1/conversations/abbbf8f9-c5f1-46e5-83f7-f6775b520d9a/messages"]}
+
+## scenario 3: same conversation still uploads and binds
+SHOT /root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/p1b/after-same-conversation-selected.png
+UPLOAD http://127.0.0.1:4630/api/v1/conversations/c464abb1-aba9-4d6f-819b-4427d23c2b4f/attachments
+MESSAGE http://127.0.0.1:4630/api/v1/conversations/c464abb1-aba9-4d6f-819b-4427d23c2b4f/messages attachmentIds=["92e9d1b0-0495-40d7-aced-74aafa56f047"] text="P1-B same conversation scenario"
+PASS the upload target is the open conversation (raw URL) :: ["http://127.0.0.1:4630/api/v1/conversations/c464abb1-aba9-4d6f-819b-4427d23c2b4f/attachments"]
+PASS the message in the same conversation carries the uploaded attachment :: [{"clientMessageId":"7922d987-a820-4fab-a7a8-4308a74844a9","text":"P1-B same conversation scenario","attachmentIds":["92e9d1b0-0495-40d7-aced-74aafa56f047"]}]
+
+## scenario 4: remove the selected file before sending
+MESSAGE http://127.0.0.1:4630/api/v1/conversations/c464abb1-aba9-4d6f-819b-4427d23c2b4f/messages attachmentIds=null text="P1-B deleted attachment scenario"
+PASS removing the file prevents its upload :: uploads=0
+PASS the message carries no attachmentIds :: [{"clientMessageId":"56e67ee3-85ad-4e07-9a9e-354a32b38f39","text":"P1-B deleted attachment scenario"}]
+
+## scenario 5: failed upload retries only in the same conversation
+UPLOAD http://127.0.0.1:4630/api/v1/conversations/c464abb1-aba9-4d6f-819b-4427d23c2b4f/attachments
+SHOT /root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/p1b/after-upload-failed.png
+UPLOAD http://127.0.0.1:4630/api/v1/conversations/c464abb1-aba9-4d6f-819b-4427d23c2b4f/attachments
+MESSAGE http://127.0.0.1:4630/api/v1/conversations/c464abb1-aba9-4d6f-819b-4427d23c2b4f/messages attachmentIds=["ffe95906-8a71-4605-9dd2-f2e909f1836c"] text="P1-B retry scenario"
+PASS the failed upload reports an attachment error :: count=1
+PASS both upload attempts target the same conversation (raw URLs) :: ["http://127.0.0.1:4630/api/v1/conversations/c464abb1-aba9-4d6f-819b-4427d23c2b4f/attachments","http://127.0.0.1:4630/api/v1/conversations/c464abb1-aba9-4d6f-819b-4427d23c2b4f/attachments"]
+PASS the retried message carries exactly the retried attachment :: [{"clientMessageId":"c6829956-698d-4d4c-aeef-6fef7adaa2ab","text":"P1-B retry scenario","attachmentIds":["ffe95906-8a71-4605-9dd2-f2e909f1836c"]}]
+
+## scenario 6: editing text and switching back keep the conversation binding
+PASS the other conversation does not show A's attachment :: count=0
+PASS returning to A restores its own attachment selection :: count=1
+PASS editing the text does not disturb the selected attachment :: count=1
+
+## verdict: 17/17 checks passed
+browser check exit=0
+records: /root/src/review-isolation-m6a-fa8ec916012c/docs/evidence/m6a/p1b/after-records.json
+
+判定（期望 / 实际 / 结论）：
+- 期望：A 已选/在途上传在切到 B 后不显示、不上传、不进入 B 的消息；同会话仍可上传绑定。
+- 实际：上面 11 条 `PASS` 与原始网络 URL；`EXIT=0`。
+- 结论：after 侧通过（本 head 重跑，截图已更新）。
+- before 侧：**未刷新**。原因：before 模式必须在 P1-B 修复前的构建上运行（原文件记录的基线 head），本轮只对最终 head 刷新；原始 before 反例与截图保留在上述历史段，未重跑。

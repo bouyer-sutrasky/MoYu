@@ -1,0 +1,496 @@
+# B3-green — 2026-11-11T07:54:22.233Z
+$ git rev-parse HEAD
+92b01d1436f0802ca16846d697ceba7e4bda2232
+# baseline for the red side
+$ git rev-parse 68c01e50d69a075183a0a175c57611fa77e1163a
+68c01e50d69a075183a0a175c57611fa77e1163a
+
+$ curl -s -X POST -d '{}' http://127.0.0.1:4625/api/v1/cleanup/preview
+HTTP 200
+{
+  "id": "6054f770-c434-42d2-9a87-b427997d2b1f",
+  "mode": "preview",
+  "status": "preview",
+  "retentionDays": 7,
+  "previewOfRunId": null,
+  "summary": {
+    "candidates": 5,
+    "eligible": 1,
+    "skipped": 4,
+    "removed": 0,
+    "alreadyCleaned": 0,
+    "failed": 0,
+    "totalBytes": 86,
+    "bytesFreed": 0
+  },
+  "error": null,
+  "createdAt": "2026-11-11T07:54:04.471Z",
+  "expiresAt": "2026-11-11T08:09:04.471Z",
+  "finishedAt": null,
+  "items": [
+    {
+      "id": "e46e8ea8-7f01-4b0e-9736-ef46aaf94d77",
+      "ticketId": "t_dirty_a1b2c3d4e5f6",
+      "conversationId": "fe8c4739-3b7e-49e8-af6f-c88d11b33ef4",
+      "repositoryId": "58f16f3a-b983-460c-8c95-107b6d8cd675",
+      "repositoryName": "bouyer-sutrasky/MoYu",
+      "profile": "probe1",
+      "directory": "/tmp/m6b-run/worktrees/probe1/task-t_dirty_a1b2",
+      "state": "skipped",
+      "eligible": false,
+      "reason": "有未提交或未跟踪改动（1 项）",
+      "sizeBytes": 27641,
+      "modifiedAt": "2026-11-11T07:54:03.545Z",
+      "detail": {
+        "ahead": 0,
+        "dirty": true,
+        "prUrl": "https://github.com/bouyer-sutrasky/MoYu/pull/44",
+        "title": "有未保存修改的清理任务",
+        "branch": "main",
+        "commit": "33a9b986019f8f3970084a0192c728b9455f4398",
+        "locked": false,
+        "taskId": "2c3b2751-50b4-4779-b274-d2c7a08736a0",
+        "prState": "merged",
+        "profile": "probe1",
+        "reasons": [
+          "有未提交或未跟踪改动（1 项）"
+        ],
+        "occupied": false,
+        "prNumber": 44,
+        "unpushed": false,
+        "upstream": "origin/main",
+        "fileCount": 30,
+        "occupiedBy": [],
+        "completedAt": "2026-11-03T07:53:38.807Z",
+        "dirtyEntries": 1,
+        "repositoryName": "bouyer-sutrasky/MoYu",
+        "inspectionState": "available",
+        "unpushedCommits": null
+      }
+    },
+    {
+      "id": "a1c2783d-591f-4f40-a18b-8578e51f9fea",
+      "ticketId": "t_outsi_a1b2c3d4e5f6",
+      "conversationId": "77957324-1e8a-4f3f-a05d-7e0e2d730f90",
+      "repositoryId": "58f16f3a-b983-460c-8c95-107b6d8cd675",
+      "repositoryName": "bouyer-sutrasky/MoYu",
+      "profile": "probe1",
+      "directory": null,
+      "state": "skipped",
+      "eligible": false,
+      "reason": "执行目录 /tmp/m6b-run/worktrees/probe1/task-t_outsi_a1b2 解析到允许边界之外，拒绝读取。",
+      "sizeBytes": null,
+      "modifiedAt": null,
+      "detail": {
+        "ahead": null,
+        "dirty": false,
+        "prUrl": "https://github.com/bouyer-sutrasky/MoYu/pull/44",
+        "title": "路径越界的清理任务",
+        "branch": null,
+        "commit": null,
+        "locked": false,
+        "taskId": "514473c9-3ee0-4ea7-a510-dddd5b5efef7",
+        "prState": "merged",
+        "reasons": [
+          "执行目录 /tmp/m6b-run/worktrees/probe1/task-t_outsi_a1b2 解析到允许边界之外，拒绝读取。"
+        ],
+        "occupied": false,
+        "prNumber": 44,
+        "unpushed": false,
+        "upstream": null,
+        "fileCount": 0,
+        "occupiedBy": [],
+        "completedAt": "2026-11-03T07:53:38.807Z",
+        "dirtyEntries": 0,
+        "repositoryName": "bouyer-sutrasky/MoYu",
+        "inspectionState": "unavailable",
+        "unpushedCommits": null
+      }
+    },
+    {
+      "id": "4eea62c0-0c3a-4a55-9e01-0f34c6d0e44a",
+      "ticketId": "t_unmer_a1b2c3d4e5f6",
+      "conversationId": "47841c61-0a64-4065-879c-3a9bbfcc853c",
+      "repositoryId": "58f16f3a-b983-460c-8c95-107b6d8cd675",
+      "repositoryName": "bouyer-sutrasky/MoYu",
+      "profile": "probe1",
+      "directory": null,
+      "state": "skipped",
+      "eligible": false,
+      "reason": "无法确认 PR #999999 已合并：无法从 GitHub 读取 PR 状态：Command failed: /root/.local/bin/gh-agent pr view 999999 --repo bouyer-sutrasky/MoYu --json number,url,state,headRefOid,baseRefName,updatedAt,closedAt,mergedAt\nGraphQL: Could not resolve to a PullRequest with the number of 999999. (repository.pullRequest)\n",
+      "sizeBytes": null,
+      "modifiedAt": null,
+      "detail": {
+        "title": "PR 尚未合并的清理任务",
+        "taskId": "b635a59d-8eb8-4069-a1da-1e3705f1af0e",
+        "prState": "unknown",
+        "prNumber": 999999,
+        "completedAt": "2026-11-03T07:53:38.807Z",
+        "repositoryName": "bouyer-sutrasky/MoYu"
+      }
+    },
+    {
+      "id": "f4d077aa-8312-4ca1-a1c3-63f81cb8958a",
+      "ticketId": "t_clean_a1b2c3d4e5f6",
+      "conversationId": "594eeea0-8479-4532-b88d-03844062aa9d",
+      "repositoryId": "58f16f3a-b983-460c-8c95-107b6d8cd675",
+      "repositoryName": "bouyer-sutrasky/MoYu",
+      "profile": "probe1",
+      "directory": "/tmp/m6b-run/worktrees/probe1/task-t_clean_a1b2",
+      "state": "planned",
+      "eligible": true,
+      "reason": "PR #44 已合并；已完成 8 天（≥ 7 天）；无未保存修改",
+      "sizeBytes": 86,
+      "modifiedAt": "2026-11-11T07:53:38.927Z",
+      "detail": {
+        "ahead": 0,
+        "dirty": false,
+        "prUrl": "https://github.com/bouyer-sutrasky/MoYu/pull/44",
+        "title": "已合并且干净的清理任务",
+        "branch": "agent/m6b-t_clean_a1b2",
+        "commit": "33a9b986019f8f3970084a0192c728b9455f4398",
+        "locked": false,
+        "taskId": "f2643a0f-3026-44e2-bbff-3bc7e4cd5b89",
+        "prState": "merged",
+        "profile": "probe1",
+        "reasons": [
+          "已合并且无未保存修改"
+        ],
+        "occupied": false,
+        "prNumber": 44,
+        "unpushed": false,
+        "upstream": "origin/agent/m6b-t_clean_a1b2",
+        "fileCount": 2,
+        "occupiedBy": [],
+        "completedAt": "2026-11-03T07:53:38.807Z",
+        "dirtyEntries": 0,
+        "repositoryName": "bouyer-sutrasky/MoYu",
+        "inspectionState": "available",
+        "unpushedCommits": null
+      }
+    },
+    {
+      "id": "2cd32dcb-03f5-46c2-8eec-03666b150e60",
+      "ticketId": "t_occup_a1b2c3d4e5f6",
+      "conversationId": "78236f59-d6cf-422b-9f03-9b3c35423d2a",
+      "repositoryId": "58f16f3a-b983-460c-8c95-107b6d8cd675",
+      "repositoryName": "bouyer-sutrasky/MoYu",
+      "profile": "probe1",
+      "directory": "/tmp/m6b-run/worktrees/probe1/task-t_occup_a1b2",
+      "state": "skipped",
+      "eligible": false,
+exit code: 0
+
+$ open Settings → 清理 → 干跑预览 → 删除预览中的目录…（不确认）
+preview shows path/reason/size: true
+explicit delete button present: true
+explicit confirmation text present: true
+--- preview ---
+设置
+
+登录凭据、浏览器会话与主题。所有操作直接调用当前 API。
+
+外观
+
+沿用固定版本的 Harness design tokens；支持跟随系统、浅色与深色。
+
+跟随系统
+浅色
+深色
+通知
+
+仅网页打开时提供系统通知，不实现关闭网页后的 Web Push；重新打开后可在活动中心补看。 同一事件使用持久事件 id 去重，重连、刷新和多标签页都只提醒一次。
+
+从不
+不弹系统通知，活动中心仍记录未读。
+仅后台
+页面在后台时提醒；正在看页面时只记未读。
+总是
+页面在前台时也弹系统通知。
+提醒类别
+需要回复
+待审阅
+已完成
+失败 / 受阻
+
+普通进度不弹通知；类别开关只影响系统通知。
+
+浏览器通知权限
+浏览器已拒绝通知。请在地址栏的站点设置中重新允许，然后刷新本页。
+重新检查
+恢复默认（仅后台，全部类别）
+清理
+
+仅清理「已合并且无未保存修改」的 worktree，默认保留 7 天（从任务完成事件起算， 不是 PR 合并时间）。先干跑预览路径、原因与大小，再显式确认；未合并、有未提交/未推送改动、 被进程占用或超出工作区的目录一律跳过。
+
+干跑预览可清理目录
+预览有效期 15 分钟；执行前会再次核对合并状态与真实工作目录。
+预览：1 个可删除 / 5 个候选
+共 0 KiB · 跳过 4 个 · 保留 7 天（自任务完成）
+将删除
+/tmp/m6b-run/worktrees/probe1/task-t_clean_a1b2
+0 KiB
+
+PR #44 已合并；已完成 8 天（≥ 7 天）；无未保存修改
+
+bouyer-sutrasky/MoYu · profile probe1 · 最近修改 今天 15:53
+跳过
+/tmp/m6b-run/worktrees/probe1/task-t_dirty_a1b2
+27 KiB
+
+有未提交或未跟踪改动（1 项）
+
+bouyer-sutrasky/MoYu · profile probe1 · 最近修改 今天 15:54
+跳过
+t_outsi_a1b2c3d4e5f6
+大小未知
+
+执行目录 /tmp/m6b-run/worktrees/probe1/task-t_outsi_a1b2 解析到允许边界之外，拒绝读取。
+
+bouyer-sutrasky/MoYu · profile probe1
+跳过
+t_unmer_a1b2c3d4e5f6
+大小未知
+
+无法确认 PR #999999 已合并：无法从 GitHub 读取 PR 状态：Command failed: /root/.local/bin/gh-agent pr view 999999 --repo bouyer-sutrasky/MoYu --json number,url,state,headRefOid,baseRefName,updatedAt,closedAt,mergedAt GraphQL: Could not resolve to a PullRequest with the number of 999999. (repository.pullRequest)
+
+bouyer-sutrasky/MoYu · profile probe1
+跳过
+/tmp/m6b-run/worktrees/probe1/task-t_occup_a1b2
+27 KiB
+
+被进程占用（PID 984329）
+
+bouyer-sutrasky/MoYu · profile probe1 · 最近修改 今天 15:54
+删除预览中的 1 个目录…
+
+预览完成：1 个目录符合条件，共 0 KiB。
+
+最近清理记录
+预览 · 预览
+候选 5 · 可删 1 · 删除 0 · 失败 0 · 0 KiB 释放
+今天 15:54
+Passkey 凭据
+
+当前 RP ID 127.0.0.1，共 0 个可用凭据。至少保留一个。
+
+添加 Passkey
+浏览器会话
+
+登录长期保持；撤销会立即断开该会话的 SSE 并阻止受保护资源访问。
+
+当前浏览器
+当前
+未知 User-Agent
+最近活动 2026/11/11 15:53:38 · 有效至 2026/11/12 15:53:38
+退出
+安全边界
+
+所有 Passkey 仅登记在 http://127.0.0.1:4625。会话 Cookie 为 HttpOnly、SameSite=Lax， 服务端只保存令牌摘要。
+
+所有者
+MoYu Owner
+当前会话
+491ecf13-ab12-4a05-b566-322b7b7dcec2
+会话有效期
+2026/11/12 15:53:38
+退出登录
+关闭
+exit code: 0
+
+$ POST /api/v1/cleanup/execute {runId}; then repeat; then check the real directories
+{
+  "http": 200,
+  "summary": {
+    "candidates": 5,
+    "eligible": 1,
+    "skipped": 4,
+    "removed": 1,
+    "alreadyCleaned": 0,
+    "failed": 0,
+    "totalBytes": 86,
+    "bytesFreed": 86
+  },
+  "duplicateOnRetry": true,
+  "cleanExistedBefore": true,
+  "survived": {
+    "dirty": true,
+    "occupied": true,
+    "outside": true,
+    "unmerged": true,
+    "cleanGone": true
+  },
+  "worktreePruned": true,
+  "worktreePruneError": null,
+  "cleanRecordGone": true,
+  "items": [
+    {
+      "ticket": "t_clean_a1b2c3d4e5f6",
+      "state": "removed",
+      "reason": "已删除"
+    },
+    {
+      "ticket": "t_dirty_a1b2c3d4e5f6",
+      "state": "skipped",
+      "reason": "有未提交或未跟踪改动（1 项）"
+    },
+    {
+      "ticket": "t_unmer_a1b2c3d4e5f6",
+      "state": "skipped",
+      "reason": "无法确认 PR #999999 已合并：无法从 GitHub 读取 PR 状态：Command failed: /root/.local/bin/gh-agent pr view 999999 --repo bouyer-sutrasky/MoYu --json number,url,state,headRefOid,baseRefName,updatedAt,closedAt,mergedAt\nGraphQL: Could not resolve to a PullRequest with the number of 999999. (repository.pullRequest)\n"
+    },
+    {
+      "ticket": "t_occup_a1b2c3d4e5f6",
+      "state": "skipped",
+      "reason": "被进程占用（PID 984329）"
+    },
+    {
+      "ticket": "t_outsi_a1b2c3d4e5f6",
+      "state": "skipped",
+      "reason": "执行目录 /tmp/m6b-run/worktrees/probe1/task-t_outsi_a1b2 解析到允许边界之外，拒绝读取。"
+    }
+  ]
+}
+exit code: 0
+
+$ git -C /tmp/m6b-run/task-source worktree list --porcelain (before and after cleanup)
+--- before ---
+worktree /tmp/m6b-run/task-source
+HEAD 33a9b986019f8f3970084a0192c728b9455f4398
+branch refs/heads/main
+
+worktree /tmp/m6b-run/worktrees/probe1/task-t_clean_a1b2
+HEAD 33a9b986019f8f3970084a0192c728b9455f4398
+branch refs/heads/agent/m6b-t_clean_a1b2
+
+--- after ---
+worktree /tmp/m6b-run/task-source
+HEAD 33a9b986019f8f3970084a0192c728b9455f4398
+branch refs/heads/main
+
+clean directory record pruned: true
+exit code: 0
+
+$ GET /api/v1/cleanup/runs
+HTTP 200
+[
+  {
+    "id": "32007790-1474-46fd-8168-cc8182236ba4",
+    "mode": "execute",
+    "status": "completed",
+    "retentionDays": 7,
+    "previewOfRunId": "6054f770-c434-42d2-9a87-b427997d2b1f",
+    "summary": {
+      "candidates": 5,
+      "eligible": 1,
+      "skipped": 4,
+      "removed": 1,
+      "alreadyCleaned": 0,
+      "failed": 0,
+      "totalBytes": 86,
+      "bytesFreed": 86
+    },
+    "error": null,
+    "createdAt": "2026-11-11T07:54:10.538Z",
+    "expiresAt": "2026-11-11T08:09:04.471Z",
+    "finishedAt": "2026-11-11T07:54:11.860Z",
+    "items": [
+      {
+        "id": "04dee819-497f-4d6b-a200-b91c857b2c40",
+        "ticketId": "t_clean_a1b2c3d4e5f6",
+        "conversationId": "594eeea0-8479-4532-b88d-03844062aa9d",
+        "repositoryId": "58f16f3a-b983-460c-8c95-107b6d8cd675",
+        "repositoryName": "bouyer-sutrasky/MoYu",
+        "profile": "probe1",
+        "directory": "/tmp/m6b-run/worktrees/probe1/task-t_clean_a1b2",
+        "state": "removed",
+        "eligible": false,
+        "reason": "已删除",
+        "sizeBytes": 86,
+        "modifiedAt": "2026-11-11T07:53:38.927Z",
+        "detail": {
+          "ahead": 0,
+          "dirty": false,
+          "prUrl": "https://github.com/bouyer-sutrasky/MoYu/pull/44",
+          "title": "已合并且干净的清理任务",
+          "branch": "agent/m6b-t_clean_a1b2",
+          "commit": "33a9b986019f8f3970084a0192c728b9455f4398",
+          "locked": false,
+          "taskId": "f2643a0f-3026-44e2-bbff-3bc7e4cd5b89",
+          "prState": "merged",
+          "profile": "probe1",
+          "reasons": [
+            "已合并且无未保存修改"
+          ],
+          "occupied": false,
+          "prNumber": 44,
+          "unpushed": false,
+          "upstream": "origin/agent/m6b-t_clean_a1b2",
+          "fileCount": 2,
+          "inspection": {
+            "ahead": 0,
+            "dirty": false,
+            "branch": "agent/m6b-t_clean_a1b2",
+            "commit": "33a9b986019f8f3970084a0192c728b9455f4398",
+            "locked": false,
+            "reasons": [
+              "已合并且无未保存修改"
+            ],
+            "occupied": false,
+            "unpushed": false,
+            "upstream": "origin/agent/m6b-t_clean_a1b2",
+            "fileCount": 2,
+            "occupiedBy": [],
+            "dirtyEntries": 0,
+            "unpushedCommits": null
+          },
+          "occupiedBy": [],
+          "completedAt": "2026-11-03T07:53:38.807Z",
+          "dirtyEntries": 0,
+          "trashRemoved": 0,
+          "trashFailures": [],
+          "repositoryName": "bouyer-sutrasky/MoYu",
+          "worktreePruned": true,
+          "inspectionState": "available",
+          "unpushedCommits": null,
+          "worktreePruneError": null
+        }
+      },
+      {
+        "id": "22eecaf6-c599-4026-a032-d7b9122adf15",
+        "ticketId": "t_dirty_a1b2c3d4e5f6",
+        "conversationId": "fe8c4739-3b7e-49e8-af6f-c88d11b33ef4",
+        "repositoryId": "58f16f3a-b983-460c-8c95-107b6d8cd675",
+        "repositoryName": "bouyer-sutrasky/MoYu",
+        "profile": "probe1",
+        "directory": "/tmp/m6b-run/worktrees/probe1/task-t_dirty_a1b2",
+        "state": "skipped",
+        "eligible": false,
+        "reason": "有未提交或未跟踪改动（1 项）",
+        "sizeBytes": 27641,
+        "modifiedAt": "2026-11-11T07:54:03.545Z",
+        "detail": {
+          "ahead": 0,
+          "dirty": true,
+          "prUrl": "https://github.com/bouyer-sutrasky/MoYu/pull/44",
+          "title": "有未保存修改的清理任务",
+          "branch": "main",
+          "commit": "33a9b986019f8f3970084a0192c728b9455f4398",
+          "locked": false,
+          "taskId": "2c3b2751-50b4-4779-b274-d2c7a08736a0",
+          "prState": "merged",
+          "profile": "probe1",
+          "reasons": [
+            "有未提交或未跟踪改动（1 项）"
+          ],
+          "occupied": false,
+          "prNumber": 44,
+          "unpushed": false,
+          "upstream": "origin/main",
+          "fileCount": 30,
+          "occupiedBy": [],
+          "completedAt": "2026-11-03T07:53:38.807Z",
+          "dirtyEntries": 1,
+          "
+exit code: 0
+

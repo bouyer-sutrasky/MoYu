@@ -1,4 +1,4 @@
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, rmSync } from 'node:fs';
+import { chmodSync, chownSync, closeSync, existsSync, mkdirSync, openSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -213,7 +213,17 @@ export class InstanceManager {
       join(this.config.dshHome, 'state'),
     ]) {
       mkdirSync(directory, { recursive: true, mode: 0o700 });
-      chmodSync(directory, 0o700);
+      // The worktree root is the one directory a dedicated review-check user
+      // must traverse and write. Hand it to that group and keep the setgid bit
+      // so every worktree the runtime creates inherits it; the other state
+      // directories stay private to the supervisor. Without a check identity
+      // the old 0700 behaviour is unchanged.
+      if (directory === this.config.worktreeRoot && this.config.reviewCheckGid !== undefined) {
+        chownSync(directory, -1, this.config.reviewCheckGid);
+        chmodSync(directory, 0o2775);
+      } else {
+        chmodSync(directory, 0o700);
+      }
     }
     await this.withLock(async () => {
       const rows = await this.store.listInstances();

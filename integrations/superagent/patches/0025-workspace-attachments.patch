@@ -1,0 +1,465 @@
+diff --git a/docs/007-architecture.md b/docs/007-architecture.md
+index 2c52677..237abfe 100644
+--- a/docs/007-architecture.md
++++ b/docs/007-architecture.md
+@@ -302,6 +302,9 @@ Some generic modules still refer directly to GitHub or Feishu:
+ | `src/core/ports.ts` | The ports: `Repositories`, `Policy`, `SourceScope`, `Assessor`, `Executor`, `Outbox`, and the domain events |
+ | `src/core/engine.ts` | The Engine, the core's entry point, and the role interfaces `EngineForSources`, `EngineForMainSession`, `EngineForPeople`, `EngineForSettings` and `EngineForExecutor` |
+ | `src/core/part.ts` | `EnginePart`, the base of the Engine's parts, and `EngineOptions` |
++| `src/core/attachments.ts` | The attachment references a workspace Trigger carries: the strict schema, the count and byte limits, `triggerAttachments`, and the safe workspace filename |
++| `src/app/attachments.ts` | Stages a platform message's attachments beside the Runtime state with the instance's machine token, verifies size and sha256, and answers 422 for bytes it refuses or 503 when the platform cannot serve them |
++| `src/executor/attachments.ts` | Copies staged attachments into a ticket workspace as `.moyu/attachments/<id>/<name>` (0600, git-excluded, idempotent) and returns the paths the worker reads |
+ | `src/core/intake.ts` | `Intake`: Triggers from Sources, to their Tickets and, unless a person's message reached one, to Eval |
+ | `src/core/evals.ts` | `Evals`: the Evals of Threads and their Decisions |
+ | `src/core/tickets.ts` | `Tickets`: the Ticket lifecycle, the Threads a Ticket follows, Subscriptions and Inputs |
+@@ -413,6 +416,7 @@ Some generic modules still refer directly to GitHub or Feishu:
+ | `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |
+ | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
+ | `tests/workspace.spec.ts` | The workspace Source kind and plugin entry: its non-secret schema, owner-only Policy part, one-page Thread context, frozen-spec environment, the reply id prefixes, and its Channel's `sent`/`gone`/retry answers against a loopback platform stand-in |
++| `tests/attachments.spec.ts` | Attachment delivery: reference validation, staging with size/sha256 checks and 422/503 refusals, the workspace copy, git exclusion and idempotence |
+ | `tests/bridge.spec.ts` | The machine Bridge: bearer auth and readiness, capabilities and models, Trigger delivery and its 409/422/503 answers, the duplicate ticket lookup, event paging and the fsynced append-only log across a restart, the ticket snapshot, `projectTicketState` row by row, and `task.progress` from worker Session events |
+ | `tests/ticket-freeze.spec.ts` | The frozen execution spec: parsing it from a workspace Trigger, copying model/base/mode onto the accepted Ticket, leaving other Sources without one, and the launch-time model validation that never falls back |
+ | `tests/discussion.spec.ts` | Discussion mode: the read-only tool allow-list and permission preset, the read-only worktree boundary and refusal of local tools such as subagent, the work tools and `danger-full-access` for execute, replacing the restriction when the mode changes, the discussion assignment text, and `discussing` state projection |
+diff --git a/src/app/attachments.ts b/src/app/attachments.ts
+new file mode 100644
+index 0000000..2a3a3ee
+--- /dev/null
++++ b/src/app/attachments.ts
+@@ -0,0 +1,77 @@
++/** Stages a platform message's attachments beside the Runtime state, verifying every byte before any Ticket exists. */
++import { createHash, randomUUID } from 'node:crypto'
++import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
++import { join } from 'node:path'
++import { attachmentFileName, MAX_TRIGGER_ATTACHMENT_BYTES, type TriggerAttachment } from '../core/attachments.ts'
++
++/** How long one platform download may take before the Trigger is refused as temporarily unavailable. */
++const DOWNLOAD_TIMEOUT_MS = 30_000
++
++/** A refusal the Bridge answers with its own status: 422 for bytes it cannot accept, 503 for a platform that cannot serve them. */
++export class AttachmentError extends Error {
++  constructor(readonly status: 422 | 503, message: string) { super(message) }
++}
++
++/** The attachment fields a Trigger request needs to be staged. */
++export interface AttachmentRequest { triggerId: string; messageId: string; attachments?: TriggerAttachment[] | undefined }
++
++/** The directory a Trigger's verified bytes are staged under, one per Trigger so a retry overwrites the same files. */
++export const stagingDirectory = (stateDir: string, triggerId: string): string => join(stateDir, 'attachments', triggerId)
++
++/** Where one verified attachment waits for the Executor to copy it into a workspace. */
++export const stagedAttachmentPath = (stateDir: string, triggerId: string, attachment: TriggerAttachment): string =>
++  join(stagingDirectory(stateDir, triggerId), attachment.id, attachmentFileName(attachment))
++
++const sha256 = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex')
++const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error)
++
++/**
++ * Downloads and verifies every attachment of a Trigger into `stateDir`, or refuses the Trigger and removes what it staged.
++ * The bearer stays in this process: the platform URL is built from configuration, never from the request body.
++ */
++export async function stageTriggerAttachments(host: { stateDir: string }, request: AttachmentRequest,
++  env: NodeJS.ProcessEnv = process.env): Promise<void> {
++  const attachments = request.attachments ?? []
++  if (!attachments.length) return
++  const base = env.MOYU_PLATFORM_URL?.trim()
++  const token = env.MOYU_PLATFORM_TOKEN?.trim()
++  if (!base || !token) throw new AttachmentError(503, 'The Runtime has no platform credentials to fetch attachments')
++  let origin: URL
++  try { origin = new URL(base) } catch { throw new AttachmentError(503, 'MOYU_PLATFORM_URL is not a valid URL') }
++  if (origin.protocol !== 'http:' && origin.protocol !== 'https:') throw new AttachmentError(503, 'MOYU_PLATFORM_URL must be http or https')
++  const directory = stagingDirectory(host.stateDir, request.triggerId)
++  try {
++    for (const attachment of attachments) {
++      if (attachment.sizeBytes > MAX_TRIGGER_ATTACHMENT_BYTES) throw new AttachmentError(422, `Attachment ${attachment.id} exceeds the size limit`)
++      const url = new URL(`/api/internal/v1/messages/${encodeURIComponent(request.messageId)}/attachments/${encodeURIComponent(attachment.id)}`, origin)
++      let response: Response
++      try {
++        response = await fetch(url, { headers: { authorization: `Bearer ${token}`, accept: 'application/octet-stream' },
++          redirect: 'error', signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) })
++      } catch (error) {
++        throw new AttachmentError(503, `The platform did not serve attachment ${attachment.id}: ${errorText(error)}`)
++      }
++      // A platform answer that names a missing/foreign attachment is a permanent refusal; a 5xx may succeed on retry.
++      if (response.status === 401 || response.status === 403 || response.status === 404 || response.status === 409) {
++        throw new AttachmentError(422, `The platform refused attachment ${attachment.id} (HTTP ${response.status})`)
++      }
++      if (!response.ok) throw new AttachmentError(503, `The platform failed to serve attachment ${attachment.id} (HTTP ${response.status})`)
++      const bytes = new Uint8Array(await response.arrayBuffer())
++      if (bytes.byteLength !== attachment.sizeBytes) {
++        throw new AttachmentError(422, `Attachment ${attachment.id} size mismatch: ${bytes.byteLength} != ${attachment.sizeBytes}`)
++      }
++      if (sha256(bytes) !== attachment.sha256) throw new AttachmentError(422, `Attachment ${attachment.id} sha256 mismatch`)
++      const target = join(directory, attachment.id)
++      await mkdir(target, { recursive: true, mode: 0o700 })
++      const file = join(target, attachmentFileName(attachment))
++      const temporary = `${file}.${randomUUID()}.part`
++      await writeFile(temporary, bytes, { mode: 0o600, flag: 'wx' })
++      await chmod(temporary, 0o600)
++      await rename(temporary, file)
++      await chmod(file, 0o600)
++    }
++  } catch (error) {
++    await rm(directory, { recursive: true, force: true })
++    throw error
++  }
++}
+diff --git a/src/app/bridge.ts b/src/app/bridge.ts
+index 0fdeca9..69e7583 100644
+--- a/src/app/bridge.ts
++++ b/src/app/bridge.ts
+@@ -18,8 +18,10 @@ import { UserError, latestAssignment, latestReport, waitsForPerson, type Channel
+ import type { RoleModel } from '../policy.ts'
+ import type { Deployment } from '../deployment.ts'
+ import type { Commands } from '../infra/commands.ts'
++import { MAX_TRIGGER_ATTACHMENTS, TriggerAttachmentSchema } from '../core/attachments.ts'
+ import { ticketOfSession } from '../executor/dsh.ts'
+ import { pullsOf } from '../sources/github-pull.ts'
++import { AttachmentError, stageTriggerAttachments } from './attachments.ts'
+ import type { Store } from './store.ts'
+ import { OperationLog, operationView, type BridgeOperation, type OperationBaseline, type OperationKind } from './operations.ts'
+ 
+@@ -256,6 +258,8 @@ const TriggerRequestSchema = z.object({
+   targetTicketId: z.string().trim().min(1).max(200).optional(),
+   executionSpec: ExecutionSpecSchema,
+   admission: AdmissionSchema.optional(),
++  // The message's sent attachments, verified by the Runtime before any Ticket exists; the bytes stay on the platform.
++  attachments: z.array(TriggerAttachmentSchema).max(MAX_TRIGGER_ATTACHMENTS).optional(),
+ }).strict()
+ type TriggerRequest = z.infer<typeof TriggerRequestSchema>
+ const CommitSchema = z.object({ sha: z.string().min(1) })
+@@ -302,6 +306,7 @@ export function workspaceTrigger(request: TriggerRequest, baseCommit: string, fr
+       },
+       admission: request.admission,
+       ...request.parentText ? { parentText: request.parentText } : {},
++      ...request.attachments?.length ? { attachments: request.attachments } : {},
+     },
+   }
+ }
+@@ -648,7 +653,7 @@ export class Bridge {
+       protocolVersion: PROTOCOL_VERSION,
+       upstream: { ...UPSTREAM },
+       capabilities: { trigger: true, events: true, tickets: true, models: true, branches: true, pause: true, resume: true, retry: true,
+-        readOnlyDiscussion: true, start: true, admission: this.requireAdmission },
++        readOnlyDiscussion: true, start: true, admission: this.requireAdmission, attachments: true },
+       source: { kind: 'workspace', enabled: this.host.workspaceEnabled() },
+     })
+   }
+@@ -959,6 +964,7 @@ export class Bridge {
+         replyToMessageId: request.replyToMessageId ?? null,
+         triggerId: request.triggerId,
+         targetTicketId: ticket.id,
++        ...request.attachments?.length ? { attachments: request.attachments } : {},
+         spec: {
+           repository: base?.repository ?? spec.repository,
+           baseBranch: base?.branch ?? spec.baseBranch,
+@@ -970,6 +976,8 @@ export class Bridge {
+         ...request.parentText ? { parentText: request.parentText } : {},
+       },
+     }
++    try { await stageTriggerAttachments(this.host, { triggerId: request.triggerId, messageId: request.messageId, attachments: request.attachments }) }
++    catch (error) { return json(res, error instanceof AttachmentError ? error.status : 503, { error: errorText(error) }) }
+     let result: ReceiveResult
+     try { result = this.host.receive(trigger) }
+     catch (error) { return json(res, 503, { error: `The runtime did not accept the trigger: ${errorText(error)}` }) }
+@@ -1016,6 +1024,8 @@ export class Bridge {
+     let baseCommit: string
+     try { baseCommit = await this.resolveCommit(request.executionSpec.baseBranch, request.executionSpec.baseCommit) }
+     catch (error) { return json(res, 422, { error: `Cannot resolve the base commit: ${error instanceof Error ? error.message : String(error)}` }) }
++    try { await stageTriggerAttachments(this.host, { triggerId: request.triggerId, messageId: request.messageId, attachments: request.attachments }) }
++    catch (error) { return json(res, error instanceof AttachmentError ? error.status : 503, { error: errorText(error) }) }
+     const trigger = workspaceTrigger(request, baseCommit, frozen)
+     let result: ReceiveResult
+     try { result = this.host.receive(trigger) }
+diff --git a/src/core/attachments.ts b/src/core/attachments.ts
+new file mode 100644
+index 0000000..b9bbd5f
+--- /dev/null
++++ b/src/core/attachments.ts
+@@ -0,0 +1,35 @@
++/** Attachment references a workspace Trigger carries; the platform owns the bytes and the Runtime only reads them. */
++import { z } from 'zod'
++
++/**
++ * One attachment a platform message was sent with. The reference names and checks the bytes; it never carries them,
++ * and it never carries a URL, so a Trigger cannot point the Runtime at another host.
++ */
++export const TriggerAttachmentSchema = z.object({
++  id: z.uuid(),
++  filename: z.string().min(1).max(255),
++  mimeType: z.string().min(1).max(200),
++  sizeBytes: z.int().positive().max(10 * 1024 * 1024),
++  sha256: z.string().regex(/^[0-9a-f]{64}$/),
++  kind: z.enum(['image', 'text']),
++}).strict()
++
++export type TriggerAttachment = z.infer<typeof TriggerAttachmentSchema>
++
++/** Most attachments one message may deliver; mirrors the platform's per-message limit. */
++export const MAX_TRIGGER_ATTACHMENTS = 10
++/** Largest attachment the Runtime accepts, also enforcing the platform's per-file limit. */
++export const MAX_TRIGGER_ATTACHMENT_BYTES = 10 * 1024 * 1024
++
++/** Returns the attachments a Trigger's meta carries, empty for Triggers delivered before attachments existed. */
++export function triggerAttachments(trigger: { meta: Record<string, unknown> }): TriggerAttachment[] {
++  const parsed = z.array(TriggerAttachmentSchema).max(MAX_TRIGGER_ATTACHMENTS).safeParse(trigger.meta.attachments ?? [])
++  if (!parsed.success) throw new Error(`This Trigger carries invalid attachment references: ${parsed.error.issues.map(issue => issue.message).join('; ')}`)
++  return parsed.data
++}
++
++/** A filename that is safe as one path component: no separators, no leading dots, a stable fallback, and an extension kept for display. */
++export function attachmentFileName(attachment: Pick<TriggerAttachment, 'id' | 'filename'>): string {
++  const base = attachment.filename.replace(/^.*[\\/]/, '').replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '').slice(-160)
++  return base && base.replace(/[^A-Za-z0-9]/g, '') ? base : `${attachment.id}.bin`
++}
+diff --git a/src/executor/attachments.ts b/src/executor/attachments.ts
+new file mode 100644
+index 0000000..38440e0
+--- /dev/null
++++ b/src/executor/attachments.ts
+@@ -0,0 +1,65 @@
++/** Copies a Trigger's verified attachments into the ticket workspace so read/read_image can consume them on demand. */
++import { createHash } from 'node:crypto'
++import { chmod, copyFile, mkdir, readFile, rename, stat } from 'node:fs/promises'
++import { dirname, isAbsolute, join, resolve } from 'node:path'
++import { attachmentFileName, triggerAttachments, type TriggerAttachment } from '../core/attachments.ts'
++import type { Trigger } from '../core/index.ts'
++import { stagedAttachmentPath } from '../app/attachments.ts'
++
++/** An attachment reference plus the workspace-relative path the worker reads. */
++export interface MaterializedAttachment extends TriggerAttachment { path: string }
++
++const sha256 = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex')
++const exists = async (path: string) => stat(path).then(value => value.isFile(), () => false)
++
++/**
++ * Makes the Trigger's attachments readable from `workspace`: `.moyu/attachments/<id>/<name>`, mode 0600, excluded from git.
++ * A file that already matches its size and sha256 is kept, so a restart or a repeated delivery copies nothing twice.
++ */
++export async function materializeTriggerAttachments(workspace: string, stateDir: string, trigger: Trigger): Promise<MaterializedAttachment[]> {
++  const attachments = triggerAttachments(trigger)
++  if (!attachments.length) return []
++  if (!workspace) throw new Error('The ticket has no workspace for its attachments')
++  await excludeAttachmentDirectory(workspace)
++  const result: MaterializedAttachment[] = []
++  for (const attachment of attachments) {
++    const source = stagedAttachmentPath(stateDir, trigger.id, attachment)
++    const sourceStat = await stat(source).catch(() => undefined)
++    if (!sourceStat?.isFile()) throw new Error(`The staged attachment ${attachment.id} is missing`)
++    if (sourceStat.size !== attachment.sizeBytes || sha256(await readFile(source)) !== attachment.sha256) {
++      throw new Error(`The staged attachment ${attachment.id} no longer matches its sha256`)
++    }
++    const name = attachmentFileName(attachment)
++    const target = join(workspace, '.moyu', 'attachments', attachment.id, name)
++    if (!await exists(target) || sha256(await readFile(target)) !== attachment.sha256) {
++      await mkdir(dirname(target), { recursive: true, mode: 0o700 })
++      const temporary = `${target}.${process.pid}.part`
++      await copyFile(source, temporary)
++      await chmod(temporary, 0o600)
++      await rename(temporary, target)
++      await chmod(target, 0o600)
++    }
++    result.push({ ...attachment, path: `.moyu/attachments/${attachment.id}/${name}` })
++  }
++  return result
++}
++
++/** Adds `.moyu/` to the worktree's private exclude file, so attachments never appear in a diff or a commit. */
++async function excludeAttachmentDirectory(workspace: string): Promise<void> {
++  const git = join(workspace, '.git')
++  const gitStat = await stat(git).catch(() => undefined)
++  if (!gitStat) return
++  let directory = git
++  if (gitStat.isFile()) {
++    const pointer = /^gitdir:\s*(.+)$/m.exec(await readFile(git, 'utf8'))
++    if (!pointer) return
++    directory = isAbsolute(pointer[1]!.trim()) ? pointer[1]!.trim() : resolve(workspace, pointer[1]!.trim())
++  }
++  const exclude = join(directory, 'info', 'exclude')
++  try {
++    const current = await readFile(exclude, 'utf8').catch(() => '')
++    if (current.split('\n').includes('.moyu/')) return
++    await mkdir(dirname(exclude), { recursive: true })
++    await import('node:fs/promises').then(fs => fs.appendFile(exclude, `${current && !current.endsWith('\n') ? '\n' : ''}.moyu/\n`, { mode: 0o600 }))
++  } catch { /* a workspace without a writable git exclude still gets the files; only the gitignored view is best-effort */ }
++}
+diff --git a/src/executor/dsh.ts b/src/executor/dsh.ts
+index 10acc5a..edc4e05 100644
+--- a/src/executor/dsh.ts
++++ b/src/executor/dsh.ts
+@@ -1,5 +1,6 @@
+ /** DSH executor: manages one persistent worker session and workspace directory per ticket. */
+ import type { Context } from '@deepseek-ai/cordis'
++import { materializeTriggerAttachments } from './attachments.ts'
+ import type { SessionId } from '@deepseek-ai/dsh-session'
+ import type { Agent } from '@deepseek-ai/dsh-agent'
+ import type { SubprocessHandle } from '@deepseek-ai/dsh-subprocess'
+@@ -489,7 +490,9 @@ export class DshExecutor implements Executor {
+     if (!trigger) return undefined
+     const parent = this.host.repliedTo(trigger)
+     const seen = parent && (parent.id === ticket.origin.triggerId || ticket.inputs.some(item => item.kind === 'trigger' && item.triggerId === parent.id))
+-    return triggerMessage(trigger, await this.host.sourceLink(trigger), note, seen ? undefined : parent)
++    const card = triggerMessage(trigger, await this.host.sourceLink(trigger), note, seen ? undefined : parent)
++    const attachments = await materializeTriggerAttachments(ticket.execution?.directory ?? '', this.host.machine.stateDir, trigger)
++    return attachments.length ? { ...card, attachments } : card
+   }
+   /**
+    * After the ending transaction commits (so a rollback leaves the worker working, and a launch the same transaction queued
+diff --git a/tests/attachments.spec.ts b/tests/attachments.spec.ts
+new file mode 100644
+index 0000000..f1613f0
+--- /dev/null
++++ b/tests/attachments.spec.ts
+@@ -0,0 +1,140 @@
++import { afterEach, describe, expect, it } from 'vitest'
++import { createHash } from 'node:crypto'
++import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
++import { createServer, type Server } from 'node:http'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import { AttachmentError, stageTriggerAttachments, stagedAttachmentPath } from '../src/app/attachments.ts'
++import { workspaceTrigger } from '../src/app/bridge.ts'
++import { TriggerAttachmentSchema, triggerAttachments, type TriggerAttachment } from '../src/core/attachments.ts'
++import { materializeTriggerAttachments } from '../src/executor/attachments.ts'
++import type { Trigger } from '../src/core/index.ts'
++
++const dirs: string[] = []
++const servers: Server[] = []
++const temp = (): string => {
++  const dir = mkdtempSync(join(tmpdir(), 'attachments-'))
++  dirs.push(dir)
++  return dir
++}
++afterEach(async () => {
++  await Promise.all(servers.splice(0).map(server => new Promise<void>(resolve => server.close(() => resolve()))))
++  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
++})
++const bytes = Buffer.from('M6-A attachment bytes\n')
++const sha = createHash('sha256').update(bytes).digest('hex')
++const attachment = (overrides: Partial<TriggerAttachment> = {}): TriggerAttachment => ({
++  id: '3f8c1f14-5c0e-4a9a-9d6a-3c9b2f3f2a11', filename: 'shot.png', mimeType: 'image/png',
++  sizeBytes: bytes.byteLength, sha256: sha, kind: 'image', ...overrides,
++})
++/** Serves `body` for one download URL and reports the requested path. */
++async function serve(status: number, body: Buffer): Promise<{ url: string; paths: string[] }> {
++  const paths: string[] = []
++  const server = createServer((request, response) => {
++    paths.push(request.url ?? '')
++    response.writeHead(status, { 'content-type': 'application/octet-stream', 'content-length': body.byteLength })
++    response.end(body)
++  })
++  servers.push(server)
++  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()))
++  const address = server.address()
++  if (!address || typeof address === 'string') throw new Error('no address')
++  return { url: `http://127.0.0.1:${address.port}`, paths }
++}
++const trigger = (attachments: TriggerAttachment[], id = 'workspace:m1'): Trigger => ({
++  id, source: 'workspace', threads: [{ source: 'workspace', id: 'workspace:c1' }], actor: { source: 'workspace', id: 'owner' },
++  human: true, addressed: 'direct', at: '2026-11-09T00:00:00.000Z', text: 'Look at the attachment',
++  channel: { source: 'workspace', thread: 'workspace:c1', address: { conversationId: 'c1' } },
++  meta: { conversationId: 'c1', messageId: 'm1', replyToMessageId: null, triggerId: id, spec: {}, attachments },
++})
++
++describe('attachment references', () => {
++  it('accepts the metadata and refuses content, URLs and unknown keys', () => {
++    expect(TriggerAttachmentSchema.parse(attachment())).toEqual(attachment())
++    expect(TriggerAttachmentSchema.safeParse({ ...attachment(), content: 'x' }).success).toBe(false)
++    expect(TriggerAttachmentSchema.safeParse({ ...attachment(), downloadUrl: 'http://127.0.0.1/x' }).success).toBe(false)
++    expect(TriggerAttachmentSchema.safeParse({ ...attachment(), sha256: 'ABC' }).success).toBe(false)
++    expect(TriggerAttachmentSchema.safeParse({ ...attachment(), kind: 'binary' }).success).toBe(false)
++    expect(triggerAttachments(trigger([attachment()]))).toEqual([attachment()])
++    expect(triggerAttachments({ meta: {} })).toEqual([])
++  })
++
++  it('keeps the references in the Trigger meta, and only when present', () => {
++    const request = { triggerId: 'workspace:m1', conversationId: 'c1', messageId: 'm1', replyToMessageId: null,
++      actor: { id: 'owner' }, text: 'hi', at: '2026-11-09T00:00:00.000Z', attachments: [attachment()],
++      executionSpec: { repository: 'acme/widgets', baseBranch: 'main', baseCommit: 'abc123', model: null, mode: 'execute' as const } }
++    expect(workspaceTrigger(request, 'abc123', { model: null, source: 'instance' }).meta.attachments).toEqual([attachment()])
++    const without = { ...request, attachments: undefined }
++    expect(workspaceTrigger(without, 'abc123', { model: null, source: 'instance' }).meta).not.toHaveProperty('attachments')
++  })
++})
++
++describe('staging platform bytes', () => {
++  it('downloads, verifies and stores a 0600 file under the Trigger id', async () => {
++    const server = await serve(200, bytes)
++    const stateDir = temp()
++    await stageTriggerAttachments({ stateDir }, { triggerId: 'workspace:m1', messageId: 'm1', attachments: [attachment()] },
++      { MOYU_PLATFORM_URL: server.url, MOYU_PLATFORM_TOKEN: 'machine-token' })
++    const path = stagedAttachmentPath(stateDir, 'workspace:m1', attachment())
++    expect(readFileSync(path)).toEqual(bytes)
++    expect(statSync(path).mode & 0o777).toBe(0o600)
++    expect(server.paths).toEqual(['/api/internal/v1/messages/m1/attachments/3f8c1f14-5c0e-4a9a-9d6a-3c9b2f3f2a11'])
++  })
++
++  it('refuses a sha256 or size mismatch with 422 and removes what it staged', async () => {
++    const server = await serve(200, bytes)
++    const stateDir = temp()
++    const wrong = attachment({ sha256: '0'.repeat(64) })
++    await expect(stageTriggerAttachments({ stateDir }, { triggerId: 'workspace:m1', messageId: 'm1', attachments: [wrong] },
++      { MOYU_PLATFORM_URL: server.url, MOYU_PLATFORM_TOKEN: 'token' })).rejects.toMatchObject({ status: 422 })
++    expect(() => statSync(join(stateDir, 'attachments', 'workspace:m1'))).toThrow()
++    const short = attachment({ sizeBytes: bytes.byteLength + 1 })
++    await expect(stageTriggerAttachments({ stateDir }, { triggerId: 'workspace:m1', messageId: 'm1', attachments: [short] },
++      { MOYU_PLATFORM_URL: server.url, MOYU_PLATFORM_TOKEN: 'token' })).rejects.toMatchObject({ status: 422 })
++  })
++
++  it('maps a platform 404/401 to a permanent refusal and a 5xx to a retryable one', async () => {
++    for (const [status, expected] of [[404, 422], [401, 422], [500, 503]] as const) {
++      const server = await serve(status, bytes)
++      const stateDir = temp()
++      await expect(stageTriggerAttachments({ stateDir }, { triggerId: 'workspace:m1', messageId: 'm1', attachments: [attachment()] },
++        { MOYU_PLATFORM_URL: server.url, MOYU_PLATFORM_TOKEN: 'token' })).rejects.toMatchObject({ status: expected })
++    }
++  })
++
++  it('requires platform credentials and a configured URL', async () => {
++    await expect(stageTriggerAttachments({ stateDir: temp() }, { triggerId: 'workspace:m1', messageId: 'm1', attachments: [attachment()] }, {}))
++      .rejects.toBeInstanceOf(AttachmentError)
++  })
++})
++
++describe('materializing into the workspace', () => {
++  it('copies with 0600, excludes .moyu from git, and keeps an already matching file', async () => {
++    const stateDir = temp()
++    const workspace = temp()
++    const git = join(workspace, '.git')
++    mkdirSync(git, { recursive: true })
++    writeFileSync(join(git, 'HEAD'), 'ref: refs/heads/main\n')
++    const server = await serve(200, bytes)
++    await stageTriggerAttachments({ stateDir }, { triggerId: 'workspace:m1', messageId: 'm1', attachments: [attachment()] },
++      { MOYU_PLATFORM_URL: server.url, MOYU_PLATFORM_TOKEN: 'token' })
++    const result = await materializeTriggerAttachments(workspace, stateDir, trigger([attachment()]))
++    expect(result).toEqual([{ ...attachment(), path: `.moyu/attachments/${attachment().id}/shot.png` }])
++    const path = join(workspace, result[0]!.path)
++    expect(readFileSync(path)).toEqual(bytes)
++    expect(statSync(path).mode & 0o777).toBe(0o600)
++    expect(readFileSync(join(git, 'info', 'exclude'), 'utf8')).toContain('.moyu/')
++    const first = statSync(path).mtimeMs
++    await materializeTriggerAttachments(workspace, stateDir, trigger([attachment()]))
++    expect(statSync(path).mtimeMs).toBe(first)
++  })
++
++  it('refuses a staged file whose bytes no longer match', async () => {
++    const stateDir = temp()
++    const workspace = temp()
++    await stageTriggerAttachments({ stateDir }, { triggerId: 'workspace:m1', messageId: 'm1', attachments: [attachment()] },
++      { MOYU_PLATFORM_URL: (await serve(200, bytes)).url, MOYU_PLATFORM_TOKEN: 'token' })
++    writeFileSync(stagedAttachmentPath(stateDir, 'workspace:m1', attachment()), 'tampered')
++    await expect(materializeTriggerAttachments(workspace, stateDir, trigger([attachment()]))).rejects.toThrow(/sha256/)
++  })
++})
+diff --git a/tests/bridge.spec.ts b/tests/bridge.spec.ts
+index 0e4352a..9931206 100644
+--- a/tests/bridge.spec.ts
++++ b/tests/bridge.spec.ts
+@@ -105,7 +105,7 @@ describe('the machine Bridge boundary', () => {
+     const capabilities = await call('GET', '/bridge/v1/capabilities')
+     expect(capabilities).toMatchObject({ status: 200, body: { protocolVersion: 'moyu-bridge/1',
+       upstream: { package: 'dsh-superagent', version: '0.1.0', commit: '6337fc823ce20251c8de8085948165c81aaa701e' },
+-      capabilities: { trigger: true, events: true, tickets: true, models: true, pause: true, resume: true, retry: true, readOnlyDiscussion: true, start: true },
++      capabilities: { trigger: true, events: true, tickets: true, models: true, pause: true, resume: true, retry: true, readOnlyDiscussion: true, start: true, attachments: true },
+       source: { kind: 'workspace', enabled: true } } })
+   })
+ 

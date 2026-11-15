@@ -12,6 +12,7 @@ describe('supervisor wake execution binding', () => {
     const app = buildSupervisorServer({
       config: { token: 'secret' } as never,
       manager: { wake } as never,
+      store: { getInstance: async () => null } as never,
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never,
     });
     const execution = { ticketId: 't1', assignmentId: 'a1', leaseId: 'l1', fencingToken: '7' };

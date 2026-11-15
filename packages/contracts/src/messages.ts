@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { attachmentSummarySchema } from './attachments';
 import { isoTimestampSchema, pageCursorSchema, uuidSchema } from './common';
 
 export const messageDirectionSchema = z.enum(['inbound', 'outbound']);
@@ -48,6 +49,8 @@ export const messageSchema = z.object({
   source: z.string().min(1),
   createdAt: isoTimestampSchema,
   delivery: deliverySummarySchema.nullable(),
+  /** Files the owner attached to this message, in upload order. */
+  attachments: z.array(attachmentSummarySchema).default([]),
 });
 
 export type Message = z.infer<typeof messageSchema>;

@@ -8,15 +8,19 @@ import {
   type ConversationSummary,
   type Message,
   type RepositorySummary,
+  type TaskReview,
   type WorkspaceEvent,
 } from '@moyu/contracts';
 
 import { api, ApiClientError } from '../lib/api';
+import { categoryForEvent, loadActivityReadIds, loadNotificationSettings } from '../lib/activity';
+import { deliverWebNotification } from '../lib/notifications';
 import { clearOwnerDrafts, moveDraftToAlias } from '../lib/drafts';
 import { describeApiError } from '../lib/errors';
 import { Icon } from '../components/Icon';
 import { useTheme } from '../theme/ThemeProvider';
 import { ActivityDialog } from './ActivityDialog';
+import { HistoryDialog } from './HistoryDialog';
 import { Composer } from './Composer';
 import { ConversationPane } from './ConversationPane';
 import { DetailsPanel } from './DetailsPanel';
@@ -149,8 +153,15 @@ export function WorkspaceShell({
   const [connection, setConnection] = useState<ConnectionStatus>('connecting');
 
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [review, setReview] = useState<TaskReview | null>(null);
+  const [reviewStatus, setReviewStatus] = useState<LoadStatus>('idle');
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const [reviewBusy, setReviewBusy] = useState<'changes' | 'checks' | null>(null);
+  const reviewTaskRef = useRef<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [addRepositoryOpen, setAddRepositoryOpen] = useState(false);
   const [repositoryActionBusy, setRepositoryActionBusy] = useState(false);
@@ -170,6 +181,7 @@ export function WorkspaceShell({
   const pendingDeliveryIdsRef = useRef<Set<string>>(new Set());
   const deliveryRefreshSeqRef = useRef(0);
   const deliveryRefreshTokensRef = useRef<Map<string, number>>(new Map());
+  const reviewRequestRef = useRef(0);
   const mainRef = useRef<HTMLElement | null>(null);
   const scrollAdjustRef = useRef<{
     conversationId: string;
@@ -184,8 +196,13 @@ export function WorkspaceShell({
   const conversationsNextCursorRef = useRef<string | null>(null);
   const selectedConversationIdRef = useRef<string | null>(selectedConversationId);
   const selectedRepositoryIdRef = useRef<string | null>(selectedRepositoryId);
+  const repositoriesRef = useRef<RepositorySummary[]>(repositories);
+  const pendingOpenRef = useRef<{ conversationId: string; repositoryId: string } | null>(null);
+  const seenEventIdsRef = useRef<Set<string>>(new Set());
+  const pageOpenedAtRef = useRef(Date.now());
   selectedConversationIdRef.current = selectedConversationId;
   selectedRepositoryIdRef.current = selectedRepositoryId;
+  repositoriesRef.current = repositories;
   messagesNextCursorRef.current = messagesNextCursor;
   messagesNewerCursorRef.current = messagesNewerCursor;
   conversationsNextCursorRef.current = conversationsNextCursor;
@@ -676,6 +693,25 @@ export function WorkspaceShell({
     void loadRepositories();
   }, [loadRepositories]);
 
+  // The unread badge is derived from the durable activity feed and this
+  // browser's read markers, so reopening a page restores what is still unread.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const result = await api.activity({ limit: 100 });
+        if (cancelled) return;
+        const readIds = loadActivityReadIds(me.owner.id);
+        setUnreadCount(result.notifications.filter((item) => !readIds.has(item.id)).length);
+      } catch {
+        if (!cancelled) setUnreadCount(0);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [me.owner.id]);
+
   useEffect(() => {
     if (repositories.length === 0) {
       setSelectedRepositoryId(null);
@@ -708,6 +744,11 @@ export function WorkspaceShell({
     setConversations([]);
     setConversationsStatus('loading');
     setConversationsError(null);
+    const pending = pendingOpenRef.current;
+    if (pending && pending.repositoryId === selectedRepositoryId) {
+      pendingOpenRef.current = null;
+      setSelectedConversationId(pending.conversationId);
+    }
     void loadConversations(selectedRepositoryId);
   }, [selectedRepositoryId, loadConversations]);
 
@@ -742,6 +783,23 @@ export function WorkspaceShell({
     void loadConversation(selectedConversationId);
     void loadMessages(selectedConversationId);
   }, [selectedConversationId, loadConversation, loadMessages]);
+
+  const openConversationTarget = useCallback(
+    (target: { conversationId: string; repositoryId: string }) => {
+      setMode('work');
+      setCreatingTask(false);
+      setActivityOpen(false);
+      setHistoryOpen(false);
+      setSidebarOpen(false);
+      if (selectedRepositoryIdRef.current !== target.repositoryId) {
+        pendingOpenRef.current = target;
+        setSelectedRepositoryId(target.repositoryId);
+      } else {
+        setSelectedConversationId(target.conversationId);
+      }
+    },
+    [],
+  );
 
   const handleWorkspaceEvent = useCallback(
     (event: WorkspaceEvent) => {
@@ -784,8 +842,42 @@ export function WorkspaceShell({
       if (repositoryId && repositoryMatches) {
         void loadConversations(repositoryId, { silent: true });
       }
+
+      // Browser notifications consume the same durable SSE event. Replayed
+      // history older than the grace window is ignored; a recently replayed
+      // event still reaches the cross-tab/cross-refresh dedupe claim.
+      const category = categoryForEvent(event);
+      if (category && !seenEventIdsRef.current.has(event.id)) {
+        seenEventIdsRef.current.add(event.id);
+        if (seenEventIdsRef.current.size > 1000) {
+          const first = seenEventIdsRef.current.values().next().value;
+          if (first) seenEventIdsRef.current.delete(first);
+        }
+        const occurredAt = Date.parse(event.occurredAt);
+        const recent =
+          !Number.isFinite(occurredAt) || occurredAt >= pageOpenedAtRef.current - 60_000;
+        if (recent) {
+          const readIds = loadActivityReadIds(me.owner.id);
+          if (!readIds.has(event.id)) {
+            setUnreadCount((current) => current + 1);
+          }
+          void deliverWebNotification({
+            event,
+            settings: loadNotificationSettings(me.owner.id),
+            repositories: repositoriesRef.current,
+            onOpen: (target) => openConversationTarget(target),
+          });
+        }
+      }
     },
-    [loadConversation, loadConversations, mergeNewerMessages, refreshMessage],
+    [
+      loadConversation,
+      loadConversations,
+      me.owner.id,
+      mergeNewerMessages,
+      openConversationTarget,
+      refreshMessage,
+    ],
   );
 
   const eventHandlerRef = useRef<(event: WorkspaceEvent) => void>(handleWorkspaceEvent);
@@ -853,10 +945,19 @@ export function WorkspaceShell({
   );
 
   const sendMessage = useCallback(
-    async (conversationId: string, text: string, clientMessageId: string) => {
+    async (
+      conversationId: string,
+      text: string,
+      clientMessageId: string,
+      attachmentIds: string[] = [],
+    ) => {
       const repositoryId = selectedRepositoryIdRef.current;
       try {
-        const result = await api.sendMessage(conversationId, { clientMessageId, text });
+        const result = await api.sendMessage(conversationId, {
+          clientMessageId,
+          text,
+          ...(attachmentIds.length > 0 ? { attachmentIds } : {}),
+        });
         // The API merged a Web message naming an existing GitHub requirement into
         // that imported conversation and removed the empty Web one. Only follow
         // it if the user is still looking at the conversation they sent from.
@@ -886,6 +987,122 @@ export function WorkspaceShell({
     },
     [loadConversations, loadConversation, loadMessages, onSessionLost],
   );
+
+  /**
+   * Loads the stored review projection. `collect` asks the runtime (through the
+   * API and the host supervisor) for a fresh worktree diff; plain loads only
+   * read persisted artifacts, so opening the panel never runs anything.
+   */
+  const loadReview = useCallback(
+    async (taskId: string, options: { collect?: boolean } = {}) => {
+      const token = ++reviewRequestRef.current;
+      setReviewStatus('loading');
+      setReviewError(null);
+      if (options.collect) setReviewBusy('changes');
+      try {
+        const result = options.collect
+          ? await api.refreshTaskReview(taskId)
+          : await api.taskReview(taskId);
+        if (token !== reviewRequestRef.current) return;
+        setReview(result.review);
+        setReviewStatus('ready');
+        reviewTaskRef.current = taskId;
+      } catch (caught) {
+        if (token !== reviewRequestRef.current) return;
+        if (caught instanceof ApiClientError && caught.status === 401) {
+          onSessionLost();
+          return;
+        }
+        setReviewStatus('error');
+        setReviewError(describeApiError(caught));
+      } finally {
+        if (token === reviewRequestRef.current) {
+          setReviewBusy((current) => (current === 'changes' ? null : current));
+        }
+      }
+    },
+    [onSessionLost],
+  );
+
+  const collectReviewChanges = useCallback(async () => {
+    const taskId = conversation?.task?.id;
+    if (!taskId || reviewBusy) return;
+    await loadReview(taskId, { collect: true });
+  }, [conversation?.task?.id, loadReview, reviewBusy]);
+
+  const runReviewChecks = useCallback(async () => {
+    const taskId = conversation?.task?.id;
+    if (!taskId || reviewBusy) return;
+    const token = ++reviewRequestRef.current;
+    setReviewBusy('checks');
+    setReviewError(null);
+    try {
+      const result = await api.runTaskChecks(taskId);
+      if (token !== reviewRequestRef.current) return;
+      setReview(result.review);
+      setReviewStatus('ready');
+    } catch (caught) {
+      if (token !== reviewRequestRef.current) return;
+      if (caught instanceof ApiClientError && caught.status === 401) {
+        onSessionLost();
+        return;
+      }
+      setReviewError(describeApiError(caught));
+    } finally {
+      if (token === reviewRequestRef.current) setReviewBusy(null);
+    }
+  }, [conversation?.task?.id, onSessionLost, reviewBusy]);
+
+  // Load the stored review whenever the details panel opens for a task, and
+  // collect once automatically when nothing has been stored yet. A task with no
+  // runtime ticket simply shows the stated reason; no placeholder diff is made.
+  useEffect(() => {
+    const taskId = conversation?.task?.id ?? null;
+    if (!detailsOpen || !taskId) {
+      setReview(null);
+      setReviewStatus('idle');
+      setReviewError(null);
+      reviewTaskRef.current = null;
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const token = ++reviewRequestRef.current;
+      setReviewStatus('loading');
+      setReviewError(null);
+      try {
+        const result = await api.taskReview(taskId);
+        if (cancelled || token !== reviewRequestRef.current) return;
+        setReview(result.review);
+        setReviewStatus('ready');
+        reviewTaskRef.current = taskId;
+        if (
+          result.review.changes.state === 'unavailable' &&
+          result.review.changes.collectedAt === null &&
+          conversation?.task?.upstreamTicketId
+        ) {
+          void loadReview(taskId, { collect: true });
+        }
+      } catch (caught) {
+        if (cancelled || token !== reviewRequestRef.current) return;
+        if (caught instanceof ApiClientError && caught.status === 401) {
+          onSessionLost();
+          return;
+        }
+        setReviewStatus('error');
+        setReviewError(describeApiError(caught));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    detailsOpen,
+    conversation?.task?.id,
+    conversation?.task?.upstreamTicketId,
+    loadReview,
+    onSessionLost,
+  ]);
 
   const runTaskCommand = useCallback(
     async (action: 'start' | 'stop' | 'resume' | 'retry') => {
@@ -1031,6 +1248,11 @@ export function WorkspaceShell({
             setActivityOpen(true);
             setSidebarOpen(false);
           }}
+          unreadCount={unreadCount}
+          onOpenHistory={() => {
+            setHistoryOpen(true);
+            setSidebarOpen(false);
+          }}
           onOpenSettings={() => {
             setSettingsOpen(true);
             setSidebarOpen(false);
@@ -1101,7 +1323,9 @@ export function WorkspaceShell({
                 title="活动中心"
               >
                 <Icon name="bell" />
-                <span className={styles.topbarBadge}>0</span>
+                <span className={styles.topbarBadge} data-empty={unreadCount === 0}>
+                  {unreadCount > 99 ? '99+' : unreadCount}
+                </span>
               </button>
               <button
                 type="button"
@@ -1120,6 +1344,7 @@ export function WorkspaceShell({
             <ConversationPane
               mode={mode}
               repository={selectedRepository}
+              repositories={repositories}
               conversation={conversation}
               conversationStatus={conversationStatus}
               conversationError={conversationError}
@@ -1168,6 +1393,12 @@ export function WorkspaceShell({
           open={detailsOpen}
           repository={selectedRepository}
           conversation={conversation}
+          review={review}
+          reviewStatus={reviewStatus}
+          reviewError={reviewError}
+          reviewBusy={reviewBusy}
+          onRefreshChanges={collectReviewChanges}
+          onRunChecks={runReviewChecks}
           onClose={() => setDetailsOpen(false)}
         />
       </div>
@@ -1183,7 +1414,25 @@ export function WorkspaceShell({
         />
       ) : null}
 
-      {activityOpen ? <ActivityDialog onClose={() => setActivityOpen(false)} /> : null}
+      {activityOpen ? (
+        <ActivityDialog
+          ownerId={me.owner.id}
+          onClose={() => setActivityOpen(false)}
+          onOpenConversation={openConversationTarget}
+          onUnreadChange={setUnreadCount}
+          onSessionLost={onSessionLost}
+        />
+      ) : null}
+
+      {historyOpen ? (
+        <HistoryDialog
+          repositories={repositories}
+          initialRepositoryId={selectedRepositoryId}
+          onClose={() => setHistoryOpen(false)}
+          onOpenConversation={openConversationTarget}
+          onSessionLost={onSessionLost}
+        />
+      ) : null}
 
       {addRepositoryOpen ? (
         <AddRepositoryDialog

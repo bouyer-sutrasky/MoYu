@@ -1,0 +1,70 @@
+# B1-red — 2026-11-11T07:54:22.233Z
+# Red-side result semantics: exit code 0 = the baseline lacks or fails this acceptance item (the expected red); exit code 1 = the feature unexpectedly exists on the baseline.
+$ git rev-parse HEAD
+92b01d1436f0802ca16846d697ceba7e4bda2232
+# baseline for the red side
+$ git rev-parse 68c01e50d69a075183a0a175c57611fa77e1163a
+68c01e50d69a075183a0a175c57611fa77e1163a
+
+$ curl -s -o /dev/null -w '%{http_code}' -b 'moyu_session=<session>' http://127.0.0.1:4626/api/v1/activity
+HTTP 404
+The baseline build has no M6-B endpoint; the not-found handler is the raw output.
+{"error":{"code":"not_found","message":"Route not found","retryable":false},"requestId":"8d6a2624-fb9b-435c-97af-2321acd7280f"}
+exit code: 0
+
+$ playwright open http://127.0.0.1:4626 (desktop-light); 点击「活动中心」
+activity placeholder present: true
+settings has 通知 section: false
+settings has 清理 section: false
+--- activity text ---
+活动中心
+
+跨仓库汇总未读、运行中与等待回复的任务。
+
+当前没有活动记录
+
+活动中心与通知在 M6 接入。M3 已提供持久事件流，但未读汇总、系统通知与活动定位仍待接入；本页不展示占位数据。
+
+活动与通知 · M6
+需要回复
+执行器提问与等待输入。
+待接入
+待审阅
+PR 交付等待所有者审阅。
+待接入
+已完成
+任务与检查全部完成。
+待接入
+失败 / 受阻
+执行失败或需要人工处理。
+待接入
+exit code: 0
+
+$ playwright open http://127.0.0.1:4626 (mobile-dark); 点击「活动中心」
+activity placeholder present: true
+settings has 通知 section: false
+settings has 清理 section: false
+--- activity text ---
+活动中心
+
+跨仓库汇总未读、运行中与等待回复的任务。
+
+当前没有活动记录
+
+活动中心与通知在 M6 接入。M3 已提供持久事件流，但未读汇总、系统通知与活动定位仍待接入；本页不展示占位数据。
+
+活动与通知 · M6
+需要回复
+执行器提问与等待输入。
+待接入
+待审阅
+PR 交付等待所有者审阅。
+待接入
+已完成
+任务与检查全部完成。
+待接入
+失败 / 受阻
+执行失败或需要人工处理。
+待接入
+exit code: 0
+

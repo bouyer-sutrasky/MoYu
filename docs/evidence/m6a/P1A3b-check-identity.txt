@@ -1,0 +1,572 @@
+# P1A3b 检查子进程独立低权身份 + 服务加固 — 2026-11-11T16:49:54+08:00
+
+依据：Issue #58 的「判据」节；本文件是红→绿两段的原始命令、输出与 exit code。
+说明：哨兵内容是合成的 `m6a-sentinel-secret`，不是任何真实凭据。
+
+$ git rev-parse HEAD
+d2883d1cc1dd7de56b15602368ebcd04b63146f3
+
+$ uname -a
+Linux lavm-flnape7bgu 6.8.0-53-generic #55-Ubuntu SMP PREEMPT_DYNAMIC Fri Jan 17 15:37:52 UTC 2025 x86_64 x86_64 x86_64 GNU/Linux
+
+$ id
+uid=0(root) gid=0(root) groups=0(root)
+
+环境：隔离 DB `moyu_check_identity`；隔离 API `127.0.0.1:4630`；green supervisor `4691`；red supervisor `4690`。
+host `/root/src/upstream/*` 未改；live `moyu.service` / 3082 / 4300 未重启、未改 unit。
+
+
+## 0. 固定身份（owner 在正式切换前创建；本脚本仅为预演创建）
+
+$ sh -c getent passwd moyu-web moyu-m5b moyu-check; getent group moyu-check
+moyu-web:x:990:983::/var/lib/moyu:/usr/sbin/nologin
+moyu-m5b:x:993:984::/var/lib/moyu-m5b:/usr/sbin/nologin
+moyu-check:x:994:985::/var/lib/moyu-check:/usr/sbin/nologin
+moyu-check:x:985:moyu-m5b
+[exit code: 0]
+
+CHECK_UID=994 CHECK_GID=985 SUP_UID=993 SUP_GID=984
+
+
+## 0.1 隔离目录（worktree 共享组 + 独立 HOME；不是递归 chown 到检查用户）
+
+$ setpriv --reuid=moyu-check --regid=moyu-check --init-groups /srv/moyu-rehearsal/node24/bin/node -v
+v24.22.2
+[exit code: 0]
+
+$ sh -c stat -c '%U %G %a %n' '/srv/moyu-rehearsal' '/srv/moyu-rehearsal/worktrees' '/srv/moyu-rehearsal/worktrees/probe1' '/srv/moyu-rehearsal/check-home' '/srv/moyu-rehearsal/sentinel'
+root root 755 /srv/moyu-rehearsal
+moyu-m5b moyu-check 2775 /srv/moyu-rehearsal/worktrees
+moyu-m5b moyu-check 2775 /srv/moyu-rehearsal/worktrees/probe1
+moyu-check moyu-check 700 /srv/moyu-rehearsal/check-home
+root root 600 /srv/moyu-rehearsal/sentinel
+[exit code: 0]
+
+
+## 1. 隔离数据库、真实 worktree 与 fixture 行
+
+$ psql postgres://moyu@127.0.0.1:55432/postgres -q -c DROP DATABASE IF EXISTS "moyu_check_identity" WITH (FORCE) -c CREATE DATABASE "moyu_check_identity"
+[exit code: 0]
+
+$ bash -c cd '/root/src/check-identity-hardening-d42136e00384' && DATABASE_URL='postgres://moyu@127.0.0.1:55432/moyu_check_identity' pnpm --filter @moyu/db db:migrate
+$ tsx src/cli/migrate.ts
+{"level":"info","service":"moyu-db","event":"migrate.completed","message":"Database migrations applied successfully"}
+[exit code: 0]
+
+$ git clone -q --no-hardlinks /root/src/check-identity-hardening-d42136e00384 /srv/moyu-rehearsal/worktrees/probe1/m6a-review-t_m6a_id_d28
+[exit code: 0]
+
+$ bash -c cd '/srv/moyu-rehearsal/worktrees/probe1/m6a-review-t_m6a_id_d28' && pnpm install --frozen-lockfile
+Scope: all 9 workspace projects
+✓ Lockfile passes supply-chain policies (verified 3d ago)
+Lockfile is up to date, resolution step is skipped
+Progress: resolved 1, reused 0, downloaded 0, added 0
+Packages: +393
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+Progress: resolved 393, reused 393, downloaded 0, added 393, done
+
+devDependencies:
++ @eslint/js 9.39.5
++ eslint 9.39.5
++ eslint-config-prettier 10.1.8
++ pg 8.23.1
++ playwright 1.56.1
++ prettier 3.6.2
++ typescript 5.9.3
++ typescript-eslint 8.72.1
+
+Done in 2.1s using pnpm v11.7.0
+[exit code: 0]
+
+$ bash -c chown -R moyu-m5b:moyu-check '/srv/moyu-rehearsal/worktrees/probe1/m6a-review-t_m6a_id_d28' && chmod -R g+rwX '/srv/moyu-rehearsal/worktrees/probe1/m6a-review-t_m6a_id_d28' && find '/srv/moyu-rehearsal/worktrees/probe1/m6a-review-t_m6a_id_d28' -type d -exec chmod g+s {} +
+[exit code: 0]
+
+$ git -c safe.directory=/srv/moyu-rehearsal/worktrees/probe1/m6a-review-t_m6a_id_d28 -C /srv/moyu-rehearsal/worktrees/probe1/m6a-review-t_m6a_id_d28 rev-parse HEAD
+d2883d1cc1dd7de56b15602368ebcd04b63146f3
+[exit code: 0]
+
+repositoryId=84d23499-26e4-46af-a560-ac024368a87c
+taskId=495104ab-ecc1-45aa-9183-591757718e8b
+conversationId=eacbf8c7-99b1-42c5-94b8-5385efd22c72
+ticket=t_m6a_id_d2883d1c
+worktree=/srv/moyu-rehearsal/worktrees/probe1/m6a-review-t_m6a_id_d28
+
+非密环境（token/DB URL 已省略）：
+/srv/moyu-rehearsal/sup-probe.env:NODE_ENV=production
+/srv/moyu-rehearsal/sup-probe.env:SUPERVISOR_PORT=4691
+/srv/moyu-rehearsal/sup-probe.env:WORKTREE_ROOT=/srv/moyu-rehearsal/worktrees
+/srv/moyu-rehearsal/sup-probe.env:REVIEW_CHECK_COMMANDS=["id -u; id -g; grep -E 'NoNewPrivs|Cap(Eff|Amb)' /proc/self/status; ps -o pid,ppid,uid,gid,cmd -p $$ -p $PPID; echo HOME=$HOME TMPDIR=$TMPDIR; cat /srv/moyu-rehearsal/sentinel; echo sentinel-exit=$?"]
+/srv/moyu-rehearsal/sup-check.env:NODE_ENV=production
+/srv/moyu-rehearsal/sup-check.env:SUPERVISOR_PORT=4691
+/srv/moyu-rehearsal/sup-check.env:WORKTREE_ROOT=/srv/moyu-rehearsal/worktrees
+/srv/moyu-rehearsal/sup-check.env:REVIEW_CHECK_COMMANDS=["pnpm check"]
+/srv/moyu-rehearsal/sup-red.env:NODE_ENV=test
+/srv/moyu-rehearsal/sup-red.env:SUPERVISOR_PORT=4690
+/srv/moyu-rehearsal/sup-red.env:WORKTREE_ROOT=/srv/moyu-rehearsal/worktrees
+/srv/moyu-rehearsal/sup-red.env:REVIEW_CHECK_COMMANDS=["id -u; id -g; grep -E 'NoNewPrivs|Cap(Eff|Amb)' /proc/self/status; ps -o pid,ppid,uid,gid,cmd -p $$ -p $PPID; echo HOME=$HOME TMPDIR=$TMPDIR; cat /srv/moyu-rehearsal/sentinel; echo sentinel-exit=$?"]
+
+API 环境（token/DB URL 已省略）：
+NODE_ENV=test
+API_HOST=127.0.0.1
+API_PORT=4630
+ARTIFACT_STORAGE_DIR=/var/lib/moyu-rehearsal/artifacts
+WEB_DIST_DIR=apps/web/dist
+HOME=/var/lib/moyu-rehearsal
+
+
+## 2. 红段：supervisor 以 root 运行、检查子进程与父进程同 uid
+
+$ systemctl show moyu.service -p User,Group,NoNewPrivileges,ProtectSystem,PrivateTmp --no-pager
+User=
+Group=
+PrivateTmp=no
+ProtectSystem=no
+NoNewPrivileges=no
+[exit code: 0]
+
+$ ps -o pid,ppid,uid,gid,cmd -p 3139515
+    PID    PPID   UID   GID CMD
+3139515       1     0     0 /usr/bin/node apps/api/dist/server.js
+[exit code: 0]
+
+$ systemd-run --unit=moyu-rehearsal-supervisor-red --description=MoYu #58 red: root supervisor without a check identity --property=WorkingDirectory=/srv/moyu-rehearsal/app --property=EnvironmentFile=/srv/moyu-rehearsal/sup-red.env /srv/moyu-rehearsal/node24/bin/node /srv/moyu-rehearsal/app/apps/supervisor/dist/main.js
+Running as unit: moyu-rehearsal-supervisor-red.service; invocation ID: 7d5736a161c54c3aa302ff20d7c51cce
+[exit code: 0]
+
+$ systemctl show moyu-rehearsal-supervisor-red -p User,Group,CapabilityBoundingSet,AmbientCapabilities,NoNewPrivileges --no-pager
+CapabilityBoundingSet=cap_chown cap_dac_override cap_dac_read_search cap_fowner cap_fsetid cap_kill cap_setgid cap_setuid cap_setpcap cap_linux_immutable cap_net_bind_service cap_net_broadcast cap_net_admin cap_net_raw cap_ipc_lock cap_ipc_owner cap_sys_module cap_sys_rawio cap_sys_chroot cap_sys_ptrace cap_sys_pacct cap_sys_admin cap_sys_boot cap_sys_nice cap_sys_resource cap_sys_time cap_sys_tty_config cap_mknod cap_lease cap_audit_write cap_audit_control cap_setfcap cap_mac_override cap_mac_admin cap_syslog cap_wake_alarm cap_block_suspend cap_audit_read cap_perfmon cap_bpf cap_checkpoint_restore
+AmbientCapabilities=
+User=
+Group=
+NoNewPrivileges=no
+[exit code: 0]
+
+$ curl -sS -H "authorization: Bearer <redacted>" -H "content-type: application/json" -d '{"ticketId":"t_m6a_id_d2883d1c"}' http://127.0.0.1:4690/control/v1/instances/<repo>/review/checks
+[exit code: 0]
+
+command     : id -u; id -g; grep -E 'NoNewPrivs|Cap(Eff|Amb)' /proc/self/status; ps -o pid,ppid,uid,gid,cmd -p $$ -p $PPID; echo HOME=$HOME TMPDIR=$TMPDIR; cat /srv/moyu-rehearsal/sentinel; echo sentinel-exit=$?
+exitCode    : 0 | passed: true | timedOut: false | ms: 22
+output      :
+0
+0
+CapEff:	000001ffffffffff
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+    PID    PPID   UID   GID CMD
+1023024       1     0     0 /srv/moyu-rehearsal/node24/bin/node /srv/moyu-rehearsal/app/apps/supervisor/dist/main.js
+1023046 1023024     0     0 /bin/bash -lc id -u; id -g; grep -E 'NoNewPrivs|Cap(Eff|Amb)' /proc/self/status; ps -o pid,ppid,uid,gid,cmd -p $$ -p $PPID; echo HOME=$HOME TMPDIR=$TMPDIR; cat /srv/moyu-rehearsal/sentinel; echo sentinel-exit=$?
+HOME=/srv/moyu-rehearsal/sup-home TMPDIR=
+m6a-sentinel-secret
+sentinel-exit=0
+---
+
+## 3. 绿段：supervisor 非 root，仅 CAP_SETUID/CAP_SETGID，检查子进程切到专用 uid
+
+$ systemd-run --unit=moyu-rehearsal-supervisor --description=MoYu #58 green: unprivileged supervisor with a dedicated check identity --property=User=moyu-m5b --property=Group=moyu-m5b --property=SupplementaryGroups=moyu-check --property=WorkingDirectory=/srv/moyu-rehearsal/app --property=EnvironmentFile=/srv/moyu-rehearsal/sup-probe.env --property=NoNewPrivileges=yes --property=PrivateTmp=yes --property=ProtectSystem=strict --property=ProtectHome=read-only --property=CapabilityBoundingSet=CAP_SETUID CAP_SETGID --property=AmbientCapabilities=CAP_SETUID CAP_SETGID --property=UMask=0002 --property=ReadWritePaths=/srv/moyu-rehearsal/worktrees /srv/moyu-rehearsal/check-home /srv/moyu-rehearsal/sup-home /srv/moyu-rehearsal/logs /srv/moyu-rehearsal/dsh /srv/moyu-rehearsal/creds /srv/moyu-rehearsal/env /srv/moyu-rehearsal/node24/bin/node /srv/moyu-rehearsal/app/apps/supervisor/dist/main.js
+Running as unit: moyu-rehearsal-supervisor.service; invocation ID: d6138138ff9c41b783a304d4e2dd4885
+[exit code: 0]
+
+$ systemctl show moyu-rehearsal-supervisor -p User,Group,SupplementaryGroups,NoNewPrivileges,ProtectSystem,PrivateTmp,CapabilityBoundingSet,AmbientCapabilities --no-pager
+CapabilityBoundingSet=cap_setgid cap_setuid
+AmbientCapabilities=cap_setgid cap_setuid
+User=moyu-m5b
+Group=moyu-m5b
+SupplementaryGroups=moyu-check
+PrivateTmp=yes
+ProtectSystem=strict
+NoNewPrivileges=yes
+[exit code: 0]
+
+$ curl -sS -H "authorization: Bearer <redacted>" -H "content-type: application/json" -d '{"ticketId":"t_m6a_id_d2883d1c"}' http://127.0.0.1:4691/control/v1/instances/<repo>/review/checks
+[exit code: 0]
+
+command     : id -u; id -g; grep -E 'NoNewPrivs|Cap(Eff|Amb)' /proc/self/status; ps -o pid,ppid,uid,gid,cmd -p $$ -p $PPID; echo HOME=$HOME TMPDIR=$TMPDIR; cat /srv/moyu-rehearsal/sentinel; echo sentinel-exit=$?
+exitCode    : 0 | passed: true | timedOut: false | ms: 20
+output      :
+994
+985
+CapEff:	0000000000000000
+CapAmb:	0000000000000000
+NoNewPrivs:	1
+    PID    PPID   UID   GID CMD
+1023067       1   993   984 /srv/moyu-rehearsal/node24/bin/node /srv/moyu-rehearsal/app/apps/supervisor/dist/main.js
+1023087 1023067   994   985 /bin/bash -lc id -u; id -g; grep -E 'NoNewPrivs|Cap(Eff|Amb)' /proc/self/status; ps -o pid,ppid,uid,gid,cmd -p $$ -p $PPID; echo HOME=$HOME TMPDIR=$TMPDIR; cat /srv/moyu-rehearsal/sentinel; echo sentinel-exit=$?
+HOME=/srv/moyu-rehearsal/check-home TMPDIR=
+sentinel-exit=1
+cat: /srv/moyu-rehearsal/sentinel: Permission denied
+---
+$ sh -c ps -eo pid,ppid,uid,gid,cmd | grep -E 'moyu-check|setpriv' | grep -v grep || true
+[exit code: 0]
+
+$ sh -c test -w '/srv/moyu-rehearsal/check-home' && echo 'check HOME writable: yes'; cat '/srv/moyu-rehearsal/sentinel' 2>&1 || true
+check HOME writable: yes
+m6a-sentinel-secret
+[exit code: 0]
+
+
+## 4. 绿段：真实 `pnpm check` 由检查身份执行，exit 0，耗时与产物正常
+
+$ systemd-run --unit=moyu-rehearsal-supervisor --description=MoYu #58 green: real pnpm check under the dedicated identity --property=User=moyu-m5b --property=Group=moyu-m5b --property=SupplementaryGroups=moyu-check --property=WorkingDirectory=/srv/moyu-rehearsal/app --property=EnvironmentFile=/srv/moyu-rehearsal/sup-check.env --property=NoNewPrivileges=yes --property=PrivateTmp=yes --property=ProtectSystem=strict --property=ProtectHome=read-only --property=CapabilityBoundingSet=CAP_SETUID CAP_SETGID --property=AmbientCapabilities=CAP_SETUID CAP_SETGID --property=UMask=0002 --property=ReadWritePaths=/srv/moyu-rehearsal/worktrees /srv/moyu-rehearsal/check-home /srv/moyu-rehearsal/sup-home /srv/moyu-rehearsal/logs /srv/moyu-rehearsal/dsh /srv/moyu-rehearsal/creds /srv/moyu-rehearsal/env /srv/moyu-rehearsal/node24/bin/node /srv/moyu-rehearsal/app/apps/supervisor/dist/main.js
+Running as unit: moyu-rehearsal-supervisor.service; invocation ID: 146ff2ac36ee4c4785e47d860ebc49b1
+[exit code: 0]
+
+$ curl -sS -H "authorization: Bearer <redacted>" -H "content-type: application/json" -d '{"ticketId":"t_m6a_id_d2883d1c"}' http://127.0.0.1:4691/control/v1/instances/<repo>/review/checks
+[exit code: 0; wall clock: 68s]
+
+command     : pnpm check
+exitCode    : 0 | passed: true | timedOut: false | ms: 67637
+summary     : 通过
+output tail :
+✔ refuses a runtime whose stateDir is not the expected isolated profile (0.589346ms)
+ℹ tests 15
+ℹ suites 0
+ℹ pass 15
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 6195.120623
+! Corepack is about to download https://registry.npmjs.org/pnpm/-/pnpm-11.7.0.tgz
+$ pnpm lint && pnpm format:check && pnpm typecheck && pnpm test
+$ eslint .
+$ prettier --check "**/*.{ts,tsx,mjs,cjs,json,yml,yaml,css,html}"
+$ pnpm -r --if-present typecheck
+$ pnpm -r --if-present test && node --test scripts/m3/guard.test.mjs integrations/superagent/tests/verify-lock.test.mjs
+$ sh -c ls -l '/srv/moyu-rehearsal/worktrees/probe1/m6a-review-t_m6a_id_d28/apps/api/dist/server.js' '/srv/moyu-rehearsal/worktrees/probe1/m6a-review-t_m6a_id_d28/apps/web/dist/index.html' 2>&1 || true
+-rw-rw---- 1 moyu-m5b moyu-check 280134 Nov 11 16:44 /srv/moyu-rehearsal/worktrees/probe1/m6a-review-t_m6a_id_d28/apps/api/dist/server.js
+-rw-rw---- 1 moyu-m5b moyu-check    664 Nov 11 16:44 /srv/moyu-rehearsal/worktrees/probe1/m6a-review-t_m6a_id_d28/apps/web/dist/index.html
+[exit code: 0]
+
+$ sh -c du -sh '/srv/moyu-rehearsal/check-home' && find '/srv/moyu-rehearsal/check-home' -maxdepth 2 -printf '%M %u %g %p\n' | head -20
+20M	/srv/moyu-rehearsal/check-home
+drwx------ moyu-check moyu-check /srv/moyu-rehearsal/check-home
+drwxrwxr-x moyu-check moyu-check /srv/moyu-rehearsal/check-home/.cache
+drwxrwxr-x moyu-check moyu-check /srv/moyu-rehearsal/check-home/.cache/node
+drwx------ moyu-check moyu-check /srv/moyu-rehearsal/check-home/tmp
+[exit code: 0]
+
+
+## 5. 服务加固预演：非 root API unit 的 readyz、附件上传下载、检查面板三段
+
+$ systemd-run --unit=moyu-rehearsal-api --description=MoYu #58 rehearsal: hardened web shell unit --property=User=moyu-web --property=Group=moyu-web --property=WorkingDirectory=/srv/moyu-rehearsal/app --property=EnvironmentFile=/srv/moyu-rehearsal/api.env --property=StateDirectory=moyu-rehearsal --property=LogsDirectory=moyu-rehearsal --property=NoNewPrivileges=yes --property=PrivateTmp=yes --property=PrivateDevices=yes --property=ProtectSystem=strict --property=ProtectHome=yes --property=ProtectKernelTunables=yes --property=ProtectKernelModules=yes --property=ProtectControlGroups=yes --property=ProtectClock=yes --property=ProtectHostname=yes --property=RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 --property=RestrictNamespaces=yes --property=RestrictSUIDSGID=yes --property=LockPersonality=yes --property=CapabilityBoundingSet= --property=AmbientCapabilities= --property=UMask=0077 /srv/moyu-rehearsal/node24/bin/node apps/api/dist/server.js
+Running as unit: moyu-rehearsal-api.service; invocation ID: 68af204ec7e54e178b925e4646d598e2
+[exit code: 0]
+
+$ systemctl show moyu-rehearsal-api -p User,Group,NoNewPrivileges,ProtectSystem,ProtectHome,PrivateTmp,PrivateDevices,CapabilityBoundingSet,AmbientCapabilities,RestrictNamespaces,RestrictSUIDSGID --no-pager
+CapabilityBoundingSet=
+AmbientCapabilities=
+User=moyu-web
+Group=moyu-web
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+[exit code: 0]
+
+$ curl -sS -D - http://127.0.0.1:4630/readyz
+HTTP/1.1 200 OK
+content-type: application/json; charset=utf-8
+x-request-id: 4e236cc5-afcc-4281-81f9-1f3f3737c392
+x-content-type-options: nosniff
+referrer-policy: no-referrer
+x-frame-options: DENY
+permissions-policy: camera=(), microphone=(), geolocation=()
+content-security-policy: default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'
+content-length: 91
+Date: Wed, 11 Nov 2026 08:51:14 GMT
+Connection: keep-alive
+Keep-Alive: timeout=72
+
+{"data":{"status":"ok","database":"ok"},"requestId":"4e236cc5-afcc-4281-81f9-1f3f3737c392"}[exit code: 0]
+
+$ curl -sS -b "moyu_session=<redacted>" -F "file=@upload.png;type=image/png" http://127.0.0.1:4630/api/v1/conversations/<conversation>/attachments
+HTTP 201
+{
+  "id": "09fbf5f9-ad7b-41e2-9447-aba05bed0eeb",
+  "conversationId": "eacbf8c7-99b1-42c5-94b8-5385efd22c72",
+  "taskId": "495104ab-ecc1-45aa-9183-591757718e8b",
+  "messageId": null,
+  "filename": "upload.png",
+  "mimeType": "image/png",
+  "sizeBytes": 70,
+  "sha256": "c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77",
+  "kind": "image",
+  "revokedAt": null,
+  "createdAt": "2026-11-11T08:51:14.182Z",
+  "downloadUrl": "/api/v1/attachments/09fbf5f9-ad7b-41e2-9447-aba05bed0eeb"
+}
+$ curl -sS -b "moyu_session=<redacted>" -o dl.png http://127.0.0.1:4630/api/v1/attachments/09fbf5f9-ad7b-41e2-9447-aba05bed0eeb
+$ sh -c sha256sum '/srv/moyu-rehearsal/upload.png' '/srv/moyu-rehearsal/dl.png'; cmp '/srv/moyu-rehearsal/upload.png' '/srv/moyu-rehearsal/dl.png' && echo 'byte-identical: yes'
+c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77  /srv/moyu-rehearsal/upload.png
+c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77  /srv/moyu-rehearsal/dl.png
+byte-identical: yes
+[exit code: 0]
+
+
+### 5.1 通过
+$ curl -sS -b "moyu_session=<redacted>" -H "content-type: application/json" -d {} http://127.0.0.1:4630/api/v1/tasks/<task>/review/checks
+HTTP 200
+state: available | collectedAt: 2026-11-11T08:51:14.307Z
+command     : pnpm check
+exitCode    : 0 | passed: true | timedOut: false | ms: 45912
+summary     : 通过
+output tail : ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 5999.277026
+$ pnpm lint && pnpm format:check && pnpm typecheck && pnpm test
+$ eslint .
+$ prettier --check "**/*.{ts,tsx,mjs,cjs,json,yml,yaml,css,html}"
+$ pnpm -r --if-present typecheck
+$ pnpm -r --if-present test && node --test scripts/m3/guard.test.mjs integrations/superagent/tests/verify-lock.test.mjs
+---
+
+### 5.2 失败（故意改坏类型）
+$ curl -sS -b "moyu_session=<redacted>" -H "content-type: application/json" -d {} http://127.0.0.1:4630/api/v1/tasks/<task>/review/checks
+HTTP 200
+state: available | collectedAt: 2026-11-11T08:52:00.349Z
+command     : pnpm check
+exitCode    : 2 | passed: false | timedOut: false | ms: 28789
+summary     : 失败（exit 2）
+output tail : apps/api typecheck: Failed
+/srv/moyu-rehearsal/worktrees/probe1/m6a-review-t_m6a_id_d28/apps/api:
+[ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL] @moyu/api@0.1.0 typecheck: `tsc --noEmit`
+Exit status 2
+[ELIFECYCLE] Command failed with exit code 2.
+[ELIFECYCLE] Command failed with exit code 2.
+$ pnpm lint && pnpm format:check && pnpm typecheck && pnpm test
+$ eslint .
+$ prettier --check "**/*.{ts,tsx,mjs,cjs,json,yml,yaml,css,html}"
+$ pnpm -r --if-present typecheck
+---
+
+### 5.3 恢复后通过
+$ curl -sS -b "moyu_session=<redacted>" -H "content-type: application/json" -d {} http://127.0.0.1:4630/api/v1/tasks/<task>/review/checks
+HTTP 200
+state: available | collectedAt: 2026-11-11T08:52:29.210Z
+command     : pnpm check
+exitCode    : 0 | passed: true | timedOut: false | ms: 46112
+summary     : 通过
+output tail : ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 5814.606284
+$ pnpm lint && pnpm format:check && pnpm typecheck && pnpm test
+$ eslint .
+$ prettier --check "**/*.{ts,tsx,mjs,cjs,json,yml,yaml,css,html}"
+$ pnpm -r --if-present typecheck
+$ pnpm -r --if-present test && node --test scripts/m3/guard.test.mjs integrations/superagent/tests/verify-lock.test.mjs
+---
+
+## 6. Unit diff 与回滚
+
+$ systemctl cat moyu.service
+# /etc/systemd/system/moyu.service
+[Unit]
+Description=MoYu web shell (Passkey) behind nginx
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/src/widgets
+EnvironmentFile=/root/.moyu.env
+ExecStart=/usr/bin/node apps/api/dist/server.js
+Restart=on-failure
+RestartSec=3
+StandardOutput=append:/var/log/moyu.log
+StandardError=append:/var/log/moyu.log
+
+[Install]
+WantedBy=multi-user.target
+[exit code: 0]
+
+--- /etc/systemd/system/moyu.service	2026-11-03 19:50:07.149373299 +0800
++++ /root/src/check-identity-hardening-d42136e00384/deploy/systemd/moyu.service	2026-11-11 16:43:14.340418216 +0800
+@@ -1,3 +1,9 @@
++# Production unit for the MoYu web shell (API + built Web) behind nginx.
++#
++# This file is the requested change, not an installed fact: the live unit still
++# runs as root. Install it only after the service user, the staged build and the
++# env file exist (see deploy/systemd/README.md). Rollback is the previous unit
++# plus `systemctl daemon-reload && systemctl restart moyu.service`.
+ [Unit]
+ Description=MoYu web shell (Passkey) behind nginx
+ After=network-online.target postgresql.service
+@@ -5,13 +11,42 @@
+ 
+ [Service]
+ Type=simple
+-WorkingDirectory=/root/src/widgets
+-EnvironmentFile=/root/.moyu.env
++User=moyu-web
++Group=moyu-web
++# A non-root user cannot traverse /root, so the build is staged here; the tree
++# is read-only to the service and the repository is never the writable state.
++WorkingDirectory=/opt/moyu/web
++EnvironmentFile=/etc/moyu/moyu.env
++Environment=HOME=/var/lib/moyu
++Environment=ARTIFACT_STORAGE_DIR=/var/lib/moyu/artifacts
++StateDirectory=moyu
++LogsDirectory=moyu
++
++# The process has no privileged operation of its own: no setuid helper, no
++# capability, no writable system path outside its state and log directories.
++NoNewPrivileges=yes
++CapabilityBoundingSet=
++AmbientCapabilities=
++UMask=0077
++PrivateTmp=yes
++PrivateDevices=yes
++ProtectSystem=strict
++ProtectHome=yes
++ProtectKernelTunables=yes
++ProtectKernelModules=yes
++ProtectControlGroups=yes
++ProtectClock=yes
++ProtectHostname=yes
++RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
++RestrictNamespaces=yes
++RestrictSUIDSGID=yes
++LockPersonality=yes
++
+ ExecStart=/usr/bin/node apps/api/dist/server.js
+ Restart=on-failure
+ RestartSec=3
+-StandardOutput=append:/var/log/moyu.log
+-StandardError=append:/var/log/moyu.log
++StandardOutput=append:/var/log/moyu/moyu.log
++StandardError=append:/var/log/moyu/moyu.log
+ 
+ [Install]
+ WantedBy=multi-user.target
+[diff exit code: 1（1 = 有差异，符合预期）]
+
+回滚（owner 执行）：
+  install -m 0644 <上一版 moyu.service 备份> /etc/systemd/system/moyu.service
+  systemctl daemon-reload
+  systemctl restart moyu.service
+  curl -fsS http://127.0.0.1:4300/readyz
+
+本脚本未执行上面三条 systemctl 命令。
+
+
+## 7. 未验证项
+
+1. live `moyu.service`（4300）未重启；本文件只预演了同一组 unit 指令。
+2. 生产用户的 `/opt/moyu/web`、`/etc/moyu/moyu.env` 与 `moyu-check` 组/目录由 owner 按 deploy/systemd/README.md 创建。
+3. 真实 DSH runtime 实例未启动；检查的 worktree 是真实 git clone，命令是真实 `pnpm check`。
+4. 未在 3082 bootstrap 实例上做任何变更。
+
+## 8. 未配置检查身份时的 fail-closed 预演（production）
+
+用同一个 supervisor 产物和同一个隔离库，只从 env 中去掉 `REVIEW_CHECK_*`、保持 `NODE_ENV=production`，再调用同一个 `/review/checks`。请求在启动任何检查子进程之前就被拒绝；journal 给出具体原因，库里不新增检查结果。
+
+$ grep -v '^REVIEW_CHECK_' /srv/moyu-rehearsal/sup-check.env > /srv/moyu-rehearsal/sup-noidentity.env
+$ systemd-run --unit=moyu-rehearsal-supervisor-noid ... --property=EnvironmentFile=/srv/moyu-rehearsal/sup-noidentity.env ...
+Running as unit: moyu-rehearsal-supervisor-noid.service
+
+$ curl -sS -o /tmp/noid.json -w '%{http_code}' -H 'authorization: Bearer <redacted>' \
+    -H 'content-type: application/json' -d '{"ticketId":"<ticket>"}' \
+    http://127.0.0.1:4691/control/v1/instances/<repo>/review/checks
+HTTP 500
+{"error":{"code":"internal_error","message":"supervisor request failed"}}
+
+$ journalctl -u moyu-rehearsal-supervisor-noid -n 5 --no-pager
+... "event":"supervisor.request_failed","error":"检查子进程身份未配置（REVIEW_CHECK_UID/GID/HOME）；拒绝以 supervisor 身份运行"
+
+$ ps -eo pid,user,uid,gid,cmd | grep -E 'moyu-check' | grep -v grep
+no check child
+[判定] 未配置身份时 fail-closed：HTTP 500，检查子进程未启动。
+
+## 9. 仓库级检查与 supervisor unit diff
+
+$ git rev-parse HEAD
+d2883d1cc1dd7de56b15602368ebcd04b63146f3
+
+$ (set -o pipefail; PATH=/opt/moyu-node24/bin:$PATH pnpm check) 2>&1 | tail -12
+✔ rejects a cleanup target whose parent link stays inside the same home (1.255874ms)
+✔ rejects a profile containing path separators (1.013858ms)
+✔ the E2E script exits before any run directory for a bootstrap home or production API (817.379614ms)
+✔ refuses a runtime whose stateDir is not the expected isolated profile (0.654919ms)
+ℹ tests 15
+ℹ suites 0
+ℹ pass 15
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 5905.056314
+[exit code: 0]
+
+$ (set -o pipefail; TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
+    PATH=/opt/moyu-node24/bin:$PATH pnpm test:integration) 2>&1 | tail -10
+ ✓ test/integration/recovery-review-repeat-catch.integration.test.ts (1 test) 592ms
+stdout | test/integration/delivery-exactly-once.integration.test.ts > delivery exactly-once on real PostgreSQL > keeps one delivery row and one effective delivery across 5 concurrent rounds
+DELIVERY_ROUNDS [{"round":1,"messageId":"690ad640-5f84-4cbc-b39f-6014efac4075","rows":1,"delivered":1,"attempts":0,"triggerIds":["workspace:690ad640-5f84-4cbc-b39f-6014efac4075"]},{"round":2,"messageId":"4ef432e8-a636-4fbe-a1b6-b79b1dba618d","rows":1,"delivered":1,"attempts":0,"triggerIds":["workspace:4ef432e8-a636-4fbe-a1b6-b79b1dba618d"]},{"round":3,"messageId":"e7cb94d4-73f4-4156-8a7b-6e8283d596cd","rows":1,"delivered":1,"attempts":0,"triggerIds":["workspace:e7cb94d4-73f4-4156-8a7b-6e8283d596cd"]},{"round":4,"messageId":"e33a4989-c209-43ed-8407-8af600121e2e","rows":1,"delivered":1,"attempts":0,"triggerIds":["workspace:e33a4989-c209-43ed-8407-8af600121e2e"]},{"round":5,"messageId":"7e0f95eb-d062-4094-a267-d4d6fe3638f0","rows":1,"delivered":1,"attempts":0,"triggerIds":["workspace:7e0f95eb-d062-4094-a267-d4d6fe3638f0"]}]
+
+ ✓ test/integration/delivery-exactly-once.integration.test.ts (1 test) 590ms
+
+ Test Files  16 passed | 1 skipped (17)
+      Tests  82 passed | 1 skipped (83)
+   Start at  16:50:51
+   Duration  15.17s (transform 1.32s, setup 0ms, collect 20.29s, tests 15.82s, environment 5ms, prepare 2.24s)
+[exit code: 0]
+
+$ git log --oneline origin/main..HEAD
+d2883d1 fix(supervisor): run review checks under a dedicated low-priv identity
+
+$ git diff --stat origin/main..HEAD
+apps/supervisor/src/config.ts              |  38 ++-
+ apps/supervisor/src/manager.ts             |  14 +-
+ apps/supervisor/src/review.ts              | 144 +++++++-
+ apps/supervisor/test/config.test.ts        |  23 ++
+ apps/supervisor/test/review.test.ts        |  72 ++++
+ deploy/systemd/README.md                   |  87 +++++
+ deploy/systemd/moyu-check.tmpfiles.conf    |   6 +
+ deploy/systemd/moyu-m5b-supervisor.service |  14 +-
+ deploy/systemd/moyu.service                |  52 +++
+ docs/DEPLOYMENT.md                         |   7 +
+ scripts/m6a/check-identity-rehearsal.sh    | 518 +++++++++++++++++++++++++++++
+ 11 files changed, 961 insertions(+), 14 deletions(-)
+
+$ git diff origin/main..HEAD -- deploy/systemd/moyu-m5b-supervisor.service
+diff --git a/deploy/systemd/moyu-m5b-supervisor.service b/deploy/systemd/moyu-m5b-supervisor.service
+index a7c3d9f..cbe6f85 100644
+--- a/deploy/systemd/moyu-m5b-supervisor.service
++++ b/deploy/systemd/moyu-m5b-supervisor.service
+@@ -10,6 +10,9 @@ Wants=network-online.target
+ Type=simple
+ User=moyu-m5b
+ Group=moyu-m5b
++# The review check child drops to REVIEW_CHECK_UID/GID; this group carries the
++# shared worktree permission the check user and the supervisor both need.
++SupplementaryGroups=moyu-check
+ WorkingDirectory=/opt/moyu/m5b
+ EnvironmentFile=/etc/moyu/m5b/supervisor.env
+ Slice=moyu-m5b.slice
+@@ -19,7 +22,16 @@ NoNewPrivileges=yes
+ PrivateTmp=yes
+ ProtectSystem=strict
+ ProtectHome=read-only
+-ReadWritePaths=/var/lib/moyu-m5b /run/moyu-m5b
++# The supervisor itself is unprivileged. These two capabilities are the whole
++# launcher: setpriv drops each check child to REVIEW_CHECK_UID/GID. The bounding
++# set removes every other capability, and NoNewPrivileges stays on; without the
++# setpriv switch a check fails closed instead of running as the supervisor.
++CapabilityBoundingSet=CAP_SETUID CAP_SETGID
++AmbientCapabilities=CAP_SETUID CAP_SETGID
++# The runtime creates worktrees as moyu-m5b; the group and umask let the
++# dedicated check user read and write the same tree without a recursive chown.
++UMask=0002
++ReadWritePaths=/var/lib/moyu-m5b /run/moyu-m5b /var/lib/moyu-check
+ ExecStart=/opt/moyu/m5b/node_modules/.bin/tsx apps/supervisor/src/main.ts
+ Restart=on-failure
+ RestartSec=3
+
+（证据头 = 代码 head `d2883d1cc1dd7de56b15602368ebcd04b63146f3`。最终 docs-only 提交只追加本文件、deploy/systemd/README.md 与脚本；PR 回执给出 `git diff --stat <code head>..<final head>`。）

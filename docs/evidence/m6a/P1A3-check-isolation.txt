@@ -1,0 +1,374 @@
+# P1-A 第三刀：检查子进程的最小环境、进程组回收与并发门控
+
+依据：#56 复审 P1-A；`docs/M6A-REWORK-HANDOFF.md` §2.1 第三条/第五条与 §4 之后（`M6A-REWORK-ISS57-P1A3`）。
+分支：本地 `agent/review-isolation-m6a-fa8ec916012c` 指向 `origin/agent/attachments-review-panel-4bd4aae33eac`（沿用 PR #44）。
+基线：`27c4d3fb456a0f0862b8c389e47ccecfbd310444`（P1-A 第二刀 + 证据）；`main = 1001c2544c68b8f4d906e330566f6fdb6ff0c795`。
+环境：`/opt/moyu-node24/bin`（Node v24.22.2、pnpm 11.7.0）、git 2.43.0、Linux；未改 `/root/src/upstream/*`，未重启 3082，未合并 PR。
+
+代码 head（本文件据其产出，其后一个 docs-only 提交入库）：
+$ git rev-parse HEAD
+40e00be1f0cb1d6bb520753d9e52ad5afb50615a
+
+$ git log --oneline 27c4d3f..HEAD
+40e00be fix(supervisor): isolate check children's environment and process group
+624ff62 test(supervisor): prove check children leak the supervisor environment
+
+## 1. 红段：测试先落（HEAD = 624ff62，生产代码未改）
+
+$ git rev-parse HEAD
+624ff620ec50639c196894f725fad93032b85ccb
+$ git status --short
+$ cd apps/supervisor && /opt/moyu-node24/bin/pnpm exec vitest run test/review.test.ts
+
+ RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/supervisor
+
+ ❯ test/review.test.ts (21 tests | 3 failed) 1785ms
+   ✓ supervisor review worktree resolution > finds the single directory whose name ends with the ticket id prefix 3ms
+   ✓ supervisor review worktree resolution > reports a missing instance profile as unavailable, never as an empty diff 1ms
+   ✓ supervisor review worktree resolution > refuses to guess when two directories match the same ticket id 1ms
+   ✓ supervisor worktree boundary > refuses a ticket directory symlinked outside the worktree root 1ms
+   ✓ supervisor worktree boundary > refuses a profile directory symlinked outside the worktree root 1ms
+   ✓ supervisor worktree boundary > refuses a profile path that climbs out of the worktree root with .. 1ms
+   ✓ supervisor worktree boundary > refuses a symlink chain that reaches outside the worktree root 1ms
+   ✓ supervisor worktree boundary > still locates a real directory inside the worktree root 1ms
+   ✓ supervisor worktree diff > reads a real git diff, including untracked, modified, deleted and renamed files 59ms
+   ✓ supervisor worktree diff > reports no files for a clean worktree instead of inventing changes 33ms
+   ✓ supervisor worktree diff > marks a non-repository directory as unavailable with the git error 6ms
+   ✓ supervisor diff helper isolation > never runs an external diff command named by the task repository attributes 40ms
+   ✓ supervisor diff helper isolation > never runs a textconv command named by the task repository attributes 39ms
+   ✓ supervisor diff helper isolation > ignores diff helpers inherited through the supervisor environment 34ms
+   ✓ supervisor diff helper isolation > never runs a repository-configured fsmonitor program while reading status 37ms
+   ✓ supervisor check runs > keeps the real exit code, timestamps and output tail of each command 121ms
+   ✓ supervisor check runs > terminates a hung command and records the timeout  324ms
+   × supervisor check runs > passes only the documented whitelist to a check command 37ms
+     → expected true to be false // Object.is equality
+   × supervisor check runs > kills a timed-out check command's whole process group 728ms
+     → expected [ null, 'Z' ] to include 'S'
+   ✓ review service > returns a cleaned state when the ticket worktree is gone 2ms
+   × review service > rejects a second check for the same repository instead of running two 313ms
+     → promise resolved "[ { id: '1794140136351-1', …(10) } ]" instead of rejecting
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/review.test.ts > supervisor check runs > passes only the documented whitelist to a check command
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ test/review.test.ts:394:38
+    392|         // Boolean assertions keep the whole environment out of a fail…
+    393|         // output, so a red log does not become a copy of the host env…
+    394|         expect(output.includes(key)).toBe(false);
+       |                                      ^
+    395|         expect(output.includes(value)).toBe(false);
+    396|       }
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  test/review.test.ts > supervisor check runs > kills a timed-out check command's whole process group
+AssertionError: expected [ null, 'Z' ] to include 'S'
+ ❯ test/review.test.ts:428:27
+    426|       await new Promise((resolve) => setTimeout(resolve, 300));
+    427|       // /proc is the raw kernel view: absent or zombie both mean term…
+    428|       expect([null, 'Z']).toContain(processState(pid));
+       |                           ^
+    429|     } finally {
+    430|       if (pid > 0 && pidAlive(pid)) {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+ FAIL  test/review.test.ts > review service > rejects a second check for the same repository instead of running two
+AssertionError: promise resolved "[ { id: '1794140136351-1', …(10) } ]" instead of rejecting
+
+- Expected: 
+Error {
+  "message": "rejected promise",
+}
+
++ Received: 
+[
+  {
+    "command": "printf x >> '/tmp/moyu-check-counter-iRmiiv/runs.txt'; sleep 0.3",
+    "durationMs": 306,
+    "exitCode": 0,
+    "finishedAt": "2026-11-08T12:15:36.658Z",
+    "id": "1794140136351-1",
+    "output": "",
+    "outputTruncated": false,
+    "passed": true,
+    "startedAt": "2026-11-08T12:15:36.351Z",
+    "summary": "通过",
+    "timedOut": false,
+  },
+]
+
+ ❯ test/review.test.ts:484:24
+    482|     const first = service.checks('repository', ticketId);
+    483|     const second = service.checks('repository', ticketId);
+    484|     await expect(second).rejects.toThrow('该仓库已有检查正在运行，请等它结束');
+       |                        ^
+    485|     const runs = await first;
+    486|     expect(runs).toHaveLength(1);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  3 failed | 18 passed (21)
+   Start at  20:15:34
+   Duration  2.33s (transform 170ms, setup 0ms, collect 293ms, tests 1.78s, environment 0ms, prepare 78ms)
+
+exit code: 1
+
+判定（红）：3 条新测试失败 ——
+（a）父进程注入的 3 个 `MOYU_SENTINEL_*` 全部出现在检查子进程的 `env` 里；
+（b）超时后孙进程 `sleep 30` 仍以 `S` 状态存活（`/proc/<pid>/stat`）；
+（c）同仓两个并发请求都通过门控并各自执行了一次命令。
+原有真实 exit code、超时两条测试仍绿。exit 1。
+
+## 2. 绿段：修复后（HEAD = 40e00be）
+
+$ git rev-parse HEAD
+40e00be1f0cb1d6bb520753d9e52ad5afb50615a
+$ cd apps/supervisor && /opt/moyu-node24/bin/pnpm exec vitest run test/review.test.ts
+
+ RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/supervisor
+
+ ✓ test/review.test.ts (21 tests) 1820ms
+   ✓ supervisor check runs > terminates a hung command and records the timeout  325ms
+   ✓ supervisor check runs > kills a timed-out check command's whole process group  732ms
+   ✓ review service > rejects a second check for the same repository instead of running two  309ms
+
+ Test Files  1 passed (1)
+      Tests  21 passed (21)
+   Start at  20:15:59
+   Duration  2.44s (transform 197ms, setup 0ms, collect 345ms, tests 1.82s, environment 0ms, prepare 81ms)
+
+exit code: 0
+
+$ git rev-parse HEAD
+40e00be1f0cb1d6bb520753d9e52ad5afb50615a
+$ cd apps/supervisor && /opt/moyu-node24/bin/pnpm test
+$ vitest run --exclude "test/integration/**"
+
+ RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/supervisor
+
+ ✓ test/review.test.ts (21 tests) 1785ms
+   ✓ supervisor check runs > terminates a hung command and records the timeout  325ms
+   ✓ supervisor check runs > kills a timed-out check command's whole process group  726ms
+   ✓ review service > rejects a second check for the same repository instead of running two  309ms
+ ✓ test/stop-proof.test.ts (4 tests) 2270ms
+   ✓ supervisor cgroup stop proof > serializes independent processes with the kernel lock  2129ms
+ ✓ test/server-wake.test.ts (1 test) 88ms
+ ✓ test/config.test.ts (3 tests) 19ms
+ ✓ test/resources.test.ts (8 tests) 8ms
+ ✓ test/provision-env.test.ts (1 test) 4ms
+ ✓ test/process.test.ts (21 tests) 6504ms
+   ✓ supervisor process evidence > never signals a reused root PID whose start time does not match  314ms
+   ✓ supervisor process evidence > does not signal a reused process group after the owned members exited  303ms
+   ✓ supervisor process evidence > does not report stopped when the timeout expires before the child exits  1787ms
+   ✓ supervisor process evidence > kills a child that ignores SIGTERM before reporting stopped  1667ms
+   ✓ supervisor process evidence > retains a newly started service regardless of its age  359ms
+   ✓ cgroup launcher only accepts a positive release > exits without executing when the parent dies before release  545ms
+
+ Test Files  7 passed (7)
+      Tests  59 passed (59)
+   Start at  20:16:54
+   Duration  6.98s (transform 442ms, setup 0ms, collect 1.05s, tests 10.68s, environment 1ms, prepare 528ms)
+
+exit code: 0
+
+$ git rev-parse HEAD
+40e00be1f0cb1d6bb520753d9e52ad5afb50615a
+$ /opt/moyu-node24/bin/pnpm --filter @moyu/supervisor typecheck
+$ tsc --noEmit
+exit code: 0
+
+$ /opt/moyu-node24/bin/pnpm check   # lint + format:check + typecheck + 全仓单测
+$ pnpm lint && pnpm format:check && pnpm typecheck && pnpm test
+$ eslint .
+
+/root/src/review-isolation-m6a-fa8ec916012c/apps/dispatcher/test/integration/dispatcher.integration.test.ts
+  716:7  warning  Unused eslint-disable directive (no problems were reported from 'no-console')
+
+✖ 1 problem (0 errors, 1 warning)
+  0 errors and 1 warning potentially fixable with the `--fix` option.
+
+$ prettier --check "**/*.{ts,tsx,mjs,cjs,json,yml,yaml,css,html}"
+Checking formatting...
+All matched files use Prettier code style!
+$ pnpm -r --if-present typecheck
+Scope: 8 of 9 workspace projects
+packages/contracts typecheck$ tsc --noEmit
+packages/db typecheck$ tsc --noEmit
+packages/theme typecheck$ tsc --noEmit
+packages/theme typecheck: Done
+packages/contracts typecheck: Done
+packages/db typecheck: Done
+apps/web typecheck$ tsc --noEmit
+packages/runtime-client typecheck$ tsc --noEmit
+packages/runtime-client typecheck: Done
+apps/web typecheck: Done
+apps/api typecheck$ tsc --noEmit
+apps/dispatcher typecheck$ tsc --noEmit
+apps/supervisor typecheck$ tsc --noEmit
+apps/supervisor typecheck: Done
+apps/dispatcher typecheck: Done
+apps/api typecheck: Done
+$ pnpm -r --if-present test && node --test scripts/m3/guard.test.mjs integrations/superagent/tests/verify-lock.test.mjs
+Scope: 8 of 9 workspace projects
+packages/contracts test$ vitest run
+packages/contracts test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/packages/contracts
+packages/contracts test:  ✓ test/contracts.test.ts (13 tests) 22ms
+packages/contracts test:  Test Files  1 passed (1)
+packages/contracts test:       Tests  13 passed (13)
+packages/contracts test:    Start at  20:16:27
+packages/contracts test:    Duration  510ms (transform 124ms, setup 0ms, collect 237ms, tests 22ms, environment 0ms, prepare 76ms)
+packages/contracts test: Done
+packages/runtime-client test$ vitest run
+packages/runtime-client test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/packages/runtime-client
+packages/runtime-client test:  ✓ test/credentials.test.ts (5 tests) 7ms
+packages/runtime-client test:  ✓ test/client.test.ts (8 tests) 27ms
+packages/runtime-client test:  Test Files  2 passed (2)
+packages/runtime-client test:       Tests  13 passed (13)
+packages/runtime-client test:    Start at  20:16:28
+packages/runtime-client test:    Duration  544ms (transform 187ms, setup 0ms, collect 337ms, tests 34ms, environment 0ms, prepare 148ms)
+packages/runtime-client test: Done
+apps/api test$ vitest run --exclude "test/integration/**"
+apps/dispatcher test$ vitest run --exclude "test/integration/**"
+apps/supervisor test$ vitest run --exclude "test/integration/**"
+apps/supervisor test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/supervisor
+apps/api test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/api
+apps/dispatcher test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/dispatcher
+apps/api test:  ✓ test/cursor.test.ts (6 tests) 20ms
+apps/dispatcher test:  ✓ test/config.test.ts (3 tests) 18ms
+apps/api test:  ✓ test/auth.test.ts (9 tests) 38ms
+apps/dispatcher test:  ✓ test/tasks.test.ts (2 tests) 11ms
+apps/dispatcher test:  Test Files  2 passed (2)
+apps/dispatcher test:       Tests  5 passed (5)
+apps/dispatcher test:    Start at  20:16:29
+apps/dispatcher test:    Duration  1.47s (transform 472ms, setup 0ms, collect 1.05s, tests 30ms, environment 1ms, prepare 384ms)
+apps/dispatcher test: Done
+apps/api test:  ✓ test/health.test.ts (5 tests) 108ms
+apps/api test:  Test Files  3 passed (3)
+apps/api test:       Tests  20 passed (20)
+apps/api test:    Start at  20:16:29
+apps/api test:    Duration  2.91s (transform 886ms, setup 0ms, collect 2.71s, tests 166ms, environment 1ms, prepare 513ms)
+apps/api test: Done
+apps/supervisor test:  ✓ test/review.test.ts (21 tests) 1871ms
+apps/supervisor test:    ✓ supervisor check runs > terminates a hung command and records the timeout  326ms
+apps/supervisor test:    ✓ supervisor check runs > kills a timed-out check command's whole process group  728ms
+apps/supervisor test:    ✓ review service > rejects a second check for the same repository instead of running two  309ms
+apps/supervisor test:  ✓ test/stop-proof.test.ts (4 tests) 2564ms
+apps/supervisor test:    ✓ supervisor cgroup stop proof > serializes independent processes with the kernel lock  2225ms
+apps/supervisor test:  ✓ test/server-wake.test.ts (1 test) 104ms
+apps/supervisor test:  ✓ test/config.test.ts (3 tests) 26ms
+apps/supervisor test:  ✓ test/resources.test.ts (8 tests) 9ms
+apps/supervisor test:  ✓ test/provision-env.test.ts (1 test) 4ms
+apps/supervisor test:  ✓ test/process.test.ts (21 tests) 6715ms
+apps/supervisor test:    ✓ supervisor process evidence > never signals a reused root PID whose start time does not match  365ms
+apps/supervisor test:    ✓ supervisor process evidence > does not signal a reused process group after the owned members exited  321ms
+apps/supervisor test:    ✓ supervisor process evidence > does not report stopped when the timeout expires before the child exits  1810ms
+apps/supervisor test:    ✓ supervisor process evidence > kills a child that ignores SIGTERM before reporting stopped  1664ms
+apps/supervisor test:    ✓ supervisor process evidence > retains a newly started service regardless of its age  360ms
+apps/supervisor test:    ✓ cgroup launcher only accepts a positive release > exits without executing when the parent dies before release  548ms
+apps/supervisor test:  Test Files  7 passed (7)
+apps/supervisor test:       Tests  59 passed (59)
+apps/supervisor test:    Start at  20:16:29
+apps/supervisor test:    Duration  7.88s (transform 1.09s, setup 0ms, collect 2.21s, tests 11.29s, environment 2ms, prepare 881ms)
+apps/supervisor test: Done
+✔ verify-lock.sh gives the same result for plain, spaced, quoted and relative paths (5911.757171ms)
+✔ accepts a dedicated profile linked to the patched build (11.759699ms)
+✔ rejects the bootstrap home and profile (1.775943ms)
+✔ rejects an unpatched build and a wrong Bridge port (2.52694ms)
+✔ rejects an env file with broad permissions (1.268222ms)
+✔ rejects a target port that is already in use (11.400624ms)
+✔ rejects instance env keys that could override the validated home/profile (1.472811ms)
+✔ rejects an instance env pointing at the production API or a conflicting process env (2.304788ms)
+✔ rejects a symlinked state parent and leaves the other instance untouched (1.332154ms)
+✔ rejects state/<profile> linked to another profile in the same home (1.375874ms)
+✔ rejects sessions linked to another directory in the same home (1.332246ms)
+✔ rejects a cleanup target whose parent link stays inside the same home (1.18621ms)
+✔ rejects a profile containing path separators (0.97127ms)
+✔ the E2E script exits before any run directory for a bootstrap home or production API (787.38287ms)
+✔ refuses a runtime whose stateDir is not the expected isolated profile (0.617292ms)
+ℹ tests 15
+ℹ suites 0
+ℹ pass 15
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 5996.375425
+EXIT=0
+
+判定（绿）：review 21 条全绿，supervisor 59 条全绿，typecheck 与全仓 `pnpm check` exit 0。
+
+### 2.1 检查路径上的功能回归（真实包管理器）
+
+用生产同一条 `runChecks` 路径（不是外面的 `pnpm check`）跑包管理器与身份探针：
+
+$ git rev-parse HEAD
+01a693d605bdfd1464d473af7f5f91cedf171eb8
+$ PATH=/opt/moyu-node24/bin:$PATH pnpm exec tsx /tmp/p1a3-pnpm-probe.mts
+command: pnpm --version
+passed: true exitCode: 0 timedOut: false
+output: 11.7.0
+command: node -p "process.getuid()"
+passed: true exitCode: 0 timedOut: false
+output: 0
+exit code: 0
+
+判定：白名单环境下 `pnpm --version` 仍解析到仓库固定的 11.7.0（exit 0），`node` 也可执行，说明清环境没有把功能改死；
+`node -p process.getuid()` 返回 `0`，与本机 supervisor 自身 uid 相同 —— 身份未隔离的直接证据，见 3.2。
+
+## 3. 逐项判定
+
+### 3.1 环境隔离 —— 已实现
+
+`runChecks` 不再传 `process.env`，改为白名单 `CHECK_ENV_KEYS = PATH, HOME, TMPDIR, LANG, LC_ALL`
+（`apps/supervisor/src/review.ts` 的 `checkEnvironment()`；LANG/LC_ALL 缺省补 `C`）。
+`bash -lc` 仍会执行 `/etc/profile`，实测可能重写 `PATH`/`LANG`（绿段测试因此断言 `HOME`、`TMPDIR` 精确值、
+`PATH` 含父进程值、`LANG`/`LC_ALL` 存在），但父进程注入的哨兵变量一个都到不了子进程。
+
+### 3.2 身份隔离 —— 未实现（原因与后续归属）
+
+平台 supervisor 以非 root 专用用户运行且禁止提权，进程内无法切换 uid/gid：
+
+$ sed -n '9,16p' deploy/systemd/moyu-m5b-supervisor.service
+[Service]
+Type=simple
+User=moyu-m5b
+Group=moyu-m5b
+WorkingDirectory=/opt/moyu/m5b
+EnvironmentFile=/etc/moyu/m5b/supervisor.env
+Slice=moyu-m5b.slice
+# Let the supervisor create instance cgroups inside the delegated subtree.
+
+因此检查命令仍以 supervisor 用户（`moyu-m5b`）身份运行；本轮提供的是环境白名单 + 工作目录
+（`cwd` = 该 ticket 的 worktree，未变）。要做「独立低权检查身份」，需要一次特权启动器改造
+（单独 systemd unit/socket + 预置低权用户 + worktree 所有权/写权限设计），不属于 #57 本轮范围。
+归属：所有者决定是否另立一项；在此之前不声称身份已隔离。
+
+### 3.3 超时回收 —— 已实现
+
+`runCommand` 新增 `ownProcessGroup`：检查命令以 `detached: true` 起成独立进程组，超时时
+`process.kill(-pid, 'SIGKILL')` 回收整组（失败才退回直接 kill）。红段里孙进程 `/proc/<pid>/stat`
+状态为 `S`（存活），绿段断言其状态为 `Z` 或已消失。
+
+### 3.4 并发门控 —— 已实现
+
+`checks()` 改为在任何 await 之前 `runningChecks.add(repositoryId)`，`finally` 释放；
+红段第二个并发请求拿到完整结果（命令执行两次），绿段第二个请求立即以 409
+「该仓库已有检查正在运行，请等它结束」拒绝，计数文件只有一次 `x`。
+
+## 4. 边界与未验证
+
+- 生产路径：`apps/supervisor/src/review.ts` 的 `runCommand` / `checkEnvironment` / `runChecks` / `createReviewService().checks`。
+- 未做：独立低权检查身份（见 3.2）；P1-B/P1-C 及其余 #56 项。
+- 未验证：推送后的 GitHub CI（本轮结束时尚未触发）；A1–A8 整套证据尚未在新 head 重跑。
+- 复现：`cd apps/supervisor && /opt/moyu-node24/bin/pnpm exec vitest run test/review.test.ts`。

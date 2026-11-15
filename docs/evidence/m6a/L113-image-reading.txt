@@ -1,0 +1,270 @@
+# L113 剩余项：执行器真实读取截图的证据（read_image）
+
+代码 head（本文件据其产出）：
+
+$ git rev-parse HEAD
+9a60fb2b779295134c835cc27891bda74a9da08a
+exit code: 0
+
+产出时间：2026-11-10 19:03–19:05 +08:00。现场：隔离 DSH_HOME `/tmp/m6a-image-run/dsh-home`、
+隔离 PostgreSQL 数据库 `moyu_m6a_image`（`127.0.0.1:55432`）、回环端口 4800/4801/4802/4890。
+未重启 3082、未改共享 m5b 实例、未改 `/root/src/upstream/*`。
+
+本轮结论：**L113 的“真实截图任务让执行器看见图像”已补齐**。能力协商为 true 的投递路径把
+`attachments` 元数据送到 Bridge；执行器把文件复制到 `.moyu/attachments/<id>/<name>`；worker 会话
+真实调用 `read_image` 并成功返回图像（1360×900）；模型转写出的 token、两行 Row 文本、像素尺寸与
+两个色块颜色全部与真值一致。
+
+## 0. 为什么此前被挡住，以及本轮改了什么
+
+此前 profile 只有模型条目、没有声明输入模态，LLM 层解析出的 `input` 回落到默认 `["text"]`，
+`read_image` 在工具入口直接拒绝（`model "..." does not declare image input`）。
+
+本轮先实测：`commandcode` 网关下的 `deepseek/deepseek-v4.1-flash` **本身接受图像输入**（见 §6.1
+探针：宽高、Row 文本、色块都读对；token 有一个 `O/0` 字形歧义，不影响能力判断）。因此在隔离
+profile 的模型条目补上：
+
+```yaml
+            input:
+              - text
+              - image
+```
+
+这不是“给不支持图像的模型硬写模态”：模型/端点在写声明之前已用真实图像请求验证；没有换模型、没有
+新增端点、没有使用外部 OCR。隔离 profile 全文片段见 §5。
+
+## 1. 隔离事实
+
+$ psql "$M6A_PG_URL" -tAc "select state, desired_state, pid, port, bridge_port, profile, reason_code from repository_instances"
+online|online|316136|4801|4800|imagetest|listening
+exit code: 0
+
+$ psql "$M6A_PG_URL" -tAc "select current_database()"
+moyu_m6a_image
+exit code: 0
+
+$ ss -ltnp | grep -E ":(4800|4801|4802|4890) "
+LISTEN 0      511        127.0.0.1:4890       0.0.0.0:*    users:(("node",pid=316114,fd=22))
+LISTEN 0      511        127.0.0.1:4802       0.0.0.0:*    users:(("node",pid=316944,fd=21))
+LISTEN 0      511        127.0.0.1:4800       0.0.0.0:*    users:(("node",pid=316136,fd=29))
+LISTEN 0      511        127.0.0.1:4801       0.0.0.0:*    users:(("node",pid=316136,fd=22))
+exit code: 0
+
+DSH_HOME=/tmp/m6a-image-run/dsh-home
+profile=/tmp/m6a-image-run/dsh-home/profiles/imagetest
+stateDir=/tmp/m6a-image-run/dsh-home/state/imagetest
+worktree=/tmp/m6a-image-run/worktrees/imagetest/image-token-transcribe-9db86fa8fc4e
+
+运行时构建（0025 已应用，`l113-build1`）：
+
+$ grep -o "attachments: true|moyu/attachments|stageTriggerAttachments" /root/src/upstream/l113-build1/lib/index.js | sort | uniq -c
+      1 attachments: true
+      2 moyu/attachments
+      3 stageTriggerAttachments
+exit code: 0
+
+$ git -C /root/src/attachments-review-panel-4bd4aae33eac show HEAD:integrations/superagent/patches/0025-workspace-attachments.patch | sha256sum
+f741f5d9eca151cb9b39c7f3a74b3ba01ff7cfef44f556ff910b782e74e441ee  -
+exit code: 0
+
+## 2. 投递链路：能力协商 + attachments 元数据
+
+Bridge 在能力协商里声明 `attachments: true`：
+
+$ curl -sS -H "authorization: Bearer $BRIDGE_TOKEN" http://127.0.0.1:4800/bridge/v1/capabilities
+{"protocolVersion":"moyu-bridge/1","upstream":{"package":"dsh-superagent","version":"0.1.0","commit":"6337fc823ce20251c8de8085948165c81aaa701e"},"capabilities":{"trigger":true,"events":true,"tickets":true,"models":true,"branches":true,"pause":true,"resume":true,"retry":true,"readOnlyDiscussion":true,"start":true,"admission":true,"attachments":true},"source":{"kind":"workspace","enabled":true}}
+exit code: 0
+
+dispatcher 读到的能力同样是 true，并真实投递成功：
+
+$ grep "dispatching for repository runtime" logs/dispatcher.log
+{"level":"info","time":"2026-11-10T11:01:55.315Z","service":"moyu-dispatcher","event":"dispatcher.repository","repository":"Bouyer12/m5a-beta-adf10ad9","admissionSupported":true,"attachmentsSupported":true,"msg":"dispatching for repository runtime"}
+
+$ grep "delivery.delivered" logs/dispatcher.log
+{"level":"info","time":"2026-11-10T11:03:12.263Z","service":"moyu-dispatcher","event":"delivery.delivered","messageId":"feba6a4e-ed0e-4ab3-918d-f23a5447306b","conversationId":"d5368e6a-9868-4969-b3c4-b9f334af960b","result":"stored","attempt":1,"msg":"runtime accepted the trigger"}
+exit code: 0
+
+delivery evidence 记录附件随本次投递送达：
+
+$ psql "$M6A_PG_URL" -tAc "select state, attempt_count, evidence from deliveries"
+delivered|1|{"result": "stored", "baseCommit": "4f4639ceb87693cc00e3c87e8cfa168074141ce0", "httpStatus": 200, "attachments": {"count": 1, "delivered": true}}
+exit code: 0
+
+上传的截图（真实 Chromium 像素，1360×900）：
+
+$ sha256sum screenshot.png
+704034a60df78770c06ccda1e1c1d1dbab85086424b7f7fe18a1a047b80910ce  /tmp/m6a-image-run/screenshot.png
+$ file screenshot.png
+/tmp/m6a-image-run/screenshot.png: PNG image data, 1360 x 900, 8-bit/color RGB, non-interlaced
+exit code: 0
+
+$ psql "$M6A_PG_URL" -tAc "select id, metadata->>'filename', mime_type, size_bytes, sha256, type from artifacts where type='attachment'"
+376e2557-7cb2-4830-a92e-5e9eefd8b1ea|m6a-l113-screenshot.png|image/png|63446|704034a60df78770c06ccda1e1c1d1dbab85086424b7f7fe18a1a047b80910ce|attachment
+exit code: 0
+
+执行器会话收到的 trigger card 里带着附件元数据与工作区相对路径（原始会话行，seq 13）：
+
+{"type":"user/message","seq":13,"time":1794308607611,"data":{"id":"dsh-superagent:658fdeff44081f3b038733eb25e94818","role":"user","content":[{"type":"text","text":"{\"ticket_id\":\"9db86fa8fc4edd2ead7aa66f1e4d3b37\",\"title\":\"读取附件截图，转写大号 token 与两条 Row 文本，并报告像素尺寸与色块颜色\",\"assignment\":\"Routing note (not the source request): 只读取图片并报告，不修改仓库文件。\",\"trigger\":{\"trigger_id\":\"workspace:feba6a4e-ed0e-4ab3-918d-f23a5447306b\",\"from\":\"dedff11f-77aa-4cb3-ac90-42e1c88f8500\",\"thread\":\"workspace:workspace:d5368e6a-9868-4969-b3c4-b9f334af960b\",\"at\":\"2026-11-10T11:03:10.798Z\",\"text\":\"请用 read_image 打开附件截图，逐字转写图中大号 token（Acceptance token 下一行）和两条 Row 文本，并报告图片的像素尺寸与两个色块的颜色。不要修改仓库文件；完成后直接报告结果。\",\"attachments\":[{\"id\":\"376e2557-7cb2-4830-a92e-5e9eefd8b1ea\",\"filename\":\"m6a-l113-screenshot.png\",\"mimeType\":\"image/png\",\"sizeBytes\":63446,\"sha256\":\"704034a60df78770c06ccda1e1c1d1dbab85086424b7f7fe18a1a047b80910ce\",\"kind\":\"image\",\"path\":\".moyu/attachments/376e2557-7cb2-4830-a92e-5e9eefd8b1ea/m6a-l113-screenshot.png\"}]}}"}],"source":{"kind":"dsh-superagent","form":"relay"}},"surfaceOp":"append"}
+
+## 3. 执行器会话：真实 read_image 调用且成功
+
+worker 会话文件：`dsh-home/sessions/--tmp-m6a-image-run-worktrees-imagetest-image-token-transcribe-9db86fa8fc4e--/worker-9db86fa8fc4edd2ead7aa66f1e4d3b37/session.v4.jsonl.zstd`。
+下面两行是从解压后的 session JSONL 原样复制的（完整 10 行见同目录
+[`L113-image-reading-session.jsonl`](L113-image-reading-session.jsonl)）。
+
+工具调用（seq 27）：
+
+{"type":"tool/call","seq":27,"time":1794308617978,"data":{"turn":1,"step":2,"callId":"call_00_hjexf9jsmo4il8hj7eqo7ld1","name":"read_image","arguments":"{\"file_path\":\".moyu/attachments/376e2557-7cb2-4830-a92e-5e9eefd8b1ea/m6a-l113-screenshot.png\"}"}}
+
+工具结果（seq 28）。`isError: false`，返回了 1360×900 的图像附件，而不是“does not declare
+image input”的拒绝：
+
+{"type":"tool/result","seq":28,"time":1794308618167,"data":{"turn":1,"step":2,"message":{"role":"tool","source":{"kind":"tool","callId":"call_00_hjexf9jsmo4il8hj7eqo7ld1"},"toolCallId":"call_00_hjexf9jsmo4il8hj7eqo7ld1","content":[{"type":"text","text":"<path>/tmp/m6a-image-run/worktrees/imagetest/image-token-transcribe-9db86fa8fc4e/.moyu/attachments/376e2557-7cb2-4830-a92e-5e9eefd8b1ea/m6a-l113-screenshot.png</path>\n<type>image</type>\n<content>\nimage/png image, 1360x900 px, 63446 bytes\n</content>"},{"type":"image","attachment":{"attachmentId":"sha256:704034a60df78770c06ccda1e1c1d1dbab85086424b7f7fe18a1a047b80910ce","mediaType":"image/png","bytes":63446,"width":1360,"height":900,"name":"m6a-l113-screenshot.png"}}],"isError":false,"id":"3d2e03fc-4cdc-420c-bdc1-fe38b1eb0a17"},"meta":{"path":"/tmp/m6a-image-run/worktrees/imagetest/image-token-transcribe-9db86fa8fc4e/.moyu/attachments/376e2557-7cb2-4830-a92e-5e9eefd8b1ea/m6a-l113-screenshot.png"}},"sourceEventSeqs":[27],"surfaceOp":"append"}
+
+读图前的 shell 准备只做了 `ls` + `file`（确认文件存在与类型）；读图后模型为核对颜色另做了一次
+PNG 像素取样，全程没有外部 OCR：
+
+{"type":"tool/call","seq":32,"time":1794308626030,"data":{"turn":1,"step":3,"callId":"call_00_d9gok19g3edogupei5ctcj37","name":"bash","arguments":"{\"command\":\"python3 - <<'EOF'\\nfrom PIL import Image\\nim = Image.open('.moyu/attachments/376e2557-7cb2-4830-a92e-5e9eefd8b1ea/m6a-l113-screenshot.png').convert('RGB')\\nprint(im.size)\\n# sample red rectangle center and blue circle center\\nfor name, xy in [('red', (160, 565)), ('blue', (380, 565))]:\\n    print(name, xy, im.getpixel(xy))\\n# get unique dominant colors in regions\\nfrom collections import Counter\\ndef dom(box):\\n    c = Counter(im.crop(box).getdata())\\n    return c.most_common(3)\\nprint('red region', dom((56,500,274,628)))\\nprint('blue region', dom((316,500,444,628)))\\nEOF\",\"description\":\"Sample swatch colors and image size\"}"}}
+
+（该次调用因没有 PIL 失败，模型随后自己用 zlib 解析 PNG 取样像素；脚本只读取指定坐标的颜色，
+没有识别文字。）
+
+## 4. 模型返回 vs 真值
+
+真值来源一：生成截图的 HTML（同目录 [`l113-image-reading-card.html`](l113-image-reading-card.html)，
+Chromium 以 1360×900 渲染，`--hide-scrollbars`）。可见文本与色值如下：
+
+```
+MoYu attachment acceptance
+L113 executor image-reading proof
+Acceptance token
+7Q3K-8842-L113
+Row: alpha bravo charlie delta
+Row: echo foxtrot golf hotel
+.box    { background:#dc2626 }   /* 红矩形 */
+.circle { background:#2563eb }   /* 蓝圆形 */
+```
+
+真值来源二：对提交的 PNG 逐像素解码（独立于模型）：
+
+$ python3 scripts/m6a/l113-png-truth.py docs/evidence/m6a/l113-image-reading-screenshot.png
+dimensions: 1360 900
+red_rect_center: RGB(220, 38, 38) #DC2626
+blue_circle_center: RGB(37, 99, 235) #2563EB
+background: RGB(11, 31, 51) #0B1F33
+
+模型经 runtime 返回给平台的 result 消息（原始会话行 seq 53，`orchestrator_report` 的 arguments；
+平台 `messages` 表里同样有一条 outbound/result 消息）：
+
+{"type":"tool/call","seq":53,"time":1794308650261,"data":{"turn":1,"step":6,"callId":"call_00_49h8hnhmkphq7t1nelhq2mj6","name":"orchestrator_report","arguments":"{\"state\":\"ready\",\"summary\":\"已用 read_image 读取附件 m6a-l113-screenshot.png（未修改任何仓库文件），并解码 PNG 核对像素与色值。\\n\\n图片像素尺寸：1360 × 900。\\n\\n大号 token（Acceptance token 下一行）：7Q3K-8842-L113\\nRow 1：Row: alpha bravo charlie delta\\nRow 2：Row: echo foxtrot golf hotel\\n\\n两个色块颜色：\\n- 左侧红色矩形：#DC2626，RGB(220, 38, 38)\\n- 右侧蓝色圆形：#2563EB，RGB(37, 99, 235)\\n\\n色值通过逐像素解码确认，色块区域内为纯色。\"}"}}
+
+| 要素 | 真值 | 模型返回 | 判定 |
+| --- | --- | --- | --- |
+| 像素尺寸 | 1360×900 | 1360 × 900 | 一致 |
+| 大号 token | `7Q3K-8842-L113` | `7Q3K-8842-L113` | 一致 |
+| Row 1 | `Row: alpha bravo charlie delta` | `Row: alpha bravo charlie delta` | 一致 |
+| Row 2 | `Row: echo foxtrot golf hotel` | `Row: echo foxtrot golf hotel` | 一致 |
+| 红矩形 | RGB(220,38,38) / #DC2626 | #DC2626 / RGB(220,38,38) | 一致 |
+| 蓝圆形 | RGB(37,99,235) / #2563EB | #2563EB / RGB(37,99,235) | 一致 |
+
+平台侧的消息（`messages` 表，按时间）：
+
+inbound|user|请用 read_image 打开附件截图，逐字转写图中大号 token（Acceptance token 下一行）和两条 Row 文本，并报告图片的像素尺寸与两个色块的颜色。不要修改仓库文件；完成后直接报告结果。
+outbound|acknowledgement|收到：打开附件截图，逐字转写大号 token 和两条 Row 文本，并报告图片像素尺寸与两个色块的颜色。
+outbound|result|已用 read_image 读取附件 m6a-l113-screenshot.png（未修改任何仓库文件），并解码 PNG 核对像素与色值。
+（完整 result 正文同上表）
+
+ticket 状态与冻结的 base commit：
+
+$ psql "$M6A_PG_URL" -tAc "select state, upstream_ticket_id, base_commit from task_links"
+completed|9db86fa8fc4edd2ead7aa66f1e4d3b37|4f4639ceb87693cc00e3c87e8cfa168074141ce0
+exit code: 0
+
+## 5. 隔离 profile 的模型声明
+
+$ sed -n "/id: llm-pi-ai/,/id: agent-default-model/p" dsh-home/profiles/imagetest/cordis.patch.yml
+- id: llm-pi-ai
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  config:
+    providers:
+      commandcode:
+        displayName: Command Code
+        apiKeyEnv: COMMAND_CODE_API_KEY
+        api: openai-completions
+        baseURL: https://api.commandcode.ai/provider/v1
+        defaultContextWindow: 1000000
+        defaultMaxTokens: 32768
+        models:
+          - id: deepseek/deepseek-v4.1-flash
+            name: DeepSeek V4.1 Flash
+            contextWindow: 1000000
+            maxTokens: 384000
+            input:
+              - text
+              - image
+            reasoningEfforts:
+              off: null
+              low: low
+              high: high
+              max: max
+- id: agent-default-model
+exit code: 0
+
+## 6. 可复现的命令（本轮实际执行）
+
+1. 探针（先证明模型本身接受图像，再写声明；脚本已提交为
+   `scripts/m6a/l113-vision-probe.py`）：
+
+   ```bash
+   $ python3 scripts/m6a/l113-vision-probe.py /tmp/probe.png
+   finish: stop usage: {'prompt_tokens': 680, 'total_tokens': 1002, 'completion_tokens': 322, 'completion_tokens_details': {'reasoning_tokens': 284}}
+   WIDTH=1200
+   HEIGHT=800
+   TOKEN=Q7K-8842-M0YU
+   ROW=alpha bravo charlie delta
+   BOX=red
+   exit code: 0
+   ```
+
+   该探针截图（1200×800）的 token 真值是 `Q7K-8842-MOYU`；模型把字母 `O` 读成数字 `0`，
+   其余宽高、Row 文本、色块均正确。这足以证明模型**接受图像输入**，也说明最终验收截图应避免
+   `O/0` 这类易混字形——本轮最终 token 用 `7Q3K-8842-L113`（无 O/0）。
+
+2. 隔离 profile：复制 `/root/.dsh-m5/profiles/m5b` 的 `package.json`/`cordis.yml` 与
+   `cordis.patch.yml`，要点：`webserver.port=__DSH_PORT__`、`dsh-superagent.stateDir=__STATE_DIR__`、
+   模型条目加 `input: [text, image]`，`node_modules/dsh-superagent -> /root/src/upstream/l113-build1`；
+   把 `/root/.dsh-m5/.credentials.yaml`（含 `COMMAND_CODE_API_KEY`）复制到隔离 `DSH_HOME`，权限 0600。
+
+3. 隔离库：`createdb moyu_m6a_image` + `DATABASE_URL=… pnpm --filter @moyu/db db:migrate`；seed 一个
+   owner、repository、浏览器 session。
+
+4. supervisor（`apps/supervisor/dist/main.js`）：`DSH_HOME=/tmp/m6a-image-run/dsh-home`,
+   `PROFILE_TEMPLATE_DIR=/tmp/m6a-image-run/profile-template`,
+   `EXECUTOR_MODEL=commandcode/deepseek/deepseek-v4.1-flash`, pinned instance
+   `{profile: imagetest, dshPort: 4801, bridgePort: 4800}`；`prepare` + `wake` 后实例
+   `online/listening`。
+
+5. API（4802）与 dispatcher（同一隔离库，`RUNTIME_CREDENTIALS_DIR=/tmp/m6a-image-run/creds`）。
+
+6. 通过真实 API 上传截图并发送消息：`POST /api/v1/conversations` →
+   `POST …/attachments`（multipart `file`）→ `POST …/messages`（`attachmentIds`）。
+
+7. 从 `DSH_HOME/sessions/.../worker-<ticket>/session.v4.jsonl.zstd` 解压会话，取 `read_image`
+   原始行；从 `messages` 表取 runtime 返回的 result 正文。
+
+截图与 HTML 源：本轮 `l113-image-reading-card.html`（提交的副本）用
+`chromium --headless=new --no-sandbox --disable-gpu --hide-scrollbars --force-device-scale-factor=1 --window-size=1360,900 --screenshot=… file://…/card.html`
+生成；提交的 PNG sha256 见 §2。
+
+## 7. 边界与未验证项
+
+1. 本轮只在隔离 profile（`/tmp/m6a-image-run/dsh-home/profiles/imagetest`）里加了 `input` 声明，
+   **没有**改共享 `m5b` 实例（边界要求），也没有改 `/root/.dsh/profiles/superagent`（bootstrap 运行中）。
+   要让生产/共享执行器具备该能力，需要所有者把同一行
+   `input: [text, image]` 加到对应 profile 的 `deepseek/deepseek-v4.1-flash` 模型条目并重启该实例。
+   该声明已由 §6.1 的真实图像请求验证，不是“硬写”。
+2. 截图为 Chromium 渲染的 acceptance card，不是某个业务页面的截图；它包含可辨识文字与两个纯色块，
+   满足“看到像素”的判据，但不等价于对真实业务 UI 截图的验收。
+3. 模型为核对颜色额外解码了 PNG 像素；文字转写来自 `read_image`，没有外部 OCR。若复核者要求
+   “颜色也必须纯靠视觉”，本证据的颜色项不满足该更严格要求（尺寸与文字项仍满足）。
+4. 限制：报告说明的“图片像素尺寸”与实际一致；模型没有给出截图之外的信息。

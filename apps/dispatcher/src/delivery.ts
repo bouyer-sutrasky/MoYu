@@ -1,5 +1,6 @@
 import type pg from 'pg';
 
+import { attachmentKindFor, type AttachmentKind, type BridgeAttachment } from '@moyu/contracts';
 import { RuntimeBridgeError, type RuntimeBridgeClient } from '@moyu/runtime-client';
 
 import type { DispatcherConfig } from './config';
@@ -17,6 +18,16 @@ interface ClaimedRow {
   message_id: string;
   attempt_count: number;
   upstream_trigger_id: string | null;
+}
+
+interface DeliveryAttachmentRow {
+  id: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  sha256: string;
+  /** Stored kind; derived from the MIME type when an older row has no metadata. */
+  kind: AttachmentKind;
 }
 
 interface DeliveryDetailRow {
@@ -47,6 +58,12 @@ interface DeliveryDetailRow {
   taskModelId: string | null;
   taskModelEffort: string | null;
   taskExecutionMode: 'execute' | 'discuss' | null;
+  /** Sent attachments of this message, oldest first; never their bytes. */
+  attachments: DeliveryAttachmentRow[];
+}
+
+interface RawDeliveryAttachmentRow extends Omit<DeliveryAttachmentRow, 'kind'> {
+  kind: string | null;
 }
 
 /** Claims one due delivery for the repository, honouring per-conversation order and a lease. */
@@ -112,7 +129,7 @@ async function claimDelivery(
 }
 
 async function loadDetail(pool: pg.Pool, messageId: string): Promise<DeliveryDetailRow | null> {
-  const result = await pool.query<DeliveryDetailRow>(
+  const result = await pool.query<DeliveryDetailRow & { attachments: RawDeliveryAttachmentRow[] }>(
     `select m.id as "messageId", m.body, m.created_at as "createdAt", m.reply_to_message_id as "replyToMessageId",
             c.id as "conversationId", c.repository_id as "repositoryId", c.base_branch as "baseBranch",
             c.base_commit as "baseCommit", c.model_id as "modelId", c.model_reasoning_effort as "modelReasoningEffort",
@@ -122,16 +139,78 @@ async function loadDetail(pool: pg.Pool, messageId: string): Promise<DeliveryDet
             t.plan_revision as "taskPlanRevision", t.stopped_at as "taskStoppedAt",
             t.stop_evidence as "taskStopEvidence", t.runtime_lease_id as "taskRuntimeLeaseId",
             t.base_branch as "taskBaseBranch", t.base_commit as "taskBaseCommit",
-            t.model_id as "taskModelId", t.model_reasoning_effort as "taskModelEffort", t.execution_mode as "taskExecutionMode"
+            t.model_id as "taskModelId", t.model_reasoning_effort as "taskModelEffort", t.execution_mode as "taskExecutionMode",
+            att.attachments as "attachments"
        from messages m
        join conversations c on c.id = m.conversation_id
        join repositories r on r.id = c.repository_id
        join owners o on o.id = c.owner_id
        left join task_links t on t.conversation_id = c.id
+       -- M6-A L113: the sent attachments of this message, in upload order.
+       -- Only locating and verification fields leave the platform: no bytes,
+       -- no download URL and no owner.
+       left join lateral (
+         select coalesce(json_agg(json_build_object(
+                  'id', a.id,
+                  'filename', coalesce(a.metadata->>'filename', 'attachment'),
+                  'mimeType', coalesce(a.mime_type, 'application/octet-stream'),
+                  'sizeBytes', a.size_bytes::int,
+                  'sha256', a.sha256,
+                  'kind', a.metadata->>'kind'
+                ) order by a.created_at, a.id), '[]'::json) as attachments
+           from artifacts a
+          where a.type = 'attachment'
+            and a.message_id = m.id
+            and a.sha256 is not null
+            and a.size_bytes > 0
+       ) att on true
       where m.id = $1`,
     [messageId],
   );
-  return result.rows[0] ?? null;
+  const row = result.rows[0];
+  if (!row) {
+    return null;
+  }
+  return {
+    ...row,
+    attachments: (row.attachments ?? []).map((attachment) => ({
+      ...attachment,
+      kind: attachmentKind(attachment),
+    })),
+  };
+}
+
+/** The stored metadata kind, falling back to the MIME type when it is missing. */
+function attachmentKind(row: RawDeliveryAttachmentRow): AttachmentKind {
+  if (row.kind === 'image' || row.kind === 'text' || row.kind === 'binary') {
+    return row.kind;
+  }
+  return attachmentKindFor(row.mimeType);
+}
+
+/**
+ * The delivery evidence for attachments. A message whose attachments cannot be
+ * delivered still goes out as text, but the evidence says so instead of
+ * pretending the runtime received them.
+ */
+function attachmentEvidence(
+  attachments: DeliveryAttachmentRow[],
+  delivered: BridgeAttachment[],
+  attachmentsSupported: boolean,
+): Record<string, unknown> | null {
+  if (attachments.length === 0) {
+    return null;
+  }
+  if (delivered.length > 0) {
+    return { delivered: true, count: delivered.length };
+  }
+  return {
+    delivered: false,
+    count: attachments.length,
+    reason: attachmentsSupported
+      ? 'no attachment of a deliverable kind'
+      : 'runtime has no attachment capability',
+  };
 }
 
 async function recordDeliveryEvent(
@@ -178,6 +257,7 @@ export async function deliverOnce(
   bridge: RuntimeBridgeClient,
   logger: DispatcherLogger,
   admissionSupported = true,
+  attachmentsSupported = false,
 ): Promise<boolean> {
   const claimed = await claimDelivery(pool, config, repository.id);
   if (!claimed) {
@@ -193,6 +273,31 @@ export async function deliverOnce(
     );
     return true;
   }
+
+  // L113: only a runtime that declared the capability may receive attachment
+  // references. An old Bridge's strict trigger schema answers 400 to unknown
+  // keys, which is a non-retryable failure, so the field stays absent and the
+  // message is delivered as text with the gap recorded in the evidence.
+  const deliverableAttachments: BridgeAttachment[] = attachmentsSupported
+    ? detail.attachments
+        .filter(
+          (attachment): attachment is DeliveryAttachmentRow & { kind: 'image' | 'text' } =>
+            attachment.kind === 'image' || attachment.kind === 'text',
+        )
+        .map((attachment) => ({
+          id: attachment.id,
+          filename: attachment.filename,
+          mimeType: attachment.mimeType,
+          sizeBytes: attachment.sizeBytes,
+          sha256: attachment.sha256,
+          kind: attachment.kind,
+        }))
+    : [];
+  const attachmentState = attachmentEvidence(
+    detail.attachments,
+    deliverableAttachments,
+    attachmentsSupported,
+  );
 
   const taskLike: TaskRow | null = detail.taskId
     ? {
@@ -322,6 +427,7 @@ export async function deliverOnce(
       ...(admissionSupported
         ? { admission: { leaseId: account.lease.id, fencingToken: account.lease.fencingToken } }
         : {}),
+      ...(deliverableAttachments.length > 0 ? { attachments: deliverableAttachments } : {}),
       executionSpec: {
         repository: detail.fullName,
         baseBranch: taskLike?.baseBranch ?? detail.baseBranch,
@@ -380,6 +486,16 @@ export async function deliverOnce(
     }
 
     const resolvedBase = result.baseCommit;
+    const evidence: Record<string, unknown> = {
+      result: result.result,
+      httpStatus: 200,
+      baseCommit: resolvedBase,
+    };
+    // Existing evidence fields stay; attachment delivery or its explicit
+    // absence is added beside them so a delivered text-only message is honest.
+    if (attachmentState) {
+      evidence.attachments = attachmentState;
+    }
     const client = await pool.connect();
     try {
       await client.query('begin');
@@ -391,7 +507,7 @@ export async function deliverOnce(
         [
           claimed.id,
           claimed.triggerId,
-          JSON.stringify({ result: result.result, httpStatus: 200, baseCommit: resolvedBase }),
+          JSON.stringify(evidence),
           account.lease.id,
           account.lease.fencingToken,
         ],

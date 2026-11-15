@@ -1,0 +1,164 @@
+# 双轴复审修复：MIME 嗅探边界与 SVG 前缀
+
+代码 head（本文件据其产出；其后一个 docs-only 提交入库）：
+$ git rev-parse HEAD
+8e31278
+
+本 head 的 PR #44 必需检查：以最终推送 head 的 `gh pr checks 44` 为准（见交付评论）；本地
+`pnpm check` 与 `pnpm test:integration` 均为 EXIT=0。
+
+## 1. 文本判定跨 512 字节边界（阻断项）
+
+RED（修复前，代码 head `9a60fb2`；测试提交 `d81ed5c` 先落、修复随后）：
+
+$ cd apps/api && TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm exec vitest run test/integration/attachments.integration.test.ts
+
+ RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/api
+
+ ❯ test/integration/attachments.integration.test.ts (22 tests | 2 failed) 1050ms
+   ✓ M6 attachment upload and download > stores a real multipart upload and serves the identical bytes back 66ms
+   ✓ M6 attachment upload and download > round-trips a text attachment byte for byte 21ms
+   ✓ M6 attachment upload and download > never serves an uploaded HTML file inline 20ms
+   ✓ M6 attachment upload and download > refuses an oversized file with 413 and stores nothing 33ms
+   ✓ M6 attachment upload and download > refuses a disallowed content type with 422 and stores nothing 13ms
+   ✓ M6 attachment upload and download > requires an authenticated session 8ms
+   ✓ M6 attachment upload and download > refuses an upload into another owner conversation and a foreign download 32ms
+   ✓ M6 attachment upload and download > binds attachments to the sent message and lists them with it 67ms
+   ✓ M6 attachment upload and download > refuses attachment ids from another conversation and already-sent attachments 31ms
+   ✓ M6 attachment upload and download > refuses an empty file 9ms
+   ✓ M6 attachment upload and download > refuses HTML declared as image/png without writing a row or a file 11ms
+   ✓ M6 attachment upload and download > refuses ELF and shebang bytes declared as image/png 15ms
+   ✓ M6 attachment upload and download > records a real PNG declared as text/plain as image/png 13ms
+   ✓ M6 attachment upload and download > keeps valid images, text, source and explicit text/html uploads 34ms
+   × M6 attachment upload and download > accepts multi-byte text whose UTF-8 sequence crosses the sniff window 18ms
+     → expected 422 to be 201 // Object.is equality
+   × M6 attachment upload and download > refuses SVG behind leading comments or a doctype, but keeps mid-text mentions 14ms
+     → expected 201 to be 422 // Object.is equality
+   ✓ M6 attachment upload and download > refuses SVG bytes even when declared image/svg+xml 10ms
+   ✓ M6 attachment upload and download > revokes an attachment softly and idempotently, and blocks its download 24ms
+   ✓ M6 attachment upload and download > refuses to send a revoked attachment without creating a message or delivery 24ms
+   ✓ M6 attachment upload and download > keeps an unrevoked attachment downloadable and sendable 25ms
+   ✓ M6 attachment upload and download > answers 404 for another owner and 401 without a session, leaving the row unchanged 13ms
+   ✓ M6 attachment upload and download > does not accept a new attachment once the task has ended 10ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/integration/attachments.integration.test.ts > M6 attachment upload and download > accepts multi-byte text whose UTF-8 sequence crosses the sniff window
+AssertionError: expected 422 to be 201 // Object.is equality
+
+- Expected
++ Received
+
+- 201
++ 422
+
+ ❯ uploadedAttachment test/integration/attachments.integration.test.ts:155:31
+    153| ): Promise<AttachmentSummary> {
+    154|   const response = await upload(harness, conversationId, file);
+    155|   expect(response.statusCode).toBe(201);
+       |                               ^
+    156|   return attachmentUploadDataSchema.parse((response.json() as { data: …
+    157| }
+ ❯ test/integration/attachments.integration.test.ts:501:22
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  test/integration/attachments.integration.test.ts > M6 attachment upload and download > refuses SVG behind leading comments or a doctype, but keeps mid-text mentions
+AssertionError: expected 201 to be 422 // Object.is equality
+
+- Expected
++ Received
+
+- 422
++ 201
+
+ ❯ test/integration/attachments.integration.test.ts:539:34
+    537|       ),
+    538|     });
+    539|     expect(commented.statusCode).toBe(422);
+       |                                  ^
+    540|     const withDoctype = await upload(harness, conversationId, {
+    541|       filename: 'doctype.svg',
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 20 passed (22)
+   Start at  20:54:31
+   Duration  2.89s (transform 493ms, setup 0ms, collect 1.58s, tests 1.05s, environment 0ms, prepare 80ms)
+
+判定（期望 / 实际 / 结论）：
+- 期望：`text/markdown` 声明、714 B（511×`a` + `中` + 200×`b`）→ 201，`kind=text`。
+- 实际：`expected 422 to be 201`；同一次运行中 512 字节对齐中文、43 B 中文、真实 PNG 等 20 条对照全部 PASS。
+- 结论：缺口成立（红），由 `17248b6` 修复：`isText` 在 fatal 解码前丢弃窗口末尾不完整的 UTF-8 序列；
+  完整但非法的序列仍在别处导致 `unknown`。
+
+GREEN（修复后，同一命令）：
+
+$ cd apps/api && TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm exec vitest run test/integration/attachments.integration.test.ts
+
+ RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/api
+
+ ✓ test/integration/attachments.integration.test.ts (22 tests) 1018ms
+
+ Test Files  1 passed (1)
+      Tests  22 passed (22)
+   Start at  20:54:56
+   Duration  2.91s (transform 508ms, setup 0ms, collect 1.61s, tests 1.02s, environment 0ms, prepare 81ms)
+
+判定：`Test Files 1 passed (1)`、`Tests 22 passed (22)`、`EXIT=0`；714 B 中文跨边界返回 201，对齐/短中文/PNG 对照仍 PASS。
+仍会被拒的内容（口径 A 不变）：ELF/PE/`#!` 脚本；SVG（含注释/doctype 前缀形式）；非 `text/html` 声明下的 HTML；
+声明为图片但内容不是图片；无法确认的二进制/非法 UTF-8。
+
+## 2. 注释/doctype 前缀的 SVG（应修项）
+
+RED（修复前，同上一次运行）：
+
+- `<!-- harmless --><svg …><script>…</script></svg>` 声明 `image/svg+xml` → 实际 **201**（`expected 201 to be 422`）。
+- `<!DOCTYPE svg …><svg><script>…</script></svg>` 同属该测试；前一条断言先失败。
+- 对照：正文中间提到 `<svg>` 的 `text/markdown` 仍为 201。
+
+判定：缺口成立（红），由 `871cf6a` 修复：`leadingMarkup` 先跳过前导空白、`<!-- -->`、`<?…?>` 与
+`<!DOCTYPE …>`，再匹配 `<svg`/HTML 开头；正文中间的 `<svg` 不算开头。
+
+GREEN：同一 GREEN 原始输出中该测试 PASS（22/22），两种前缀 SVG 均 422，正文提及仍 201。
+
+## 3. 口径文字（不改行为）
+
+`text/html` 显式声明 + HTML 内容继续 201、`kind=text`、下载中和为 `octet-stream`；已写入
+`apps/api/src/domain/mime-sniff.ts` 注释与 `docs/evidence/m6a/A2b-mime-sniff.txt` 判定表（提交 `8e31278`）。
+
+## 4. 规范项（提交 `288b1d7`）
+
+| 项 | 改动 |
+| --- | --- |
+| 仓库内 token | `a2b`/`a2c`/`l116`/`l117` 取证脚本改为每次生成随机 `SUPERVISOR_TOKEN`（与 p1b 同款），API env 使用同一变量 |
+| 重复 schema | `attachmentRevokeDataSchema = attachmentUploadDataSchema`，保留两个语义化导出名 |
+| 0016 down 哈希重复 | 保留自包含的重复，并在文件注释写明理由 |
+| 未读字段 | 删除 `MimeDecision.sniffed`/`.kind`（无人读取）；路由仍按已存 MIME 计算 kind |
+| fixture 命名 | `0016_later_guard_fixture.sql` → `later_migration_fixture.sql`，假 hash 统一为 `test-later-migration-fixture` |
+
+## 5. 可选：0015 证据 LEGAL 段（提交 `8e31278`）
+
+0016 入链后「0015 是最新已应用迁移」无法直接复现；已在 `0015-latest-guard.txt` 补记由
+`rollback-0015.integration.test.ts` 覆盖，并附该测试的原始输出（2 files / 4 tests，EXIT=0）。
+
+## 6. 回归（本 head）
+
+$ pnpm check
+packages/contracts test:       Tests  19 passed (19)
+packages/runtime-client test:       Tests  13 passed (13)
+apps/dispatcher test:       Tests  5 passed (5)
+apps/api test:       Tests  20 passed (20)
+apps/supervisor test:       Tests  59 passed (59)
+
+$ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm test:integration
+ Test Files  13 passed (13)
+      Tests  42 passed (42)
+ Test Files  16 passed (16)
+      Tests  111 passed (111)
+ Test Files  16 passed | 1 skipped (17)
+      Tests  82 passed | 1 skipped (83)
+
+判定：check EXIT=0；集成 db 42、api 111（新增 2 条本文件用例）、dispatcher 82+1 skipped，EXIT=0。

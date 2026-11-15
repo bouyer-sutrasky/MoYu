@@ -1,3 +1,5 @@
+import type { ReviewChanges, ReviewCheckRun } from '@moyu/contracts';
+
 import type { ApiConfig } from '../config';
 
 export interface SupervisorInstance {
@@ -34,6 +36,67 @@ export interface SupervisorClient {
     manual: boolean,
   ): Promise<{ accepted: boolean; duplicate: boolean; instance: SupervisorInstance }>;
   touch(repositoryId: string): Promise<SupervisorInstance>;
+  reviewChanges(repositoryId: string, ticketId: string): Promise<SupervisorChanges>;
+  reviewChecks(
+    repositoryId: string,
+    ticketId: string,
+  ): Promise<{ worktree: SupervisorWorktree; runs: ReviewCheckRun[] }>;
+  cleanupInspect(repositoryId: string, ticketId: string): Promise<SupervisorCleanupInspection>;
+  cleanupDelete(repositoryId: string, ticketId: string): Promise<SupervisorCleanupRemoval>;
+  cleanupTrash(repositoryId: string): Promise<SupervisorTrashResult>;
+}
+
+/** Host-side worktree inspection payload, as the supervisor reports it. */
+export interface SupervisorWorktree {
+  state: 'available' | 'cleaned' | 'unavailable';
+  directory: string | null;
+  reason: string | null;
+  profile: string | null;
+}
+
+export interface SupervisorChanges extends Omit<ReviewChanges, 'collectedAt'> {
+  directory: string | null;
+}
+
+/** The host supervisor's real-path inspection of one ticket worktree. */
+export interface SupervisorCleanupInspection {
+  ticketId: string;
+  state: 'available' | 'cleaned' | 'unavailable';
+  reason: string | null;
+  directory: string | null;
+  profile: string | null;
+  branch: string | null;
+  commit: string | null;
+  upstream: string | null;
+  ahead: number | null;
+  dirty: boolean;
+  dirtyEntries: number;
+  unpushed: boolean;
+  unpushedCommits: number | null;
+  occupied: boolean;
+  occupiedBy: Array<{ pid: number; command: string }>;
+  locked: boolean;
+  sizeBytes: number | null;
+  fileCount: number;
+  modifiedAt: string | null;
+  eligible: boolean;
+  reasons: string[];
+}
+
+export interface SupervisorCleanupRemoval {
+  state: 'removed' | 'already_cleaned' | 'quarantined';
+  directory: string | null;
+  trashPath: string | null;
+  bytesFreed: number;
+  reason: string;
+  pruned: boolean;
+  pruneError: string | null;
+}
+
+export interface SupervisorTrashResult {
+  removed: number;
+  bytesFreed: number;
+  failures: Array<{ path: string; error: string }>;
 }
 
 /**
@@ -91,5 +154,21 @@ export function createSupervisorClient(config: ApiConfig): SupervisorClient | nu
         [200, 409],
       ),
     touch: (repositoryId) => request(`/control/v1/instances/${repositoryId}/touch`, 'POST', {}),
+    reviewChanges: (repositoryId, ticketId) =>
+      request(`/control/v1/instances/${repositoryId}/review/changes`, 'POST', { ticketId }),
+    reviewChecks: (repositoryId, ticketId) =>
+      request(
+        `/control/v1/instances/${repositoryId}/review/checks`,
+        'POST',
+        { ticketId },
+        // A check run is long by nature; the supervisor bounds each command.
+        960_000,
+      ),
+    cleanupInspect: (repositoryId, ticketId) =>
+      request(`/control/v1/instances/${repositoryId}/cleanup/inspect`, 'POST', { ticketId }),
+    cleanupDelete: (repositoryId, ticketId) =>
+      request(`/control/v1/instances/${repositoryId}/cleanup/delete`, 'POST', { ticketId }),
+    cleanupTrash: (repositoryId) =>
+      request(`/control/v1/instances/${repositoryId}/cleanup/trash`, 'POST', {}),
   };
 }

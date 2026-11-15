@@ -1,0 +1,133 @@
+# A2c 附件撤销失效
+
+代码 head（本文件据其产出）：
+$ git rev-parse HEAD
+9434fc8a15a1e6442869cd27b4a7d465b12a2afa
+
+## 口径（写死）
+
+- **软撤销**：只把 `artifacts.revoked_at` 置为撤销时间，保留行与磁盘字节（配额/清理另议），**不做硬删**，
+  不删除也不改写 `storage_key`。
+- **存储方案 A**：迁移 `packages/db/migrations/0016_attachment_revoke.sql` 新增 `revoked_at timestamptz`，
+  配套 `packages/db/migrations/rollback/0016_attachment_revoke.down.sql`（事务内先校验 0016 ledger 行恰好 1 条、
+  且没有更晚迁移，再删列并删 ledger 行）。回滚→重新迁移的原始输出见 GREEN 段开头。
+- **草稿列表**：`GET /api/v1/conversations/:id/attachments` **保留已撤销行并带 `revokedAt`**（不过滤），
+  这样调用方能看到撤销状态；下载与投递各自独立拦截。
+- **权限**：撤销端点 owner-only；他人的或不存在的一律 404（不泄露存在性），未登录 401；失败不改变原行。
+- **生产守卫**（`apps/api/src`）：`routes/attachments.ts` 的 `POST /api/v1/attachments/:id/revoke`、
+  本人下载查询与 `routes/runtime.ts` 机器下载查询都带 `isNull(artifacts.revokedAt)`；
+  `domain/attachments.ts` 的 `sendStoredAttachment` 再兜底拒绝已撤销对象，`attachToMessage` 的选择与更新
+  都要求 `revoked_at is null`，因此带已撤销附件发消息会在创建消息前 422。
+- 前端本轮未加撤销按钮；撤销能力由真实 API 提供，不以「前端不显示」充当实现。
+
+复现：`scripts/m6a/a2c-revoke-evidence.sh`（同一脚本在两棵树上各跑一次；检查脚本 sha256
+`2da4d99a7a24489af2037e3e7c22706809537f35d5c2d5d98bbd8190517a8cec`），隔离 PostgreSQL + 真实 multipart/HTTP。
+
+## 判定（期望 / 实际 / 结论）
+
+| # | 期望 | RED 实际 | GREEN 实际 | 结论 |
+| --- | --- | --- | --- | --- |
+| 1 | 撤销成功 200 且响应可见撤销状态 | `POST .../revoke` → **404 Route not found** | 200，`revokedAt=2026-11-09T06:5x:xxZ`，`artifacts.revoked_at` 同值 | 缺口成立→修复 |
+| 2 | 重复撤销幂等（200 或明确 already-revoked） | 404 | 第二次 200，`revokedAt` 与首次相同 | 通过 |
+| 3 | 撤销后本人下载 404 | 下载 **200**（仍可下载） | **404** | 缺口成立→修复 |
+| 4 | 撤销后带附件发消息 4xx，且无消息/无 trigger | **202**，attachment 仍绑定新消息；messages 0→1、deliveries 0→1 | **422** `attachmentIds 必须是本会话尚未发送的附件`；messages 0→0、deliveries 0→0 | 缺口成立→修复 |
+| 5 | 未撤销附件照旧可下载、可投递（红段即绿） | 下载 200；发送 202，messages/deliveries 各 +1 | 同左 | 未误伤 |
+| 6 | 非拥有者撤销 404、未登录 401，且不改状态 | 404（路由不存在，行未变） | 404 / 401，`revoked_at` 保持首次撤销值 | 通过 |
+| 7 | 草稿列表体现撤销状态 | 响应无 `revokedAt` 字段 | 同一行带 `revokedAt` | 通过 |
+| 8 | 撤销保留行与字节 | — | `storage_key` 仍在，存储文件数撤销前后 1→1 | 通过 |
+
+## RED（改动前：无撤销端点、无任何附件状态校验）
+
+RED 树 = `a94ffc9` 的 `apps/` 与 `packages/`（0016 尚不存在，旧迁移链），同一检查脚本，`EXIT=1`：
+
+$ M6A_A2C_SKIP_MIGRATION=1 bash scripts/m6a/a2c-revoke-evidence.sh
+FAIL revoke-200: {"status":404,"body":{"error":{"code":"not_found","message":"Route not found","retryable":false},"requestId":"ab62dd73-554d-4fc6-ae1a-b012460844f4"}}
+FAIL revoked-state-visible: {}
+FAIL revoke-idempotent: {"status":404}
+FAIL download-after-revoke-404: {"status":200}
+FAIL send-revoked-4xx: {"status":202,"body":{"data":{"message":{"id":"72f1960d-0c50-4cf4-a022-239efc9a3beb","conversationId":"ac36f608-7b90-40f8-b596-fa730cc84fe7","direction":"inbound","kind":"user","clientMessageId":"a2c-revoked-1794207289534","body":"A2c revoke check","replyToMessageId":null,"source":"web","createdAt":"2026-11-09T06:54:49.542Z","delivery":{"state":"stored","attemptCount":0,"lastError":null,"deliveredAt":null,"handedToWorkerAt":null,"readAt":null},"attachments":[{"id":"f2d732f1-eda2-4edc-a439-754505902922","conversationId":"ac36f608-7b90-40f8-b596-fa730cc84fe7","taskId":"e17b4f64-2965-4e46-947f-a3edef204790","messageId":"72f1960d-0c50-4cf4-a022-239efc9a3beb","filename":"revoked.png","mimeType":"image/png","sizeBytes":70,"sha256":"c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77","kind":"image","createdAt":"2026-11-09T06:54:49.503Z","downloadUrl":"/api/v1/attachments/f2d732f1-eda2-4edc-a439-754505902922"}]},"duplicate":false},"requestId":"2cb3b9a8-1180-4211-8d1f-ff811b975718"}}
+FAIL send-revoked-creates-no-message-or-trigger: {"before":{"messages":0,"deliveries":0},"after":{"messages":1,"deliveries":1}}
+FAIL revoked-keeps-row-and-bytes: {"row":{"id":"f2d732f1-eda2-4edc-a439-754505902922","mime_type":"image/png","message_id":"72f1960d-0c50-4cf4-a022-239efc9a3beb","revoked_at":null,"storage_key":"attachments/ac36f608-7b90-40f8-b596-fa730cc84fe7/80df4854-ff09-4895-bacb-3e5f7d2fd45e"},"files":{"beforeRevoke":1,"afterRevoke":1,"afterSend":1}}
+PASS unrevoked-download-200: {"status":200,"bytes":70}
+PASS unrevoked-send-accepted: {"status":202}
+PASS unrevoked-creates-message-and-trigger: {"before":{"messages":1,"deliveries":1},"after":{"messages":2,"deliveries":2}}
+PASS foreign-revoke-404: {"status":404}
+FAIL anonymous-revoke-401: {"status":404}
+PASS foreign-revoke-does-not-change-state: {"revokedAt":null}
+FAIL draft-list-shows-revoked-state: {}
+ARTIFACTS [{"id":"f2d732f1-eda2-4edc-a439-754505902922","mime_type":"image/png","message_id":"72f1960d-0c50-4cf4-a022-239efc9a3beb","revoked_at":null,"storage_key":"attachments/ac36f608-7b90-40f8-b596-fa730cc84fe7/80df4854-ff09-4895-bacb-3e5f7d2fd45e"},{"id":"99b19705-2983-4ed7-8a74-c7cb3c734da5","mime_type":"image/png","message_id":"deb3a01b-36af-43c7-8cbf-695f70573f9a","revoked_at":null,"storage_key":"attachments/ac36f608-7b90-40f8-b596-fa730cc84fe7/c07dd247-ba52-401b-a0a0-106efeaa6fa7"}]
+RESULT FAIL passed=4/13 failed=["revoke-200","revoked-state-visible","revoke-idempotent","download-after-revoke-404","send-revoked-4xx","send-revoked-creates-no-message-or-trigger","revoked-keeps-row-and-bytes","anonymous-revoke-401","draft-list-shows-revoked-state"]
+EXIT=1
+
+判定（RED）：撤销路由 404；「撤销后」下载仍 200；名为 revoked 的附件发送仍 202 并写入 1 条消息与 1 条
+delivery；草稿列表没有撤销字段。未撤销附件的下载/发送两条用例本来即 PASS，说明绿段不是「一律拒绝」。
+
+## GREEN（改动后：0016 + 撤销端点 + 下载/投递守卫）
+
+$ bash scripts/m6a/a2c-revoke-evidence.sh
+## 0016 回滚 → 重新迁移（同一套生产迁移链）
+$ psql .../$MIG -f packages/db/migrations/rollback/0016_attachment_revoke.down.sql
+BEGIN
+DO
+ALTER TABLE
+DELETE 1
+COMMIT
+down exit code: 0
+$ after down: revoked_at column count / ledger count
+0
+16
+$ DATABASE_URL=.../$MIG pnpm --filter @moyu/db db:migrate
+{"level":"info","service":"moyu-db","event":"migrate.completed","message":"Database migrations applied successfully"}
+$ after re-migrate: revoked_at column count / 0016 ledger count
+1
+1
+PASS revoke-200: {"status":200,"body":{"data":{"attachment":{"id":"c6ddb21e-2f5d-4044-8f2c-6f3bba1021a1","conversationId":"79871425-d4d0-4d0f-a514-ef8b8096f321","taskId":"0a248178-5ed4-46fb-9dd5-dbc73b946c3e","messageId":null,"filename":"revoked.png","mimeType":"image/png","sizeBytes":70,"sha256":"c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77","kind":"image","revokedAt":"2026-11-09T06:55:25.850Z","createdAt":"2026-11-09T06:55:25.832Z","downloadUrl":"/api/v1/attachments/c6ddb21e-2f5d-4044-8f2c-6f3bba1021a1"}},"requestId":"65e47c3c-5c8d-4c2c-93ac-f0df8536b487"}}
+PASS revoked-state-visible: {"revokedAt":"2026-11-09T06:55:25.850Z"}
+PASS revoke-idempotent: {"status":200,"revokedAt":"2026-11-09T06:55:25.850Z"}
+PASS download-after-revoke-404: {"status":404}
+PASS send-revoked-4xx: {"status":422,"body":{"error":{"code":"invalid_request","message":"attachmentIds 必须是本会话尚未发送的附件","retryable":false},"requestId":"f0356f9d-dc04-41ee-bc6c-a438ad9e634e"}}
+PASS send-revoked-creates-no-message-or-trigger: {"before":{"messages":0,"deliveries":0},"after":{"messages":0,"deliveries":0}}
+PASS revoked-keeps-row-and-bytes: {"row":{"id":"c6ddb21e-2f5d-4044-8f2c-6f3bba1021a1","mime_type":"image/png","message_id":null,"revoked_at":"2026-11-09T06:55:25.850Z","storage_key":"attachments/79871425-d4d0-4d0f-a514-ef8b8096f321/bb11e11b-af34-4532-83f3-9d5f9a1ac5cf"},"files":{"beforeRevoke":1,"afterRevoke":1,"afterSend":1}}
+PASS unrevoked-download-200: {"status":200,"bytes":70}
+PASS unrevoked-send-accepted: {"status":202}
+PASS unrevoked-creates-message-and-trigger: {"before":{"messages":0,"deliveries":0},"after":{"messages":1,"deliveries":1}}
+PASS foreign-revoke-404: {"status":404}
+PASS anonymous-revoke-401: {"status":401}
+PASS foreign-revoke-does-not-change-state: {"revokedAt":"2026-11-09T06:55:25.850Z"}
+PASS draft-list-shows-revoked-state: {"listed":{"id":"c6ddb21e-2f5d-4044-8f2c-6f3bba1021a1","conversationId":"79871425-d4d0-4d0f-a514-ef8b8096f321","taskId":"0a248178-5ed4-46fb-9dd5-dbc73b946c3e","messageId":null,"filename":"revoked.png","mimeType":"image/png","sizeBytes":70,"sha256":"c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77","kind":"image","revokedAt":"2026-11-09T06:55:25.850Z","createdAt":"2026-11-09T06:55:25.832Z","downloadUrl":"/api/v1/attachments/c6ddb21e-2f5d-4044-8f2c-6f3bba1021a1"}}
+ARTIFACTS [{"id":"c6ddb21e-2f5d-4044-8f2c-6f3bba1021a1","mime_type":"image/png","message_id":null,"revoked_at":"2026-11-09T06:55:25.850Z","storage_key":"attachments/79871425-d4d0-4d0f-a514-ef8b8096f321/bb11e11b-af34-4532-83f3-9d5f9a1ac5cf"},{"id":"5e34d927-67e4-4d45-a496-64233c3ac351","mime_type":"image/png","message_id":"5d056fd5-f50a-48f1-9c35-e734fb0d1c31","revoked_at":null,"storage_key":"attachments/79871425-d4d0-4d0f-a514-ef8b8096f321/5aa00e1e-21f2-4c43-900a-42dc44fe2fee"}]
+RESULT PASS passed=13/13 failed=[]
+EXIT=0
+
+判定（GREEN）：迁移回滚 `down exit code: 0`（`revoked_at` 0 列、ledger 16），重新迁移后 1 列、0016 ledger 1 行；
+撤销 200 且 `revokedAt` 可见、重复撤销同值；撤销后下载 404；带已撤销附件发送 422 且 messages/deliveries
+`0→0`；未撤销附件下载 200、发送 202（messages/deliveries 各 +1）；他人 404、匿名 401、行不变；草稿列表带
+`revokedAt`；存储文件数撤销前后均为 1。`RESULT PASS passed=13/13`、`EXIT=0`。
+
+## 回归
+
+$ pnpm check
+packages/contracts test:       Tests  19 passed (19)
+packages/runtime-client test:       Tests  13 passed (13)
+apps/dispatcher test:       Tests  5 passed (5)
+apps/api test:       Tests  20 passed (20)
+apps/supervisor test:       Tests  59 passed (59)
+EXIT=0
+
+$ pnpm test:integration
+ Test Files  13 passed (13)
+      Tests  42 passed (42)
+ Test Files  16 passed (16)
+      Tests  109 passed (109)
+ Test Files  16 passed | 1 skipped (17)
+      Tests  82 passed | 1 skipped (83)
+EXIT=0
+
+`pnpm check` EXIT=0；集成 db 42（新增 0016 rollback 2 条并同步旧 rollback 测试）、api 109（附件套件 20 条，
+含新增 4 条撤销用例）、dispatcher 82+1 skipped，EXIT=0。
+
+## 未验证 / 已知缺口
+
+- 前端没有撤销入口（本轮为 API 与存储语义；不以 UI 隐藏冒充撤销）。
+- 撤销发生在附件已发送之后时，历史消息保留该附件摘要，但其下载 URL 按要求 404；未做消息附件的追溯清理。
+- 未在生产部署/3082 上执行；证据来自隔离 PostgreSQL 与真实 API。计时器/配额清理不在本轮。

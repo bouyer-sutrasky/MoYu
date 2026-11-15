@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { once } from 'node:events';
 
@@ -22,6 +23,8 @@ interface FakeBridge {
   failNextTrigger: boolean;
   slowNextTrigger: boolean;
   filterNextTrigger: boolean;
+  /** Whether the served capability document declares attachment delivery. */
+  attachmentsCapability: boolean | undefined;
   server: Server;
   close: () => Promise<void>;
 }
@@ -49,6 +52,7 @@ async function startFakeBridge(events: BridgeEvent[]): Promise<FakeBridge> {
     failNextTrigger: false,
     slowNextTrigger: false,
     filterNextTrigger: false,
+    attachmentsCapability: undefined as boolean | undefined,
   };
   const server = createServer(async (request: IncomingMessage, response: ServerResponse) => {
     const send = (status: number, value: unknown) => {
@@ -105,7 +109,13 @@ async function startFakeBridge(events: BridgeEvent[]): Promise<FakeBridge> {
           readOnlyDiscussion: true,
           start: true,
           admission: true,
+          // Absent unless a test turns it on: that is exactly how an M5
+          // runtime without the attachment patch reports itself.
+          ...(state.attachmentsCapability === undefined
+            ? {}
+            : { attachments: state.attachmentsCapability }),
         },
+        source: { kind: 'workspace', enabled: true },
       });
       return;
     }
@@ -159,12 +169,78 @@ async function startFakeBridge(events: BridgeEvent[]): Promise<FakeBridge> {
     set filterNextTrigger(value: boolean) {
       state.filterNextTrigger = value;
     },
+    get attachmentsCapability() {
+      return state.attachmentsCapability;
+    },
+    set attachmentsCapability(value: boolean | undefined) {
+      state.attachmentsCapability = value;
+    },
     server,
     close: () =>
       new Promise<void>((resolve) => {
         server.close(() => resolve());
       }),
   } as FakeBridge;
+}
+
+interface SeedAttachment {
+  filename: string;
+  mimeType: string;
+  kind: 'image' | 'text' | 'binary';
+  sizeBytes: number;
+  sha256: string;
+}
+
+/** A queued message with sent attachment artifacts, ready for one delivery attempt. */
+async function seedAttachmentMessage(
+  testDatabase: TestDatabase,
+  ownerId: string,
+  repositoryId: string,
+  label: string,
+  attachments: SeedAttachment[],
+): Promise<{ conversationId: string; messageId: string; attachmentIds: string[] }> {
+  const conversation = await testDatabase.pool.query<{ id: string }>(
+    `insert into conversations (owner_id, repository_id, mode, execution_mode, base_branch, title)
+     values ($1, $2, 'work', 'execute', 'main', $3) returning id`,
+    [ownerId, repositoryId, `attachments ${label}`],
+  );
+  const conversationId = conversation.rows[0]!.id;
+  const message = await testDatabase.pool.query<{ id: string }>(
+    `insert into messages (conversation_id, direction, kind, client_message_id, body)
+     values ($1, 'inbound', 'user', $2, $3) returning id`,
+    [conversationId, `client-attachments-${label}`, `look at the ${label} attachments`],
+  );
+  const messageId = message.rows[0]!.id;
+  await testDatabase.pool.query(
+    `insert into task_links (conversation_id, repository_id, state, base_branch)
+     values ($1, $2, 'queued', 'main')`,
+    [conversationId, repositoryId],
+  );
+  await testDatabase.pool.query(
+    `insert into deliveries (message_id, upstream_trigger_id) values ($1, $2)`,
+    [messageId, `workspace:${messageId}`],
+  );
+  const attachmentIds: string[] = [];
+  for (const attachment of attachments) {
+    const row = await testDatabase.pool.query<{ id: string }>(
+      `insert into artifacts
+         (repository_id, conversation_id, message_id, type, storage_key, mime_type, size_bytes, sha256, metadata)
+       values ($1, $2, $3, 'attachment', $4, $5, $6, $7, $8::jsonb)
+       returning id`,
+      [
+        repositoryId,
+        conversationId,
+        messageId,
+        `attachments/${conversationId}/${randomUUID()}`,
+        attachment.mimeType,
+        attachment.sizeBytes,
+        attachment.sha256,
+        JSON.stringify({ filename: attachment.filename, kind: attachment.kind }),
+      ],
+    );
+    attachmentIds.push(row.rows[0]!.id);
+  }
+  return { conversationId, messageId, attachmentIds };
 }
 
 describe('dispatcher delivery and Bridge event catch-up on real PostgreSQL', () => {
@@ -940,4 +1016,159 @@ describe('dispatcher delivery and Bridge event catch-up on real PostgreSQL', () 
     expect(delivery.rows[0]?.state).toBe('pending');
     expect(delivery.rows[0]?.evidence.leaseRefused).toBe('held');
   });
+
+  it('delivers text-only and records the undelivered attachments when the runtime has no capability', async () => {
+    fakeBridge.triggerCalls.length = 0;
+    // A delivery left pending by another scenario must not be claimed first.
+    await testDatabase.pool.query(
+      `update deliveries set state='failed', last_error='attachment fixture reset'
+        where state in ('pending', 'delivering')`,
+    );
+    const seed = await seedAttachmentMessage(
+      testDatabase,
+      ownerId,
+      repository.id,
+      'no-capability',
+      [
+        {
+          filename: 'l113-shot.png',
+          mimeType: 'image/png',
+          kind: 'image',
+          sizeBytes: 48_213,
+          sha256: 'a'.repeat(64),
+        },
+        {
+          filename: 'l113-notes.txt',
+          mimeType: 'text/plain',
+          kind: 'text',
+          sizeBytes: 128,
+          sha256: 'b'.repeat(64),
+        },
+      ],
+    );
+
+    expect(
+      await deliverOnce(
+        testDatabase.pool,
+        config,
+        repository,
+        client,
+        createConsoleLogger('test'),
+        true,
+        false,
+      ),
+    ).toBe(true);
+
+    const sent = fakeBridge.triggerCalls.at(-1);
+    expect(sent?.text).toBe('look at the no-capability attachments');
+    // An old Bridge's strict schema would answer 400 to this key, which the
+    // client treats as non-retryable, so it must be entirely absent.
+    expect(sent).not.toHaveProperty('attachments');
+
+    const delivery = await testDatabase.pool.query<{
+      state: string;
+      evidence: Record<string, unknown>;
+    }>(`select state, evidence from deliveries where message_id = $1`, [seed.messageId]);
+    expect(delivery.rows[0]?.state).toBe('delivered');
+    expect(delivery.rows[0]?.evidence).toMatchObject({
+      result: 'stored',
+      httpStatus: 200,
+      attachments: {
+        delivered: false,
+        count: 2,
+        reason: 'runtime has no attachment capability',
+      },
+    });
+  }, 30_000);
+
+  it('sends attachment metadata only, for image and text, when the runtime declares the capability', async () => {
+    fakeBridge.triggerCalls.length = 0;
+    fakeBridge.attachmentsCapability = true;
+    // A delivery left pending by another scenario must not be claimed first.
+    await testDatabase.pool.query(
+      `update deliveries set state='failed', last_error='attachment fixture reset'
+        where state in ('pending', 'delivering')`,
+    );
+    const seed = await seedAttachmentMessage(testDatabase, ownerId, repository.id, 'capability', [
+      {
+        filename: 'l113-shot.png',
+        mimeType: 'image/png',
+        kind: 'image',
+        sizeBytes: 48_213,
+        sha256: 'a'.repeat(64),
+      },
+      {
+        filename: 'l113-notes.txt',
+        mimeType: 'text/plain',
+        kind: 'text',
+        sizeBytes: 128,
+        sha256: 'b'.repeat(64),
+      },
+      {
+        filename: 'l113-archive.zip',
+        mimeType: 'application/zip',
+        kind: 'binary',
+        sizeBytes: 1_024,
+        sha256: 'c'.repeat(64),
+      },
+    ]);
+
+    // The capability the dispatcher reads at startup is the gate for the field.
+    const capabilities = await client.capabilities();
+    expect(capabilities.capabilities.attachments).toBe(true);
+
+    expect(
+      await deliverOnce(
+        testDatabase.pool,
+        config,
+        repository,
+        client,
+        createConsoleLogger('test'),
+        true,
+        capabilities.capabilities.attachments === true,
+      ),
+    ).toBe(true);
+
+    const sent = fakeBridge.triggerCalls.at(-1);
+    expect(sent?.attachments).toEqual([
+      {
+        id: seed.attachmentIds[0],
+        filename: 'l113-shot.png',
+        mimeType: 'image/png',
+        sizeBytes: 48_213,
+        sha256: 'a'.repeat(64),
+        kind: 'image',
+      },
+      {
+        id: seed.attachmentIds[1],
+        filename: 'l113-notes.txt',
+        mimeType: 'text/plain',
+        sizeBytes: 128,
+        sha256: 'b'.repeat(64),
+        kind: 'text',
+      },
+    ]);
+    // Metadata only: no bytes, no download URL, no owner or conversation id.
+    for (const attachment of sent?.attachments ?? []) {
+      expect(Object.keys(attachment).sort()).toEqual([
+        'filename',
+        'id',
+        'kind',
+        'mimeType',
+        'sha256',
+        'sizeBytes',
+      ]);
+    }
+
+    const delivery = await testDatabase.pool.query<{
+      state: string;
+      evidence: Record<string, unknown>;
+    }>(`select state, evidence from deliveries where message_id = $1`, [seed.messageId]);
+    expect(delivery.rows[0]?.state).toBe('delivered');
+    expect(delivery.rows[0]?.evidence).toMatchObject({
+      result: 'stored',
+      attachments: { delivered: true, count: 2 },
+    });
+    fakeBridge.attachmentsCapability = undefined;
+  }, 30_000);
 });

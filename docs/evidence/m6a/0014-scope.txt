@@ -1,0 +1,31 @@
+# 0014 回滚守卫的归属（#37）与 0015 带来的耦合 — 2026-11-08T14:38:44+08:00
+$ git rev-parse HEAD
+d4d5801358b9f0c814cf25ae7491aadb90f14f09
+两个独立隔离数据库：moyu_m6a_0014_counter（反例）、moyu_m6a_0014_order（支持顺序）
+
+## 前提：main 上 0014 脚本已有的守卫（事务 + 唯一 ledger 行），本 PR 未改它
+$ git log -1 --oneline origin/main -- packages/db/migrations/rollback/0014_execution_reservations.down.sql
+25b0d0d fix(db): guard the 0014 rollback and keep its evidence honest
+$ git diff --stat origin/main...HEAD -- packages/db/migrations/rollback/0014_execution_reservations.down.sql
+（空输出＝本 PR 没有改 0014 脚本）
+
+## 1. 反例（数据库 A）：0015 仍是最后一条时直接回滚 0014，再 migrate —— 表不会被重建
+{"level":"info","service":"moyu-db","event":"migrate.completed","message":"Database migrations applied successfully"}
+ execution_reservations present = false
+
+判定：migrateDatabase 只回放最后一条 ledger 之后的迁移，0014 不会被重放；
+      未适配的 `rollback-0014` 测试就会在这里红：expected { table_present: true } received { table_present: false }。
+      这是 0015 带来、必须在本 PR 处理的耦合（只改测试顺序，不改 0014 脚本）。
+
+## 2. 支持顺序（数据库 B）：先回滚 0015，再回滚 0014，再 migrate
+ before re-apply: execution_reservations present = false, artifacts.message_id present = false
+
+{"level":"info","service":"moyu-db","event":"migrate.completed","message":"Database migrations applied successfully"}
+ after re-apply: execution_reservations present = true, artifacts.message_id present = true
+
+判定：支持顺序下两张表/列都能被 migrate 重建；`rollback-0014` 测试按此顺序执行。
+
+## 3. 归属
+- 本 PR 不改 0014 脚本；上面的 `git diff` 为空。
+- 「0014 必须是最后一条已应用迁移」的脚本级守卫属于 #37（校验脚本自身的拒绝行为），本 PR 不实现。
+- 本 PR 只做 0015 带来的必要适配：回滚测试改为 0015 → 0014，迁移计数 15 → 16。

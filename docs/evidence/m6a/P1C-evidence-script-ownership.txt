@@ -1,0 +1,259 @@
+# P1-C：evidence.sh 只清理自己启动的进程
+
+依据：#56 复审 P1-C（复审报告 L317–323、L79–86）；动作键 `M6A-REWORK-ISS57-P1C`。
+分支：本地 `agent/review-isolation-m6a-fa8ec916012c` 指向 `origin/agent/attachments-review-panel-4bd4aae33eac`（沿用 PR #44）。
+基线：`4d830176c1ff83a281329ae0a76f3c56027a4bfd`（P1-A 第三刀 + 证据）；`main = 1001c2544c68b8f4d906e330566f6fdb6ff0c795`。
+环境：`/opt/moyu-node24/bin`（Node v24.22.2、pnpm 11.7.0）、Linux；未改 `/root/src/upstream/*`，未重启 3082，未合并 PR。
+
+代码 head（本文件据其产出，其后一个 docs-only 提交入库）：
+$ git rev-parse HEAD
+b218353a59f330d7b41057de83b6fea3a99e489a
+
+$ git log --oneline 4d83017..HEAD
+b218353 fix(m6a): only clean up the evidence harness's own processes
+e6bc28f test(m6a): prove the evidence harness kills processes it did not start
+
+## 1. 红段：先落测试（HEAD = e6bc28f，清理逻辑仍是按端口/按命令行杀）
+
+测试构造两个「不是本轮启动」的同款进程（`node …/dispatcher/dist/main.js --name m6a-decoy` 与
+4620 端口监听者），再用 harness 的 `start_owned` 记录两个自己的进程，然后调用 harness 自己的清理函数
+（`stop_dispatcher` 与 EXIT 用的 `cleanup_run_processes`）。红段里两个 decoy 都被杀掉：
+
+$ git rev-parse HEAD
+e6bc28f1ab3929683426e66af83d17dfd16865ff
+$ git status --short
+$ bash scripts/m6a/test-evidence-ownership.sh
+## 1. decoys this run did not start
+decoy dispatcher pid=3066512 state=S
+decoy listener   pid=3066513 state=S
+decoy dispatcher carries the run marker: 0
+
+## 2. processes this run started through the harness
+own dispatcher pid=3066541 state=S marker=1
+own listener   pid=3066555 state=S marker=1
+
+## 3. before: raw ps
+    PID STAT COMMAND
+3066512 Sl   node /tmp/m6a-ownership.olfWpZ/decoy/dispatcher/dist/main.js --name m6a-decoy
+3066513 Sl   node -e const http=require("http");http.createServer((q,s)=>s.end("ok")).listen(process.argv[1],"127.0.0.1") 4620
+3066541 Ssl  node /tmp/m6a-ownership.olfWpZ/own/dispatcher/dist/main.js --name own
+3066555 Ssl  node -e const http=require("http");http.createServer((q,s)=>s.end("ok")).listen(process.argv[1],"127.0.0.1") 4621
+
+## 4. the harness stops its dispatcher, then its EXIT cleanup runs
+## 5. after: raw ps
+    PID STAT COMMAND
+
+## 6. verdict
+FAIL decoy dispatcher survives (this run did not start it)
+PASS own dispatcher is stopped (run .pid was 3066541)
+FAIL decoy listener survives (this run did not start it)
+PASS own listener is stopped (run .pid was 3066555)
+exit=1
+exit code: 1
+
+判定（红）：`FAIL decoy dispatcher`、`FAIL decoy listener` —— 旧清理按命令行模式杀 dispatcher、按端口杀监听者；
+`PASS own dispatcher`、`PASS own listener` —— 自己的进程照旧被清理。exit 1，正是要修的缺陷。
+
+## 2. 绿段：先核后杀（HEAD = b218353）
+
+$ git rev-parse HEAD
+b218353a59f330d7b41057de83b6fea3a99e489a
+$ git status --short
+$ bash scripts/m6a/test-evidence-ownership.sh
+## 1. decoys this run did not start
+decoy dispatcher pid=3070885 state=S
+decoy listener   pid=3070886 state=S
+decoy dispatcher carries the run marker: 0
+
+## 2. processes this run started through the harness
+own dispatcher pid=3070914 state=S marker=1
+own listener   pid=3070929 state=S marker=1
+
+## 3. before: raw ps
+    PID STAT COMMAND
+3070885 Sl   node /tmp/m6a-ownership.awp2qj/decoy/dispatcher/dist/main.js --name m6a-decoy
+3070886 Sl   node -e const http=require("http");http.createServer((q,s)=>s.end("ok")).listen(process.argv[1],"127.0.0.1") 4620
+3070914 Ssl  node /tmp/m6a-ownership.awp2qj/own/dispatcher/dist/main.js --name own
+3070929 Ssl  node -e const http=require("http");http.createServer((q,s)=>s.end("ok")).listen(process.argv[1],"127.0.0.1") 4621
+
+## 4. the harness stops its dispatcher, then its EXIT cleanup runs
+## 5. after: raw ps
+    PID STAT COMMAND
+3070885 Sl   node /tmp/m6a-ownership.awp2qj/decoy/dispatcher/dist/main.js --name m6a-decoy
+3070886 Sl   node -e const http=require("http");http.createServer((q,s)=>s.end("ok")).listen(process.argv[1],"127.0.0.1") 4620
+
+## 6. verdict
+PASS decoy dispatcher survives (this run did not start it)
+PASS own dispatcher is stopped (run .pid was 3070914)
+PASS decoy listener survives (this run did not start it)
+PASS own listener is stopped (run .pid was 3070929)
+exit=0
+exit code: 0
+
+判定（绿）：两个 decoy 存活（`ps` 原始行仍在），两个自己启动的进程已停止（`Z` 或消失），exit 0。
+
+## 3. 两处「按谁」的改法
+
+### 3.1 按命令行杀 dispatcher（原 A3 收尾）
+
+- 旧：`ps -eo pid,args | grep 'dispatcher/dist/main[.]js' | … | kill` —— 会杀掉任何同名 dispatcher。
+- 新：A3 启动 dispatcher 时走 `start_owned dispatcher …`，把 pid 写进 `$RUN/pids/dispatcher.pid`，进程环境里带
+  `M6A_RUN_ID=<本次 run 的唯一 id>`；收尾改调 `stop_dispatcher` → `stop_owned dispatcher`。
+
+### 3.2 按端口杀监听者（EXIT trap）
+
+- 旧：`ss -ltnp | grep ':4620|:4621|:4690|:4699' | … | kill` —— 会杀掉任何占着这些端口的进程。
+- 新：所有服务（stub Bridge、supervisor、after API、before API、dispatcher）都经 `start_owned` 启动并记录
+  `$RUN/pids/<name>.pid`；EXIT trap 只调 `cleanup_run_processes` → `stop_owned_services` → 逐个 `stop_owned`。
+
+`stop_owned` 的信号前先做归属证明：`grep -qzxF "$MARKER" /proc/<pid>/environ`（`MARKER` 是本次 run 的
+`M6A_RUN_ID`）；证明通过才 `kill -TERM -- -<pid>`（整进程组，服务是 `setsid` 起的 session leader），
+超时再 `SIGKILL`。进程已消失或环境读不到时一律不动。`start_owned` 在启动时同样校验一次：pid 文件写完后
+若 `/proc/<pid>/environ` 没有本次标记就直接失败，不再继续跑。
+
+## 4. 回归与冒烟
+
+$ git rev-parse HEAD
+b218353a59f330d7b41057de83b6fea3a99e489a
+$ bash -n scripts/m6a/evidence.sh scripts/m6a/test-evidence-ownership.sh
+exit code: 0
+
+$ bash scripts/m6a/evidence.sh   # 未提供 TEST_DATABASE_ADMIN_URL：main 守卫应在建目录/起进程前拒绝
+scripts/m6a/evidence.sh: line 147: TEST_DATABASE_ADMIN_URL: TEST_DATABASE_ADMIN_URL is required
+exit code: 1
+
+判定：两个脚本 `bash -n` 通过；缺少 `TEST_DATABASE_ADMIN_URL` 时 `main` 守卫在创建任何目录/进程之前
+以 exit 1 拒绝（证明 main 分发与守卫正常，没有把脚本改成 source 时就会执行）。
+
+$ /opt/moyu-node24/bin/pnpm check   # lint + format:check + typecheck + 全仓单测
+$ pnpm lint && pnpm format:check && pnpm typecheck && pnpm test
+$ eslint .
+
+/root/src/review-isolation-m6a-fa8ec916012c/apps/dispatcher/test/integration/dispatcher.integration.test.ts
+  716:7  warning  Unused eslint-disable directive (no problems were reported from 'no-console')
+
+✖ 1 problem (0 errors, 1 warning)
+  0 errors and 1 warning potentially fixable with the `--fix` option.
+
+$ prettier --check "**/*.{ts,tsx,mjs,cjs,json,yml,yaml,css,html}"
+Checking formatting...
+All matched files use Prettier code style!
+$ pnpm -r --if-present typecheck
+Scope: 8 of 9 workspace projects
+packages/contracts typecheck$ tsc --noEmit
+packages/db typecheck$ tsc --noEmit
+packages/theme typecheck$ tsc --noEmit
+packages/theme typecheck: Done
+packages/contracts typecheck: Done
+packages/db typecheck: Done
+apps/web typecheck$ tsc --noEmit
+packages/runtime-client typecheck$ tsc --noEmit
+packages/runtime-client typecheck: Done
+apps/web typecheck: Done
+apps/api typecheck$ tsc --noEmit
+apps/dispatcher typecheck$ tsc --noEmit
+apps/supervisor typecheck$ tsc --noEmit
+apps/dispatcher typecheck: Done
+apps/supervisor typecheck: Done
+apps/api typecheck: Done
+$ pnpm -r --if-present test && node --test scripts/m3/guard.test.mjs integrations/superagent/tests/verify-lock.test.mjs
+Scope: 8 of 9 workspace projects
+packages/contracts test$ vitest run
+packages/contracts test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/packages/contracts
+packages/contracts test:  ✓ test/contracts.test.ts (13 tests) 21ms
+packages/contracts test:  Test Files  1 passed (1)
+packages/contracts test:       Tests  13 passed (13)
+packages/contracts test:    Start at  21:18:48
+packages/contracts test:    Duration  510ms (transform 126ms, setup 0ms, collect 241ms, tests 21ms, environment 0ms, prepare 81ms)
+packages/contracts test: Done
+packages/runtime-client test$ vitest run
+packages/runtime-client test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/packages/runtime-client
+packages/runtime-client test:  ✓ test/credentials.test.ts (5 tests) 7ms
+packages/runtime-client test:  ✓ test/client.test.ts (8 tests) 28ms
+packages/runtime-client test:  Test Files  2 passed (2)
+packages/runtime-client test:       Tests  13 passed (13)
+packages/runtime-client test:    Start at  21:18:49
+packages/runtime-client test:    Duration  555ms (transform 201ms, setup 0ms, collect 348ms, tests 34ms, environment 0ms, prepare 154ms)
+packages/runtime-client test: Done
+apps/api test$ vitest run --exclude "test/integration/**"
+apps/dispatcher test$ vitest run --exclude "test/integration/**"
+apps/supervisor test$ vitest run --exclude "test/integration/**"
+apps/api test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/api
+apps/dispatcher test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/dispatcher
+apps/supervisor test:  RUN  v3.2.7 /root/src/review-isolation-m6a-fa8ec916012c/apps/supervisor
+apps/api test:  ✓ test/cursor.test.ts (6 tests) 29ms
+apps/dispatcher test:  ✓ test/config.test.ts (3 tests) 11ms
+apps/api test:  ✓ test/auth.test.ts (9 tests) 39ms
+apps/dispatcher test:  ✓ test/tasks.test.ts (2 tests) 11ms
+apps/dispatcher test:  Test Files  2 passed (2)
+apps/dispatcher test:       Tests  5 passed (5)
+apps/dispatcher test:    Start at  21:18:50
+apps/dispatcher test:    Duration  1.31s (transform 424ms, setup 0ms, collect 946ms, tests 22ms, environment 0ms, prepare 366ms)
+apps/dispatcher test: Done
+apps/api test:  ✓ test/health.test.ts (5 tests) 114ms
+apps/api test:  Test Files  3 passed (3)
+apps/api test:       Tests  20 passed (20)
+apps/api test:    Start at  21:18:50
+apps/api test:    Duration  2.90s (transform 1.02s, setup 0ms, collect 2.84s, tests 182ms, environment 1ms, prepare 603ms)
+apps/api test: Done
+apps/supervisor test:  ✓ test/review.test.ts (21 tests) 1851ms
+apps/supervisor test:    ✓ supervisor check runs > terminates a hung command and records the timeout  325ms
+apps/supervisor test:    ✓ supervisor check runs > kills a timed-out check command's whole process group  728ms
+apps/supervisor test:    ✓ review service > rejects a second check for the same repository instead of running two  309ms
+apps/supervisor test:  ✓ test/stop-proof.test.ts (4 tests) 2530ms
+apps/supervisor test:    ✓ supervisor cgroup stop proof > serializes independent processes with the kernel lock  2216ms
+apps/supervisor test:  ✓ test/server-wake.test.ts (1 test) 88ms
+apps/supervisor test:  ✓ test/config.test.ts (3 tests) 18ms
+apps/supervisor test:  ✓ test/resources.test.ts (8 tests) 8ms
+apps/supervisor test:  ✓ test/provision-env.test.ts (1 test) 4ms
+apps/supervisor test:  ✓ test/process.test.ts (21 tests) 6693ms
+apps/supervisor test:    ✓ supervisor process evidence > never signals a reused root PID whose start time does not match  335ms
+apps/supervisor test:    ✓ supervisor process evidence > does not signal a reused process group after the owned members exited  308ms
+apps/supervisor test:    ✓ supervisor process evidence > does not report stopped when the timeout expires before the child exits  1785ms
+apps/supervisor test:    ✓ supervisor process evidence > kills a child that ignores SIGTERM before reporting stopped  1677ms
+apps/supervisor test:    ✓ supervisor process evidence > retains a newly started service regardless of its age  362ms
+apps/supervisor test:    ✓ cgroup launcher only accepts a positive release > exits without executing when the parent dies before release  550ms
+apps/supervisor test:  Test Files  7 passed (7)
+apps/supervisor test:       Tests  59 passed (59)
+apps/supervisor test:    Start at  21:18:50
+apps/supervisor test:    Duration  7.95s (transform 1.04s, setup 0ms, collect 2.05s, tests 11.19s, environment 2ms, prepare 889ms)
+apps/supervisor test: Done
+✔ verify-lock.sh gives the same result for plain, spaced, quoted and relative paths (5987.139963ms)
+✔ accepts a dedicated profile linked to the patched build (12.427942ms)
+✔ rejects the bootstrap home and profile (2.390138ms)
+✔ rejects an unpatched build and a wrong Bridge port (3.376133ms)
+✔ rejects an env file with broad permissions (1.369821ms)
+✔ rejects a target port that is already in use (12.052635ms)
+✔ rejects instance env keys that could override the validated home/profile (1.475538ms)
+✔ rejects an instance env pointing at the production API or a conflicting process env (2.382616ms)
+✔ rejects a symlinked state parent and leaves the other instance untouched (1.373571ms)
+✔ rejects state/<profile> linked to another profile in the same home (1.381843ms)
+✔ rejects sessions linked to another directory in the same home (1.312525ms)
+✔ rejects a cleanup target whose parent link stays inside the same home (1.203027ms)
+✔ rejects a profile containing path separators (0.969584ms)
+✔ the E2E script exits before any run directory for a bootstrap home or production API (823.699789ms)
+✔ refuses a runtime whose stateDir is not the expected isolated profile (0.6082ms)
+ℹ tests 15
+ℹ suites 0
+ℹ pass 15
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 6070.555038
+EXIT=0
+
+判定：`pnpm check` exit 0，P1-A/其它产品代码未改动。说明：`scripts/m6a/*.sh` 不在 eslint/prettier/tsc
+覆盖范围内（`format:check` 只匹配 ts/tsx/mjs/cjs/json/yml/yaml/css/html），所以本轮的脚本验证是
+`bash -n` + ownership 测试 + main 守卫冒烟；ownership 测试没有并入 `pnpm check`（它需要绑定 4620/4621
+两个回环端口并管理进程），单独命令为：
+
+    bash scripts/m6a/test-evidence-ownership.sh
+
+## 5. 边界与未验证
+
+- 改动只在 `scripts/m6a/evidence.sh` 与新增的 `scripts/m6a/test-evidence-ownership.sh`，产品代码未动。
+- 未在本轮跑完整 A1–A8：完整运行会重写 `docs/evidence/m6a/A1–A8` 与截图，且需要隔离 PostgreSQL；
+  服务启动改走 `start_owned` 目前由 ownership 测试、`bash -n`、main 守卫冒烟覆盖，完整取证运行待下一次
+  A1–A8 重跑时确认。
+- 未验证：推送后的 GitHub CI（本轮结束时尚未触发）。

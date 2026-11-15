@@ -41,6 +41,8 @@ interface SidebarProps {
   repositoryActionBusy: boolean;
   repositoryActionError: string | null;
   onOpenActivity: () => void;
+  unreadCount: number;
+  onOpenHistory: () => void;
   onOpenSettings: () => void;
   ownerName: string;
   themeMode: ThemeMode;
@@ -75,6 +77,8 @@ export function Sidebar({
   repositoryActionBusy,
   repositoryActionError,
   onOpenActivity,
+  unreadCount,
+  onOpenHistory,
   onOpenSettings,
   ownerName,
   themeMode,
@@ -355,7 +359,13 @@ export function Sidebar({
         <button type="button" className={styles.navButton} onClick={onOpenActivity}>
           <Icon name="bell" />
           活动中心
-          <span className={styles.navMeta}>M6</span>
+          {unreadCount > 0 ? (
+            <span className={styles.navBadge}>{unreadCount > 99 ? '99+' : unreadCount}</span>
+          ) : null}
+        </button>
+        <button type="button" className={styles.navButton} onClick={onOpenHistory}>
+          <Icon name="search" />
+          历史搜索
         </button>
         <button type="button" className={styles.navButton} onClick={onOpenSettings}>
           <Icon name="settings" />

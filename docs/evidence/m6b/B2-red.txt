@@ -1,0 +1,14 @@
+# B2-red — 2026-11-11T07:54:22.233Z
+# Red-side result semantics: exit code 0 = the baseline lacks or fails this acceptance item (the expected red); exit code 1 = the feature unexpectedly exists on the baseline.
+$ git rev-parse HEAD
+92b01d1436f0802ca16846d697ceba7e4bda2232
+# baseline for the red side
+$ git rev-parse 68c01e50d69a075183a0a175c57611fa77e1163a
+68c01e50d69a075183a0a175c57611fa77e1163a
+
+$ curl -s -o /dev/null -w '%{http_code}' -b 'moyu_session=<session>' http://127.0.0.1:4626/api/v1/history/search?q=x
+HTTP 404
+The baseline build has no M6-B endpoint; the not-found handler is the raw output.
+{"error":{"code":"not_found","message":"Route not found","retryable":false},"requestId":"586f6cbf-399a-4031-a22a-a4d09c470e46"}
+exit code: 0
+

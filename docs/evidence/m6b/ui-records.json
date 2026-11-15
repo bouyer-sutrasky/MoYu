@@ -1,0 +1,92 @@
+[
+  {
+    "name": "before-activity-desktop-light",
+    "base": "before",
+    "theme": "light",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    }
+  },
+  {
+    "name": "before-settings-desktop-light",
+    "base": "before",
+    "theme": "light",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    }
+  },
+  {
+    "name": "before-activity-mobile-dark",
+    "base": "before",
+    "theme": "dark",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    }
+  },
+  {
+    "name": "before-settings-mobile-dark",
+    "base": "before",
+    "theme": "dark",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    }
+  },
+  {
+    "name": "after-cleanup-confirm-desktop-light",
+    "base": "after",
+    "theme": "light",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    }
+  },
+  {
+    "name": "after-activity-desktop-light",
+    "base": "after",
+    "theme": "light",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    }
+  },
+  {
+    "name": "after-settings-desktop-light",
+    "base": "after",
+    "theme": "light",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    }
+  },
+  {
+    "name": "after-activity-mobile-dark",
+    "base": "after",
+    "theme": "dark",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    }
+  },
+  {
+    "name": "after-settings-mobile-dark",
+    "base": "after",
+    "theme": "dark",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    }
+  },
+  {
+    "name": "after-history-desktop-light",
+    "base": "after",
+    "theme": "light",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    }
+  }
+]

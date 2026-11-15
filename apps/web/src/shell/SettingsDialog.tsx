@@ -13,6 +13,8 @@ import { describeAuthError, isWebAuthnSupported } from '../lib/errors';
 import { Icon } from '../components/Icon';
 import { Modal } from '../components/Modal';
 import { useTheme, type ThemeMode } from '../theme/ThemeProvider';
+import { CleanupPanel } from './CleanupPanel';
+import { NotificationSettingsSection } from './NotificationSettingsSection';
 import styles from './SettingsDialog.module.css';
 
 interface SettingsDialogProps {
@@ -201,6 +203,10 @@ export function SettingsDialog({
             ))}
           </div>
         </section>
+
+        <NotificationSettingsSection ownerId={me.owner.id} />
+
+        <CleanupPanel onSessionLost={onSessionLost} />
 
         <section className={styles.section} aria-labelledby="passkeys-heading">
           <div className={styles.sectionHeading}>

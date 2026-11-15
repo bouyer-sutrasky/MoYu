@@ -1,0 +1,144 @@
+/* Safe Markdown message rendering. Every block is bounded so a long line,
+   table or log scrolls inside the bubble instead of widening the page. */
+.mdMessage {
+  max-width: 100%;
+  min-width: 0;
+  color: inherit;
+  font: inherit;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.mdMessage > :first-child {
+  margin-top: 0;
+}
+.mdMessage > :last-child {
+  margin-bottom: 0;
+}
+.mdParagraph {
+  margin: 0 0 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.mdHeading {
+  margin: 10px 0 6px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+h1.mdHeading {
+  font-size: 1.15em;
+}
+h2.mdHeading {
+  font-size: 1.08em;
+}
+h3.mdHeading {
+  font-size: 1em;
+}
+.mdList {
+  margin: 4px 0 8px;
+  padding-left: 22px;
+}
+.mdList li {
+  margin: 2px 0;
+}
+.mdLink {
+  color: var(--dsw-alias-brand-primary, #2f6fed);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.mdLink:hover {
+  text-decoration: none;
+}
+.mdInlineCode {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+}
+.mdCode {
+  max-width: 100%;
+  margin: 6px 0 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  overflow: hidden;
+  background: color-mix(in srgb, currentColor 5%, transparent);
+}
+.mdCodeBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  font-size: 12px;
+}
+.mdCodeLanguage {
+  opacity: 0.7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.mdCodeActions {
+  display: flex;
+  gap: 4px;
+}
+.mdCodeButton {
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 5px;
+  padding: 1px 7px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.mdCodeButton:hover {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+.mdCodeBody {
+  margin: 0;
+  padding: 8px 10px;
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre;
+  tab-size: 2;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+/* Folded long logs keep every character in the DOM and only clamp the view. */
+.mdCodeBody[data-folded='true'] {
+  max-height: 260px;
+  overflow-y: hidden;
+  mask-image: linear-gradient(to bottom, #000 75%, transparent 100%);
+}
+.mdTableScroll {
+  max-width: 100%;
+  margin: 6px 0 10px;
+  overflow-x: auto;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+}
+.mdTable {
+  border-collapse: collapse;
+  width: max-content;
+  min-width: 100%;
+  font-size: 0.95em;
+}
+.mdTable th,
+.mdTable td {
+  padding: 4px 9px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  border-right: 1px solid var(--dsw-alias-border-l2);
+  text-align: left;
+  white-space: nowrap;
+}
+.mdTable th:last-child,
+.mdTable td:last-child {
+  border-right: 0;
+}
+.mdTable tr:last-child td {
+  border-bottom: 0;
+}
+.mdTable th {
+  font-weight: 650;
+  background: color-mix(in srgb, currentColor 6%, transparent);
+}
