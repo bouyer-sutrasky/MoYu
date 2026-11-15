@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import {
   chmodSync,
+  chownSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -65,6 +66,20 @@ export function parseEnvFile(path: string): Record<string, string> {
     values[trimmed.slice(0, index).trim()] = trimmed.slice(index + 1).trim();
   }
   return values;
+}
+
+/** Creates the group-shared worktree root used by both the runtime and the checks. */
+function ensureSharedWorktreeRoot(config: SupervisorConfig): void {
+  mkdirSync(config.worktreeRoot, { recursive: true, mode: 0o2775 });
+  try {
+    if (config.reviewCheckGid !== undefined)
+      chownSync(config.worktreeRoot, -1, config.reviewCheckGid);
+    chmodSync(config.worktreeRoot, 0o2775);
+  } catch {
+    // A root the supervisor cannot chgrp stays as created; the check identity then
+    // refuses the run instead of silently using the supervisor's uid.
+    chmodSync(config.worktreeRoot, 0o750);
+  }
 }
 
 function sha256(value: string): string {
@@ -165,7 +180,10 @@ export async function prepareInstance(
   ensurePrivateDir(config.credentialsDir);
   ensurePrivateDir(config.instanceEnvDir);
   ensurePrivateDir(config.logDir);
-  ensurePrivateDir(join(config.worktreeRoot));
+  // The worktree root is shared with the review check identity on purpose: the
+  // check user has to traverse into a ticket directory to run the repository's
+  // checks. `ensurePrivateDir` would force 0700 and silently lock it out.
+  ensureSharedWorktreeRoot(config);
 
   const { profile, dshPort, bridgePort } = await allocate(config, store, repository);
   const profileDir = installProfile(config, profile, dshPort);
