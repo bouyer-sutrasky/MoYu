@@ -306,26 +306,46 @@ export class InstanceManager {
    * so the panel proxy and the settings UI stop talking to a dead port and the
    * scheduler can start it again.
    */
-  private async requeueLostRuntime(row: InstanceRow): Promise<boolean> {
-    if (row.state !== 'online') return false;
+  /**
+   * Settle a row whose recorded process is gone.
+   *
+   * A supervisor restart removes the unit cgroup, so the runtimes die with it. The
+   * rows can be left `online` (the old lie) or `stopping`/`stop_failed` (a stop
+   * that can never be confirmed). Both wedge a repository: `online` talks to a
+   * dead port, and `stopping` holds an online slot forever while nothing runs.
+   *
+   * With the pid provably gone the stop *is* complete, so record that truth:
+   * sleeping, `desiredState` preserved, and let the scheduler decide whether to
+   * start it again.
+   */
+  private async settleDeadRuntime(row: InstanceRow): Promise<boolean> {
+    if (row.state !== 'online' && row.state !== 'stopping') return false;
     if (row.pid && pidAlive(row.pid)) return false;
+    const wasStopping = row.state === 'stopping';
     await this.store.updateInstance(row.repositoryId, {
       state: 'sleeping',
       desiredState: row.desiredState,
       pid: null,
       ownership: {},
-      reasonCode: 'instance_lost',
-      reasonDetail:
-        'The recorded runtime process is gone (for example because a supervisor restart removed its cgroup); the instance is queued to start again',
+      reasonCode: wasStopping ? 'stop_settled' : 'instance_lost',
+      reasonDetail: wasStopping
+        ? 'The recorded processes are gone, so the stop is complete; the instance is queued again if it was wanted online'
+        : 'The recorded runtime process is gone (for example because a supervisor restart removed its cgroup); the instance is queued to start again',
       waitingFor: null,
       errorCode: null,
       errorDetail: null,
-      lastStoppedAt: null,
+      ...(wasStopping ? { lastStoppedAt: new Date() } : { lastStoppedAt: null }),
     });
     await this.store.syncRepositoryStatus(row.repositoryId, 'sleeping');
     this.logger.warn(
-      { event: 'supervisor.instance_lost', repositoryId: row.repositoryId, pid: row.pid },
-      'recorded runtime process is gone; requeued the instance',
+      {
+        event: wasStopping ? 'supervisor.stop_settled' : 'supervisor.instance_lost',
+        repositoryId: row.repositoryId,
+        pid: row.pid,
+      },
+      wasStopping
+        ? 'recorded processes are gone; the stop is settled'
+        : 'recorded runtime process is gone; requeued the instance',
     );
     return true;
   }
@@ -335,7 +355,7 @@ export class InstanceManager {
     let snapshot = collectOwnership(row.pid ?? 0, stored);
     let live = snapshot.members;
     const rootAlive = row.pid ? pidAlive(row.pid) : false;
-    if (await this.requeueLostRuntime(row)) return;
+    if (await this.settleDeadRuntime(row)) return;
     if (!stored.cgroup && rootAlive) {
       stored = await this.attachCgroup(row, stored);
       snapshot = collectOwnership(row.pid ?? 0, stored);
@@ -730,7 +750,7 @@ export class InstanceManager {
         const snapshot = collectOwnership(row.pid ?? 0, stored);
         const live = snapshot.members;
 
-        if (await this.requeueLostRuntime(row)) continue;
+        if (await this.settleDeadRuntime(row)) continue;
 
         if (snapshot.unknown) {
           const current = (await this.store.getInstance(row.repositoryId)) ?? row;
