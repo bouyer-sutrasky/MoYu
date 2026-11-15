@@ -8,10 +8,14 @@ import type { SupervisorLogger } from './logger';
 import { configureProfile, waitForPanel } from './panel';
 import {
   CGROUP_LAUNCHER,
+  CGROUP_ROOT,
+  cgroupBoundary,
   collectOwnership,
   ensureCgroup,
   movePidToCgroup,
   cgroupOomKilled,
+  ownedByRoot,
+  portOwners,
   removeCgroup,
   pidAlive,
   portFree,
@@ -19,6 +23,8 @@ import {
   stopProcessTree,
   waitForPortClosed,
   type ProcessIdentity,
+  type ProcessOwnershipSnapshot,
+  type StopProcessResult,
   type StoredOwnership,
 } from './process';
 import { instanceLogPath, parseEnvFile, prepareInstance, type PreparedInstance } from './provision';
@@ -66,6 +72,7 @@ function storedOwnership(row: InstanceRow): StoredOwnership {
     rootPid: typeof value.rootPid === 'number' ? value.rootPid : row.pid,
     pgid: typeof value.pgid === 'number' ? value.pgid : row.pid,
     cgroup: typeof value.cgroup === 'string' ? value.cgroup : null,
+    cgroupInode: typeof value.cgroupInode === 'number' ? value.cgroupInode : null,
     adoptedUnproven: value.adoptedUnproven === true,
     execution:
       value.execution && typeof value.execution === 'object'
@@ -80,11 +87,13 @@ function ownershipPayload(
   pgid: number | null,
   members: ProcessIdentity[],
   cgroup: string | null = null,
+  cgroupInode: number | null = null,
 ) {
   return {
     rootPid,
     pgid,
     cgroup,
+    cgroupInode,
     members: members.map((member) => ({
       pid: member.pid,
       startTime: member.startTime,
@@ -244,43 +253,48 @@ export class InstanceManager {
   }
 
   /**
-   * Converges one persisted instance after a supervisor restart. A root PID
-   * that is gone is not enough to release capacity: stored descendants and the
-   * old process group are checked, and a failed cleanup stays `stopping`.
-   */
-  /**
    * Moves an adopted runtime (and its current descendants) into a new cgroup.
-   * Existing rows predate the cgroup boundary; without this migration a stop
-   * after an upgrade would have no durable proof for setsid children.
+   * Rows from before the cgroup boundary, and rows whose boundary object was
+   * removed or replaced, have no durable proof for setsid children; binding the
+   * live process restores metering for everything it does from now on.
    */
   private async attachCgroup(row: InstanceRow, stored: StoredOwnership): Promise<StoredOwnership> {
-    if (stored.cgroup || !row.pid || !row.profile || !pidAlive(row.pid)) return stored;
-    const snapshot = collectOwnership(row.pid, stored);
+    if (!row.pid || !row.profile || !pidAlive(row.pid)) return stored;
+    const boundary = cgroupBoundary(stored.cgroup);
+    const replaced =
+      boundary.state === 'ok' &&
+      typeof stored.cgroupInode === 'number' &&
+      boundary.inode !== stored.cgroupInode;
+    if (boundary.state === 'ok' && !replaced) return stored;
+    // The saved boundary is gone or is no longer the object we created; the
+    // live process is the only thing that can be verified now.
+    const snapshot = collectOwnership(row.pid, { ...stored, cgroup: null });
     const verified = snapshot.members.some((member) => member.pid === row.pid);
     if (!verified) {
       // The saved identity no longer matches this PID. Never launder an
       // unrelated process into a fresh cgroup.
-      const next = { ...stored, adoptedUnproven: true };
+      const next = { ...stored, cgroup: null, cgroupInode: null, adoptedUnproven: true };
       await this.store.updateInstance(row.repositoryId, { ownership: next });
       return next;
     }
-    const cgroup = ensureCgroup(`${row.profile}-adopt-${Date.now()}`);
-    if (!cgroup) {
-      const next = { ...stored, adoptedUnproven: true };
+    const setup = ensureCgroup(`${row.profile}-adopt-${Date.now()}`);
+    if (!setup.ok || !setup.path) {
+      const next = { ...stored, cgroup: null, cgroupInode: null, adoptedUnproven: true };
       await this.store.updateInstance(row.repositoryId, { ownership: next });
       return next;
     }
-    let moved = movePidToCgroup(cgroup, row.pid);
+    let moved = movePidToCgroup(setup.path, row.pid);
     for (const member of snapshot.members) {
-      if (member.pid !== row.pid && movePidToCgroup(cgroup, member.pid)) moved = true;
+      if (member.pid !== row.pid && movePidToCgroup(setup.path, member.pid)) moved = true;
     }
     if (!moved) {
-      removeCgroup(cgroup);
+      removeCgroup(setup.path);
       return stored;
     }
     const next = {
       ...stored,
-      cgroup,
+      cgroup: setup.path,
+      cgroupInode: setup.inode,
       // A live process adopted after the fact may already have double-forked
       // descendants that no scan can recover; a new cgroup cannot prove them.
       adoptedUnproven: true,
@@ -290,39 +304,94 @@ export class InstanceManager {
     return next;
   }
 
+  /**
+   * Persists the current identity set together with the boundary object it
+   * lives in. The adoption marker and the execution binding survive the rewrite:
+   * dropping them would make an adopted runtime look fully proven again (and a
+   * periodic rewrite would erase the generation it is bound to).
+   */
+  private ownershipFrom(
+    rootPid: number | null,
+    snapshot: ProcessOwnershipSnapshot,
+    stored: StoredOwnership,
+  ) {
+    return {
+      ...ownershipPayload(
+        rootPid,
+        snapshot.pgid,
+        snapshot.members,
+        stored.cgroup,
+        snapshot.cgroupInode ?? stored.cgroupInode ?? null,
+      ),
+      ...(stored.adoptedUnproven ? { adoptedUnproven: true } : {}),
+      ...(stored.execution ? { execution: stored.execution } : {}),
+    };
+  }
+
+  /**
+   * Converges one persisted instance after a supervisor restart. A root PID
+   * that is gone is not enough to release capacity: stored descendants, the old
+   * process group and the saved boundary object are checked, and a stop that
+   * cannot prove an empty boundary stays `stopping`.
+   */
   private async reconcileRestart(row: InstanceRow): Promise<void> {
     let stored = storedOwnership(row);
     let snapshot = collectOwnership(row.pid ?? 0, stored);
     let live = snapshot.members;
     const rootAlive = row.pid ? pidAlive(row.pid) : false;
-    if (!stored.cgroup && rootAlive) {
+    if (rootAlive && snapshot.cgroup !== 'ok') {
+      // A restart can lose the boundary object under the old path; a live
+      // runtime is re-bound instead of being reported as unverified forever.
       stored = await this.attachCgroup(row, stored);
       snapshot = collectOwnership(row.pid ?? 0, stored);
       live = snapshot.members;
     }
     if (snapshot.unknown) {
-      if (row.state === 'online' && row.desiredState === 'online') {
+      const bridgeUp = rootAlive && row.bridgePort ? await portOpen(row.bridgePort) : false;
+      const serving =
+        rootAlive &&
+        (bridgeUp || row.state === 'online') &&
+        row.desiredState === 'online' &&
+        (row.state === 'online' || row.state === 'starting');
+      if (serving) {
+        // A serving runtime stays online, even while starting: killing it here
+        // would destroy the work it was started for. Its reason describes
+        // health; the ownership caveat is a detail, not an instance failure.
+        const promote = row.state === 'starting' && bridgeUp;
         await this.store.updateInstance(row.repositoryId, {
-          reasonCode: 'ownership_unverified',
-          reasonDetail:
-            'The adopted runtime is serving, but its historical descendants cannot be proven; sleep will remain blocked',
-          waitingFor: 'runtime',
+          ...(promote
+            ? {
+                state: 'online',
+                lastHealthAt: new Date(),
+                waitingFor: null,
+                reasonCode: 'listening',
+              }
+            : {
+                lastHealthAt: bridgeUp ? new Date() : row.lastHealthAt,
+                reasonCode: bridgeUp ? 'listening' : 'bridge_unreachable',
+                waitingFor: bridgeUp ? null : 'runtime',
+              }),
+          ownership: this.ownershipFrom(row.pid, snapshot, stored),
+          reasonDetail: bridgeUp
+            ? snapshot.unknownMembers.length > 0
+              ? `${snapshot.unknownMembers.length} live process(es) in the saved group/session cannot be tied to this runtime; they are left untouched and sleep needs an explicit stop`
+              : 'This runtime was adopted while running; descendants created before the adoption cannot be proven, and a stop proves the boundary from this generation on'
+            : 'The runtime process survived the supervisor restart but its Bridge did not answer the first health check',
         });
+        if (promote) await this.store.syncRepositoryStatus(row.repositoryId, 'online');
         return;
       }
-      await this.store.updateInstance(row.repositoryId, {
-        state: 'stopping',
-        desiredState: row.desiredState,
-        pid: row.pid,
-        ownership: { ...stored, members: [...(stored.members ?? []), ...live] },
-        reasonCode: 'stop_failed',
-        reasonDetail:
-          'Process ownership is unverified; capacity remains occupied until it is cleared',
-        waitingFor: 'process_exit',
-        errorCode: 'stop_failed',
-        errorDetail: 'unverified process group/session members',
-      });
-      await this.store.syncRepositoryStatus(row.repositoryId, 'stopping');
+      // An unknown snapshot with a stop intent: attempt the proof-based stop.
+      // Foreign members are never signalled, and the stop only completes when
+      // the boundary itself is empty.
+      const stopped = await this.stopInstance(row, 'restart_cleanup', 'process_exit');
+      if (stopped) {
+        await this.failInstance(
+          row,
+          'instance_lost',
+          'The supervisor restarted while this runtime was not serving; its verified process tree is stopped',
+        );
+      }
       return;
     }
 
@@ -331,7 +400,7 @@ export class InstanceManager {
         const bridgeUp = row.bridgePort ? await portOpen(row.bridgePort) : false;
         await this.store.updateInstance(row.repositoryId, {
           lastHealthAt: bridgeUp ? new Date() : row.lastHealthAt,
-          ownership: ownershipPayload(row.pid, snapshot.pgid, live, stored.cgroup),
+          ownership: this.ownershipFrom(row.pid, snapshot, stored),
           reasonCode: bridgeUp ? 'listening' : 'bridge_unreachable',
           reasonDetail: bridgeUp
             ? null
@@ -365,7 +434,7 @@ export class InstanceManager {
         await this.store.updateInstance(row.repositoryId, {
           state: 'online',
           lastHealthAt: new Date(),
-          ownership: ownershipPayload(row.pid, snapshot.pgid, live, stored.cgroup),
+          ownership: this.ownershipFrom(row.pid, snapshot, stored),
           reasonCode: 'listening',
           reasonDetail: null,
           waitingFor: null,
@@ -639,34 +708,68 @@ export class InstanceManager {
         } catch {
           // Progress is explanatory only; a missing row must not stop scheduling.
         }
-        const stored = storedOwnership(row);
-        const snapshot = collectOwnership(row.pid ?? 0, stored);
+        let stored = storedOwnership(row);
+        let snapshot = collectOwnership(row.pid ?? 0, stored);
+        const rootAliveNow = row.pid ? pidAlive(row.pid) : false;
+        if (
+          rootAliveNow &&
+          snapshot.cgroup !== 'ok' &&
+          (row.state === 'online' || row.state === 'starting')
+        ) {
+          // The boundary object disappeared (for example a recreated unit
+          // cgroup). Re-bind the verified runtime so metering and a later stop
+          // are provable again instead of reporting it unverified forever.
+          stored = await this.attachCgroup(row, stored);
+          snapshot = collectOwnership(row.pid ?? 0, stored);
+        }
         const live = snapshot.members;
 
         if (snapshot.unknown) {
           const current = (await this.store.getInstance(row.repositoryId)) ?? row;
           if (row.state === 'online' && current.desiredState === 'online') {
+            // A serving runtime stays online; the ownership caveat is recorded
+            // as a detail instead of replacing the health reason.
             await this.store.updateInstance(row.repositoryId, {
-              reasonCode: 'ownership_unverified',
+              ownership: this.ownershipFrom(row.pid, snapshot, stored),
+              reasonCode: 'listening',
               reasonDetail:
-                'The runtime is serving, but its historical descendants cannot be proven; sleep will remain blocked',
-              waitingFor: 'runtime',
+                snapshot.unknownMembers.length > 0
+                  ? `${snapshot.unknownMembers.length} live process(es) in the saved group/session cannot be tied to this runtime; they are left untouched and sleep needs an explicit stop`
+                  : 'This runtime was adopted while running; descendants created before the adoption cannot be proven, and a stop proves the boundary from this generation on',
+              waitingFor: null,
             });
             continue;
           }
-          await this.store.updateInstance(row.repositoryId, {
-            state: 'stopping',
-            desiredState: current.desiredState,
-            pid: row.pid,
-            ownership: { ...stored, members: [...(stored.members ?? []), ...live] },
-            reasonCode: 'stop_failed',
-            reasonDetail:
-              'Process ownership is unverified; capacity remains occupied until it is cleared',
-            waitingFor: 'process_exit',
-            errorCode: 'stop_failed',
-            errorDetail: 'unverified process group/session members',
-          });
-          await this.store.syncRepositoryStatus(row.repositoryId, 'stopping');
+          // Not serving: a proof-based stop is attempted instead of freezing the
+          // row. Foreign members are never signalled, and the row only leaves
+          // `stopping` when the boundary itself is empty. An unreadable boundary
+          // is not retried every tick: a stop cannot prove anything there, and a
+          // repeated full-timeout attempt would starve the other rows.
+          if (snapshot.cgroup === 'unreadable') {
+            await this.store.updateInstance(row.repositoryId, {
+              state: 'stopping',
+              desiredState: current.desiredState,
+              pid: row.pid,
+              ownership: this.ownershipFrom(row.pid, snapshot, stored),
+              reasonCode: 'stop_failed',
+              reasonDetail:
+                'Process ownership is unverified: the saved cgroup boundary cannot be read, so capacity remains occupied until it is restored or cleared by the owner',
+              waitingFor: 'process_exit',
+              errorCode: 'stop_failed',
+              errorDetail: 'unreadable cgroup boundary',
+            });
+            await this.store.syncRepositoryStatus(row.repositoryId, 'stopping');
+            await this.store.recordProgress(row.repositoryId);
+            continue;
+          }
+          const stopped = await this.stopInstance(row, 'ownership_stop', 'process_exit');
+          if (stopped && (row.state === 'starting' || row.state === 'online')) {
+            await this.failInstance(
+              (await this.store.getInstance(row.repositoryId)) ?? row,
+              'instance_lost',
+              'The runtime was not serving; its verified process tree is stopped',
+            );
+          }
           await this.store.recordProgress(row.repositoryId);
           continue;
         }
@@ -689,24 +792,34 @@ export class InstanceManager {
 
         if (live.length === 0) {
           if (row.state === 'stopping') {
-            if (bridgeUp) {
-              // No owned process remains, but the Bridge port still accepts
-              // connections. It may be an unrelated listener or a process we
-              // could not identify; do not release the slot on a guess.
-              const current = (await this.store.getInstance(row.repositoryId)) ?? row;
-              await this.store.updateInstance(row.repositoryId, {
-                state: 'stopping',
-                desiredState: current.desiredState,
-                pid: null,
-                ownership: {},
-                reasonCode: 'stop_failed',
-                reasonDetail: `The Bridge port ${row.bridgePort ?? '(none)'} is still listening after the owned process tree exited`,
-                waitingFor: 'process_exit',
-                errorCode: 'stop_failed',
-                errorDetail: 'port still listening after process exit',
-              });
-              await this.store.syncRepositoryStatus(row.repositoryId, 'stopping');
-              continue;
+            const ports = [row.port, row.bridgePort].filter(
+              (port): port is number => typeof port === 'number',
+            );
+            let open = false;
+            for (const port of ports) {
+              if (!(await portFree(port))) open = true;
+            }
+            if (open) {
+              // No owned process remains but a port still accepts connections.
+              // Its owner decides: our own leftover is stopped, a foreign
+              // listener is reported and never signalled.
+              const conflict = await this.resolvePortConflict(row, ports);
+              if (conflict) {
+                const current = (await this.store.getInstance(row.repositoryId)) ?? row;
+                await this.store.updateInstance(row.repositoryId, {
+                  state: 'stopping',
+                  desiredState: current.desiredState,
+                  pid: null,
+                  ownership: {},
+                  reasonCode: 'stop_failed',
+                  reasonDetail: `A runtime port is still listening after the owned process tree exited: ${conflict}`,
+                  waitingFor: 'process_exit',
+                  errorCode: 'stop_failed',
+                  errorDetail: 'port still listening after process exit',
+                });
+                await this.store.syncRepositoryStatus(row.repositoryId, 'stopping');
+                continue;
+              }
             }
             await this.markSleeping(row, 'stop_completed');
           } else if (row.state === 'starting' || row.state === 'online') {
@@ -725,7 +838,7 @@ export class InstanceManager {
             await this.store.updateInstance(row.repositoryId, {
               state: 'stopping',
               desiredState: current.desiredState,
-              ownership: ownershipPayload(row.pid, snapshot.pgid, live, stored.cgroup),
+              ownership: this.ownershipFrom(row.pid, snapshot, stored),
               reasonCode: 'stop_failed',
               reasonDetail: `Stopping is incomplete: ${live.length} process(es) still alive`,
               waitingFor: 'process_exit',
@@ -752,7 +865,7 @@ export class InstanceManager {
         }
 
         await this.store.updateInstance(row.repositoryId, {
-          ownership: ownershipPayload(row.pid, snapshot.pgid, live, stored.cgroup),
+          ownership: this.ownershipFrom(row.pid, snapshot, stored),
         });
 
         if (row.state === 'online') {
@@ -909,6 +1022,89 @@ export class InstanceManager {
     });
   }
 
+  /**
+   * A proven stop can still carry a residual ownership risk (descendants that
+   * escaped before the runtime was adopted). The generation is over and its
+   * boundary is empty, but the risk is recorded instead of being dropped.
+   */
+  private logResidualOwnership(instance: InstanceRow, result: StopProcessResult): void {
+    if (!result.unknown) return;
+    this.logger.warn(
+      {
+        event: 'supervisor.stop_proven_with_residual',
+        repositoryId: instance.repositoryId,
+        boundary: result.boundary,
+      },
+      'the execution boundary is empty; descendants that escaped before adoption stay unproven',
+    );
+  }
+
+  /**
+   * Explains which listener blocks a port pair and clears the ones that are
+   * provably this supervisor's own: only a process inside MOYU_CGROUP_ROOT (or
+   * a saved identity) is stopped. Anything else is reported, never signalled.
+   */
+  private async resolvePortConflict(
+    instance: InstanceRow,
+    ports: number[],
+  ): Promise<string | null> {
+    const blocked: string[] = [];
+    const rows = await this.store.listInstances();
+    const otherBoundaries = new Set(
+      rows
+        .filter((row) => row.repositoryId !== instance.repositoryId)
+        .map((row) => storedOwnership(row).cgroup)
+        .filter((cgroup): cgroup is string => typeof cgroup === 'string'),
+    );
+    for (const port of ports) {
+      if (await portFree(port)) continue;
+      const owners = portOwners(port);
+      if (owners.length === 0) {
+        blocked.push(`port ${port} is listening but no owning process could be identified`);
+        continue;
+      }
+      const foreign = owners.filter(
+        (owner) =>
+          !ownedByRoot(owner, CGROUP_ROOT) ||
+          (owner.cgroup !== null && otherBoundaries.has(owner.cgroup)),
+      );
+      if (foreign.length > 0) {
+        blocked.push(
+          `port ${port} is held by pid ${foreign.map((owner) => owner.pid).join('/')} outside ${CGROUP_ROOT} (${foreign[0]?.cgroup ?? 'no cgroup'})`,
+        );
+        continue;
+      }
+      for (const owner of owners) {
+        // Only a listener in its own instance cgroup is stopped as a tree. A
+        // process that sits directly in the root has no boundary of its own, so
+        // its verified identity and session are used and no other instance
+        // cgroup is touched.
+        const boundary = owner.cgroup && owner.cgroup !== CGROUP_ROOT ? owner.cgroup : null;
+        this.logger.info(
+          {
+            event: 'supervisor.orphan_port_owner',
+            port,
+            pid: owner.pid,
+            cgroup: owner.cgroup,
+            boundary,
+            command: owner.command.slice(0, 120),
+          },
+          'stopping a leftover managed runtime that still holds a port',
+        );
+        await stopProcessTree(owner.pid, this.config.stopTimeoutMs, {
+          rootPid: owner.pid,
+          pgid: owner.pgid,
+          cgroup: boundary,
+          members: [owner],
+        });
+      }
+      if (!(await waitForPortClosed(port, 5000))) {
+        blocked.push(`port ${port} is still listening after its managed owner was stopped`);
+      }
+    }
+    return blocked.length > 0 ? blocked.join('; ') : null;
+  }
+
   private async spawnInstance(instance: InstanceRow): Promise<void> {
     let prepared: PreparedInstance;
     try {
@@ -917,12 +1113,12 @@ export class InstanceManager {
       await this.failInstance(instance, 'prepare_failed', safeError(error));
       return;
     }
-    if (!(await portFree(prepared.dshPort)) || !(await portFree(prepared.bridgePort))) {
-      await this.failInstance(
-        instance,
-        'port_in_use',
-        `Port ${prepared.dshPort} or ${prepared.bridgePort} is already in use`,
-      );
+    const portConflict = await this.resolvePortConflict(instance, [
+      prepared.dshPort,
+      prepared.bridgePort,
+    ]);
+    if (portConflict) {
+      await this.failInstance(instance, 'port_in_use', `A port is already in use: ${portConflict}`);
       return;
     }
     // The upstream state directory uses a proper-lockfile-style lock directory.
@@ -955,16 +1151,17 @@ export class InstanceManager {
       await this.failInstance(instance, 'start_failed', safeError(error));
       return;
     }
-    const cgroup = ensureCgroup(`${prepared.profile}-${Date.now()}`);
-    if (!cgroup) {
+    const setup = ensureCgroup(`${prepared.profile}-${Date.now()}`);
+    if (!setup.ok || !setup.path) {
       closeSync(logFd);
       await this.failInstance(
         instance,
         'cgroup_unavailable',
-        'The per-instance cgroup could not be created; refusing to start outside the enforced boundary',
+        `The per-instance cgroup could not be created (${setup.step ?? 'root'}): ${setup.error ?? 'unknown error'}`,
       );
       return;
     }
+    const cgroup = setup.path;
     const applied = applyInstanceMemoryLimit(cgroup, limitsFromConfig(this.config));
     if (!applied.ok) {
       removeCgroup(cgroup);
@@ -1089,7 +1286,7 @@ export class InstanceManager {
       port: prepared.dshPort,
       bridgePort: prepared.bridgePort,
       profile: prepared.profile,
-      ownership: ownershipPayload(pid, pid, collectOwnership(pid).members, cgroup),
+      ownership: ownershipPayload(pid, pid, collectOwnership(pid).members, cgroup, setup.inode),
       reasonCode: 'starting',
       reasonDetail: null,
       waitingFor: null,
@@ -1482,16 +1679,31 @@ export class InstanceManager {
       pgid,
       members: [...(stored.members ?? []), ...snapshot.members],
     });
-    const portClosed = instance.bridgePort
-      ? await waitForPortClosed(instance.bridgePort, 5000)
-      : true;
+    // Both listeners must be gone: the panel port is what the next start
+    // probes, so stopping only the Bridge would leave a start blocked later.
+    const ports = [instance.port, instance.bridgePort].filter(
+      (port): port is number => typeof port === 'number',
+    );
+    const portClosed = (
+      await Promise.all(ports.map((port) => waitForPortClosed(port, 5000)))
+    ).every(Boolean);
     if (result.stopped && portClosed) {
+      this.logResidualOwnership(instance, result);
       await this.markSleeping(instance, reason);
       return true;
     }
     const remaining = result.remaining;
+    // A listener that survives the verified tree is resolved by identity: our
+    // own orphan is stopped, a foreign service is reported and left alone.
+    const portConflict = result.stopped ? await this.resolvePortConflict(instance, ports) : null;
+    if (result.stopped && !portConflict) {
+      this.logResidualOwnership(instance, result);
+      await this.markSleeping(instance, reason);
+      return true;
+    }
     const detail = result.stopped
-      ? `The Bridge port ${instance.bridgePort ?? '(none)'} remained open after the process tree exited`
+      ? (portConflict ??
+        `The runtime ports (${ports.join(', ') || 'none'}) remained open after the process tree exited`)
       : result.unknown
         ? 'The owned process tree exited, but the saved process group still has unverified members'
         : `Stopping is incomplete: ${remaining.length} process(es) still alive after the timeout`;
