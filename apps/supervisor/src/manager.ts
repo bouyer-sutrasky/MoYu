@@ -1,5 +1,14 @@
-import { chmodSync, chownSync, closeSync, existsSync, mkdirSync, openSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  chmodSync,
+  chownSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { dirname, join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -1264,6 +1273,15 @@ export class InstanceManager {
     }
   }
 
+  /**
+   * Marker for the one-time default seed of an instance profile. It lives under
+   * the supervisor's own instance directory, next to the runtime credentials, so
+   * it never enters the worktree and follows the profile across restarts.
+   */
+  private profileSeededPath(profile: string): string {
+    return join(this.config.instanceEnvDir, `${profile}.profile-seeded.json`);
+  }
+
   private async settleStart(
     repositoryId: string,
     generation: number,
@@ -1297,6 +1315,9 @@ export class InstanceManager {
         throw new Error('The runtime Bridge port did not open');
       }
       if (!ownerId) throw new Error('No owner is registered for the instance policy');
+      // First-run defaults are written once per instance; every later start only
+      // re-asserts the platform invariants so owner edits survive sleep/wake/restart.
+      const seedDefaults = !existsSync(this.profileSeededPath(prepared.profile));
       await configureProfile({
         port: prepared.dshPort,
         repository: prepared.repository.fullName,
@@ -1312,7 +1333,23 @@ export class InstanceManager {
         worktreeDir,
         prepare,
         timeoutMs: this.config.startTimeoutMs,
+        seedDefaults,
       });
+      if (seedDefaults) {
+        mkdirSync(dirname(this.profileSeededPath(prepared.profile)), {
+          recursive: true,
+          mode: 0o700,
+        });
+        writeFileSync(
+          this.profileSeededPath(prepared.profile),
+          JSON.stringify({
+            repositoryId,
+            profile: prepared.profile,
+            seededAt: new Date().toISOString(),
+          }),
+          { mode: 0o600 },
+        );
+      }
       if (this.stopped) return;
       const handle = this.handles.get(repositoryId);
       if (!handle || handle.generation !== generation) return;

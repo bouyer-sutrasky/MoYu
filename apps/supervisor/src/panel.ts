@@ -1,5 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 
+import { mergeProfileSettings, type PanelSettingsView } from './profile-config';
+
 export interface PanelSettings {
   blocks: Record<string, { revision: number; value: Record<string, unknown> }>;
   sources?: Array<{ id: string; revision: number; value?: Record<string, unknown> }>;
@@ -80,6 +82,13 @@ export interface ConfigureProfileInput {
   worktreeDir: string;
   prepare: string;
   timeoutMs: number;
+  /**
+   * True only for the first configuration of this instance. First-run defaults
+   * (GitHub polling/observation switches, worker and Eval models, Eval mode and
+   * timeout, blocked commands) are written then; later starts only re-assert
+   * the platform invariants and keep every owner edit.
+   */
+  seedDefaults: boolean;
 }
 
 /**
@@ -110,6 +119,10 @@ async function putSettings(
   }
 }
 
+function encodeBlock(block: string): string {
+  return block.replace(':', '%3A');
+}
+
 export async function configureProfile(input: ConfigureProfileInput): Promise<void> {
   const readyDeadline = Date.now() + input.timeoutMs;
   let settings: PanelSettings;
@@ -124,79 +137,31 @@ export async function configureProfile(input: ConfigureProfileInput): Promise<vo
     }
     await delay(1000);
   }
-  const sourceRevision = (id: string) =>
-    settings.sources?.find((source) => source.id === id)?.revision ?? 0;
-  const blockRevision = (block: string) => settings.blocks?.[block]?.revision ?? 0;
 
-  await putSettings(
-    input.port,
-    '/settings/source%3Aworkspace',
+  // Re-assert only the platform invariants and, on the first run, the defaults.
+  // Everything else is the owner's configuration and is left exactly as the
+  // runtime reported it, so sleep/wake/restart cannot overwrite it.
+  const blocks = mergeProfileSettings(
+    settings as unknown as PanelSettingsView,
     {
-      value: { enabled: true, config: { repository: input.repository } },
-      revision: sourceRevision('workspace'),
-    },
-    input.timeoutMs,
-  );
-  await putSettings(
-    input.port,
-    '/settings/source%3Agithub',
-    {
-      value: {
-        enabled: true,
-        config: {
-          repository: input.repository,
-          cli: input.githubCli,
-          pollSeconds: 60,
-          failuresBeforeError: 3,
-          observeIssues: true,
-          observePulls: true,
-          observeComments: true,
-          observeCi: false,
-        },
-      },
-      revision: sourceRevision('github'),
-    },
-    input.timeoutMs,
-  );
-  await request(input.port, '/settings/policy', 'PUT', {
-    value: {
-      rules: settings.blocks?.policy?.value?.rules ?? [],
-      sources: {
-        workspace: { allowed: [{ id: input.ownerId }], admission: {} },
-        github: {
-          allowed: input.githubAllowedUsers.map((id) => ({ id })),
-          admission: {},
-        },
-      },
-    },
-    revision: blockRevision('policy'),
-  });
-  await request(input.port, '/settings/executor', 'PUT', {
-    value: {
-      model: {
-        provider: input.model.provider,
-        model: input.model.model,
-        ...(input.model.reasoningEffort ? { reasoningEffort: input.model.reasoningEffort } : {}),
-      },
-      maxWorkers: 1,
-      directory: input.worktreeDir,
+      repository: input.repository,
+      ownerId: input.ownerId,
+      githubAllowedUsers: input.githubAllowedUsers,
+      githubCli: input.githubCli,
+      worktreeDir: input.worktreeDir,
       prepare: input.prepare,
-      blockedCommands: [],
+      model: input.model,
     },
-    revision: blockRevision('executor'),
-  });
-  await request(input.port, '/settings/eval', 'PUT', {
-    value: {
-      mode: 'auto',
-      timeoutSeconds: 300,
-      model: {
-        provider: input.model.provider,
-        model: input.model.model,
-        reasoningEffort: 'low',
-      },
-    },
-    revision: blockRevision('eval'),
-  });
+    input.seedDefaults,
+  );
+  for (const block of blocks) {
+    await putSettings(
+      input.port,
+      `/settings/${encodeBlock(block.block)}`,
+      { value: block.value, revision: block.revision },
+      input.timeoutMs,
+    );
+  }
 
   const deadline = Date.now() + input.timeoutMs;
   while (Date.now() < deadline) {
