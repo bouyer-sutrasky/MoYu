@@ -11,6 +11,13 @@ import type { SupervisorLogger } from './logger';
 import type { InstanceManager } from './manager';
 import { createReviewService } from './review';
 import { createCleanupService } from './cleanup';
+import {
+  PANEL_PROMPTS_PATH,
+  PANEL_READ_PATHS,
+  isSettingsBlock,
+  panelCall,
+  panelErrorText,
+} from './panel-proxy';
 
 const wakeSchema = z
   .object({
@@ -148,6 +155,100 @@ export function buildSupervisorServer(options: {
   app.post('/control/v1/instances/:repositoryId/cleanup/trash', async (request) => {
     const repositoryId = repositoryIdOf(request);
     return { data: await cleanup.emptyTrash(repositoryId) };
+  });
+
+  /**
+   * Loopback proxy for one instance's settings panel. The browser reaches this
+   * only through the authenticated API; the port comes from the instance row and
+   * every path is checked against an allow-list.
+   */
+  const panelPortFor = async (repositoryId: string): Promise<number> => {
+    const row = await options.store.getInstance(repositoryId);
+    if (!row) {
+      throw Object.assign(new Error('Instance not found'), { statusCode: 404 });
+    }
+    if (row.state !== 'online' || !row.port) {
+      throw Object.assign(
+        new Error(
+          `The runtime is not online (state=${row.state}); settings can only be read or written while it is running`,
+        ),
+        { statusCode: 409 },
+      );
+    }
+    return row.port;
+  };
+
+  app.get('/control/v1/instances/:repositoryId/panel/:page', async (request, reply) => {
+    const repositoryId = repositoryIdOf(request);
+    const page = (request.params as { page?: string }).page ?? '';
+    const path = page === 'policy-history' ? '/policy/history' : `/${page}`;
+    if (!PANEL_READ_PATHS.has(path)) {
+      return reply.code(422).send({
+        error: { code: 'invalid_request', message: `Unsupported panel page: ${page}` },
+      });
+    }
+    const port = await panelPortFor(repositoryId);
+    const result = await panelCall({ port, path });
+    if (result.status >= 400) {
+      logger.info(
+        {
+          event: 'supervisor.panel_read_failed',
+          repositoryId,
+          page,
+          detail: panelErrorText(result),
+        },
+        'runtime panel read failed',
+      );
+    }
+    return reply.code(result.status).send(result.body);
+  });
+
+  app.put('/control/v1/instances/:repositoryId/panel/settings/:block', async (request, reply) => {
+    const repositoryId = repositoryIdOf(request);
+    const raw = (request.params as { block?: string }).block ?? '';
+    let block: string;
+    try {
+      block = decodeURIComponent(raw);
+    } catch {
+      return reply
+        .code(422)
+        .send({ error: { code: 'invalid_request', message: 'Malformed settings block' } });
+    }
+    if (!isSettingsBlock(block)) {
+      return reply.code(422).send({
+        error: { code: 'invalid_request', message: `Unsupported settings block: ${block}` },
+      });
+    }
+    const port = await panelPortFor(repositoryId);
+    const result = await panelCall({
+      port,
+      path: `/settings/${encodeURIComponent(block)}`,
+      method: 'PUT',
+      body: request.body ?? {},
+    });
+    logger.info(
+      {
+        event: 'supervisor.panel_settings_saved',
+        repositoryId,
+        block,
+        status: result.status,
+        ...(result.status >= 400 ? { detail: panelErrorText(result) } : {}),
+      },
+      'runtime settings save relayed',
+    );
+    return reply.code(result.status).send(result.body);
+  });
+
+  app.put('/control/v1/instances/:repositoryId/panel/prompts', async (request, reply) => {
+    const repositoryId = repositoryIdOf(request);
+    const port = await panelPortFor(repositoryId);
+    const result = await panelCall({
+      port,
+      path: PANEL_PROMPTS_PATH,
+      method: 'PUT',
+      body: request.body ?? {},
+    });
+    return reply.code(result.status).send(result.body);
   });
 
   app.get('/control/v1/instances/:repositoryId', async (request) => {
