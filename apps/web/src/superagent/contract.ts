@@ -15,7 +15,19 @@
  * threads, decisions, overview) are typed loosely on purpose.
  */
 
+import type { SetupProblem } from './values/setup';
+import type { Health } from './values/health';
+import type { Reason } from './values/reasons';
+
+export type { Health } from './values/health';
+export { HEALTH_TEXT } from './values/health';
+
+export type { SetupProblem };
+
 export type Localized = { zh: string; en: string } | string;
+
+/** The five settings groups, in the order the navigation shows them. */
+export type SettingsGroup = 'source' | 'eval' | 'execution' | 'prompts' | 'deployment';
 
 /** One field of a Source's config schema, as the runtime reports it. */
 export type FieldSpec =
@@ -54,7 +66,7 @@ export type FieldSpec =
       label: Localized;
       hint?: Localized;
       advanced?: boolean;
-      settings?: string;
+      settings?: SettingsGroup;
     }
   | {
       key: string;
@@ -65,16 +77,25 @@ export type FieldSpec =
       columns: RowColumn[];
     };
 
-export interface RowColumn {
-  key: string;
-  type: 'text' | 'select';
-  label: Localized;
-  pattern?: string;
-  optional?: boolean;
-  choose?: Localized;
-  refresh?: Localized;
-  options?: Array<{ value: string; label: Localized }>;
-}
+export type RowColumn =
+  | {
+      key: string;
+      type: 'select';
+      label: Localized;
+      options: Array<{ value: string; label: Localized }>;
+      optional?: boolean;
+      choose?: Localized;
+      refresh?: Localized;
+    }
+  | {
+      key: string;
+      type: 'text';
+      label: Localized;
+      pattern?: string;
+      optional?: boolean;
+      choose?: Localized;
+      refresh?: Localized;
+    };
 
 export type AdmissionCell = 'listedUnaddressed' | 'unlistedAddressed' | 'unlistedUnaddressed';
 
@@ -90,7 +111,11 @@ export interface SourcePolicyView {
   fields: FieldSpec[];
   explicit: Localized;
   rows: AdmissionRowView[];
-  sync?: { label: Localized; ready: boolean; health?: { state: string; at?: string; detail?: string } };
+  sync?: {
+    label: Localized;
+    ready: boolean;
+    health?: { state: string; at?: string; detail?: string };
+  };
 }
 
 export interface SourceView {
@@ -239,15 +264,20 @@ export interface BuiltInPartView {
   roles: string[];
   text: string;
   base?: string;
+  placeholders?: string[];
 }
 
-export interface PromptConfig {
-  communication: string;
-  scope: string;
-  delivery: string;
+/**
+ * A prompt configuration. Team sections are dynamic (`config[section]`), so the
+ * index signature is intentionally loose; `skills` and `overrides` are the two
+ * structured parts.
+ */
+export type PromptConfig = {
   skills: Record<string, string>;
   overrides?: Record<string, { text: string; base?: string }>;
-}
+  // Team sections are dynamic: the runtime sends one string per section.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+} & Record<string, any>;
 
 export interface PromptsView {
   masterId: string;
@@ -258,11 +288,17 @@ export interface PromptsView {
   builtin: string;
   skillPrefix: string;
   parts: BuiltInPartView[];
-  defaultChanged: Array<{ part: string; removed?: boolean }>;
+  defaultChanged: Array<{ part: string; removed?: boolean; base?: string; previous?: string }>;
   revision: number;
-  sessions: Array<{ id: string; title: string }>;
+  sessions: Array<{ sessionId: string; revision: number }>;
   notificationPending: boolean;
-  revisions: number[];
+  revisions: Array<{
+    revision: number;
+    savedAt: string;
+    source: string;
+    /** Prompt sections/skills this revision changed. */
+    changed: string[];
+  }>;
   next_offset: number | null;
 }
 
@@ -281,24 +317,24 @@ export interface ModelCatalog {
   failures: unknown[];
 }
 
-export interface Health {
-  name: string;
-  state: 'ready' | 'paused' | 'error' | 'idle' | string;
-  code?: string;
-  detail: string;
-  at?: string;
-}
+export type SourceState = 'missing' | 'off' | 'error' | 'setup' | 'starting' | 'paused' | 'ready';
 
 export interface SourceStatusView {
   id: string;
   title: Localized;
   installed: boolean;
   enabled: boolean;
-  state: string;
+  state: SourceState;
   health: Health[];
   stats: { received: number; filtered: number; lastAt: string };
   problem?: SetupProblem | null;
-  filtered: Array<{ id: string; actor: string; preview: string; reason: string; at: string }>;
+  filtered: Array<{
+    id: string;
+    actor: { name?: Localized };
+    preview: string;
+    reason: string;
+    at: string;
+  }>;
   dropped: Array<{
     id: string;
     preview: string;
@@ -308,15 +344,89 @@ export interface SourceStatusView {
   }>;
 }
 
-/** Labels for runtime health checks, as the runtime reports them. */
-export const HEALTH_TEXT: Record<string, { zh: string; en: string }> = {};
-
 /**
  * The management API surface, as the vendored components name it.
  * Only the settings endpoints are served by MoYu today; the ticket/thread routes
  * are declared so the shared components typecheck, and calling them returns the
  * relay's 404/422 instead of pretending to work.
  */
+export type ThreadStage =
+  | 'error'
+  | 'evaluating'
+  | 'queued'
+  | 'subscribed'
+  | 'dormant'
+  | 'unsubscribed';
+
+/** One fact a Thread publishes, rendered as a chip label/value pair. */
+export interface ThreadFactView {
+  label?: Localized;
+  value: Localized;
+  problem?: boolean;
+}
+
+/** One Thread row, as the shared row component reads it. */
+export interface ThreadRowView {
+  key?: string;
+  id?: string;
+  stage: ThreadStage;
+  pending: number;
+  title: string;
+  source: string;
+  url: string | null;
+  facts: Record<string, ThreadFactView>;
+  /** Tickets currently attached to this thread. */
+  tickets: Array<{ id: string; state: string; title: string }>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any;
+}
+
+/** One Decision row. */
+export type DecisionOutcome =
+  | 'accept'
+  | 'reopen'
+  | 'stop'
+  | 'ignore'
+  | 'unavailable'
+  | 'wouldAccept';
+
+export interface DecisionRowView {
+  id: string;
+  kind: string;
+  at: string;
+  outcome: DecisionOutcome;
+  /** Rules consulted for this decision, in evaluation order. */
+  rules: Array<{ matched: boolean; name: string }>;
+  preview: string;
+  reason?: string | Reason | readonly Reason[];
+  ticketId?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any;
+}
+
+/** One Ticket list row. */
+/** A Ticket row carries the stage discriminant itself, as the shared rows expect. */
+export type TicketRowView = TicketStage & {
+  id: string;
+  title: string;
+  ended?: { outcome?: string; at?: string } | null;
+  pending?: number;
+  threads: ThreadRowView[];
+  /** Unread runtime messages the platform has not delivered yet. */
+  undelivered: number;
+  updatedAt: string;
+  note?: { text: string; error?: boolean } | null;
+  question?: string | null;
+  /** Set when the ticket ended; the outcome decides the row's mark. */
+  endedAt?: string | null;
+  /** Where the ticket came from, rendered as a small tag. */
+  context?: { url?: string; source?: string; text?: string } | null;
+  /** Per-action availability, keyed by action name. */
+  actions: Record<string, { enabled?: boolean; reason?: string | null } | undefined>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any;
+};
+
 export interface TicketLineView {
   id: string;
   title: string;
@@ -332,8 +442,19 @@ export interface DecisionLineView {
 }
 export type TicketFilter = 'open' | 'person' | 'working' | 'idle' | 'ended';
 export type ThreadFilter = 'subscribed' | 'evaluating' | 'recent' | 'all';
-export const TICKET_FILTERS: readonly TicketFilter[] = ['open', 'person', 'working', 'idle', 'ended'];
-export const THREAD_FILTERS: readonly ThreadFilter[] = ['subscribed', 'evaluating', 'recent', 'all'];
+export const TICKET_FILTERS: readonly TicketFilter[] = [
+  'open',
+  'person',
+  'working',
+  'idle',
+  'ended',
+];
+export const THREAD_FILTERS: readonly ThreadFilter[] = [
+  'subscribed',
+  'evaluating',
+  'recent',
+  'all',
+];
 
 type Paged = { offset?: number; limit?: number };
 type Delivery = 'injected' | 'pending';
@@ -348,14 +469,17 @@ type Loose = Record<string, any>;
 export interface Api {
   'GET state': { response: StateView };
   'GET overview': { response: { problems: Loose[] } & Loose };
-  'GET search': { query: { q: string }; response: { tickets: Loose[] } & Loose };
+  'GET search': { query: { q: string }; response: { tickets: TicketRowView[] } & Loose };
   'GET sources': { response: SourceStatusView[] };
   'GET settings': { response: SettingsView };
   'POST sources/:id/labels': { response: { added: string[] } };
-  'GET threads': { query?: Paged & { filter?: ThreadFilter }; response: { items: Loose[] } & Loose };
+  'GET threads': {
+    query?: Paged & { filter?: ThreadFilter };
+    response: { items: ThreadRowView[] } & Loose;
+  };
   'GET threads/:key': {
     query?: { limit?: number; before?: string; around?: string };
-    response: { timeline: Loose[] } & Loose;
+    response: { timeline: Loose[]; ticket?: TicketRowView } & Loose;
   };
   'POST threads/:key/unsubscribe': {
     response: { removed: boolean; thread: string; context_delivery: Delivery };
@@ -363,10 +487,13 @@ export interface Api {
   'POST triggers/:id/requeue': { response: { queued: boolean } };
   'GET decisions': {
     query?: Paged & { kind?: string; window?: '24h' };
-    response: { items: Loose[] } & Loose;
+    response: { items: DecisionRowView[] } & Loose;
   };
   'POST decisions/:id/dismiss': { response: { dismissed: true } };
-  'GET tickets': { query?: Paged & { state?: TicketFilter }; response: { items: Loose[] } & Loose };
+  'GET tickets': {
+    query?: Paged & { state?: TicketFilter };
+    response: { items: TicketRowView[] } & Loose;
+  };
   'GET tickets/:id': { response: Loose };
   'POST tickets/:id/retry': { response: { retried: true } };
   'POST tickets/:id/stop': { response: { stopped: true } };
@@ -397,8 +524,15 @@ export type RouteParams<K extends keyof Api> = Params<Path<K>>;
 export type ApiRequest<K extends keyof Api> = RouteParams<K> & Omit<Api[K], 'response'>;
 export type ApiResponse<K extends keyof Api> = Api[K]['response'];
 
-/** The locale function the components receive. */
-export type Translate = (key: string, values?: Record<string, string | number>) => string;
+/**
+ * The locale function the components receive. Upstream types it against the
+ * locale-key union through a DSH module augmentation; MoYu keeps the call shape
+ * and lets the key be any locale name.
+ */
+export type Translate<K extends string = string> = (
+  key: K,
+  values?: Record<string, string | number>,
+) => string;
 
 /** Snapshot of one instance's Deployment configuration. */
 export interface DeploymentSnapshot<V = Record<string, unknown>> {
