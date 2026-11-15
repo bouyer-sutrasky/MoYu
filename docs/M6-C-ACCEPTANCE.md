@@ -68,6 +68,6 @@
 ## 已知缺口（不是验收项，但会影响后续）
 
 1. `events_source_event_uq` 缺 repository 维度：同一 `source_event_id` 无法存在于两个仓库，去重更强但隔离语义不对。
-2. `runtime_cursors` 表为空：事件游标走内存，跨重启从头部重放的持久性未验证。
+2. `runtime_cursors` 表为空，但代码里有写入路径（`apps/dispatcher/src/sync.ts:1286/1333`）：Bridge 事件消费在运行中并没有把游标落库。重启后会从头部重放，靠 `events_source_event_uq` 去重兜底。结果是"能用但不该这样"：游标持久化事实上未生效，重放规模随事件量线性增长。已在 A25 记为部分通过。
 3. dispatcher 在 supervisor 重启窗口内每秒写一条 `event_sync_error`（error 级）：不是故障，但日志噪音大。
 4. 部署内容领先 `main` 两个未合并 PR：合并前不能称"main 即线上"。
