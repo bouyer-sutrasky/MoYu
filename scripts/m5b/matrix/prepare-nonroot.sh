@@ -49,7 +49,7 @@ LEGACY_WRITE_PATHS=(/root/.dsh-m5 /root/.config/gh-agent)
 GH_HOST_CONFIG=/root/.config/gh-agent
 MATRIX_SSH_KEY=$M5B_MATRIX_SSH_KEY
 MATRIX_GH_CONFIG_DIR=$M5B_MATRIX_GH_CONFIG_DIR
-MATRIX_HOME=/home/$USER_
+MATRIX_HOME=${M5B_MATRIX_SSH_HOME:-/home/$USER_}
 MATRIX_SSH_DIR=$MATRIX_HOME/.ssh
 
 fail() {
@@ -118,7 +118,8 @@ remove_legacy_key_copy() {
       return 0
     fi
     echo "  fingerprint_before_removal=$(sha256sum "$legacy" | cut -d' ' -f1 | cut -c1-16)"
-    rm -f "$legacy"
+    remove_ssh_legacy_copy "$USER_" "$MATRIX_SSH_DIR" sa_agent2 \
+      || fail "could not remove the legacy key copy as $USER_"
     echo "  -> removed; the matrix identity no longer holds the host agent key"
   fi
 }
@@ -146,27 +147,11 @@ install_ssh_credential() {
   if [[ $MODE == check ]]; then
     return 0
   fi
-  install -d -m 0700 -o "$USER_" -g "$GROUP" "$MATRIX_SSH_DIR"
-  install -m 0600 -o "$USER_" -g "$GROUP" "$MATRIX_SSH_KEY" "$MATRIX_SSH_DIR/probe_deploy"
-  cat >"$MATRIX_SSH_DIR/config" <<SSHCONF
-Host ssh.github.com
-  HostName ssh.github.com
-  Port 443
-  IdentityFile $MATRIX_SSH_DIR/probe_deploy
-  IdentitiesOnly yes
-
-Host github.com
-  HostName github.com
-  Port 22
-  IdentityFile $MATRIX_SSH_DIR/probe_deploy
-  IdentitiesOnly yes
-SSHCONF
-  chown "$USER_:$GROUP" "$MATRIX_SSH_DIR/config"
-  chmod 0600 "$MATRIX_SSH_DIR/config"
-  ssh-keyscan -p 443 ssh.github.com >"$MATRIX_SSH_DIR/known_hosts" 2>/dev/null || true
-  chown "$USER_:$GROUP" "$MATRIX_SSH_DIR/known_hosts"
-  chmod 0600 "$MATRIX_SSH_DIR/known_hosts"
-  echo "  ssh_material=$MATRIX_SSH_DIR (probe_deploy 0600, known_hosts entries: $(wc -l < "$MATRIX_SSH_DIR/known_hosts"))"
+  # Root only reads the trusted key and pipes it in; the identity performs every
+  # write below its own home, so a pre-created symlink is replaced, never followed.
+  install_ssh_material "$USER_" "$GROUP" "$MATRIX_SSH_KEY" "$MATRIX_SSH_DIR" probe_deploy \
+    || fail "could not install the dedicated SSH material as $USER_"
+  echo "  known_hosts entries: $(wc -l < "$MATRIX_SSH_DIR/known_hosts")"
   return 0
 }
 
@@ -245,7 +230,9 @@ grant_dir /root/.config 0710
 grant_tree /opt/moyu-node24 g+rx g+r
 # The matrix gh wrapper must be executable by the identity; the host umask may
 # otherwise leave the checkout's copy at 0700.
-[[ -f $REPO/scripts/m5b/matrix/gh-m5b.sh ]] && chmod 0755 "$REPO/scripts/m5b/matrix/gh-m5b.sh"
+if [[ $MODE == apply ]] && [[ -f $REPO/scripts/m5b/matrix/gh-m5b.sh ]]; then
+  chmod 0755 "$REPO/scripts/m5b/matrix/gh-m5b.sh"
+fi
 echo
 
 echo "## removing the shared credential copy"

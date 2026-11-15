@@ -248,3 +248,122 @@ Test Files  7 passed (7)
 | 异常清理 | `down` 删除 token、`up` 清空 Bridge 凭据与暂存状态；`cleanOwnedDir` 不跟随链接的回归 | 旧布局的 56 个凭据由下一次 `stack.sh up` 的 `reset_owned_state` 清空 |
 | 后续可复跑 | `prepare-run`/`write-protected`/`check-run` 重跑与路径替换的 CLI 回归；运行根可在旧属主上被采纳 | 待 §4 完成后按 README 复跑七项 |
 | 公开证据脱敏 | 预检只输出 owner/mode/布尔值；token 只在“present/not present”级别出现，日志打印的 argv 以 `TOKEN=***` 脱敏 | — |
+
+## 7. 第二轮复核修复（动作键 `M5B-PR49-ISOLATION-8B7E07C`，2026-11-15）
+
+复核固定 head `8b7e07c`，指出四类缺口：root 在低权身份拥有的目录里写入/改权限、`precheck --online`
+的 argv 入口错误、`prepare-nonroot --check` 仍会 chmod、`up` 中途失败会遗留单元和密钥。本轮全部
+修复，未执行所有者动作，也未启动现场矩阵。
+
+### 7.1 低权树内不再有 root 写入
+
+- 新增 `scripts/m5b/matrix/lowpriv.mjs`：低权路径的写入、删除、chmod 全部以目标身份执行（当前用户
+  不是目标身份时经 `runuser` 重新进入同一 helper）；写入先建 `wx` 临时文件再 `rename`，预置叶子
+  链接被替换而不是跟随；删除只 unlink 链接本身。`lowpriv.test.mjs` 8 例覆盖哨兵内容+元数据不变。
+- `prepare-nonroot.sh` 的 SSH 安装改用 `scripts/m5b/matrix/ssh-material.sh`：root 只读取自己的
+  0600 key 并通过 stdin 管道交给 `m5bmatrix`，`probe_deploy`/`config`/`known_hosts` 全部由该身份
+  写入；删除旧 key 副本也以该身份 unlink。`--check` 分支不再执行任何 chmod（wrapper 的 0755 只在
+  `--apply` 设置）。
+- `stack.sh` 的 stage 始终由 root 拥有（0750 root:matrix），root 只在自己的 stage/control 里写入；
+  profile 复制到 matrix home 由该身份执行；额外仓库再次进入的是同一个 root stage，不会变成
+  可替换的 root 写入目标（`scripts/m5b/matrix/stage.sh`）。
+- item5/item6 的 **root→provider** 输入（`worker-report.json`、`worker-delay.txt`、
+  `worker-sleep.txt`、`open-pr.txt`、`worker-mem.txt`、`provider-alloc.txt`）移到 root 拥有的
+  `control/`；provider→root 的输出（`pr-number.txt`、provider 日志）留在 matrix 拥有的 `tmp/`，
+  root 只读，清理以身份执行。
+
+红→绿原始结果（同一主机、root 0600/0644 哨兵，路径已缩短）：
+
+```text
+# RED（旧 head 8b7e07c 的行为，脚本按旧代码行的语义复现）
+## old prepare-nonroot install: root shell redirection inside the identity's .ssh
+sentinel_before=content=41252872f52e5a67... mode=600 uid=0 mtime=2026-11-15 15:27:22.682097168 +0800
+sentinel_after =content=40e60d1ef81ce620... mode=600 uid=0 mtime=2026-11-15 15:27:22.706097421 +0800
+sentinel_changed=yes
+
+## old stack stage: root chmod after the stage was handed to the identity
+sentinel_before=content=e24073572f7d3203... mode=644 uid=0 mtime=2026-11-15 15:27:22.719097558 +0800
+sentinel_after =content=e24073572f7d3203... mode=600 uid=0 mtime=2026-11-15 15:27:22.719097558 +0800
+sentinel_metadata_changed=yes
+
+## old prepare-nonroot --check: unconditional chmod of the gh wrapper
+old_check_wrapper_mode_before=600 after=755
+new_check_wrapper_mode_before=600 after=600
+```
+
+```bash
+bash scripts/m5b/matrix/isolation-regression.sh
+```
+
+```text
+## 1. install_ssh_material as the identity (leaf link + rerun)
+PASS: SSH material is installed as the identity; sentinel content/metadata unchanged across reruns
+## 2. stage_profile_tree twice (main + extra repo) with a pre-set leaf link
+PASS: main and extra-repository staging run as the identity; sentinel content/metadata unchanged
+## 3. root control inputs vs identity scratch
+PASS: the identity cannot write the root control directory
+PASS: identity scratch cleanup unlinks the link, not the host sentinel
+## 4. prepare-nonroot.sh --check is read-only
+PASS: --check left the gh wrapper content and mode unchanged
+verdict=PASS
+```
+
+### 7.2 precheck 与启动 gate
+
+- 统一 `runAsMatrix` 执行入口（修复 deny 调用把 `-u` 当 argv 的 `ERR_INVALID_ARG_TYPE`），结果分为
+  `allowed`/`denied`/`missing credential`/`exec-error`/`timeout`；缺凭据判 `INCOMPLETE` 并拒绝回退
+  共享凭据探测。
+- 写授权只读核验：SSH key 用 `git push --dry-run`（不更新任何远端 ref）；gh token 用“非法 head 的
+  PR 创建请求”，有写权限时返回 422 校验失败且不会创建对象，无权限时 403/404。
+- 启动 gate 检查实际运行凭据：拒绝**改名/搬家后仍使用共享 token** 的 gh 配置（按 token 哈希比对
+  `/root/.config/gh-agent`），检查 `GH_TOKEN`/`GITHUB_TOKEN`/`GH_ENTERPRISE_TOKEN` 覆盖（wrapper 里
+  `unset`，precheck 里报 FAIL）；`stack.sh up` 在启动任何单元前运行 `precheck --gate --online`。
+- 预检原始结果（`--online --json`，脱敏；本机共享配置尚未收敛、专用凭据未发放）：
+
+```text
+INCOMPLETE ssh-key:/root/.config/m5bmatrix/probe_ssh_key — the matrix SSH key does not exist
+INCOMPLETE gh-config:/root/.config/m5bmatrix/gh — the matrix gh config does not exist
+INCOMPLETE online-probes — dedicated probe credentials are incomplete (ssh_installed=false, gh_config=false); refusing to probe with shared credentials
+run-layout/bridge-credentials: 61 stale bridge credential file(s) from earlier runs
+verdict violated
+```
+
+`prepare-nonroot.sh --check` 仍以 exit 1 报告共享目录可写/共享凭据可读/旧凭据残留（与 §1 相同，
+属于所有者收敛项，不在本 PR 执行）。
+
+### 7.3 启动失败清理与回读
+
+- `stack.sh up` 失败时调用 `scripts/m5b/matrix/lifecycle.mjs cleanup-failed-up`：stop/reset 所有
+  矩阵单元、写 `cgroup.kill` 终止实例子树、删除 protected token、清空 bridge credentials 与
+  instance-env，然后回读 `is-active`、`cgroup.procs`、secret 存在性和凭据文件数；任何残留都打印
+  `cleanup FAILED` 并以非零退出。
+- `M5B_MATRIX_INJECT_FAILURE=<step>` 提供确定性失败点（start_slice/postgres/provider/supervisor/
+  api/runtime/dispatcher/migrate）；`lifecycle.test.mjs` 用注入的 exec 覆盖 5 个场景：全部停止、
+  单元拒绝停止、secret 不可删、实例 cgroup 残留、空 cgroup 通过。
+- CLI 原始输出（沙箱 protected/credentials；未启动任何现场单元）：
+
+```text
+# 清理失败必须显示（测试夹具把 credentials 目录留成 root 所有）
+cleanup FAILED: could not clean bridge credentials in ...: owned by uid 0, expected 995
+cleanup FAILED: 1 bridge credential file(s) remain in ...
+exit=1
+
+# 正常清理并回读
+cleanup: removed secret .../protected/supervisor-token
+cleanup: cleaned 1 bridge credentials file(s) from .../credentials
+cleanup: cleaned 1 instance env file(s) from .../instance-env
+cleanup verified: no unit or bootstrap secret left behind
+exit=0
+```
+
+按所有者“请勿启动现场矩阵”的要求，没有在宿主上跑真实 `up` 的失败注入；`stack.sh` 的失败路径调用
+的正是上面这个 CLI，注入点由上述单测覆盖。
+
+### 7.4 本轮测试
+
+```text
+node --test guard.test.mjs lowpriv.test.mjs lifecycle.test.mjs gh-wrapper.test.mjs
+# tests 31 / pass 31 / fail 0
+PATH=/opt/moyu-node24/bin:$PATH corepack pnpm check
+# lint / prettier / typecheck 通过；聚合 node --test: tests 48 / pass 48 / fail 0
+```

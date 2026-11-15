@@ -258,3 +258,15 @@ node 进程，主 3082 服务随之中断。未修改生产数据、Nginx、3082
   `supervisor-token`/`seed.env` 放在测试身份拥有的运行根下，并留下 56 个 Bridge 凭据文件。
 - **未执行**：宿主授权收敛、共享凭据轮换、专用凭据创建（所有者动作，见隔离文档 §4）。
   因此现场矩阵复跑仍被阻断；本单不重跑七项，也不把旧 harness 的日志当作新证据。
+
+#### 隔离修复第二轮（M5B-PR49-ISOLATION-8B7E07C，2026-11-15）
+
+- 复核指出 root 在低权身份拥有的 `.ssh`/stage/tmp 内写入或 chmod。新增 `lowpriv.mjs`：写入、删除、
+  chmod 全部以该身份执行（临时文件 + rename，不跟随预置链接）；SSH 材料、profile 复制、control/tmp
+  分区与清理全部改走该边界。
+- `precheck.mjs` 统一执行入口，区分拒权/缺凭据/执行失败/超时；写授权用 `git push --dry-run` 与
+  422 校验型 PR 创建探测（无副作用）；拒绝改名复制的共享 token 与 `GH_TOKEN`/`GITHUB_TOKEN` 覆盖；
+  `stack.sh up` 起单元前跑该 gate。
+- `prepare-nonroot.sh --check` 不再 chmod；`stack.sh` 启动失败调用 `lifecycle.mjs` 清理单元/实例
+  cgroup/token/凭据并回读，残留显式失败；`M5B_MATRIX_INJECT_FAILURE` 提供注入点。
+- 红→绿、脱敏原始输出与单测见 `docs/evidence/m5b/matrix/HARNESS-ISOLATION.md` §7。

@@ -2,29 +2,40 @@
 /**
  * Read-only isolation precheck for the M5-B on-site matrix.
  *
- * Answers the questions the ticket asks before any matrix rerun:
+ * Answers, before any matrix rerun:
  *
- *   - can the dedicated test identity write host configuration (bootstrap DSH
- *     homes, shared gh configuration, SSH keys)?  (must be no)
- *   - can it read a shared credential?                          (must be no)
- *   - are its own credentials dedicated to the probe repositories and does it
- *     really reach only those?                     (checked with --online)
+ *   - can the dedicated test identity write host configuration or read a shared
+ *     credential?                                       (must be no)
+ *   - are its SSH and gh credentials dedicated, and do they actually reach only
+ *     the probe repositories?                            (`--online` / `--gate`)
  *   - do privileged bootstrap files live outside the matrix-writable tree, and
- *     is there stale privileged state from an earlier layout?
+ *     is stale privileged state left from an earlier layout?
  *
- * The script never writes: it stats paths, calls the guard's pure audits, and
- * (with --online) performs GET/`git ls-remote` probes as the test identity. It
- * prints no file content and no token: only modes, owners and pass/fail.
+ * Scope probes do not change remote state: the SSH key is checked with
+ * `git push --dry-run` (no refs are updated), and the gh token with a GitHub
+ * write endpoint armed with an invalid body (missing head branch), which the
+ * server rejects with 422 without creating anything if the token is allowed,
+ * and with 403/404 if it is not. The result therefore distinguishes "allowed",
+ * "denied", "missing credential", "execution error" and "timeout" instead of
+ * treating every non-zero exit as a denial.
  *
- *   node scripts/m5b/matrix/precheck.mjs                 # local facts
- *   node scripts/m5b/matrix/precheck.mjs --online        # plus credential scope
- *   node scripts/m5b/matrix/precheck.mjs --json          # machine readable
+ * `--gate` runs only the credential/scope gate that `stack.sh up` calls before
+ * starting a unit. The script never writes host configuration and never prints
+ * token material.
  *
- * Exit codes: 0 clean, 1 isolation violation, 2 evidence incomplete (missing
- * dedicated credential or a host probe that could not run).
+ * Exit codes: 0 clean/authorized, 1 isolation violation or missing credential,
+ * 2 evidence incomplete (a probe could not run).
  */
-import { existsSync, readdirSync, statSync } from 'node:fs';
-import { hostname } from 'node:os';
+import {
+  chownSync,
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
+import { hostname, tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
@@ -46,11 +57,12 @@ const flags = new Set(argv.filter((value) => value.startsWith('--')));
 const option = (name, fallback) => {
   const index = argv.indexOf(`--${name}`);
   if (index >= 0 && argv[index + 1] && !argv[index + 1].startsWith('--')) return argv[index + 1];
-  return process.env[`M5B_MATRIX_${name.toUpperCase().replaceAll('-', '_')}`] ?? fallback;
+  return fallback;
 };
 
 const json = flags.has('--json');
-const online = flags.has('--online');
+const gate = flags.has('--gate');
+const online = flags.has('--online') || gate;
 const userName = option('user', 'm5bmatrix');
 const runDir = option('run', '/tmp/m5bmatrix');
 const layout = layoutFor(runDir, process.env);
@@ -71,6 +83,7 @@ const probeRepositories = [
     .map((pair) => pair.split(':')[0]),
 ];
 const forbiddenRepository = 'bouyer-sutrasky/MoYu';
+const credentialEnvNames = ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN'];
 
 const checks = [];
 const findings = [];
@@ -90,11 +103,58 @@ function matrixIdentity() {
   }
 }
 
-function asMatrix(args, options = {}) {
-  return spawnSync('runuser', ['-u', userName, '--', ...args], {
-    encoding: 'utf8',
-    timeout: options.timeout ?? 20000,
-  });
+/**
+ * Unified execution entry: every probe that must run as the matrix identity
+ * goes through here, including the same-user case used by tests.
+ */
+function runAsMatrix(args, { timeoutMs = 30000 } = {}) {
+  const env = { ...process.env, HOME: matrixHome };
+  const current = userInfo().username;
+  let result;
+  if (current === userName) {
+    result = spawnSync(args[0], args.slice(1), { encoding: 'utf8', timeout: timeoutMs, env });
+  } else {
+    if (typeof process.getuid !== 'function' || process.getuid() !== 0) {
+      return { status: null, error: new Error(`cannot run as ${userName} without root`), args };
+    }
+    result = spawnSync('runuser', ['-u', userName, '--', ...args], {
+      encoding: 'utf8',
+      timeout: timeoutMs,
+      env,
+    });
+  }
+  return {
+    status: result.status,
+    signal: result.signal,
+    timedOut: result.error?.code === 'ETIMEDOUT',
+    error: result.error ?? null,
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+    args,
+  };
+}
+
+function classify(result) {
+  if (result.timedOut) return 'timeout';
+  if (result.error) return 'exec-error';
+  if (result.status === 0) return 'allowed';
+  const text = `${result.stdout}\n${result.stderr}`;
+  if (
+    /Permission denied|could not read Username|Authentication failed|Repository not found|not found|HTTP 40[13]|Resource not accessible|must have push|gh auth login/i.test(
+      text,
+    )
+  ) {
+    return 'denied';
+  }
+  return 'failed';
+}
+
+function firstLine(text) {
+  return redact(
+    String(text)
+      .split('\n')
+      .find((line) => line.trim()) ?? '',
+  ).slice(0, 140);
 }
 
 function hostAudit(identity) {
@@ -111,7 +171,7 @@ function hostAudit(identity) {
     const computed = access.writeViolations.length > 0 ? 'writable' : 'not-writable';
     let observed = 'not-probed';
     if (probeAvailable) {
-      observed = asMatrix(['test', '-w', path]).status === 0 ? 'writable' : 'not-writable';
+      observed = runAsMatrix(['test', '-w', path]).status === 0 ? 'writable' : 'not-writable';
     }
     record(
       'host-boundary',
@@ -126,7 +186,7 @@ function hostAudit(identity) {
     const computed = access.readViolations.length > 0 ? 'readable' : 'not-readable';
     let observed = 'not-probed';
     if (probeAvailable && facts.exists) {
-      observed = asMatrix(['test', '-r', path]).status === 0 ? 'readable' : 'not-readable';
+      observed = runAsMatrix(['test', '-r', path]).status === 0 ? 'readable' : 'not-readable';
     }
     record(
       'host-boundary',
@@ -141,11 +201,7 @@ function hostAudit(identity) {
 function credentialAudit(identity) {
   let key = null;
   try {
-    key = assertDedicatedSshKey({
-      keyPath: sshKey,
-      hostKeyDir: '/root/.ssh',
-      uid: identity.uid,
-    });
+    key = assertDedicatedSshKey({ keyPath: sshKey, hostKeyDir: '/root/.ssh', uid: identity.uid });
     record(
       'credentials',
       `ssh-key:${sshKey}`,
@@ -167,9 +223,14 @@ function credentialAudit(identity) {
       hostConfigDirs: ['/root/.config/gh-agent'],
       uid: identity.uid,
     });
-    record('credentials', `gh-config:${config.path}`, 'PASS', 'token=present (not printed)');
+    record(
+      'credentials',
+      `gh-config:${config.path}`,
+      'PASS',
+      `token=present sha256=${config.tokenSha256} (value not printed)`,
+    );
   } catch (error) {
-    const missing = /does not exist/.test(error.message);
+    const missing = /does not exist|carries no token/.test(error.message);
     record(
       'credentials',
       `gh-config:${ghConfigDir}`,
@@ -177,92 +238,144 @@ function credentialAudit(identity) {
       redact(error.message),
     );
   }
+  for (const name of credentialEnvNames) {
+    if (process.env[name]) {
+      record(
+        'credentials',
+        `env:${name}`,
+        'FAIL',
+        `${name} is set in the harness environment and would override the dedicated gh config`,
+      );
+    }
+  }
   return { key };
 }
 
-function scopeProbes() {
+function gitWriteProbe(repository) {
+  const root = mkdtempSync(join(tmpdir(), 'm5b-scope-'));
+  const identity = matrixIdentity();
+  try {
+    chmodSync(root, 0o700);
+    if (process.getuid() === 0 && identity) chownSync(root, identity.uid, identity.gid);
+    const init = runAsMatrix(['git', 'init', '-q', root]);
+    if (init.status !== 0) return { kind: 'exec-error', detail: firstLine(init.stderr) };
+    runAsMatrix(['git', '-C', root, 'config', 'user.name', 'M5B Scope Probe']);
+    runAsMatrix(['git', '-C', root, 'config', 'user.email', 'scope-probe@example.invalid']);
+    const commit = runAsMatrix([
+      'git',
+      '-C',
+      root,
+      'commit',
+      '-q',
+      '--allow-empty',
+      '-m',
+      'scope probe',
+    ]);
+    if (commit.status !== 0) return { kind: 'exec-error', detail: firstLine(commit.stderr) };
+    const result = runAsMatrix([
+      'git',
+      '-C',
+      root,
+      'push',
+      '--dry-run',
+      `ssh://git@ssh.github.com:443/${repository}.git`,
+      `HEAD:refs/heads/m5b-scope-${Date.now()}`,
+    ]);
+    return { kind: classify(result), detail: firstLine(result.stderr || result.stdout) };
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function ghWriteProbe(repository) {
+  const base = ['env', `HOME=${matrixHome}`, `GH_CONFIG_DIR=${ghConfigDir}`, 'gh', 'api'];
+  const view = runAsMatrix([...base, `repos/${repository}`, '--jq', '.default_branch']);
+  const viewKind = classify(view);
+  if (viewKind !== 'allowed') {
+    return { kind: viewKind, detail: firstLine(view.stderr || view.stdout) };
+  }
+  const branch = (view.stdout ?? '').trim() || 'main';
+  // Deliberately invalid head branch: an authorized token gets a validation
+  // (422) response and no pull request is created; an unauthorized one gets
+  // 403/404. This is the only way to prove write authorization without state.
+  const probe = runAsMatrix([
+    ...base,
+    '-X',
+    'POST',
+    `repos/${repository}/pulls`,
+    '-f',
+    'title=m5b-isolation-scope-probe',
+    '-f',
+    'head=__m5b_scope_probe_missing_branch__',
+    '-f',
+    `base=${branch}`,
+  ]);
+  if (probe.status === 0) {
+    return { kind: 'created', detail: 'the write probe unexpectedly succeeded' };
+  }
+  const text = `${probe.stdout}\n${probe.stderr}`;
+  if (/HTTP 42[0-9]|Validation Failed|no commits between|invalid/i.test(text)) {
+    return { kind: 'allowed', detail: 'write authorization confirmed by a validation response' };
+  }
+  return { kind: classify(probe), detail: firstLine(text) };
+}
+
+function scopeProbes(identity) {
   if (!online) {
     record('scope', 'online-probes', 'SKIP', 'run with --online to check repository reach');
     return;
   }
-  const check = (label, args, expectedOk) => {
-    const result = spawnSync(args[0], args.slice(1), { encoding: 'utf8', timeout: 30000 });
-    const ok = result.status === 0;
-    const pass = expectedOk ? ok : !ok;
-    const detail = ok
-      ? 'reachable'
-      : `denied (${(result.stderr || result.stdout || '').split('\n')[0].slice(0, 120)})`;
-    record('scope', label, pass ? 'PASS' : 'FAIL', redact(detail));
-  };
+  if (!identity) {
+    record('scope', 'online-probes', 'INCOMPLETE', 'identity does not exist');
+    return;
+  }
+  const sshInstalled =
+    existsSync(sshKey) &&
+    existsSync(join(matrixHome, '.ssh', 'probe_deploy')) &&
+    existsSync(join(matrixHome, '.ssh', 'config'));
+  const ghConfigured = existsSync(join(ghConfigDir, 'hosts.yml'));
+  if (!sshInstalled || !ghConfigured) {
+    record(
+      'scope',
+      'online-probes',
+      'INCOMPLETE',
+      `dedicated probe credentials are incomplete (ssh_installed=${sshInstalled}, gh_config=${ghConfigured}); refusing to probe with shared credentials`,
+    );
+    return;
+  }
   for (const repository of probeRepositories) {
-    check(
-      `git:${repository}`,
-      [
-        '-u',
-        userName,
-        '--',
-        'env',
-        `HOME=${matrixHome}`,
-        'git',
-        'ls-remote',
-        '--heads',
-        `ssh://git@ssh.github.com:443/${repository}.git`,
-      ],
-      true,
+    const git = gitWriteProbe(repository);
+    record(
+      'scope',
+      `git-push-dry-run:${repository}`,
+      git.kind === 'allowed' ? 'PASS' : git.kind === 'denied' ? 'FAIL' : 'INCOMPLETE',
+      `${git.kind} — ${git.detail}`,
+    );
+    const gh = ghWriteProbe(repository);
+    record(
+      'scope',
+      `gh-write-probe:${repository}`,
+      gh.kind === 'allowed' ? 'PASS' : gh.kind === 'denied' ? 'FAIL' : 'INCOMPLETE',
+      `${gh.kind} — ${gh.detail}`,
     );
   }
-  check(
-    `git:${forbiddenRepository} (must be denied)`,
-    'runuser',
-    [
-      '-u',
-      userName,
-      '--',
-      'env',
-      `HOME=${matrixHome}`,
-      'git',
-      'ls-remote',
-      '--heads',
-      `ssh://git@ssh.github.com:443/${forbiddenRepository}.git`,
-    ],
-    false,
+  const forbiddenGit = gitWriteProbe(forbiddenRepository);
+  record(
+    'scope',
+    `git-push-dry-run:${forbiddenRepository} (must be denied)`,
+    forbiddenGit.kind === 'denied'
+      ? 'PASS'
+      : forbiddenGit.kind === 'allowed'
+        ? 'FAIL'
+        : 'INCOMPLETE',
+    `${forbiddenGit.kind} — ${forbiddenGit.detail}`,
   );
-  for (const repository of probeRepositories) {
-    check(
-      `gh:${repository}`,
-      [
-        '-u',
-        userName,
-        '--',
-        'env',
-        `HOME=${matrixHome}`,
-        `GH_CONFIG_DIR=${ghConfigDir}`,
-        'gh',
-        'api',
-        `repos/${repository}`,
-        '--jq',
-        '.full_name',
-      ],
-      true,
-    );
-  }
-  check(
-    `gh:${forbiddenRepository} (must be denied)`,
-    'runuser',
-    [
-      '-u',
-      userName,
-      '--',
-      'env',
-      `HOME=${matrixHome}`,
-      `GH_CONFIG_DIR=${ghConfigDir}`,
-      'gh',
-      'api',
-      `repos/${forbiddenRepository}`,
-      '--jq',
-      '.full_name',
-    ],
-    false,
+  const forbiddenGh = ghWriteProbe(forbiddenRepository);
+  record(
+    'scope',
+    `gh-write-probe:${forbiddenRepository} (must be denied)`,
+    forbiddenGh.kind === 'denied' ? 'PASS' : forbiddenGh.kind === 'allowed' ? 'FAIL' : 'INCOMPLETE',
+    `${forbiddenGh.kind} — ${forbiddenGh.detail}`,
   );
 }
 
@@ -274,11 +387,10 @@ function layoutAudit(identity) {
     facts.exists && facts.uid === 0 ? 'PASS' : 'FAIL',
     `owner=${facts.uid ?? 'missing'} mode=${facts.mode ?? 'missing'}`,
   );
-  const privileged = [
-    { name: 'protected', path: layout.protectedDir, wantPrivate: true },
-    { name: 'config', path: layout.configDir, wantPrivate: false },
-  ];
-  for (const entry of privileged) {
+  for (const entry of [
+    { name: 'protected', path: layout.protectedDir },
+    { name: 'config', path: layout.configDir },
+  ]) {
     const dir = describePath(entry.path);
     record(
       'run-layout',
@@ -287,11 +399,8 @@ function layoutAudit(identity) {
       dir.exists ? `owner=${dir.uid} mode=${dir.mode}` : 'absent (created by stack.sh)',
     );
   }
-  // The pre-guard layout wrote privileged files into the matrix-owned run root.
-  const legacySecrets = ['supervisor-token', 'seed.env', 'state.env'];
-  for (const name of legacySecrets) {
-    const path = join(layout.run, name);
-    const file = describePath(path);
+  for (const name of ['supervisor-token', 'seed.env', 'state.env']) {
+    const file = describePath(join(layout.run, name));
     record(
       'run-layout',
       `legacy-secret:${name}`,
@@ -301,12 +410,11 @@ function layoutAudit(identity) {
         : 'absent',
     );
   }
-  const credentialsDir = layout.credentialsDir;
   let credentialCount = 0;
-  if (existsSync(credentialsDir)) {
+  if (existsSync(layout.credentialsDir)) {
     try {
-      credentialCount = readdirSync(credentialsDir).filter((entry) =>
-        statSync(join(credentialsDir, entry)).isFile(),
+      credentialCount = readdirSync(layout.credentialsDir).filter((entry) =>
+        statSync(join(layout.credentialsDir, entry)).isFile(),
       ).length;
     } catch {
       credentialCount = -1;
@@ -346,17 +454,17 @@ if (identity) {
     'identity does not exist; run prepare-nonroot.sh --apply',
   );
 }
-const host = hostAudit(identity);
+const host = gate ? null : hostAudit(identity);
 const credentials = identity ? credentialAudit(identity) : null;
-scopeProbes();
-layoutAudit(identity);
+scopeProbes(identity);
+if (!gate) layoutAudit(identity);
 
 const summary = {
   recorded: startedAt,
+  mode: gate ? 'gate' : online ? 'online' : 'local',
   host,
-  credentials,
-  user: userName,
   identity,
+  credentials,
   sshKey,
   ghConfigDir,
   probeRepositories,
@@ -371,7 +479,7 @@ if (json) {
 } else {
   console.log('# M5-B matrix isolation precheck');
   console.log(`recorded=${startedAt}`);
-  console.log(`host=${hostname()} user=${userName}`);
+  console.log(`host=${hostname()} user=${userName} mode=${summary.mode}`);
   console.log(`matrix_home=${matrixHome}`);
   console.log(`ssh_key=${sshKey}`);
   console.log(`gh_config=${ghConfigDir}`);
@@ -390,9 +498,9 @@ if (json) {
   console.log('');
   if (findings.length > 0) {
     console.log('verdict=violated');
-    console.log('findings:');
-    for (const finding of findings)
+    for (const finding of findings) {
       console.log(`  - ${finding.section}/${finding.name}: ${finding.detail}`);
+    }
   } else if (incomplete.length > 0) {
     console.log('verdict=incomplete');
     for (const entry of incomplete)
@@ -403,4 +511,4 @@ if (json) {
 }
 
 if (summary.verdict === 'violated') process.exitCode = 1;
-else if (summary.verdict === 'incomplete') process.exitCode = 2;
+else if (summary.verdict === 'incomplete') process.exitCode = gate ? 1 : 2;

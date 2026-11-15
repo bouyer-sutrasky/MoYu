@@ -99,6 +99,7 @@ export const DEFAULT_LAYOUT = Object.freeze({
   protected: 'protected',
   config: 'config',
   scratch: 'tmp',
+  control: 'control',
   credentials: 'credentials',
   instanceEnv: 'instance-env',
   instanceLogs: 'instance-logs',
@@ -594,13 +595,24 @@ export function assertDedicatedGhConfig({
   if (!hostsStat.isFile()) fail(`the matrix gh hosts file is missing: ${hosts}`);
   if ((modeOf(hostsStat) & 0o022) !== 0) fail(`the matrix gh hosts file is group/other writable`);
   const text = readFileSync(hosts, 'utf8');
-  if (!/^\s*oauth_token:\s*\S+/m.test(text)) {
+  const tokenMatch = text.match(/^\s*oauth_token:\s*(\S+)/m);
+  if (!tokenMatch) {
     fail(`the matrix gh hosts file carries no token: ${hosts}`);
   }
+  const digest = createHash('sha256').update(tokenMatch[1]).digest('hex');
   for (const hostConfig of hostConfigDirs) {
     if (isInside(hostConfig, hosts)) fail(`the matrix gh hosts file is the shared one: ${hosts}`);
+    const sharedHosts = join(resolve(hostConfig), 'hosts.yml');
+    if (!existsSync(sharedHosts)) continue;
+    const shared = readFileSync(sharedHosts, 'utf8').match(/^\s*oauth_token:\s*(\S+)/m);
+    if (!shared) continue;
+    if (createHash('sha256').update(shared[1]).digest('hex') === digest) {
+      fail(
+        `the matrix gh config reuses the shared token from ${sharedHosts}; provision a probe-only token`,
+      );
+    }
   }
-  return { path: target, hosts, tokenPresent: true };
+  return { path: target, hosts, tokenPresent: true, tokenSha256: digest.slice(0, 16) };
 }
 
 /**
@@ -641,6 +653,7 @@ export function layoutFor(runDir, env = process.env) {
     protectedDir: pick('M5B_MATRIX_PROTECTED', DEFAULT_LAYOUT.protected),
     configDir: pick('M5B_MATRIX_CONFIG', DEFAULT_LAYOUT.config),
     scratchDir: pick('M5B_MATRIX_TMP', DEFAULT_LAYOUT.scratch),
+    controlDir: pick('M5B_MATRIX_CONTROL', DEFAULT_LAYOUT.control),
     credentialsDir: pick('M5B_MATRIX_CREDENTIALS', DEFAULT_LAYOUT.credentials),
     instanceEnvDir: pick('M5B_MATRIX_INSTANCE_ENV', DEFAULT_LAYOUT.instanceEnv),
     instanceLogsDir: pick('M5B_MATRIX_INSTANCE_LOGS', DEFAULT_LAYOUT.instanceLogs),
@@ -688,8 +701,13 @@ export function prepareLayout(runDir, user, env = process.env) {
     gid: user.gid,
     mode: SHARED_CONFIG_DIR_MODE,
   });
-  prepareDir(layout.run, layout.stageDir, { uid: rootUid, mode: PRIVATE_DIR_MODE });
+  prepareDir(layout.run, layout.stageDir, {
+    uid: rootUid,
+    gid: user.gid,
+    mode: SHARED_CONFIG_DIR_MODE,
+  });
   prepareDir(layout.run, layout.logsDir, { uid: rootUid, mode: RUN_ROOT_MODE });
+  prepareDir(layout.run, layout.controlDir, { uid: rootUid, mode: RUN_ROOT_MODE });
   for (const dir of [
     layout.scratchDir,
     layout.credentialsDir,
@@ -707,11 +725,11 @@ export function checkLayout(runDir, user, env = process.env) {
   const layout = layoutFor(runDir, env);
   const rootUid = process.getuid();
   const run = prepareRunRoot(layout.run, { uid: rootUid, adoptUids: [rootUid, user.uid] });
-  for (const dir of [layout.protectedDir, layout.stageDir]) {
-    assertSecuredDir(dir, { uid: rootUid });
-  }
+  assertSecuredDir(layout.protectedDir, { uid: rootUid });
+  assertSecuredDir(layout.stageDir, { uid: rootUid, allowGroupRead: true });
   assertSecuredDir(layout.configDir, { uid: rootUid, allowGroupRead: true });
   prepareDir(layout.run, layout.logsDir, { uid: rootUid, mode: RUN_ROOT_MODE });
+  prepareDir(layout.run, layout.controlDir, { uid: rootUid, mode: RUN_ROOT_MODE });
   for (const dir of [
     layout.scratchDir,
     layout.credentialsDir,

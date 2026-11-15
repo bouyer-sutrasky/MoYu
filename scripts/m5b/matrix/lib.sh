@@ -61,6 +61,9 @@ export M5B_MATRIX_WORKTREES=${M5B_MATRIX_WORKTREES:-$M5B_MATRIX_RUN/worktrees}
 export M5B_MATRIX_SUPERVISOR_TOKEN_FILE=$M5B_MATRIX_PROTECTED/supervisor-token
 export M5B_MATRIX_SEED_FILE=$M5B_MATRIX_PROTECTED/seed.env
 export M5B_MATRIX_STATE=${M5B_MATRIX_STATE:-$M5B_MATRIX_PROTECTED/state.env}
+export M5B_MATRIX_CONTROL=${M5B_MATRIX_CONTROL:-$M5B_MATRIX_RUN/control}
+export M5B_MATRIX_LOWPRIV=${M5B_MATRIX_LOWPRIV:-$M5B_MATRIX_DIR/lowpriv.mjs}
+export M5B_MATRIX_SSH_HOME=${M5B_MATRIX_SSH_HOME:-/home/$M5B_MATRIX_USER}
 export M5B_MATRIX_INSTANCES_JSON=${M5B_MATRIX_INSTANCES_JSON:-$M5B_MATRIX_CONFIG/instances.json}
 # Dedicated, probe-only credentials. The host agent key and the shared
 # /root/.config/gh-agent token are refused by the guard.
@@ -94,6 +97,16 @@ m5b_run_redacted() {
 
 m5b_guard() {
   node "$M5B_MATRIX_DIR/guard.mjs" "$@"
+}
+
+# Every write below a directory the test identity owns goes through this helper,
+# executed as that identity: a root write would follow a pre-created symlink.
+m5b_lowpriv() {
+  node "$M5B_MATRIX_LOWPRIV" "$@"
+}
+
+m5b_lifecycle() {
+  node "$M5B_MATRIX_DIR/lifecycle.mjs" "$@"
 }
 
 m5b_prepare_run() {
@@ -186,3 +199,8 @@ m5b_slice_facts() {
   echo "  memory.swap.max=$(cat "$path/memory.swap.max" 2>/dev/null || echo missing)"
   echo "host_mem_available_kb=$(awk '/MemAvailable/{print $2}' /proc/meminfo)"
 }
+
+# shellcheck source=scripts/m5b/matrix/ssh-material.sh
+source "$M5B_MATRIX_DIR/ssh-material.sh"
+# shellcheck source=scripts/m5b/matrix/stage.sh
+source "$M5B_MATRIX_DIR/stage.sh"

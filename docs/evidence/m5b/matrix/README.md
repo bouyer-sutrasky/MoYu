@@ -53,7 +53,12 @@ before/after。它只授予**读/遍历**权限；`/root/.dsh-m5`、`/root/.conf
 | `/tmp/m5bmatrix` | root 0755 | 运行根，测试身份不能改名/替换条目 |
 | `protected/` | root 0700 | supervisor token、seeded 会话 token、`state.env` |
 | `config/` | root:matrix 0750 | `instances.json`（supervisor 只读） |
-| `tmp/ credentials/ instance-env/ dsh-home/ ...` | m5bmatrix 0700 | provider/worker 交互文件、Bridge 凭据、暂存 home |
+| `stage/` | root:matrix 0750 | root 生成的 profile 暂存树；测试身份只读，复制进自己的 home |
+| `control/` | root 0755 | root 写给 provider 的 fixture（report/delay/sleep/open-pr/mem/alloc） |
+| `tmp/ credentials/ instance-env/ dsh-home/ ...` | m5bmatrix 0700 | provider 输出、Bridge 凭据、暂存 home；写入/清理都以该身份执行 |
+
+低权树内的写入、chmod 和删除一律经 `scripts/m5b/matrix/lowpriv.mjs` 以 `m5bmatrix` 身份执行，
+root 不跟随测试身份预置的链接（`install_ssh_material`/`stage_profile_tree` 同源修复）。
 
 测试身份的仓库凭据与 gh 凭据都是**专用且仅授权探测仓库**的（`M5B_MATRIX_SSH_KEY`、
 `M5B_MATRIX_GH_CONFIG_DIR`）；`guard audit-credentials` 会拒绝宿主 agent key 的副本（含改名）
@@ -94,8 +99,10 @@ before/after。它只授予**读/遍历**权限；`/root/.dsh-m5`、`/root/.conf
   （root:root 0600）安装为 `/home/m5bmatrix/.ssh/probe_deploy`（0600），并配置
   `ssh-keyscan -p 443 ssh.github.com` 的 `known_hosts`；该 key 只应加入探测仓库。
   gh 走 `/root/.config/m5bmatrix/gh`（0750 root:matrix，`hosts.yml` 0640），由
-  `scripts/m5b/matrix/gh-m5b.sh` 固定 `HOME`/`GH_CONFIG_DIR` 使用。
-  不再复制 `/root/.ssh/sa_agent2`；`prepare-nonroot.sh --revoke` 会删除旧副本。
-  现场范围用 `node scripts/m5b/matrix/precheck.mjs --online` 验证（探测仓库可达、MoYu 被拒）。
+  `scripts/m5b/matrix/gh-m5b.sh` 固定 `HOME`/`GH_CONFIG_DIR` 并 unset `GH_TOKEN`/`GITHUB_TOKEN`
+  等覆盖变量；不再复制 `/root/.ssh/sa_agent2`，`prepare-nonroot.sh --revoke` 会删除旧副本。
+- **启动 gate**：`stack.sh up` 在起任何单元前运行 `precheck.mjs --gate --online`，用
+  `git push --dry-run` 和“非法 head 的 PR 创建请求（422=有写权限，无副作用）”证明探测仓库可写、
+  MoYu 被拒；缺凭据或范围不符直接失败。
 - 构建测试进程用 `/opt/moyu-node24`，该目录组只读；不安装/不升级任何包。
 这两项都只给 `m5bmatrix` 组，退役时可用脚本打印的原始 group/mode 回退。

@@ -17,7 +17,7 @@ RUN=$M5B_MATRIX_RUN
 SLICE=$M5B_MATRIX_SLICE_PATH
 CGROOT=$M5B_MATRIX_CGROUP_ROOT
 LIVE="node $M5B_MATRIX_ROOT/scripts/m5b/matrix/live.mjs"
-SLEEP_FILE="$M5B_MATRIX_TMP/worker-sleep.txt"
+SLEEP_FILE="$M5B_MATRIX_CONTROL/worker-sleep.txt"
 
 fail() {
   echo "FAIL: $*"
@@ -91,8 +91,7 @@ echo "## start a long turn that really spawns background children"
 # The provider answers the worker's turn with `sh -c 'sleep N & sleep N & wait'`,
 # so the runtime owns two real descendants, not just a node process.
 echo 900 >"$SLEEP_FILE"
-chown "$M5B_MATRIX_USER:$M5B_MATRIX_GROUP" "$SLEEP_FILE" 2>/dev/null || true
-chmod 0640 "$SLEEP_FILE"
+chmod 0644 "$SLEEP_FILE"
 if tree_cmdlines | grep -q 'sleep 900'; then
   echo "a long turn with real children is already running; reusing it"
   TICKET=$(ps -eo pid,cmd 2>/dev/null | awk '/[s]leep 900/{print $1; exit}')

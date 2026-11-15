@@ -35,9 +35,43 @@ RUN=$M5B_MATRIX_RUN
 PGDATA="$RUN/pgdata"
 PROVIDER_LOG="$M5B_MATRIX_TMP/local-provider.jsonl"
 
+cleanup_failed_up() {
+  echo "!! up failed; stopping units and removing run secrets" >&2
+  local unit
+  local args=(--user "$M5B_MATRIX_USER" --protected "$M5B_MATRIX_PROTECTED"
+    --credentials "$M5B_MATRIX_CREDENTIALS" --instance-env "$M5B_MATRIX_INSTANCE_ENV"
+    --cgroup-root "$M5B_MATRIX_CGROUP_ROOT")
+  for unit in "${ALL_UNITS[@]}" "$ANCHOR"; do
+    args+=(--unit "$unit")
+  done
+  m5b_lifecycle cleanup-failed-up "${args[@]}" \
+    || echo "!! cleanup verification FAILED: see the leftover list above" >&2
+}
+
 fail() {
-  echo "FAIL: $*" >&2
+  local message=$*
+  echo "FAIL: ${message}" >&2
+  if [[ ${M5B_MATRIX_UP_ACTIVE:-0} == 1 ]]; then
+    M5B_MATRIX_UP_ACTIVE=0
+    cleanup_failed_up
+  fi
   exit 1
+}
+
+# A deterministic failure point for the cleanup regression (never in normal runs).
+maybe_inject_failure() {
+  if [[ ${M5B_MATRIX_INJECT_FAILURE:-} == "$1" ]]; then
+    fail "injected failure after step: $1"
+  fi
+}
+
+# The credentials actually used by the services must reach only the probe
+# repositories. This runs with the same dedicated key/config the units receive.
+scope_gate() {
+  note "verifying probe-only credential scope before starting the stack"
+  m5b_run node "$HERE/precheck.mjs" --gate --online --user "$M5B_MATRIX_USER" \
+    --run "$RUN" --ssh-key "$M5B_MATRIX_SSH_KEY" --gh-config "$M5B_MATRIX_GH_CONFIG_DIR" \
+    || fail "the probe credential scope gate did not pass"
 }
 
 note() {
@@ -79,11 +113,17 @@ reset_owned_state() {
     [[ -d $dir ]] || continue
     m5b_clean_owned "$dir" || fail "could not clean $dir"
   done
-  # Staging is root-owned and rebuilt from the read-only profile source.
+  # Staging is root-owned (never handed to the identity) and rebuilt from the
+  # read-only profile source.
   if [[ -d $M5B_MATRIX_STAGE ]]; then
     rm -rf "${M5B_MATRIX_STAGE:?}"
     mkdir -p "$M5B_MATRIX_STAGE"
-    chmod 0700 "$M5B_MATRIX_STAGE"
+    chgrp "$M5B_MATRIX_GROUP" "$M5B_MATRIX_STAGE"
+    chmod 0750 "$M5B_MATRIX_STAGE"
+  fi
+  # Root->identity control inputs are root-owned; the identity can only read.
+  if [[ -d $M5B_MATRIX_CONTROL ]]; then
+    find "$M5B_MATRIX_CONTROL" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
   fi
 }
 
@@ -246,9 +286,9 @@ start_provider() {
   note "starting the loopback test provider"
   # A stale file owned by another user makes the provider's own writes fail; the
   # scratch directory is verified and emptied before the unit starts.
-  rm -f "$PROVIDER_LOG" "$M5B_MATRIX_TMP/provider-prompts.jsonl" \
-    "$M5B_MATRIX_TMP/open-pr.txt" "$M5B_MATRIX_TMP/pr-number.txt" \
-    "$M5B_MATRIX_TMP/worker-mem.txt" "$M5B_MATRIX_TMP/provider-alloc.txt"
+  m5b_lowpriv remove --user "$M5B_MATRIX_USER" --root "$M5B_MATRIX_TMP" \
+    --path "$PROVIDER_LOG" --path "$M5B_MATRIX_TMP/provider-prompts.jsonl" \
+    >/dev/null || true
   m5b_run systemd-run --unit="${PROV_UNIT%.service}" --slice="$SLICE" \
     --uid="$M5B_MATRIX_USER" --gid="$M5B_MATRIX_GROUP" \
     --property=MemoryMax=512M --property=MemorySwapMax=0 \
@@ -256,13 +296,13 @@ start_provider() {
     --setenv=LOCAL_PROVIDER_LOG="$PROVIDER_LOG" \
     ${M5B_MATRIX_PROVIDER_DUMP:+--setenv=LOCAL_PROVIDER_DUMP="$M5B_MATRIX_TMP/provider-prompts.jsonl"} \
     --setenv=LOCAL_PROVIDER_WORKER_REPORT="${M5B_MATRIX_WORKER_REPORT:-}" \
-    --setenv=LOCAL_PROVIDER_WORKER_REPORT_FILE="$M5B_MATRIX_TMP/worker-report.json" \
-    --setenv=LOCAL_PROVIDER_WORKER_SLEEP_FILE="$M5B_MATRIX_TMP/worker-sleep.txt" \
-    --setenv=LOCAL_PROVIDER_WORKER_DELAY_FILE="$M5B_MATRIX_TMP/worker-delay.txt" \
-    --setenv=LOCAL_PROVIDER_WORKER_OPEN_PR_FILE="$M5B_MATRIX_TMP/open-pr.txt" \
-    --setenv=LOCAL_PROVIDER_PR_NUMBER_FILE="$M5B_MATRIX_TMP/pr-number.txt" \
-    --setenv=LOCAL_PROVIDER_WORKER_MEM_FILE="$M5B_MATRIX_TMP/worker-mem.txt" \
-    --setenv=LOCAL_PROVIDER_ALLOCATE_MB_FILE="$M5B_MATRIX_TMP/provider-alloc.txt" \
+    --setenv=LOCAL_PROVIDER_WORKER_REPORT_FILE="$M5B_MATRIX_CONTROL/worker-report.json" \
+    --setenv=LOCAL_PROVIDER_WORKER_SLEEP_FILE="$M5B_MATRIX_CONTROL/worker-sleep.txt" \
+    --setenv=LOCAL_PROVIDER_WORKER_DELAY_FILE="$M5B_MATRIX_CONTROL/worker-delay.txt" \
+    --setenv=LOCAL_PROVIDER_WORKER_OPEN_PR_FILE="$M5B_MATRIX_CONTROL/open-pr.txt" \
+    --setenv=LOCAL_PROVIDER_PR_NUMBER_FILE="$M5B_MATRIX_CONTROL/pr-number.txt" \
+    --setenv=LOCAL_PROVIDER_WORKER_MEM_FILE="$M5B_MATRIX_CONTROL/worker-mem.txt" \
+    --setenv=LOCAL_PROVIDER_ALLOCATE_MB_FILE="$M5B_MATRIX_CONTROL/provider-alloc.txt" \
     --working-directory="$M5B_MATRIX_ROOT" \
     /usr/bin/node scripts/m5b/local-provider.mjs >/dev/null \
     || fail "could not start the local test provider"
@@ -325,85 +365,10 @@ stage_dsh_home() {
   local staged=${1:-$M5B_MATRIX_PROFILE}
   local port=${2:-3404}
   note "staging the runtime profile $staged (webserver port $port) into a matrix-owned harness home"
-  local stage="$M5B_MATRIX_STAGE/profiles/$staged"
-  local dst="$M5B_MATRIX_DSH_HOME/profiles/$staged"
-  rm -rf "${stage:?}"
-  mkdir -p "$stage/node_modules"
-  local file
-  for file in package.json cordis.patch.yml cordis.yml; do
-    [[ -f $M5B_MATRIX_PROFILE_SOURCE/$file ]] && cp "$M5B_MATRIX_PROFILE_SOURCE/$file" "$stage/$file"
-  done
-  ln -sfn "$M5B_MATRIX_UPSTREAM_BUILD" "$stage/node_modules/dsh-superagent"
-  # The staged profile must point its state at this harness home; the supervisor
-  # verifies that exact path before it reports the instance online.
-  # Each profile needs its own webserver port: two runtimes cannot bind one port,
-  # and the supervisor passes the port it recorded for the instance.
-  sed -i "/^- id: webserver/{n;n;n;s#^    port: .*#    port: $port#}" "$stage/cordis.patch.yml"
-  sed -i "s#^    stateDir: .*#    stateDir: $M5B_MATRIX_DSH_HOME/state/$staged#" \
-    "$stage/cordis.patch.yml"
-  grep -n "stateDir:" "$stage/cordis.patch.yml"
-  # The isolated matrix runs on the loopback provider only. This fixture is
-  # applied to the staged copy, so the shared m5b profile stays untouched:
-  #  - `local-test` gains reasoning efforts (the supervisor always asks the eval
-  #    model for reasoningEffort "low");
-  #  - the orchestrator's default model is the loopback model, so a candidate is
-  #    decided by the deterministic provider instead of an external one;
-  #  - the external provider is removed, so no request can leave the host.
-  m5b_run python3 - "$stage/cordis.patch.yml" <<'PYEOF'
-import re, sys
-path = sys.argv[1]
-text = open(path).read()
-text = text.replace(
-    """          - id: local-test
-            name: Local Test
-            contextWindow: 32768
-            maxTokens: 4096""",
-    """          - id: local-test
-            name: Local Test
-            contextWindow: 32768
-            maxTokens: 4096
-            reasoningEfforts:
-              off: null
-              low: low
-              high: high""",
-)
-text = text.replace(
-    """- id: agent-default-model
-  config:
-    provider: commandcode
-    model: deepseek/deepseek-v4.1-flash""",
-    """- id: agent-default-model
-  config:
-    provider: local-test
-    model: local-test""",
-)
-text = re.sub(r"      commandcode:\n(?:        .*\n)+", "", text)
-open(path, "w").write(text)
-PYEOF
-  # The runtime resolves `LOCAL_TEST_API_KEY` from its own credential store, so the
-  # fixture key lives in the staged harness home, never in the shared one.
-  printf 'version: 1\nrefs:\n  LOCAL_TEST_API_KEY: local-test-dummy\n' >"$M5B_MATRIX_STAGE/.credentials.yaml"
-  grep -n "provider: local-test\|reasoningEfforts\|commandcode" "$stage/cordis.patch.yml" | head -6
-  # Root hands the staged tree to the matrix identity. From here the copy into
-  # the matrix-owned home runs *as that identity*, so a replaced path in a
-  # writable directory can only affect matrix-owned files.
-  chown -R "$M5B_MATRIX_USER:$M5B_MATRIX_GROUP" "$M5B_MATRIX_STAGE"
-  chmod 0600 "$M5B_MATRIX_STAGE/.credentials.yaml"
-  m5b_run runuser -u "$M5B_MATRIX_USER" -- bash -c '
-    set -euo pipefail
-    dsh=$1
-    stage=$2
-    profile=$3
-    mkdir -p "$dsh/profiles" "$dsh/state" "$dsh/sessions"
-    rm -rf -- "$dsh/profiles/${profile:?}"
-    cp -a -- "$stage/profiles/$profile" "$dsh/profiles/$profile"
-    cp -a -- "$stage/.credentials.yaml" "$dsh/.credentials.yaml"
-    chmod 0700 "$dsh" "$dsh/profiles" "$dsh/state" "$dsh/sessions" "$dsh/profiles/$profile"
-    chmod 0600 "$dsh/.credentials.yaml"
-  ' _ "$M5B_MATRIX_DSH_HOME" "$M5B_MATRIX_STAGE" "$staged" \
+  stage_profile_tree "$staged" "$port" "$M5B_MATRIX_PROFILE_SOURCE" "$M5B_MATRIX_UPSTREAM_BUILD" \
+    "$M5B_MATRIX_STAGE" "$M5B_MATRIX_DSH_HOME" "$M5B_MATRIX_USER" "$M5B_MATRIX_GROUP" \
     || fail "the matrix identity could not stage profile $staged"
-  echo "dsh_home=$M5B_MATRIX_DSH_HOME owner=$(stat -c %U:%G "$M5B_MATRIX_DSH_HOME")"
-  echo "profile=$dst -> $(readlink "$dst/node_modules/dsh-superagent")"
+  echo "profile=$M5B_MATRIX_DSH_HOME/profiles/$staged -> $(readlink "$M5B_MATRIX_DSH_HOME/profiles/$staged/node_modules/dsh-superagent")"
 }
 
 start_supervisor() {
@@ -613,10 +578,16 @@ case ${1:-} in
     down
     prepare_environment
     reset_owned_state
+    scope_gate
+    M5B_MATRIX_UP_ACTIVE=1
     start_slice
+    maybe_inject_failure start_slice
     start_postgres
+    maybe_inject_failure start_postgres
     migrate_and_seed
+    maybe_inject_failure migrate_and_seed
     start_provider
+    maybe_inject_failure start_provider
     write_instances_config
     stage_dsh_home
     extra_profile=''
@@ -628,10 +599,15 @@ case ${1:-} in
       index=$((index + 1))
     done
     start_supervisor
+    maybe_inject_failure start_supervisor
     start_api
+    maybe_inject_failure start_api
     start_runtime
+    maybe_inject_failure start_runtime
     start_dispatcher
+    maybe_inject_failure start_dispatcher
     write_state
+    M5B_MATRIX_UP_ACTIVE=0
     note "stack is up"
     status
     ;;

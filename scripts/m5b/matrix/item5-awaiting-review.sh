@@ -19,8 +19,8 @@ source "$HERE/lib.sh"
 
 RUN=$M5B_MATRIX_RUN
 FIXTURE_REPO=${M5B_MATRIX_FIXTURE_REPO:-Bouyer12/m5a-beta-adf10ad9}
-OPEN_PR_FILE="$M5B_MATRIX_TMP/open-pr.txt"
-PR_NUMBER_FILE="$M5B_MATRIX_TMP/pr-number.txt"
+OPEN_PR_FILE="$M5B_MATRIX_CONTROL/open-pr.txt"
+PR_NUMBER_FILE="$M5B_MATRIX_CONTROL/pr-number.txt"
 LIVE="node $M5B_MATRIX_ROOT/scripts/m5b/matrix/live.mjs"
 
 fail() {
@@ -66,13 +66,12 @@ echo
 
 echo "## the worker fixture: push its ticket branch"
 echo "script=scripts/m5b/matrix/fixture-open-pr.sh (push only; the PR is opened by the harness)"
+# Root writes the fixture pointer in its own control directory; the provider
+# reads it. pr-number is written by the provider (matrix identity); root only
+# removes a stale entry as that identity, never by writing/chmod-ing it.
 printf '%s\n' "$M5B_MATRIX_ROOT/scripts/m5b/matrix/fixture-open-pr.sh" >"$OPEN_PR_FILE"
-chown "$M5B_MATRIX_USER:$M5B_MATRIX_GROUP" "$OPEN_PR_FILE"
-chmod 0640 "$OPEN_PR_FILE"
+chmod 0644 "$OPEN_PR_FILE"
 rm -f "$PR_NUMBER_FILE"
-: >"$PR_NUMBER_FILE"
-chown "$M5B_MATRIX_USER:$M5B_MATRIX_GROUP" "$PR_NUMBER_FILE"
-chmod 0660 "$PR_NUMBER_FILE"
 echo "open_pr_fixture=$(cat "$OPEN_PR_FILE")"
 echo
 
