@@ -785,9 +785,14 @@ export async function maintainLeases(
   bridge: RuntimeBridgeClient,
   logger: DispatcherLogger,
 ): Promise<void> {
-  // Release only confirmed-safe states. `blocked`/`stopping`/`failed` keep the
+  // Release only confirmed-safe states. `blocked`/`stopping` keep the
   // generation until a stop proof exists; a queued/running owner command also
   // keeps the slot so a maintenance pass cannot free a resume/retry admission.
+  // `failed` is terminal: the runtime has already ended the assignment, so the
+  // worker cannot still be running. Keeping its lease was a permanent wedge —
+  // one failed task made the repository unable to execute again, because
+  // recovery_state never reaches 'recovered' and every later delivery waited
+  // on `execution_slot` forever.
   await pool.query(
     `update runtime_leases l
         set state = 'released', released_at = now(), heartbeat_at = now(),
@@ -795,7 +800,8 @@ export async function maintainLeases(
       from task_links t
      where t.runtime_lease_id = l.id and l.state = 'active'
        and l.repository_id = $1
-       and (t.state::text in ('waiting_input', 'awaiting_review', 'completed', 'closed_unmerged')
+       and (t.state::text in ('waiting_input', 'awaiting_review', 'completed', 'closed_unmerged',
+                              'failed')
             or (t.state::text = 'stopped' and t.stopped_at is not null))
        and not exists (
          select 1 from task_operations op

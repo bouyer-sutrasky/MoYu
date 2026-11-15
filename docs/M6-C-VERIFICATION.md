@@ -76,3 +76,33 @@ production untouched.
 Settings UI port, instance settings API, Deployment adapter, home page redesign, real task
 execution, dual-entrance dedup, backup/restore, platform and plugin rollback, mobile and dark
 theme screenshots, and the live save→sleep→wake configuration replay.
+
+## 2026-11-15 18:34 (+08:00) — first real end-to-end execution
+
+The Web → API → dispatcher → Bridge → Ticket → DSH worker → Git push → PR chain was executed
+once against the isolated candidate stack (repository `Bouyer12/m5a-alpha-adf10ad9`).
+
+| step | observed |
+| --- | --- |
+| task created (web API) | conversation `942b50de…` then `1693adde-5029-458e-a309-557b7714b55b` |
+| delivery to the repository Bridge | `deliveries.state=delivered`, `upstream_trigger_id=workspace:<messageId>` |
+| ticket created by the Bridge | `253f6afcf4c2b3eaaa9e3ce3904303b2` (first attempt `80845ef8…`) |
+| worker execution | `task_links.state=running` → `completed` |
+| commit | `a3865370dfc26314264cacf3f6ca7c53082f4ea2`, author `Bouyer12 <202233540+Bouyer12@users.noreply.github.com>` |
+| pull request | `https://github.com/Bouyer12/m5a-alpha-adf10ad9/pull/6`, OPEN, non-draft, 1 addition, file `M6C-PROBE.md` |
+| file content read back from GitHub | `m6c candidate probe ok` |
+
+Two real defects were found and fixed on the way:
+
+1. **Worker had no Git identity.** The prepare command clones over
+   `ssh://git@ssh.github.com:443` and the service user had no key or `known_hosts`;
+   the first attempt failed with `Host key verification failed` and the runtime reported
+   `The prepare command failed`. Fixed for the candidate by installing a 0600 SSH identity
+   and `known_hosts` for `moyu-m6c` and verifying `git clone` as that user.
+2. **A failed task wedged the repository forever.** `maintainLeases()` released a lease only
+   for `waiting_input|awaiting_review|completed|closed_unmerged` and proven `stopped`. A task
+   that reached `failed` kept `runtime_leases.state='active'` permanently; the next delivery
+   retried with `waitingFor=execution_slot` and never progressed (observed 39 attempts), and
+   `recovery_state` never becomes `recovered`, so nothing could clear it. `failed` is terminal
+   and the runtime has already ended the assignment, so it was added to the release set.
+   After the fix the stuck lease was released and the retry delivered on the next pass.
