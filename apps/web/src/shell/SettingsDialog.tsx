@@ -241,7 +241,6 @@ export function SettingsDialog({
 
   return (
     <div className={styles.overlay} role="presentation" onMouseDown={onClose}>
-      <div className={styles.mask} aria-hidden="true" />
       <div
         ref={panelRef}
         className={styles.panel}

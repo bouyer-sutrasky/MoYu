@@ -302,12 +302,6 @@
   justify-content: center;
 }
 
-.mask {
-  position: absolute;
-  inset: 0;
-  background: color-mix(in srgb, var(--dsw-alias-label-primary) 24%, transparent);
-}
-
 .panel {
   position: relative;
   z-index: 1;
