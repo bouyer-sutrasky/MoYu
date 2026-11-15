@@ -20,6 +20,13 @@ export interface RunDispatcherOptions {
   logger?: DispatcherLogger;
 }
 
+/**
+ * Consecutive failures after which a loop's failure is a real error rather than a
+ * transient one. A supervisor restart makes every Bridge call fail for a few
+ * seconds, and reporting that at error level once per second buries real errors.
+ */
+const TRANSIENT_FAILURES = 3;
+
 async function runLoop(
   name: string,
   intervalMs: number,
@@ -27,18 +34,36 @@ async function runLoop(
   logger: DispatcherLogger,
   work: () => Promise<boolean>,
 ): Promise<void> {
+  let consecutiveFailures = 0;
   while (!signal.aborted) {
     let busy = false;
     try {
       busy = await work();
+      if (consecutiveFailures > 0) {
+        logger.info(
+          {
+            event: `dispatcher.${name}_recovered`,
+            consecutiveFailures,
+          },
+          `${name} loop recovered`,
+        );
+        consecutiveFailures = 0;
+      }
     } catch (error) {
-      logger.error(
-        {
-          event: `dispatcher.${name}_error`,
-          error: error instanceof Error ? error.message : String(error),
-        },
-        `${name} loop failed; retrying`,
-      );
+      consecutiveFailures += 1;
+      const detail = {
+        event: `dispatcher.${name}_error`,
+        consecutiveFailures,
+        error: error instanceof Error ? error.message : String(error),
+      };
+      // A bridge that is briefly unreachable while an instance restarts is a
+      // warning; only a failure that persists past the transient window is an
+      // error the operator has to act on.
+      if (consecutiveFailures < TRANSIENT_FAILURES) {
+        logger.warn(detail, `${name} loop failed; retrying`);
+      } else {
+        logger.error(detail, `${name} loop failed ${consecutiveFailures} times; retrying`);
+      }
     }
     if (!busy) {
       await delay(intervalMs, undefined, { signal }).catch(() => undefined);
