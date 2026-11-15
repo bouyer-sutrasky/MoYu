@@ -299,11 +299,43 @@ export class InstanceManager {
     return next;
   }
 
+  /**
+   * A row that still says `online` while its recorded process is gone is a lie:
+   * the runtime died (typically because a supervisor restart removed the unit
+   * cgroup). Requeue it instead of reporting an instance that no longer exists,
+   * so the panel proxy and the settings UI stop talking to a dead port and the
+   * scheduler can start it again.
+   */
+  private async requeueLostRuntime(row: InstanceRow): Promise<boolean> {
+    if (row.state !== 'online') return false;
+    if (row.pid && pidAlive(row.pid)) return false;
+    await this.store.updateInstance(row.repositoryId, {
+      state: 'sleeping',
+      desiredState: row.desiredState,
+      pid: null,
+      ownership: {},
+      reasonCode: 'instance_lost',
+      reasonDetail:
+        'The recorded runtime process is gone (for example because a supervisor restart removed its cgroup); the instance is queued to start again',
+      waitingFor: null,
+      errorCode: null,
+      errorDetail: null,
+      lastStoppedAt: null,
+    });
+    await this.store.syncRepositoryStatus(row.repositoryId, 'sleeping');
+    this.logger.warn(
+      { event: 'supervisor.instance_lost', repositoryId: row.repositoryId, pid: row.pid },
+      'recorded runtime process is gone; requeued the instance',
+    );
+    return true;
+  }
+
   private async reconcileRestart(row: InstanceRow): Promise<void> {
     let stored = storedOwnership(row);
     let snapshot = collectOwnership(row.pid ?? 0, stored);
     let live = snapshot.members;
     const rootAlive = row.pid ? pidAlive(row.pid) : false;
+    if (await this.requeueLostRuntime(row)) return;
     if (!stored.cgroup && rootAlive) {
       stored = await this.attachCgroup(row, stored);
       snapshot = collectOwnership(row.pid ?? 0, stored);
@@ -651,6 +683,8 @@ export class InstanceManager {
         const stored = storedOwnership(row);
         const snapshot = collectOwnership(row.pid ?? 0, stored);
         const live = snapshot.members;
+
+        if (await this.requeueLostRuntime(row)) continue;
 
         if (snapshot.unknown) {
           const current = (await this.store.getInstance(row.repositoryId)) ?? row;
