@@ -17,6 +17,7 @@ import { MarkdownMessage } from './markdown';
 import './markdown.css';
 import { NewTaskFromTaskDialog } from './NewTaskFromTaskDialog';
 import { NewTaskPanel } from './NewTaskPanel';
+import { WorkbenchHome } from './WorkbenchHome';
 import styles from './WorkspaceShell.module.css';
 
 type Mode = 'work' | 'chat';
@@ -55,14 +56,11 @@ interface ConversationPaneProps {
   onCancelNewTask: () => void;
   onCreatedTask: (conversation: ConversationSummary) => void;
   onSessionLost: () => void;
+  /** Every conversation of the selected repository, for the home page rows. */
+  conversations: ConversationSummary[];
+  conversationsLoading: boolean;
+  onOpenConversation: (conversationId: string) => void;
 }
-
-const STATUS_LABELS: Record<RepositorySummary['status'], string> = {
-  provisioning: '实例待准备',
-  active: '实例在线',
-  sleeping: '实例休眠',
-  error: '实例异常',
-};
 
 function DeliveryBadge({ message }: { message: Message }) {
   const delivery = message.delivery;
@@ -158,6 +156,9 @@ export function ConversationPane({
   onCancelNewTask,
   onCreatedTask,
   onSessionLost,
+  conversations,
+  conversationsLoading,
+  onOpenConversation,
 }: ConversationPaneProps) {
   if (mode === 'chat') {
     return (
@@ -236,28 +237,13 @@ export function ConversationPane({
   if (!conversation) {
     return (
       <div className={styles.conversation}>
-        <div className={styles.hero}>
-          <span className={styles.heroIcon}>
-            <Icon name="work" size={26} />
-          </span>
-          <p className={styles.heroEyebrow}>
-            {repository.fullName} · {STATUS_LABELS[repository.status]}
-          </p>
-          <h1 className={styles.heroTitle}>选择会话或新建任务</h1>
-          <p className={styles.heroLead}>
-            一个会话对应一个任务。新建任务会冻结仓库、起点分支与执行方式；发送第一条消息后才会投递给执行器。
-          </p>
-          <div className={styles.heroActions}>
-            <button type="button" className={styles.primaryButton} onClick={onNewTask}>
-              <Icon name="plus" />
-              新建任务
-            </button>
-            <button type="button" className={styles.secondaryButton} onClick={onOpenDetails}>
-              <Icon name="panel" />
-              查看右侧详情
-            </button>
-          </div>
-        </div>
+        <WorkbenchHome
+          repository={repository}
+          conversations={conversations}
+          conversationsLoading={conversationsLoading}
+          onNewTask={onNewTask}
+          onOpenConversation={onOpenConversation}
+        />
       </div>
     );
   }
