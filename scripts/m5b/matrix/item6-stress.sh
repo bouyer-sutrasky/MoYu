@@ -25,8 +25,8 @@ SLICE=$M5B_MATRIX_SLICE_PATH
 PG_URL=$M5B_MATRIX_PG_URL
 LIVE="node $M5B_MATRIX_ROOT/scripts/m5b/matrix/live.mjs"
 FILL_UNIT=m5bmatrix-stress-fill.service
-MEM_FILE="$M5B_MATRIX_TMP/worker-mem.txt"
-ALLOC_FILE="$M5B_MATRIX_TMP/provider-alloc.txt"
+MEM_FILE="$M5B_MATRIX_CONTROL/worker-mem.txt"
+ALLOC_FILE="$M5B_MATRIX_CONTROL/provider-alloc.txt"
 FILL_MB=${M5B_MATRIX_FILL_MB:-6500}
 
 cg_line() {
@@ -76,16 +76,14 @@ PGPASSWORD= psql "$PG_URL" -X -q -v ON_ERROR_STOP=1 -c "
 PG_JOB=$!
 echo "runtime: a worker turn holding 600 MiB inside the runtime's cgroup"
 echo 600 >"$MEM_FILE"
-chown "$M5B_MATRIX_USER:$M5B_MATRIX_GROUP" "$MEM_FILE" 2>/dev/null || true
-chmod 0640 "$MEM_FILE"
+chmod 0644 "$MEM_FILE"
 CREATED=$($LIVE new-task --text "Matrix item 6b: hold worker memory under load." \
   --client-request-id "item6-stress-$(date +%s)")
 TASK=$(printf '%s' "$CREATED" | python3 -c 'import json,sys;print(json.load(sys.stdin)["taskId"])')
 echo "task=${TASK}"
 echo "provider: hold 300 MiB inside the provider process"
 echo 300 >"$ALLOC_FILE"
-chown "$M5B_MATRIX_USER:$M5B_MATRIX_GROUP" "$ALLOC_FILE" 2>/dev/null || true
-chmod 0640 "$ALLOC_FILE"
+chmod 0644 "$ALLOC_FILE"
 curl -sS -m 120 -X POST "http://127.0.0.1:${M5B_MATRIX_PROVIDER_PORT}/v1/chat/completions" \
   -H 'content-type: application/json' \
   -d '{"model":"local-test","messages":[{"role":"user","content":"allocate"}]}' >/dev/null 2>&1 &

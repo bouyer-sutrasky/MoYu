@@ -6,6 +6,10 @@
 # home). It points at the dedicated, probe-only configuration, never at the
 # shared /root/.config/gh-agent token used by the host bootstrap.
 #
+# Token environment variables take precedence over hosts.yml in gh. Unset them
+# so a caller's inherited GH_TOKEN/GITHUB_TOKEN cannot replace the dedicated
+# probe-only configuration.
+unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN
 # Overrides exist for a differently laid out host; the defaults match
 # scripts/m5b/matrix/lib.sh.
 HOME=${M5B_MATRIX_GH_HOME:-/home/m5bmatrix}

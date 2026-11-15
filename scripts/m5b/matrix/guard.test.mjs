@@ -69,6 +69,9 @@ test('prepareLayout makes a root-owned run directory with a private protected ar
   assert.equal(modeOf(layout.credentialsDir), 0o700);
   assert.equal(modeOf(layout.dshHome), 0o700);
   assert.equal(lstatSync(layout.protectedDir).uid, uid);
+  assert.equal(modeOf(layout.stageDir), 0o750);
+  assert.equal(lstatSync(layout.stageDir).gid, gid);
+  assert.equal(modeOf(layout.controlDir), 0o755);
   rmSync(run, { recursive: true, force: true });
 });
 
@@ -231,6 +234,17 @@ test('refuses the shared gh config and accepts a dedicated one', () => {
   assertFails(
     () => assertDedicatedGhConfig({ configDir: shared, hostConfigDirs: [shared], uid }),
     /shared gh configuration/,
+  );
+  // A relocated, renamed copy of the shared config still carries the shared
+  // token; it must be rejected by value, not only by path.
+  const copied = join(root, 'gh-copy');
+  mkdirSync(copied, { mode: 0o750 });
+  chmodSync(copied, 0o750);
+  writeFileSync(join(copied, 'hosts.yml'), 'oauth_token: shared\n');
+  chmodSync(join(copied, 'hosts.yml'), 0o640);
+  assertFails(
+    () => assertDedicatedGhConfig({ configDir: copied, hostConfigDirs: [shared], uid }),
+    /reuses the shared token/,
   );
   const accepted = assertDedicatedGhConfig({
     configDir: dedicated,
