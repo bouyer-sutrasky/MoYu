@@ -1,0 +1,52 @@
+{
+  "origin": "https://moyu-m6c.117-72-211-55.sslip.io",
+  "startedAt": "2026-11-15T10:04:45.918Z",
+  "steps": [
+    {
+      "name": "virtual-authenticator-added",
+      "at": "2026-11-15T10:04:46.046Z",
+      "authenticatorId": "4d9064a3-f594-44b5-8225-a0250b525e69"
+    },
+    {
+      "name": "opened-setup",
+      "at": "2026-11-15T10:04:47.320Z",
+      "title": "MoYu"
+    },
+    {
+      "name": "binding-code-consumed",
+      "at": "2026-11-15T10:04:47.454Z"
+    },
+    {
+      "name": "passkey-registered",
+      "at": "2026-11-15T10:04:47.573Z",
+      "label": "m6c-candidate-2026-11-15"
+    },
+    {
+      "name": "authenticator-credentials",
+      "at": "2026-11-15T10:04:47.574Z",
+      "count": 1
+    },
+    {
+      "name": "auth-state",
+      "at": "2026-11-15T10:04:47.605Z",
+      "initialized": true,
+      "activeCredentialCount": 1,
+      "setupOpen": false,
+      "recoveryOpen": false,
+      "rpId": "moyu-m6c.117-72-211-55.sslip.io",
+      "origin": "https://moyu-m6c.117-72-211-55.sslip.io"
+    },
+    {
+      "name": "me",
+      "at": "2026-11-15T10:04:47.612Z",
+      "status": 200,
+      "owner": "MoYu Owner"
+    }
+  ],
+  "authenticated": true,
+  "cookieNames": [
+    "__Host-moyu_session"
+  ],
+  "ok": false,
+  "finishedAt": "2026-11-15T10:04:47.693Z"
+}
