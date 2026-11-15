@@ -1,14 +1,20 @@
 import { createHash, randomBytes } from 'node:crypto';
 import {
   chmodSync,
+  closeSync,
   cpSync,
   existsSync,
+  fsyncSync,
+  lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  renameSync,
   rmSync,
-  writeFileSync,
+  unlinkSync,
+  writeSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 
 import type { SupervisorConfig } from './config';
 import type { RepositoryRow, SupervisorStore } from './store';
@@ -25,14 +31,89 @@ export interface PreparedInstance {
   callbackToken: string;
 }
 
-function ensurePrivateDir(path: string): void {
+/**
+ * Refuses a symbolic link anywhere on the path. A worker shares this process's
+ * uid, so a replaced component must not be able to redirect a bootstrap write.
+ */
+function currentUid(): number {
+  return typeof process.getuid === 'function' ? process.getuid() : -1;
+}
+
+function assertNoSymlinkComponents(path: string): void {
+  const absolute = resolve(path);
+  let cursor: string = sep;
+  for (const part of absolute.split(sep).filter(Boolean)) {
+    cursor = join(cursor, part);
+    try {
+      if (lstatSync(cursor).isSymbolicLink()) {
+        throw new Error(`Refusing to follow the symbolic link ${cursor}`);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+  }
+}
+
+/**
+ * Creates or verifies a directory that holds instance credentials, the profile
+ * or instance state: it must be a real directory owned by this process and
+ * group/other must not be able to write it. The mode is repaired, never the
+ * owner: a directory owned by another identity is refused rather than adopted.
+ */
+export function ensurePrivateDir(path: string): void {
+  assertNoSymlinkComponents(path);
   mkdirSync(path, { recursive: true, mode: 0o700 });
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink()) throw new Error(`Refusing to use the symbolic link ${path}`);
+  if (!stat.isDirectory()) throw new Error(`Not a directory: ${path}`);
+  if (stat.uid !== currentUid()) {
+    throw new Error(`Refusing to use ${path}: owned by uid ${stat.uid}, expected ${currentUid()}`);
+  }
   chmodSync(path, 0o700);
 }
 
-function writePrivate(path: string, content: string): void {
-  writeFileSync(path, content, { mode: 0o600 });
-  chmodSync(path, 0o600);
+/**
+ * Writes one credential or profile file into a verified private directory,
+ * atomically and without ever following a symbolic link at the target. The
+ * temporary file is created with `wx` and renamed over the target, so a
+ * partially written token can never become the live one.
+ */
+export function writePrivate(path: string, content: string): void {
+  const directory = dirname(resolve(path));
+  ensurePrivateDir(directory);
+  const target = resolve(path);
+  if (existsSync(target)) {
+    const stat = lstatSync(target);
+    if (stat.isSymbolicLink())
+      throw new Error(`Refusing to write through the symbolic link ${target}`);
+    if (!stat.isFile()) throw new Error(`Refusing to replace the non-file ${target}`);
+    if (stat.uid !== currentUid()) {
+      throw new Error(`Refusing to replace ${target}: owned by uid ${stat.uid}`);
+    }
+  }
+  const temporary = join(
+    directory,
+    `.${target.split(sep).at(-1)}.tmp-${process.pid}-${Date.now()}`,
+  );
+  const fd = openSync(temporary, 'wx', 0o600);
+  try {
+    writeSync(fd, content);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  try {
+    renameSync(temporary, target);
+    chmodSync(target, 0o600);
+  } catch (error) {
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // The rename already consumed the temporary file.
+    }
+    throw error;
+  }
 }
 
 /** The managed instance environment written under `INSTANCE_ENV_DIR`. */
