@@ -38,6 +38,18 @@ const saveBodySchema = z
   })
   .strict();
 
+const deploymentOpSchema = z.union([
+  z.object({ op: z.literal('set'), path: z.array(z.string()).min(1), value: z.unknown() }).strict(),
+  z.object({ op: z.literal('unset'), path: z.array(z.string()).min(1) }).strict(),
+]);
+
+const deploymentBodySchema = z
+  .object({
+    ops: z.array(deploymentOpSchema).min(1).max(8),
+    revision: z.number().int().nonnegative(),
+  })
+  .strict();
+
 const promptsBodySchema = z
   .object({
     config: z.unknown(),
@@ -162,6 +174,35 @@ export function registerSuperagentSettingsRoutes(
         kind: 'save-settings',
         block: params.data.block,
         body: { value: body.data.value, revision: body.data.revision },
+      });
+      return relay(reply, request, result);
+    },
+  );
+
+  app.get(
+    '/api/v1/repositories/:id/superagent/deployment',
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const repository = await ownedRepository(request);
+      const supervisor = requireSupervisor(config);
+      const result = await supervisor.deployment(repository.id);
+      return relay(reply, request, result);
+    },
+  );
+
+  app.put(
+    '/api/v1/repositories/:id/superagent/deployment',
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const repository = await ownedRepository(request);
+      const body = deploymentBodySchema.safeParse(request.body);
+      if (!body.success) {
+        throw ApiProblem.invalid('A Deployment save needs { ops, revision }');
+      }
+      const supervisor = requireSupervisor(config);
+      const result = await supervisor.saveDeployment(repository.id, {
+        ops: body.data.ops,
+        revision: body.data.revision,
       });
       return relay(reply, request, result);
     },

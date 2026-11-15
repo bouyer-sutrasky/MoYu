@@ -65,6 +65,13 @@ export interface SupervisorClient {
    * reaches the browser unchanged.
    */
   panel(repositoryId: string, request: PanelRequest): Promise<PanelResult>;
+  /** Instance Deployment snapshot; the supervisor reads it from the profile patch. */
+  deployment(repositoryId: string): Promise<PanelResult>;
+  /** Applies set/unset operations against a revision, then restarts the instance. */
+  saveDeployment(
+    repositoryId: string,
+    body: { ops: unknown[]; revision: number },
+  ): Promise<PanelResult>;
 }
 
 /** Host-side worktree inspection payload, as the supervisor reports it. */
@@ -226,6 +233,10 @@ export function createSupervisorClient(config: ApiConfig): SupervisorClient | nu
   };
 
   return {
+    deployment: (repositoryId) =>
+      rawRequest(`/control/v1/instances/${repositoryId}/deployment`, 'GET'),
+    saveDeployment: (repositoryId, body) =>
+      rawRequest(`/control/v1/instances/${repositoryId}/deployment`, 'PUT', body, 60_000),
     panel: (repositoryId, panelRequest) => {
       const prefix = `/control/v1/instances/${repositoryId}/panel`;
       switch (panelRequest.kind) {

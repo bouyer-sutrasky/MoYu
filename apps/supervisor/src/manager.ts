@@ -565,6 +565,47 @@ export class InstanceManager {
     });
   }
 
+  /**
+   * Restart one instance so a Deployment change (limits in the profile patch)
+   * takes effect. Refuses while a task or owner command is active: restarting
+   * would discard work the runtime may still need.
+   */
+  async restart(repositoryId: string): Promise<{ restarted: boolean; reason?: string }> {
+    const gate = await this.store.taskGate(repositoryId);
+    if (gate.active > 0 || gate.pendingOperations > 0) {
+      return {
+        restarted: false,
+        reason:
+          'A task or owner command is still active; the new Deployment limits apply after it finishes and the instance is restarted',
+      };
+    }
+    return this.withLock(async () => {
+      const row = await this.store.getInstance(repositoryId);
+      if (!row) return { restarted: false, reason: 'No instance row for this repository' };
+      if (row.state !== 'online' && row.state !== 'starting') {
+        return { restarted: false, reason: `The instance is ${row.state}` };
+      }
+      const stopped = await this.stopInstance(row, 'settings_restart', 'manual');
+      if (!stopped) {
+        return {
+          restarted: false,
+          reason: 'The runtime did not confirm that it stopped; it will not be started again yet',
+        };
+      }
+      await this.store.updateInstance(repositoryId, {
+        desiredState: 'online',
+        reasonCode: 'restarting_for_settings',
+        reasonDetail: 'Restarting so the saved Deployment limits take effect',
+        waitingFor: null,
+      });
+      this.logger.info(
+        { event: 'supervisor.instance_restarting', repositoryId },
+        'restarting the runtime so saved Deployment settings take effect',
+      );
+      return { restarted: true };
+    });
+  }
+
   async touch(repositoryId: string): Promise<InstanceRow> {
     const at = new Date();
     await this.store.setLastActivity(repositoryId, at);
