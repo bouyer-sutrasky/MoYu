@@ -99,3 +99,64 @@ Pre-change nginx state: `/root/m6c-nginx-sites-before.txt`; site config copy:
   not a real-device passkey.
 - `moyu.sutrasky.com` is **not** pointed at this stack. Moving it there is the formal release
   step and needs the owner's real-device passkey registration.
+
+## 备份、恢复与回滚（演练过的步骤）
+
+所有命令都在候选机上以 root 执行。生产库 `moyu` 不在这些步骤里被打开或写入。
+
+### 备份
+
+```bash
+DIR=/root/m6c-backups/$(date -u +%Y%m%dT%H%M%SZ); install -d -m 0700 "$DIR"
+export PGPASSWORD="$(cat /etc/moyu-m6c/.dbpass)"
+pg_dump -h 127.0.0.1 -U moyu_m6c -d moyu_m6c -Fc -f "$DIR/moyu_m6c.dump"
+```
+
+`moyu_m6c` 角色没有 CREATEDB（正确）。恢复要建库时用 postgres 超级用户：
+
+```bash
+sudo -u postgres psql -c "create database moyu_m6c_restore owner moyu_m6c"
+pg_restore -h 127.0.0.1 -U moyu_m6c -d moyu_m6c_restore --no-owner --no-privileges "$DIR/moyu_m6c.dump"
+```
+
+恢复后必须证明**能被应用直接跑起来**，而不只是"表在"：用同一个 release 起一个临时 API
+（`API_PORT=<未占用端口>`），看 `/readyz` 200 与 `/api/v1/auth/state` 里的
+`initialized` / `activeCredentialCount`，然后杀掉进程、确认端口释放。
+
+### 平台回滚（发布版本）
+
+```bash
+readlink /opt/moyu-m6c/current                      # 记下当前 release
+ln -sfn /opt/moyu-m6c/releases/<上一个> /opt/moyu-m6c/current
+systemctl restart moyu-m6c-api && sleep 6
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4310/readyz
+curl -sS https://moyu.sutrasky.com/ | grep -o 'assets/index-[A-Za-z0-9_-]*\.js' | head -1   # bundle 名应变化
+```
+
+回滚是一次符号链接切换 + 一次服务重启；`/api/v1/auth/state` 不应变化。
+
+### 插件回滚（Superagent 运行时）
+
+每个 profile 通过 `profiles/<profile>/node_modules/dsh-superagent` 这个符号链接加载运行时：
+
+```bash
+LINK=/var/lib/moyu-m6c/dsh/profiles/m6c-b/node_modules/dsh-superagent
+ln -sfn /opt/moyu-m6c/artifacts/<目标产物> "$LINK"
+# 让实例真正重新加载（sleep 的 body 是 {}，不是 {"reason":...}；带 reason 会 422）
+curl -sS -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{}' http://127.0.0.1:4491/control/v1/instances/<repo>/sleep
+curl -sS -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"reason":"new_task"}' http://127.0.0.1:4491/control/v1/instances/<repo>/wake
+```
+
+判据：`repository_instances.pid` 换新（证明真的重新加载），并且 `panel/settings` 的
+`policyVersion` 与 `/deployment` 的 revision/value 不变。
+
+### 迁移
+
+```bash
+DATABASE_URL=postgres://moyu_m6c:<pass>@127.0.0.1:5432/<db> pnpm db:migrate
+```
+
+空库迁到 19 个迁移后，API 应以首启状态启动（`setupOpen:true`、`activeCredentialCount:0`）。
+没有 down 迁移：回滚 = 用备份覆盖，已演练通过。
