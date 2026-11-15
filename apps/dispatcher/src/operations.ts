@@ -12,6 +12,7 @@ import {
   reconcileLeases,
   releaseTaskLease,
   requireLeaseStopProof,
+  settleIgnoredAdmissionOn,
   type ExecutionLease,
 } from './leases';
 import { pauseEvidenceProblem, pauseEvidenceProven } from './pause-evidence';
@@ -803,6 +804,73 @@ export async function maintainLeases(
        )`,
     [repository.id],
   );
+  // A task the runtime already refused still holds a generation written before
+  // the settlement path existed. When it never reached a runtime Ticket, no
+  // process can exist for it: settle the generation exactly as an ignored
+  // receipt would. Unknown evidence is left for reconciliation.
+  const ignored = await pool.query<{ taskId: string; leaseId: string; fencingToken: string }>(
+    `select t.id as "taskId", l.id as "leaseId", l.fencing_token::text as "fencingToken"
+       from task_links t
+       join runtime_leases l on l.id = t.runtime_lease_id
+      where t.repository_id = $1 and l.state = 'active'
+        and t.state::text = 'not_accepted'
+        and t.upstream_ticket_id is null
+        and not exists (
+          select 1 from task_operations op
+           where op.task_id = t.id and op.state in ('queued', 'running')
+        )
+        and not exists (
+          select 1 from execution_reservations r
+           where r.lease_id = l.id and r.state = 'claimed'
+        )
+        and not exists (
+          select 1 from deliveries d
+           where d.runtime_lease_id = l.id and d.state in ('pending', 'delivering')
+        )
+      order by l.expires_at
+      limit 20`,
+    [repository.id],
+  );
+  for (const row of ignored.rows) {
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      const settlement = await settleIgnoredAdmissionOn(client, repository.id, {
+        taskId: row.taskId,
+        decisionId: 'maintenance',
+        messageIds: [],
+        leaseId: row.leaseId,
+        fencingToken: row.fencingToken,
+        reason: 'maintenance settled an unaccepted admission that never created a runtime ticket',
+      });
+      await client.query('commit');
+      if (settlement.settled) {
+        logger.info(
+          {
+            event: 'lease.ignored_admission_settled',
+            repositoryId: repository.id,
+            taskId: row.taskId,
+            leaseId: row.leaseId,
+          },
+          'released an execution generation left behind by an unaccepted admission',
+        );
+      }
+    } catch (error) {
+      await client.query('rollback').catch(() => undefined);
+      logger.warn(
+        {
+          event: 'lease.ignored_admission_error',
+          repositoryId: repository.id,
+          taskId: row.taskId,
+          leaseId: row.leaseId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'kept the unaccepted admission generation after a settlement error',
+      );
+    } finally {
+      client.release();
+    }
+  }
   await pool.query(
     `update task_links t
         set runtime_lease_id = null, updated_at = now()

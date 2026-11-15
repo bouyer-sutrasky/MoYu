@@ -9,7 +9,7 @@ import { RuntimeBridgeClient } from '@moyu/runtime-client';
 import { loadDispatcherConfig, type DispatcherConfig } from '../../src/config';
 import { deliverOnce } from '../../src/delivery';
 import { createConsoleLogger } from '../../src/logger';
-import { acquireExecutionLease } from '../../src/leases';
+import { acquireExecutionLease, releaseExecutionLease, releaseTaskLease } from '../../src/leases';
 import { maintainLeases, operationsOnce, reconcileTasks } from '../../src/operations';
 import { captureReportsOnce } from '../../src/reports';
 import type { RepositoryBinding } from '../../src/runtime';
@@ -318,6 +318,53 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
               plan_revision as "planRevision"
          from task_links where id = $1`,
       [taskId],
+    );
+    return result.rows[0] as Record<string, unknown>;
+  }
+
+  /** Binds the pending admission to a real lease and records the delivery it was sent under. */
+  async function bindIgnoredGeneration(
+    fixture: Seed,
+    messageId: string,
+  ): Promise<{ leaseId: string; fencingToken: string }> {
+    const account = await acquireExecutionLease(
+      testDatabase.pool,
+      fixture.repository.id,
+      { taskId: fixture.taskId, reason: 'ignored admission fixture' },
+      3_600_000,
+    );
+    if (!account.lease) throw new Error(`lease unavailable: ${account.refused}`);
+    await testDatabase.pool.query(
+      `insert into deliveries (message_id, upstream_trigger_id, state, runtime_lease_id, fencing_token)
+       values ($1, $2, 'delivered', $3, $4)`,
+      [messageId, `workspace:${messageId}`, account.lease.id, account.lease.fencingToken],
+    );
+    return { leaseId: account.lease.id, fencingToken: account.lease.fencingToken };
+  }
+
+  function ignoredLeaseEvent(fixture: Seed, messageId: string, eventId: string): BridgeEvent {
+    return {
+      seq: 1,
+      id: eventId,
+      type: 'decision.ignored',
+      at: '2026-11-08T00:00:00.000Z',
+      data: {
+        decisionId: `decision-${fixture.taskId}`,
+        triggerIds: [`workspace:${messageId}`],
+        conversationId: fixture.conversationId,
+        messageIds: [messageId],
+        messageId,
+        at: '2026-11-08T00:00:00.000Z',
+      },
+    };
+  }
+
+  async function readLease(leaseId: string) {
+    const result = await testDatabase.pool.query(
+      `select state, recovery_state as "recoveryState", recovery_reason as "recoveryReason",
+              waiting_for as "waitingFor", stop_proof as "stopProof"
+         from runtime_leases where id = $1`,
+      [leaseId],
     );
     return result.rows[0] as Record<string, unknown>;
   }
@@ -1031,6 +1078,257 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
     fakeBridge.events = [event(1, pending, pendingMessage.rows[0]!.id)];
     await syncOnce(testDatabase.pool, pending.repository, client, logger);
     expect((await readTask(pending.taskId)).version).toBe(version);
+  }, 30_000);
+
+  it('settles the unstarted generation when an ignored decision closes its admission', async () => {
+    const fixture = await seed({ state: 'pending_admission' });
+    await testDatabase.pool.query(`update task_links set upstream_ticket_id = null where id = $1`, [
+      fixture.taskId,
+    ]);
+    const message = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body)
+       values ($1, 'inbound', 'user', 'ignored probe') returning id`,
+      [fixture.conversationId],
+    );
+    const messageId = message.rows[0]!.id;
+    const generation = await bindIgnoredGeneration(fixture, messageId);
+    await testDatabase.pool.query(
+      `insert into execution_reservations
+         (repository_id, task_id, ticket_id, assignment_id, lease_id, fencing_token, request_key, state)
+       values ($1, $2, 'ticket-unstarted', $3, $4, $5, $6, 'reserved')`,
+      [
+        fixture.repository.id,
+        fixture.taskId,
+        'a'.repeat(32),
+        generation.leaseId,
+        generation.fencingToken,
+        `admit:${fixture.taskId}`,
+      ],
+    );
+    fakeBridge.events = [
+      ignoredLeaseEvent(fixture, messageId, `decision-ignored:settle:${fixture.taskId}`),
+    ];
+
+    const logger = createConsoleLogger('test');
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+
+    const task = await readTask(fixture.taskId);
+    expect(task).toMatchObject({ state: 'not_accepted', runtimeLeaseId: null });
+    expect(task.stopEvidence).toMatchObject({
+      leaseSettlement: { kind: 'admission_ignored', noRuntimeTicket: true },
+    });
+    const lease = await readLease(generation.leaseId);
+    expect(lease).toMatchObject({ state: 'released' });
+    expect(lease.stopProof).toMatchObject({ kind: 'admission_ignored' });
+    const reservation = await testDatabase.pool.query<{ state: string }>(
+      `select state from execution_reservations where lease_id = $1`,
+      [generation.leaseId],
+    );
+    expect(reservation.rows[0]?.state).toBe('abandoned');
+    const released = await testDatabase.pool.query<{ detail: Record<string, unknown> }>(
+      `select detail from runtime_lease_events
+        where lease_id = $1 and type = 'released' order by created_at desc limit 1`,
+      [generation.leaseId],
+    );
+    expect(released.rows[0]?.detail).toMatchObject({
+      reason: expect.stringContaining('ignored this admission'),
+      proof: { kind: 'admission_ignored', decisionId: `decision-${fixture.taskId}` },
+    });
+
+    // The next task in the same repository must actually obtain a new generation
+    // instead of waiting for the old TTL.
+    const next = await acquireExecutionLease(
+      testDatabase.pool,
+      fixture.repository.id,
+      { reason: 'after the ignored admission settled' },
+      60_000,
+    );
+    expect(next.refused).toBeNull();
+    expect(next.lease?.id).not.toBe(generation.leaseId);
+    await releaseExecutionLease(
+      testDatabase.pool,
+      fixture.repository.id,
+      next.lease!.id,
+      'test cleanup',
+    );
+  }, 30_000);
+
+  it('leaves a newer generation alone when a late ignored receipt names the old one', async () => {
+    const fixture = await seed({ state: 'pending_admission' });
+    await testDatabase.pool.query(`update task_links set upstream_ticket_id = null where id = $1`, [
+      fixture.taskId,
+    ]);
+    const oldMessage = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body)
+       values ($1, 'inbound', 'user', 'old probe') returning id`,
+      [fixture.conversationId],
+    );
+    const old = await bindIgnoredGeneration(fixture, oldMessage.rows[0]!.id);
+    await testDatabase.pool.query(`update task_links set state = 'not_accepted' where id = $1`, [
+      fixture.taskId,
+    ]);
+    expect(
+      await releaseTaskLease(
+        testDatabase.pool,
+        fixture.repository.id,
+        fixture.taskId,
+        'test: the old generation ended',
+        { expectedLeaseId: old.leaseId, allowUnproven: true },
+      ),
+    ).toBe(true);
+    await testDatabase.pool.query(
+      `update task_links set state = 'pending_admission', upstream_ticket_id = null where id = $1`,
+      [fixture.taskId],
+    );
+    const current = await acquireExecutionLease(
+      testDatabase.pool,
+      fixture.repository.id,
+      { taskId: fixture.taskId, reason: 'the next admission generation' },
+      3_600_000,
+    );
+    expect(current.lease).not.toBeNull();
+    fakeBridge.events = [
+      ignoredLeaseEvent(fixture, oldMessage.rows[0]!.id, `decision-ignored:late:${fixture.taskId}`),
+    ];
+
+    await syncOnce(testDatabase.pool, fixture.repository, client, createConsoleLogger('test'));
+
+    expect(await readTask(fixture.taskId)).toMatchObject({
+      state: 'pending_admission',
+      runtimeLeaseId: current.lease!.id,
+    });
+    expect(await readLease(current.lease!.id)).toMatchObject({ state: 'active' });
+  }, 30_000);
+
+  it('settles once when two dispatchers process the same ignored receipt together', async () => {
+    const fixture = await seed({ state: 'pending_admission' });
+    await testDatabase.pool.query(`update task_links set upstream_ticket_id = null where id = $1`, [
+      fixture.taskId,
+    ]);
+    const message = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body)
+       values ($1, 'inbound', 'user', 'concurrent ignored probe') returning id`,
+      [fixture.conversationId],
+    );
+    const generation = await bindIgnoredGeneration(fixture, message.rows[0]!.id);
+    const event = ignoredLeaseEvent(
+      fixture,
+      message.rows[0]!.id,
+      `decision-ignored:concurrent:${fixture.taskId}`,
+    );
+    const logger = createConsoleLogger('test');
+    const applyOnce = async () => {
+      const connection = await testDatabase.pool.connect();
+      try {
+        await connection.query('begin');
+        await applyEvent(connection, fixture.repository, event, logger);
+        await connection.query('commit');
+      } catch (error) {
+        await connection.query('rollback').catch(() => undefined);
+        throw error;
+      } finally {
+        connection.release();
+      }
+    };
+
+    await Promise.all([applyOnce(), applyOnce()]);
+
+    expect(await readTask(fixture.taskId)).toMatchObject({
+      state: 'not_accepted',
+      runtimeLeaseId: null,
+    });
+    expect(await readLease(generation.leaseId)).toMatchObject({ state: 'released' });
+    const released = await testDatabase.pool.query<{ count: number }>(
+      `select count(*)::int as count from runtime_lease_events
+        where lease_id = $1 and type = 'released'`,
+      [generation.leaseId],
+    );
+    expect(released.rows[0]?.count).toBe(1);
+  }, 30_000);
+
+  it('keeps the generation and records why when the ignored admission has a runtime ticket', async () => {
+    const fixture = await seed({ state: 'pending_admission' });
+    const message = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body)
+       values ($1, 'inbound', 'user', 'ignored but ticketed') returning id`,
+      [fixture.conversationId],
+    );
+    const messageId = message.rows[0]!.id;
+    const generation = await bindIgnoredGeneration(fixture, messageId);
+    fakeBridge.events = [
+      ignoredLeaseEvent(fixture, messageId, `decision-ignored:ticketed:${fixture.taskId}`),
+    ];
+
+    await syncOnce(testDatabase.pool, fixture.repository, client, createConsoleLogger('test'));
+
+    expect(await readTask(fixture.taskId)).toMatchObject({
+      state: 'not_accepted',
+      runtimeLeaseId: generation.leaseId,
+    });
+    expect(await readLease(generation.leaseId)).toMatchObject({
+      state: 'active',
+      recoveryState: 'blocked',
+      waitingFor: 'execution_stop_proof',
+      recoveryReason: expect.stringContaining('cannot be proven'),
+    });
+  }, 30_000);
+
+  it('maintenance settles an unaccepted admission that never created a runtime ticket', async () => {
+    const fixture = await seed({ state: 'pending_admission' });
+    await testDatabase.pool.query(`update task_links set upstream_ticket_id = null where id = $1`, [
+      fixture.taskId,
+    ]);
+    const message = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body)
+       values ($1, 'inbound', 'user', 'pre-existing stranded admission') returning id`,
+      [fixture.conversationId],
+    );
+    const generation = await bindIgnoredGeneration(fixture, message.rows[0]!.id);
+    // The state a pre-fix dispatcher left behind: closed admission, live lease.
+    await testDatabase.pool.query(`update task_links set state = 'not_accepted' where id = $1`, [
+      fixture.taskId,
+    ]);
+
+    await maintainLeases(
+      testDatabase.pool,
+      config,
+      fixture.repository,
+      client,
+      createConsoleLogger('test'),
+    );
+
+    expect(await readTask(fixture.taskId)).toMatchObject({
+      state: 'not_accepted',
+      runtimeLeaseId: null,
+    });
+    expect(await readLease(generation.leaseId)).toMatchObject({ state: 'released' });
+  }, 30_000);
+
+  it('maintenance keeps an unaccepted admission whose runtime ticket may have executed', async () => {
+    const fixture = await seed({ state: 'pending_admission' });
+    const message = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body)
+       values ($1, 'inbound', 'user', 'unproven stranded admission') returning id`,
+      [fixture.conversationId],
+    );
+    const generation = await bindIgnoredGeneration(fixture, message.rows[0]!.id);
+    await testDatabase.pool.query(`update task_links set state = 'not_accepted' where id = $1`, [
+      fixture.taskId,
+    ]);
+
+    await maintainLeases(
+      testDatabase.pool,
+      config,
+      fixture.repository,
+      client,
+      createConsoleLogger('test'),
+    );
+
+    expect(await readTask(fixture.taskId)).toMatchObject({
+      state: 'not_accepted',
+      runtimeLeaseId: generation.leaseId,
+    });
+    expect(await readLease(generation.leaseId)).toMatchObject({ state: 'active' });
   }, 30_000);
 
   it('resolves a merged conversation alias before closing the ignored admission', async () => {

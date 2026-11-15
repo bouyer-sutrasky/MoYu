@@ -64,6 +64,21 @@ function routedTriggerId(body) {
   return matches.length > 0 ? matches[matches.length - 1][1] : 'workspace:probe-1';
 }
 
+/**
+ * The route decision for the next candidate. A scenario can write `ignore` to
+ * the per-run route file (default accept) so the runtime really records a
+ * `decision.ignored` receipt for the platform to settle.
+ */
+function routeKind() {
+  const file = process.env.LOCAL_PROVIDER_ROUTE_FILE;
+  if (!file) return 'accept';
+  try {
+    return fs.readFileSync(file, 'utf8').trim() === 'ignore' ? 'ignore' : 'accept';
+  } catch {
+    return 'accept';
+  }
+}
+
 const readBody = (request) =>
   new Promise((resolve, reject) => {
     let body = '';
@@ -169,17 +184,29 @@ const server = http.createServer(async (request, response) => {
   const id = `chatcmpl-local-${++sequence}`;
   // Deterministic route decision for an isolated probe. Replace the trigger id
   // with the candidate card's id when driving a different fixture.
-  const decision = {
-    decisions: [
-      {
-        kind: 'accept',
-        trigger_id: routedTriggerId(body),
-        title: 'Fix README probe line',
-        worktree_name: 'fix-readme-probe',
-        acknowledgement: 'On it: updating the README probe line.',
-      },
-    ],
-  };
+  const route = routeKind();
+  const decision =
+    route === 'ignore'
+      ? {
+          decisions: [
+            {
+              kind: 'ignore',
+              trigger_id: routedTriggerId(body),
+              reason: 'Isolated lifecycle fixture: this probe needs no ticket.',
+            },
+          ],
+        }
+      : {
+          decisions: [
+            {
+              kind: 'accept',
+              trigger_id: routedTriggerId(body),
+              title: 'Fix README probe line',
+              worktree_name: 'fix-readme-probe',
+              acknowledgement: 'On it: updating the README probe line.',
+            },
+          ],
+        };
   // A turn starts with a user message. Answering only there keeps one route
   // decision (or one worker report) per delivered candidate, even when earlier
   // turns already carry a tool result in the history.
