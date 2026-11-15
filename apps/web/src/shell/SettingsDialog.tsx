@@ -5,6 +5,7 @@ import type {
   AuthMeData,
   AuthStateData,
   PasskeyCredentialSummary,
+  RepositorySummary,
   SessionSummary,
 } from '@moyu/contracts';
 
@@ -15,11 +16,16 @@ import { Modal } from '../components/Modal';
 import { useTheme, type ThemeMode } from '../theme/ThemeProvider';
 import { CleanupPanel } from './CleanupPanel';
 import { NotificationSettingsSection } from './NotificationSettingsSection';
+import { SuperagentSettings } from '../superagent/SuperagentSettings';
 import styles from './SettingsDialog.module.css';
 
 interface SettingsDialogProps {
   me: AuthMeData;
   authState: AuthStateData;
+  /** Every added repository, so Superagent settings can be scoped to one. */
+  repositories: RepositorySummary[];
+  /** The repository the workbench is showing; the settings open on it. */
+  selectedRepositoryId: string | null;
   onClose: () => void;
   onRefreshMe: () => Promise<void>;
   onLoggedOut: () => void;
@@ -53,6 +59,8 @@ function deviceLabel(credential: PasskeyCredentialSummary): string {
 export function SettingsDialog({
   me,
   authState,
+  repositories,
+  selectedRepositoryId,
   onClose,
   onRefreshMe,
   onLoggedOut,
@@ -68,6 +76,9 @@ export function SettingsDialog({
   const [label, setLabel] = useState('');
   const [confirmKey, setConfirmKey] = useState<string | null>(null);
   const supported = isWebAuthnSupported();
+  const [superagentRepositoryId, setSuperagentRepositoryId] = useState<string | null>(
+    selectedRepositoryId ?? repositories[0]?.id ?? null,
+  );
 
   const handleError = useCallback(
     (caught: unknown) => {
@@ -207,6 +218,41 @@ export function SettingsDialog({
         <NotificationSettingsSection ownerId={me.owner.id} />
 
         <CleanupPanel onSessionLost={onSessionLost} />
+
+        <section className={styles.section} aria-labelledby="superagent-heading">
+          <div className={styles.sectionHeading}>
+            <h3 id="superagent-heading">Superagent 设置（按仓库）</h3>
+            <p>
+              每个仓库有独立的 Superagent 实例与配置。这里的分组来自上游设置页，保存走 MoYu
+              鉴权接口并由 supervisor 转发到该仓库自己的运行时；A 与 B 互不影响。
+            </p>
+          </div>
+          <div className={styles.addRow}>
+            <label className={styles.muted} htmlFor="superagent-repository">
+              目标仓库
+            </label>
+            <select
+              id="superagent-repository"
+              className={styles.input}
+              value={superagentRepositoryId ?? ''}
+              onChange={(event) => setSuperagentRepositoryId(event.target.value || null)}
+            >
+              {repositories.length === 0 ? <option value="">尚未添加仓库</option> : null}
+              {repositories.map((repository) => (
+                <option key={repository.id} value={repository.id}>
+                  {repository.fullName}
+                </option>
+              ))}
+            </select>
+          </div>
+          <SuperagentSettings
+            repositoryId={superagentRepositoryId}
+            repositoryName={
+              repositories.find((repository) => repository.id === superagentRepositoryId)
+                ?.fullName ?? null
+            }
+          />
+        </section>
 
         <section className={styles.section} aria-labelledby="passkeys-heading">
           <div className={styles.sectionHeading}>

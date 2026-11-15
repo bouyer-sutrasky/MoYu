@@ -1,6 +1,7 @@
 /** Same-origin client and polling hook for the orchestrator management API. */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Api, ApiRequest, ApiResponse } from '../contract';
+import { panelUrl } from '../transport';
 import { USER_ERRORS, type UserErrorCode } from '../values/errors';
 import type { TicketStage } from '../contract';
 import type { SetupProblem } from '../values/setup';
@@ -61,7 +62,7 @@ async function api<T>(
       ? {}
       : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
   try {
-    response = await fetch(`/orchestrator/api/${path}`, {
+    response = await fetch(panelUrl(path), {
       method,
       ...json,
       headers: { 'x-orchestrator-request': '1', ...json.headers },
