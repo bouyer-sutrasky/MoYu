@@ -448,6 +448,11 @@ export class InstanceManager {
   async stop(): Promise<void> {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
+    // Wait for an in-flight tick before the caller closes the pool. Without this
+    // the tick's queries run against an ended pool and the process crashes with
+    // 'Cannot use a pool after calling end on the pool', which systemd reports as
+    // a failed unit on every restart.
+    await this.withLock(async () => undefined);
     // The supervisor does not kill running runtime processes on its own exit:
     // they are detached and the next supervisor adopts them. Explicit sleep is
     // the only path that stops a runtime.
