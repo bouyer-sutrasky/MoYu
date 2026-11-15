@@ -423,3 +423,32 @@ pnpm --filter @moyu/supervisor test → 10 passed | 1 skipped (11 files), 100 pa
 This exercises the parts that used to fail: the check identity's own HOME as the pnpm store, network
 access, and a real build/test toolchain resolving from a lockfile. It is **not** the review API path
 on `lessons`: that still needs a real lessons ticket, which needs the owner to create the task.
+
+## 2026-11-15 23:20 (+08:00) — three gaps closed, one of my own claims retracted
+
+**Correction first.** I recorded that `runtime_cursors` was empty and that the Bridge cursor was
+in-memory only. That was wrong: the table holds three rows with advancing cursors (12 / 5 / 0,
+`updated_at` matching each repository's last consumed event) and `syncOnce()` does
+`insert … on conflict do nothing`, `select cursor`, then updates inside the transaction. I sampled it
+during a restart window and read "no new row right now" as "never written". The claim is retracted in
+`M6-C-ACCEPTANCE.md`.
+
+**`events_source_event_uq` is now repository-scoped.** Migration `0019_event_dedupe_per_repository`
+(replaces the index with `(repository_id, source, source_event_id)`), generated with drizzle-kit and
+drilled on an isolated copy first:
+
+| step | observed |
+| --- | --- |
+| isolated copy + migrate | 19 → 20 migrations, `migrate.completed` |
+| index definition | `(repository_id, source, source_event_id) WHERE source_event_id IS NOT NULL` |
+| duplicate inside one repository | still rejected (`duplicate key value violates …`) |
+| same event id in a second repository | now accepted (`INSERT 0 1`) |
+| candidate database | 20 migrations, events count unchanged at 39 |
+
+**Transient Bridge failures no longer log as errors.** `runLoop` counts consecutive failures: the
+first two are warnings, the third and later are errors, and a recovering loop logs one
+`<loop>_recovered` info line. Before this, a supervisor restart produced ~237 `event_sync_error` lines
+at error level plus 114 `report.capture_failed` warnings in the observed window, all one cause.
+
+`pnpm check` passes after both changes (contracts 26, runtime-client 13, dispatcher 5, api 20, plus the
+supervisor and web suites).

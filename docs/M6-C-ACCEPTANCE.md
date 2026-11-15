@@ -6,13 +6,13 @@
 
 | 项 | 值 |
 | --- | --- |
-| 代码 `main` | `22f887d820d0cc2e28897983d7c398b6470f8446`（#65 合并后） |
-| 候选部署 release | `/opt/moyu-m6c/releases/b6fa35bb5394-home` |
-| 部署内容 | `main` + PR #66（设置前端）+ PR #67（首页收敛），**两个 PR 尚未合并** |
+| 代码 `main` | `499e9e4f22805e6c57a1030ef92358aa766e84d9`（#66、#67 合并后） |
+| 候选部署 release | `/opt/moyu-m6c/releases/499e9e4f2280`（从合并后的 main 构建） |
+| 部署内容 | 与 `main` 一致（#66 设置前端、#67 首页收敛均已合并） |
 | 上游 Superagent pin | `6337fc823ce20251c8de8085948165c81aaa701e`（补丁 0001–0025） |
 | 运行时产物 | `/opt/moyu-m6c/artifacts/superagent-ad9650631bc3`，`lib/index.js` sha256 `07f46473b150ec97e35f1fe45090946df8e966f847c5269bcd5b2190a9fdd49b` |
-| Web bundle | `index-BCMyha2F.js` |
-| 数据库 | `moyu_m6c`，19 个迁移，25 张表 |
+| Web bundle | `index-BKsFiS9r.js` |
+| 数据库 | `moyu_m6c`，20 个迁移，25 张表 |
 | 入口 | `https://moyu.sutrasky.com`（nginx → `127.0.0.1:4310`） |
 | 服务身份 | `moyu-m6c`(988) / 检查身份 `moyu-m6c-check`(987:981) |
 
@@ -67,7 +67,7 @@
 
 ## 已知缺口（不是验收项，但会影响后续）
 
-1. `events_source_event_uq` 缺 repository 维度：同一 `source_event_id` 无法存在于两个仓库，去重更强但隔离语义不对。
-2. `runtime_cursors` 表为空，但代码里有写入路径（`apps/dispatcher/src/sync.ts:1286/1333`）：Bridge 事件消费在运行中并没有把游标落库。重启后会从头部重放，靠 `events_source_event_uq` 去重兜底。结果是"能用但不该这样"：游标持久化事实上未生效，重放规模随事件量线性增长。已在 A25 记为部分通过。
-3. dispatcher 在 supervisor 重启窗口内每秒写一条 `event_sync_error`（error 级）：不是故障，但日志噪音大。
+1. ~~`events_source_event_uq` 缺 repository 维度~~ —— **已修**（迁移 `0019_event_dedupe_per_repository`）：索引改为 `(repository_id, source, source_event_id)`。先在隔离库演练（19→20 迁移、同仓库重复仍被拒、跨仓库同一 id 被允许），再对候选库应用，事件数 39 不变。
+2. ~~`runtime_cursors` 表为空~~ —— **这条我先前判断错了，撤回**。实际有 3 行且游标在推进（12 / 5 / 0，`updated_at` 与各自最后一次事件消费时间吻合），`syncOnce` 里就是 `insert … on conflict do nothing` + `select cursor` + 事务内 `update`。当时是在实例重启窗口里查的，把「那一刻没有新行」误当成「从不写入」。游标持久化是工作的。
+3. dispatcher 在 supervisor 重启窗口内每秒写一条 `event_sync_error`（error 级），且 `report.capture_failed` 同源。已改为：连续失败 1–2 次记 `warn`，第 3 次起才记 `error`，恢复时补一条 `<loop>_recovered`（info）。这是观感/可运维性问题，不是功能缺陷。
 4. 部署内容领先 `main` 两个未合并 PR：合并前不能称"main 即线上"。
