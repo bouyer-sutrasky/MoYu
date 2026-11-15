@@ -146,3 +146,55 @@ the real-device passkey at `https://moyu.sutrasky.com/setup`.
 sed -i 's|proxy_pass http://127.0.0.1:4310;|proxy_pass http://127.0.0.1:4300;|' /etc/nginx/sites-available/moyu.conf
 nginx -t && systemctl reload nginx && systemctl start moyu.service
 ```
+
+## 2026-11-15 19:05 (+08:00) — per-repository settings relay
+
+Added and verified the settings transport that the five Superagent settings groups need.
+
+| endpoint (owner-authenticated) | behaviour |
+| --- | --- |
+| `GET /api/v1/repositories/:id/superagent/settings` | the runtime's settings view (blocks + sources + revisions) |
+| `GET …/superagent/{state,sources,models,prompts,policy-history}` | the remaining read pages |
+| `PUT …/superagent/settings/:block` `{value, revision}` | saves one block, relays 409/422 unchanged |
+| `PUT …/superagent/prompts` `{config, baseRevision}` | saves prompts, relays 409/422 unchanged |
+
+The browser names a repository it owns plus a block name; it never names a port, URL, profile or
+token. The API calls the host supervisor, which resolves the port from `repository_instances`
+and relays only an allow-listed panel call (`/state`, `/settings`, `/sources`, `/policy/history`,
+`/models`, `/prompts`, plus `PUT /settings/:block` and `PUT /prompts`).
+
+Live checks against repository B's running runtime:
+
+| check | result |
+| --- | --- |
+| `GET settings` | **200**, blocks `policy,eval,executor`, sources `github@1 workspace@1` |
+| real values read back | `repository=Bouyer12/m5a-beta-adf10ad9`, `cli=/opt/moyu-m6c/bin/gh-agent`, `pollSeconds=60`, `observeCi=false`, `maxWorkers=1`, `directory=/var/lib/moyu-m6c/worktrees/m6c-b`, `eval.mode=auto` |
+| `GET models` / `prompts` / `policy-history` | 200 / 200 / 200 |
+| `PUT settings/eval` with `revision: 0` | **409** `{"error":"Settings changed. Reload before saving."}` — the runtime's own message, not a flattened error |
+| `PUT settings/whatever` | 422 |
+| `GET panel/tickets` (not allow-listed) | 422 |
+| request without the machine token | 401 |
+
+Unit tests: block-name and read-path allow-lists including path-traversal attempts,
+`source:`/`source:GitHub`/`source:github:pause` rejections, and error summarisation
+(`apps/supervisor/test/panel-proxy.test.ts`). Full `pnpm check` green; supervisor suite 93 tests.
+
+**Still not done:** the Deployment group's instance-level `snapshot/subscribe/mutate` adapter, the
+ported five-group settings UI, the home page, and the browser-side save/conflict/draft acceptance.
+
+## 2026-11-15 19:03 (+08:00) — a runtime is no longer reported online after its process died
+
+Observed: after a supervisor restart two rows kept `state=online`, `reason_code=ownership_unverified`
+and a pid that no longer existed. Nothing listened on the panel ports, so every panel call returned
+503 while the projection and the API still claimed a live instance.
+
+Root cause: both the restart reconcile and the tick path take the `ownership unverified` branch
+*before* checking whether the recorded process is alive, and that branch returns early for
+`state=online && desiredState=online`.
+
+Fix: `requeueLostRuntime()` runs first in both paths. A row whose recorded pid is gone becomes
+`state=sleeping`, keeps its `desiredState`, gets `reasonCode=instance_lost` and is scheduled again.
+
+Live verification after deploy: log shows `supervisor.instance_lost` → `instance_spawned` ×2 →
+`instance_online` ×2, both instances came back with new pids (3940915 / 3940923), both panel ports
+listen again (3461 / 3463), and `reason_code` is now the truthful `listening`.
