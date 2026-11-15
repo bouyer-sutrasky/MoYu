@@ -1382,6 +1382,9 @@ export function WorkspaceShell({
               onCancelNewTask={() => setCreatingTask(false)}
               onCreatedTask={handleCreatedTask}
               onSessionLost={onSessionLost}
+              conversations={conversations}
+              conversationsLoading={conversationsStatus === 'loading'}
+              onOpenConversation={(conversationId) => setSelectedConversationId(conversationId)}
             />
           </main>
 
