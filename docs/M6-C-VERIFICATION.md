@@ -198,3 +198,51 @@ Fix: `requeueLostRuntime()` runs first in both paths. A row whose recorded pid i
 Live verification after deploy: log shows `supervisor.instance_lost` → `instance_spawned` ×2 →
 `instance_online` ×2, both instances came back with new pids (3940915 / 3940923), both panel ports
 listen again (3461 / 3463), and `reason_code` is now the truthful `listening`.
+
+## 2026-11-15 19:20 (+08:00) — instance-level Deployment adapter
+
+Upstream edits three machine limits through DSH's `ConfigForm`
+(`snapshot` / `subscribe` / `mutate`). MoYu has no plugin-manager surface, so the equivalent is
+the instance's own profile patch (`DSH_HOME/profiles/<profile>/cordis.patch.yml`):
+
+| endpoint | behaviour |
+| --- | --- |
+| `GET /control/v1/instances/:id/deployment` | `{status,writable,mode,revision,value,stateDir,profile}` read from the patch |
+| `PUT /control/v1/instances/:id/deployment` `{ops, revision}` | validates, writes, then restarts the instance |
+| `GET/PUT /api/v1/repositories/:id/superagent/deployment` | the owner-authenticated surface |
+
+Live verification on repository B's runtime:
+
+| step | result |
+| --- | --- |
+| `GET deployment` | 200, `revision=815181629`, `promptMaxChars=100000`, `pages=10`, `timeout=15000`, `stateDir=/var/lib/moyu-m6c/dsh/state/m6c-b` |
+| `PUT` set `promptMaxChars=200000` | 200 `{saved:true, revision:1883730372, applied:["promptMaxChars"], restarting:true}` |
+| file on disk | line 9 became `promptMaxChars: 200000` — the save is real, not just a snapshot |
+| reuse the old revision | **409** `{"error":"The Deployment settings changed. Reload before saving.","revision":1883730372}` |
+| out-of-range value (999) | 422 |
+| `stateDir` (platform-managed) | 422 `{"error":"Deployment key is platform-managed or unknown: stateDir"}` |
+| restart | `instance_restarting` logged; instance came back `online` with a new pid |
+| durability | after a further supervisor restart, `GET deployment` still returns revision 1883730372 and `promptMaxChars=200000` |
+
+12 unit tests: in-place update that leaves every other line byte-identical, insertion inside the
+config mapping, unset, multi-op save, `stateDir` refusal, unknown key, nested path, the three
+upstream bounds, non-integers, and a missing `dsh-superagent` block.
+
+## 2026-11-15 19:22 (+08:00) — two restart defects that made every restart fail
+
+1. **Shutdown crashed the process.** `systemctl restart moyu-m6c-supervisor` exited 1 with
+   `Cannot use a pool after calling end on the pool`: shutdown ended the pg pool while a tick's
+   queries were still running, the rejection escaped, and systemd recorded a failed unit — which
+   left the formal entry returning 502 until the unit was started by hand. `stop()` now waits on
+   the same lock the tick holds before the caller closes the pool, and shutdown only reports a
+   non-zero exit for a genuine failure. Verified: two consecutive restarts end with
+   `ExecMainStatus=0`, `NRestarts=0`.
+2. **Instances wedged in `stopping/stop_failed`.** A supervisor restart removes the unit cgroup,
+   so the runtimes die with it; rows could stay `stopping`/`stop_failed` with a pid that no longer
+   exists — a stop that can never be confirmed, holding an online slot while nothing runs. The
+   dead-runtime handler now covers `stopping` as well as `online`. Verified: after a restart the log
+   shows `supervisor.stop_settled` → `instance_spawned` ×2 → `instance_online` ×2, both instances
+   back `online`/`listening` with new pids, gamma still `sleeping` because it was never wanted.
+
+**Still not done:** the five-group settings UI, the home page, #64's five supplemental
+verifications, dual-entrance dedup, backup/restore and rollback drills.
