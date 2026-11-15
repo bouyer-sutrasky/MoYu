@@ -285,3 +285,47 @@ outstanding.
 
 Also note: `/var/lib/moyu-m6c` had to become `0751` so the check identity can traverse into
 `worktrees/` without being able to list it.
+
+## 2026-11-15 21:20 (+08:00) — lessons intake and the three-repository capacity proof
+
+Owner instruction: add the organisation's `lessons` repository, drop one test repository, and merge
+PR #65.
+
+**PR #65 merged.** Squash-merged at `2026-11-15T13:15:27Z` with
+`--match-head-commit 5660ea1fb2555f524cfc9dac9a9fb54f535a082a` after re-reading the gate
+(`MERGEABLE`, `CLEAN`, both required checks `pass`). Merge commit
+`22f887d820d0cc2e28897983d7c398b6470f8446`; `git merge-base --is-ancestor` confirms the PR head is
+in `main`.
+
+**Test repository removed.** `Bouyer12/m5a-gamma-adf10ad9` — the unused one: 0 conversations, 0
+tasks, 0 audit rows, never started. Its row was deleted (the instance row cascades), and its
+credential file, log, worktree directory, state directory and profile seed were removed.
+
+**`bouyer-sutrasky/lessons` added.** GitHub is the authority and it said `push: true`,
+`default_branch: master`, id `1453958822`; the row was inserted with the same fields the create route
+uses (`status` provisioning → then active), and the supervisor `prepare` call provisioned the fixed
+boundary: profile `m6c-1`, ports 3471/3472, a per-repository credential file. Its runtime answers all
+six panel reads with real content (`state`, `settings`, `sources`, `models`, `prompts`,
+`policy-history` all 200), so it is a live runtime rather than a listening socket.
+
+Not done through `POST /api/v1/repositories`: that route needs the owner's signed-in session and the
+machine has none. The GitHub write check, the inserted fields and the `prepare` call are the ones the
+route performs; only the authenticated request itself is missing, so the API path for a *new* add is
+still unverified end to end.
+
+**Capacity, three repositories, two online.** Waking `lessons` while alpha and beta were online was
+accepted with `waitingFor: capacity`; the supervisor evicted the idle instance (alpha went
+`stopping → sleeping` with `reason_code evicted`), then `lessons` went `starting → online`. Steady
+state: `online = 2` of 3 repositories. Observed sequence:
+
+```
+t+0s   lessons=sleeping/wake_queued   alpha=stopping   beta=online   count=2
+t+5s   lessons=starting/starting      alpha=sleeping/evicted  beta=online   count=2
+t+10s  lessons=online/listening       alpha=sleeping/evicted  beta=online   count=2
+```
+
+`lessons` is an npm repository (`package-lock.json`, no pnpm lock) whose scripts are `build`, `test`,
+`check:contract`, so its per-repository checks are set to
+`["npm install --no-audit --no-fund", "npm test", "npm run check:contract"]` instead of the platform
+default. That makes it the repository that can close the one outstanding #64 row (a real dependency
+install in a fresh worktree) once its first ticket exists.
