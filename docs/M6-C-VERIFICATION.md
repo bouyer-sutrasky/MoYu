@@ -246,3 +246,42 @@ upstream bounds, non-integers, and a missing `dsh-superagent` block.
 
 **Still not done:** the five-group settings UI, the home page, #64's five supplemental
 verifications, dual-entrance dedup, backup/restore and rollback drills.
+
+## 2026-11-15 20:20 (+08:00) — #64 supplemental verification on a real runtime
+
+Executed against repository A's real ticket `253f6afcf4c2b3eaaa9e3ce3904303b2`
+(worktree `/var/lib/moyu-m6c/worktrees/m6c-a/probe-file-ok-253f6afcf4c2`).
+
+| # | scenario | observed | result |
+| --- | --- | --- | --- |
+| 1 | a repository's own check command is used | `check_commands=["echo repo-a-check-ok"]` → run `command="echo repo-a-check-ok"`, `exitCode 0`, `output "repo-a-check-ok"` | Pass |
+| 2 | unconfigured repository falls back to the global default | `check_commands=NULL` → run `command="pnpm install --frozen-lockfile && pnpm check"`, `exitCode 1`, `output "[ERR_PNPM_NO_PKG_MANIFEST] No package.json found in …"` | Pass |
+| 3 | a failing command is not silently passed | `["sh -c \"exit 7\""]` → `exitCode 7`, `passed false`, `summary "失败（exit 7）"` | Pass |
+| 4 | an empty command list is refused | `update … set check_commands='[]'` → `ERROR: violates check constraint "repositories_check_commands_shape"`; the row kept its previous value | Pass (DB constraint) |
+| 5 | checks run as a separate identity | command `id -un; id -u; id -g` → `moyu-m6c-check`, `987`, `981` — the supervisor runs as `moyu-m6c` (988) | Pass |
+| 6 | a timed-out check is killed and leaves nothing behind | `REVIEW_CHECK_TIMEOUT_MS=8000` with `["sh -c \"sleep 30 & wait\""]` → `timedOut true`, `durationMs 8002`, and afterwards `ps` shows no `sleep 30` and no `sh -c sleep` | Pass |
+
+**Not verified:** two *different repositories* running their own commands in the same
+session. Repository B has `check_commands=["echo repo-b-check-ok"]`, but a review run needs a
+real ticket there, and creating one needs the owner's signed-in session. That single row is
+outstanding.
+
+### Three defects this verification exposed and fixed
+
+1. **The check identity could never write a worktree.** `provisionInstance()` called
+   `ensurePrivateDir()` on the worktree root, chmod-ing it 0700 on every prepare, and the
+   per-profile directory was created 0700 too. Every check failed closed with
+   `检查身份 987:981 无法写入工作目录`. Fixed: root and per-profile directory are created 2775
+   with the check group.
+2. **`ProtectSystem=strict` hid the check identity's HOME.** `/var/lib/moyu-m6c-check` was not
+   in `ReadWritePaths`, so inside the unit's mount namespace the check user's own HOME was
+   read-only and the pre-flight refused every run. Fixed by adding the path.
+3. **A timed-out check could not be killed.** The child runs as uid 987, the supervisor as 988,
+   and the unit had no `CAP_KILL`: `process.kill()` returned EPERM, the command kept running
+   after the timeout, and the run still reported only "timed out". Observed: a `sleep 30` tree
+   alive after an 8 s timeout. Fixed by granting `CAP_KILL` to the unit and by enumerating the
+   child's session after the group kill, retrying SIGKILL on survivors and carrying
+   `lingeringPids` into the run summary. Re-tested: no process survived.
+
+Also note: `/var/lib/moyu-m6c` had to become `0751` so the check identity can traverse into
+`worktrees/` without being able to list it.
