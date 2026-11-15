@@ -22,6 +22,7 @@ import {
   registrationVerifyDataSchema,
   repositoryActionDataSchema,
   repositoryBranchListDataSchema,
+  repositoryDataSchema,
   repositoryListDataSchema,
   repositoryRuntimeDataSchema,
   githubRepositoryListDataSchema,
@@ -56,6 +57,7 @@ import {
   type HistorySearchData,
   type RepositoryActionData,
   type RepositoryBranchListData,
+  type RepositoryData,
   type RepositoryPreferencesData,
   type RepositoryRuntimeData,
   type RepositoryPreferencesInput,
@@ -85,7 +87,7 @@ export class ApiClientError extends Error {
 }
 
 interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
 }
 
@@ -238,6 +240,19 @@ export const api = {
   },
   repositories(): Promise<{ repositories: RepositorySummary[] }> {
     return request('/api/v1/repositories', repositoryListDataSchema);
+  },
+  updateRepositoryCheckCommands(
+    repositoryId: string,
+    checkCommands: string[] | null,
+  ): Promise<RepositoryData> {
+    return request(
+      `/api/v1/repositories/${encodeURIComponent(repositoryId)}`,
+      repositoryDataSchema,
+      {
+        method: 'PATCH',
+        body: { checkCommands },
+      },
+    );
   },
   githubRepositories(q?: string): Promise<GithubRepositoryListData> {
     const query = q ? `?q=${encodeURIComponent(q)}` : '';

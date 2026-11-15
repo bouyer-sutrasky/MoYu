@@ -2,7 +2,12 @@ import { spawn } from 'node:child_process';
 import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, sep } from 'node:path';
 
-import { reviewCheckRunSchema, type ReviewCheckRun, type ReviewFile } from '@moyu/contracts';
+import {
+  repositoryCheckCommandsSchema,
+  reviewCheckRunSchema,
+  type ReviewCheckRun,
+  type ReviewFile,
+} from '@moyu/contracts';
 
 import type { SupervisorConfig } from './config';
 import type { SupervisorStore } from './store';
@@ -600,6 +605,37 @@ async function assertCheckRuntime(identity: CheckIdentity, directory: string): P
 }
 
 /**
+ * Resolves the effective commands for one repository.
+ *
+ * `null`/missing in the row means "use the supervisor-wide default". Any other
+ * value is repository-controlled configuration and must pass the shared
+ * contract; an empty or malformed value refuses the run (422) instead of
+ * falling back to the default or silently skipping the check.
+ */
+export function resolveCheckCommands(input: {
+  repositoryCommands: unknown;
+  defaultCommands: readonly string[];
+}): { commands: string[]; source: 'repository' | 'default' } {
+  if (input.repositoryCommands === null || input.repositoryCommands === undefined) {
+    const parsed = repositoryCheckCommandsSchema.safeParse(input.defaultCommands);
+    if (!parsed.success) {
+      throw new Error(
+        `supervisor 默认检查命令配置无效：${parsed.error.issues[0]?.message ?? 'unknown'}`,
+      );
+    }
+    return { commands: parsed.data, source: 'default' };
+  }
+  const parsed = repositoryCheckCommandsSchema.safeParse(input.repositoryCommands);
+  if (!parsed.success) {
+    throw Object.assign(
+      new Error(`仓库检查命令配置无效，拒绝执行：${parsed.error.issues[0]?.message ?? 'unknown'}`),
+      { statusCode: 422 },
+    );
+  }
+  return { commands: parsed.data, source: 'repository' };
+}
+
+/**
  * Runs the configured check commands in the ticket worktree, one by one.
  *
  * Each child gets the whitelist environment, its own process group and — when
@@ -609,11 +645,17 @@ async function assertCheckRuntime(identity: CheckIdentity, directory: string): P
  * supervisor's identity. Production refuses to run a check without an identity
  * (`requireIsolated`), and a preflight proves the check user can write the
  * worktree and its HOME before the first command runs.
+ *
+ * The total budget spans every command: each child gets `min(per-command
+ * timeout, remaining budget)`, and a command that starts after the budget is
+ * exhausted is reported as a failed, non-executed run rather than being silently
+ * dropped.
  */
 export async function runChecks(input: {
   directory: string;
   commands: readonly string[];
   timeoutMs: number;
+  totalTimeoutMs: number;
   identity?: CheckIdentity;
   requireIsolated?: boolean;
 }): Promise<ReviewCheckRun[]> {
@@ -632,13 +674,35 @@ export async function runChecks(input: {
     }
     await assertCheckRuntime(identity, input.directory);
   }
+  const deadline = Date.now() + input.totalTimeoutMs;
   const runs: ReviewCheckRun[] = [];
   for (const command of input.commands) {
     const startedAt = new Date();
     const started = process.hrtime.bigint();
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      const finishedAt = new Date();
+      runs.push(
+        reviewCheckRunSchema.parse({
+          id: `${startedAt.getTime()}-${runs.length + 1}`,
+          command,
+          exitCode: null,
+          passed: false,
+          timedOut: true,
+          startedAt: startedAt.toISOString(),
+          finishedAt: finishedAt.toISOString(),
+          durationMs: 0,
+          summary: '检查总时限已用完，命令未执行',
+          output: '',
+          outputTruncated: false,
+        }),
+      );
+      continue;
+    }
+    const timeoutMs = Math.max(1, Math.min(input.timeoutMs, remaining));
     const result = await runCommand(['/bin/bash', '-lc', command], {
       cwd: input.directory,
-      timeoutMs: input.timeoutMs,
+      timeoutMs,
       maxBytes: 4 * 1024 * 1024,
       env: checkEnvironment(process.env, identity),
       ownProcessGroup: true,
@@ -660,7 +724,7 @@ export async function runChecks(input: {
         finishedAt: finishedAt.toISOString(),
         durationMs,
         summary: result.timedOut
-          ? `命令在 ${Math.round(input.timeoutMs / 1000)} 秒超时后被终止`
+          ? `命令在 ${Math.round(timeoutMs / 1000)} 秒超时后被终止`
           : passed
             ? '通过'
             : `失败（exit ${result.code ?? 'unknown'}）`,
@@ -731,6 +795,16 @@ export function createReviewService(input: {
       }
       runningChecks.add(repositoryId);
       try {
+        const repository = await store.getRepository(repositoryId);
+        if (!repository) {
+          throw Object.assign(new Error('仓库不存在或尚未同步，无法运行检查'), {
+            statusCode: 404,
+          });
+        }
+        const { commands, source } = resolveCheckCommands({
+          repositoryCommands: repository.checkCommands,
+          defaultCommands: config.reviewCheckCommands,
+        });
         const worktree = await resolve(repositoryId, ticketId);
         if (worktree.state !== 'available' || !worktree.directory) {
           throw Object.assign(new Error(worktree.reason ?? '执行目录不可用'), {
@@ -750,8 +824,9 @@ export function createReviewService(input: {
             : undefined;
         const runs = await runChecks({
           directory: worktree.directory,
-          commands: config.reviewCheckCommands,
+          commands,
           timeoutMs: config.reviewCheckTimeoutMs,
+          totalTimeoutMs: config.reviewCheckTotalTimeoutMs,
           ...(identity ? { identity } : {}),
           requireIsolated: config.nodeEnv === 'production',
         });
@@ -760,7 +835,8 @@ export function createReviewService(input: {
             event: 'review.checks_finished',
             repositoryId,
             ticketId,
-            commands: config.reviewCheckCommands,
+            commandSource: source,
+            commands,
             identity: identity ? { uid: identity.uid, gid: identity.gid } : null,
             results: runs.map((run) => ({
               command: run.command,

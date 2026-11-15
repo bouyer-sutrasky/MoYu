@@ -2,6 +2,21 @@ import type { ReviewChanges, ReviewCheckRun } from '@moyu/contracts';
 
 import type { ApiConfig } from '../config';
 
+/**
+ * A non-2xx answer from the supervisor control API. The original status is kept
+ * so a repository-configuration refusal (422) is not flattened into a generic
+ * "runtime unavailable" error at the platform boundary.
+ */
+export class SupervisorRequestError extends Error {
+  constructor(
+    readonly statusCode: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'SupervisorRequestError';
+  }
+}
+
 export interface SupervisorInstance {
   repositoryId: string;
   state: 'sleeping' | 'starting' | 'online' | 'stopping' | 'fault';
@@ -131,7 +146,10 @@ export function createSupervisorClient(config: ApiConfig): SupervisorClient | nu
         error?: { message?: string };
       };
       if ((!response.ok && !acceptStatuses.includes(response.status)) || !payload.data) {
-        throw new Error(payload.error?.message ?? `supervisor request failed (${response.status})`);
+        throw new SupervisorRequestError(
+          response.ok ? 502 : response.status,
+          payload.error?.message ?? `supervisor request failed (${response.status})`,
+        );
       }
       return payload.data;
     } finally {

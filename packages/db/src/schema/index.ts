@@ -12,6 +12,7 @@ export * from './duplicate-tickets';
 export * from './messages';
 export * from './owners';
 export * from './repositories';
+export * from './repository-audit-events';
 export * from './repository-instances';
 export * from './repository-preferences';
 export * from './runtime-cursors';

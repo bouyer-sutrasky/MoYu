@@ -15,7 +15,13 @@ import { basename, join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { collectChanges, locateTicketWorktree, runChecks, type ReviewService } from '../src/review';
+import {
+  collectChanges,
+  locateTicketWorktree,
+  resolveCheckCommands,
+  runChecks,
+  type ReviewService,
+} from '../src/review';
 import { createReviewService } from '../src/review';
 import { pidAlive } from '../src/process';
 
@@ -349,6 +355,7 @@ describe('supervisor check runs', () => {
         'node -e "console.error(\'broken type\'); process.exit(2)"',
       ],
       timeoutMs: 30_000,
+      totalTimeoutMs: 60_000,
     });
     expect(runs).toHaveLength(2);
     expect(runs[0]).toMatchObject({ exitCode: 0, passed: true, summary: '通过' });
@@ -364,6 +371,7 @@ describe('supervisor check runs', () => {
       directory,
       commands: ['sleep 5'],
       timeoutMs: 300,
+      totalTimeoutMs: 60_000,
     });
     expect(runs[0]?.timedOut).toBe(true);
     expect(runs[0]?.passed).toBe(false);
@@ -387,7 +395,12 @@ describe('supervisor check runs', () => {
     for (const key of Object.keys(overrides)) saved.set(key, process.env[key]);
     Object.assign(process.env, overrides);
     try {
-      const runs = await runChecks({ directory, commands: ['env'], timeoutMs: 30_000 });
+      const runs = await runChecks({
+        directory,
+        commands: ['env'],
+        timeoutMs: 30_000,
+        totalTimeoutMs: 60_000,
+      });
       const output = runs[0]!.output;
       for (const [key, value] of Object.entries(overrides)) {
         if (!key.startsWith('MOYU_SENTINEL_')) continue;
@@ -421,6 +434,7 @@ describe('supervisor check runs', () => {
         directory,
         commands: [`sleep 30 >/dev/null 2>&1 & echo $! > '${pidFile}'; sleep 60`],
         timeoutMs: 400,
+        totalTimeoutMs: 60_000,
       });
       expect(runs[0]?.timedOut).toBe(true);
       pid = Number(readFileSync(pidFile, 'utf8').trim());
@@ -438,6 +452,25 @@ describe('supervisor check runs', () => {
       }
     }
   });
+
+  it('bounds the whole run by the total budget, not just each command', async () => {
+    const directory = repository();
+    const runs = await runChecks({
+      directory,
+      commands: ['sleep 5', 'printf second'],
+      timeoutMs: 60_000,
+      totalTimeoutMs: 300,
+    });
+    expect(runs).toHaveLength(2);
+    expect(runs[0]).toMatchObject({ passed: false, timedOut: true });
+    expect(runs[1]).toMatchObject({
+      passed: false,
+      timedOut: true,
+      exitCode: null,
+      summary: '检查总时限已用完，命令未执行',
+    });
+    expect(runs[1]?.output).toBe('');
+  });
 });
 
 describe('supervisor check identity', () => {
@@ -448,7 +481,13 @@ describe('supervisor check identity', () => {
     const ownUid = process.getuid?.() ?? 1;
     const ownGid = process.getgid?.() ?? 1;
     const run = (identity: { uid: number; gid: number; home: string; setpriv: string }) =>
-      runChecks({ directory, commands: ['true'], timeoutMs: 5_000, identity });
+      runChecks({
+        directory,
+        commands: ['true'],
+        timeoutMs: 5_000,
+        totalTimeoutMs: 60_000,
+        identity,
+      });
 
     await expect(run({ uid: 0, gid: ownGid + 1, home: directory, setpriv })).rejects.toThrow(
       'root',
@@ -476,6 +515,7 @@ describe('supervisor check identity', () => {
         directory: repository(),
         commands: ['true'],
         timeoutMs: 5_000,
+        totalTimeoutMs: 60_000,
         requireIsolated: true,
       }),
     ).rejects.toThrow('身份未配置');
@@ -499,6 +539,7 @@ describe('supervisor check identity', () => {
           `id -u; id -g; grep -E 'CapEff' /proc/self/status; cat '${sentinel}'; echo sentinel-exit=$?`,
         ],
         timeoutMs: 10_000,
+        totalTimeoutMs: 60_000,
         identity: { uid: 65_534, gid: 65_534, home, setpriv },
       });
 
@@ -510,6 +551,53 @@ describe('supervisor check identity', () => {
   );
 });
 
+describe('repository check command resolution', () => {
+  it('prefers repository commands and reports the source', () => {
+    expect(
+      resolveCheckCommands({
+        repositoryCommands: ['npm test'],
+        defaultCommands: ['pnpm check'],
+      }),
+    ).toEqual({ commands: ['npm test'], source: 'repository' });
+  });
+
+  it('falls back to the supervisor default only when the row has no override', () => {
+    expect(
+      resolveCheckCommands({
+        repositoryCommands: null,
+        defaultCommands: ['pnpm check'],
+      }),
+    ).toEqual({ commands: ['pnpm check'], source: 'default' });
+    expect(
+      resolveCheckCommands({
+        repositoryCommands: undefined,
+        defaultCommands: ['npm ci && npm test'],
+      }),
+    ).toEqual({ commands: ['npm ci && npm test'], source: 'default' });
+  });
+
+  it('fails closed on empty, malformed, multi-line or oversized repository values', () => {
+    const invalid: unknown[] = [
+      [],
+      ['   '],
+      ['echo first\necho second'],
+      ['echo \u0000'],
+      Array.from({ length: 9 }, (_, index) => `echo ${index}`),
+      'npm test',
+    ];
+    for (const repositoryCommands of invalid) {
+      expect(() =>
+        resolveCheckCommands({ repositoryCommands, defaultCommands: ['pnpm check'] }),
+      ).toThrow(/配置无效/);
+    }
+    try {
+      resolveCheckCommands({ repositoryCommands: [], defaultCommands: ['pnpm check'] });
+    } catch (error) {
+      expect((error as { statusCode?: number }).statusCode).toBe(422);
+    }
+  });
+});
+
 describe('review service', () => {
   it('returns a cleaned state when the ticket worktree is gone', async () => {
     const root = temporary('moyu-worktrees');
@@ -519,10 +607,14 @@ describe('review service', () => {
       reviewMaxFiles: 10,
       reviewCheckCommands: ['true'],
       reviewCheckTimeoutMs: 5_000,
+      reviewCheckTotalTimeoutMs: 60_000,
     };
     const service: ReviewService = createReviewService({
       config: config as never,
-      store: { getInstance: async () => ({ profile: 'probe1' }) } as never,
+      store: {
+        getInstance: async () => ({ profile: 'probe1' }),
+        getRepository: async () => ({ checkCommands: null }),
+      } as never,
       logger: { info: () => undefined },
     });
     const changes = await service.changes('repository', 'deadbeefdeadbeef');
@@ -544,10 +636,14 @@ describe('review service', () => {
       reviewMaxFiles: 10,
       reviewCheckCommands: [`printf x >> '${counter}'; sleep 0.3`],
       reviewCheckTimeoutMs: 5_000,
+      reviewCheckTotalTimeoutMs: 60_000,
     };
     const service: ReviewService = createReviewService({
       config: config as never,
-      store: { getInstance: async () => ({ profile }) } as never,
+      store: {
+        getInstance: async () => ({ profile }),
+        getRepository: async () => ({ checkCommands: null }),
+      } as never,
       logger: { info: () => undefined },
     });
 
@@ -558,5 +654,34 @@ describe('review service', () => {
     expect(runs).toHaveLength(1);
     expect(runs[0]?.passed).toBe(true);
     expect(readFileSync(counter, 'utf8')).toBe('x');
+  });
+
+  it('runs the repository commands reported by the store, not the global default', async () => {
+    const root = temporary('moyu-worktrees');
+    const profile = 'probe1';
+    const ticketId = '1234567890abcdef';
+    const directory = join(root, profile, `mp-repo-${ticketId.slice(0, 12)}`);
+    mkdirSync(join(directory, '.git'), { recursive: true });
+    const config = {
+      worktreeRoot: root,
+      reviewDiffMaxBytes: 4096,
+      reviewMaxFiles: 10,
+      reviewCheckCommands: ['printf global'],
+      reviewCheckTimeoutMs: 5_000,
+      reviewCheckTotalTimeoutMs: 60_000,
+    };
+    const service: ReviewService = createReviewService({
+      config: config as never,
+      store: {
+        getInstance: async () => ({ profile }),
+        getRepository: async () => ({ checkCommands: ['printf repository'] }),
+      } as never,
+      logger: { info: () => undefined },
+    });
+
+    const runs = await service.checks('repository', ticketId);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.command).toBe('printf repository');
+    expect(runs[0]?.output).toContain('repository');
   });
 });

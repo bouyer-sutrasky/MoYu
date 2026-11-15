@@ -1,0 +1,114 @@
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
+  font: var(--dsw-font-s-14);
+  cursor: pointer;
+}
+
+.option span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.option small {
+  color: var(--dsw-alias-label-tertiary);
+  font: var(--dsw-font-xs-13);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xs-13);
+}
+
+.field textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
+  font: var(--dsw-font-code-13, var(--dsw-font-s-14));
+  resize: vertical;
+}
+
+.field textarea:focus {
+  border-color: var(--dsw-alias-brand-primary);
+  outline: none;
+}
+
+.hint {
+  margin: 0;
+  color: var(--dsw-alias-label-tertiary);
+  font: var(--dsw-font-xs-13);
+  line-height: 1.6;
+}
+
+.warning {
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-warning, rgba(180, 120, 20, 0.12));
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xs-13);
+  line-height: 1.6;
+}
+
+.error {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-error, rgba(190, 50, 50, 0.12));
+  color: var(--dsw-alias-label-error, #b42318);
+  font: var(--dsw-font-xs-13);
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.primary,
+.secondary {
+  padding: 8px 16px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  font: var(--dsw-font-xs-strong-13);
+  cursor: pointer;
+}
+
+.primary {
+  border-color: transparent;
+  background: var(--dsw-alias-brand-primary);
+  color: var(--dsw-alias-label-inverse, #fff);
+}
+
+.primary:disabled,
+.secondary:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}

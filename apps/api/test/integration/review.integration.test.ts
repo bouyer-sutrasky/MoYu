@@ -39,10 +39,11 @@ interface Harness {
 interface SupervisorState {
   changes: Record<string, unknown>;
   checks: Record<string, unknown>[];
+  checksFailure: { status: number; message: string } | null;
   calls: { path: string; body: unknown }[];
 }
 
-const supervisor: SupervisorState = { changes: {}, checks: [], calls: [] };
+const supervisor: SupervisorState = { changes: {}, checks: [], checksFailure: null, calls: [] };
 let server: Server;
 
 function startSupervisor(): Promise<number> {
@@ -62,6 +63,13 @@ function startSupervisor(): Promise<number> {
         return;
       }
       if (request.url?.endsWith('/review/checks')) {
+        if (supervisor.checksFailure) {
+          response.writeHead(supervisor.checksFailure.status, {
+            'content-type': 'application/json',
+          });
+          response.end(JSON.stringify({ error: { message: supervisor.checksFailure.message } }));
+          return;
+        }
         response.writeHead(200, { 'content-type': 'application/json' });
         response.end(
           JSON.stringify({
@@ -324,6 +332,35 @@ describe('M6 review projection', () => {
       .from(artifacts)
       .where(eq(artifacts.type, 'check_report'));
     expect(row?.taskId).toBe(harness.taskId);
+  });
+
+  it('maps a supervisor configuration refusal to 422 and stores no check report', async () => {
+    const rowsBefore = await harness.database
+      .select()
+      .from(artifacts)
+      .where(eq(artifacts.type, 'check_report'));
+    supervisor.checksFailure = {
+      status: 422,
+      message: '仓库检查命令配置无效，拒绝执行：must not be blank',
+    };
+    try {
+      const response = await harness.app.inject({
+        method: 'POST',
+        url: `/api/v1/tasks/${harness.taskId}/review/checks`,
+        ...authCookie(harness),
+      });
+      expect(response.statusCode).toBe(422);
+      expect((response.json() as { error: { message: string } }).error.message).toContain(
+        '仓库检查命令配置无效',
+      );
+    } finally {
+      supervisor.checksFailure = null;
+    }
+    const rowsAfter = await harness.database
+      .select()
+      .from(artifacts)
+      .where(eq(artifacts.type, 'check_report'));
+    expect(rowsAfter).toHaveLength(rowsBefore.length);
   });
 
   it('keeps a pull request closed but unmerged as closed, never merged', async () => {

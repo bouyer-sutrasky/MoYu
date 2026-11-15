@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 
 import type { Repository } from '@moyu/db';
-import { owners, repositories, type Database } from '@moyu/db';
+import { owners, repositories, repositoryAuditEvents, type Database } from '@moyu/db';
 
 import type { ApiConfig } from '../config';
 import { ensureLegacyInstance } from './instances';
@@ -64,4 +64,54 @@ export async function findOwnedRepository(
     return undefined;
   }
   return repository;
+}
+
+function sameCommands(left: readonly string[] | null, right: readonly string[] | null): boolean {
+  if (left === null || right === null) {
+    return left === right;
+  }
+  return left.length === right.length && left.every((command, index) => command === right[index]);
+}
+
+/**
+ * Updates the repository's check-command override and records an audit row when
+ * the effective value changes. The row is locked and re-read inside the
+ * transaction, so two concurrent changes cannot both claim the same `from`
+ * value; the update and its audit commit together.
+ */
+export async function setRepositoryCheckCommands(input: {
+  database: Database;
+  repository: Repository;
+  actorOwnerId: string;
+  commands: string[] | null;
+}): Promise<Repository> {
+  const { database, repository, actorOwnerId, commands } = input;
+  return database.transaction(async (transaction) => {
+    const [current] = await transaction
+      .select()
+      .from(repositories)
+      .where(eq(repositories.id, repository.id))
+      .for('update');
+    if (!current) {
+      throw new Error('repository disappeared during update');
+    }
+    if (sameCommands(current.checkCommands, commands)) {
+      return current;
+    }
+    const [updated] = await transaction
+      .update(repositories)
+      .set({ checkCommands: commands, updatedAt: new Date() })
+      .where(eq(repositories.id, repository.id))
+      .returning();
+    if (!updated) {
+      throw new Error('repository update returned no row');
+    }
+    await transaction.insert(repositoryAuditEvents).values({
+      repositoryId: repository.id,
+      actorOwnerId,
+      type: 'check_commands_updated',
+      detail: { from: current.checkCommands, to: commands },
+    });
+    return updated;
+  });
 }
