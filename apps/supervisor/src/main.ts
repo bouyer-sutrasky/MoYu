@@ -18,10 +18,21 @@ async function shutdown(signal: string): Promise<void> {
   if (closing) return;
   closing = true;
   logger.info({ event: 'supervisor.shutdown', signal }, 'supervisor shutting down');
-  await manager.stop();
-  await app.close().catch(() => undefined);
+  try {
+    await manager.stop();
+    await app.close();
+  } catch (error) {
+    logger.error(
+      {
+        event: 'supervisor.shutdown_failed',
+        error: error instanceof Error ? error.message : String(error),
+      },
+      'supervisor shutdown did not complete cleanly',
+    );
+    process.exitCode = 1;
+  }
   await pool.end().catch(() => undefined);
-  process.exitCode = 0;
+  if (process.exitCode === undefined) process.exitCode = 0;
 }
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {

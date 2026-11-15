@@ -29,6 +29,7 @@ import { registerHistoryRoutes } from './routes/history';
 import { registerPreferenceRoutes } from './routes/preferences';
 import { registerRuntimeRoutes } from './routes/runtime';
 import { registerRepositoryRoutes } from './routes/repositories';
+import { registerSuperagentSettingsRoutes } from './routes/superagent-settings';
 import { registerReviewRoutes } from './routes/review';
 import { registerTaskRoutes } from './routes/tasks';
 import { SERVICE_NAME, SERVICE_VERSION } from './version';
@@ -132,6 +133,7 @@ export function buildApp({
     const machineAuthenticate = createMachineAuthenticate(config);
     registerAuthRoutes(app, { config, database, sessions: sessionService });
     registerRepositoryRoutes(app, { config, database, authenticate });
+    registerSuperagentSettingsRoutes(app, { config, database, authenticate });
     registerPreferenceRoutes(app, { config, database, authenticate });
     registerEventRoutes(app, {
       database,

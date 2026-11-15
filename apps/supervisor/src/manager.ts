@@ -1,5 +1,14 @@
-import { chmodSync, chownSync, closeSync, existsSync, mkdirSync, openSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  chmodSync,
+  chownSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { dirname, join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -290,11 +299,63 @@ export class InstanceManager {
     return next;
   }
 
+  /**
+   * A row that still says `online` while its recorded process is gone is a lie:
+   * the runtime died (typically because a supervisor restart removed the unit
+   * cgroup). Requeue it instead of reporting an instance that no longer exists,
+   * so the panel proxy and the settings UI stop talking to a dead port and the
+   * scheduler can start it again.
+   */
+  /**
+   * Settle a row whose recorded process is gone.
+   *
+   * A supervisor restart removes the unit cgroup, so the runtimes die with it. The
+   * rows can be left `online` (the old lie) or `stopping`/`stop_failed` (a stop
+   * that can never be confirmed). Both wedge a repository: `online` talks to a
+   * dead port, and `stopping` holds an online slot forever while nothing runs.
+   *
+   * With the pid provably gone the stop *is* complete, so record that truth:
+   * sleeping, `desiredState` preserved, and let the scheduler decide whether to
+   * start it again.
+   */
+  private async settleDeadRuntime(row: InstanceRow): Promise<boolean> {
+    if (row.state !== 'online' && row.state !== 'stopping') return false;
+    if (row.pid && pidAlive(row.pid)) return false;
+    const wasStopping = row.state === 'stopping';
+    await this.store.updateInstance(row.repositoryId, {
+      state: 'sleeping',
+      desiredState: row.desiredState,
+      pid: null,
+      ownership: {},
+      reasonCode: wasStopping ? 'stop_settled' : 'instance_lost',
+      reasonDetail: wasStopping
+        ? 'The recorded processes are gone, so the stop is complete; the instance is queued again if it was wanted online'
+        : 'The recorded runtime process is gone (for example because a supervisor restart removed its cgroup); the instance is queued to start again',
+      waitingFor: null,
+      errorCode: null,
+      errorDetail: null,
+      ...(wasStopping ? { lastStoppedAt: new Date() } : { lastStoppedAt: null }),
+    });
+    await this.store.syncRepositoryStatus(row.repositoryId, 'sleeping');
+    this.logger.warn(
+      {
+        event: wasStopping ? 'supervisor.stop_settled' : 'supervisor.instance_lost',
+        repositoryId: row.repositoryId,
+        pid: row.pid,
+      },
+      wasStopping
+        ? 'recorded processes are gone; the stop is settled'
+        : 'recorded runtime process is gone; requeued the instance',
+    );
+    return true;
+  }
+
   private async reconcileRestart(row: InstanceRow): Promise<void> {
     let stored = storedOwnership(row);
     let snapshot = collectOwnership(row.pid ?? 0, stored);
     let live = snapshot.members;
     const rootAlive = row.pid ? pidAlive(row.pid) : false;
+    if (await this.settleDeadRuntime(row)) return;
     if (!stored.cgroup && rootAlive) {
       stored = await this.attachCgroup(row, stored);
       snapshot = collectOwnership(row.pid ?? 0, stored);
@@ -407,6 +468,11 @@ export class InstanceManager {
   async stop(): Promise<void> {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
+    // Wait for an in-flight tick before the caller closes the pool. Without this
+    // the tick's queries run against an ended pool and the process crashes with
+    // 'Cannot use a pool after calling end on the pool', which systemd reports as
+    // a failed unit on every restart.
+    await this.withLock(async () => undefined);
     // The supervisor does not kill running runtime processes on its own exit:
     // they are detached and the next supervisor adopts them. Explicit sleep is
     // the only path that stops a runtime.
@@ -521,6 +587,47 @@ export class InstanceManager {
         duplicate: alreadyQueued,
         instance: (await this.store.getInstance(repositoryId)) ?? instance,
       };
+    });
+  }
+
+  /**
+   * Restart one instance so a Deployment change (limits in the profile patch)
+   * takes effect. Refuses while a task or owner command is active: restarting
+   * would discard work the runtime may still need.
+   */
+  async restart(repositoryId: string): Promise<{ restarted: boolean; reason?: string }> {
+    const gate = await this.store.taskGate(repositoryId);
+    if (gate.active > 0 || gate.pendingOperations > 0) {
+      return {
+        restarted: false,
+        reason:
+          'A task or owner command is still active; the new Deployment limits apply after it finishes and the instance is restarted',
+      };
+    }
+    return this.withLock(async () => {
+      const row = await this.store.getInstance(repositoryId);
+      if (!row) return { restarted: false, reason: 'No instance row for this repository' };
+      if (row.state !== 'online' && row.state !== 'starting') {
+        return { restarted: false, reason: `The instance is ${row.state}` };
+      }
+      const stopped = await this.stopInstance(row, 'settings_restart', 'manual');
+      if (!stopped) {
+        return {
+          restarted: false,
+          reason: 'The runtime did not confirm that it stopped; it will not be started again yet',
+        };
+      }
+      await this.store.updateInstance(repositoryId, {
+        desiredState: 'online',
+        reasonCode: 'restarting_for_settings',
+        reasonDetail: 'Restarting so the saved Deployment limits take effect',
+        waitingFor: null,
+      });
+      this.logger.info(
+        { event: 'supervisor.instance_restarting', repositoryId },
+        'restarting the runtime so saved Deployment settings take effect',
+      );
+      return { restarted: true };
     });
   }
 
@@ -642,6 +749,8 @@ export class InstanceManager {
         const stored = storedOwnership(row);
         const snapshot = collectOwnership(row.pid ?? 0, stored);
         const live = snapshot.members;
+
+        if (await this.settleDeadRuntime(row)) continue;
 
         if (snapshot.unknown) {
           const current = (await this.store.getInstance(row.repositoryId)) ?? row;
@@ -1264,6 +1373,15 @@ export class InstanceManager {
     }
   }
 
+  /**
+   * Marker for the one-time default seed of an instance profile. It lives under
+   * the supervisor's own instance directory, next to the runtime credentials, so
+   * it never enters the worktree and follows the profile across restarts.
+   */
+  private profileSeededPath(profile: string): string {
+    return join(this.config.instanceEnvDir, `${profile}.profile-seeded.json`);
+  }
+
   private async settleStart(
     repositoryId: string,
     generation: number,
@@ -1297,6 +1415,9 @@ export class InstanceManager {
         throw new Error('The runtime Bridge port did not open');
       }
       if (!ownerId) throw new Error('No owner is registered for the instance policy');
+      // First-run defaults are written once per instance; every later start only
+      // re-asserts the platform invariants so owner edits survive sleep/wake/restart.
+      const seedDefaults = !existsSync(this.profileSeededPath(prepared.profile));
       await configureProfile({
         port: prepared.dshPort,
         repository: prepared.repository.fullName,
@@ -1312,7 +1433,23 @@ export class InstanceManager {
         worktreeDir,
         prepare,
         timeoutMs: this.config.startTimeoutMs,
+        seedDefaults,
       });
+      if (seedDefaults) {
+        mkdirSync(dirname(this.profileSeededPath(prepared.profile)), {
+          recursive: true,
+          mode: 0o700,
+        });
+        writeFileSync(
+          this.profileSeededPath(prepared.profile),
+          JSON.stringify({
+            repositoryId,
+            profile: prepared.profile,
+            seededAt: new Date().toISOString(),
+          }),
+          { mode: 0o600 },
+        );
+      }
       if (this.stopped) return;
       const handle = this.handles.get(repositoryId);
       if (!handle || handle.generation !== generation) return;

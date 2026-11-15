@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, sep } from 'node:path';
 
 import {
@@ -50,6 +50,8 @@ interface CommandResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  /** Processes still alive in the child's session after a timeout cleanup. */
+  lingeringPids: number[];
 }
 
 const GIT_TIMEOUT_MS = 20_000;
@@ -86,6 +88,36 @@ export function checkIdentityProblem(identity: CheckIdentity): string | null {
     return '检查子进程 gid 必须不同于 supervisor';
   }
   return null;
+}
+
+/**
+ * Processes that still belong to the given session id. Used after a timeout to
+ * prove the cleanup: a grandchild that stayed behind keeps the leader's session
+ * unless it called setsid itself.
+ */
+function sessionMembers(sessionId: number): number[] {
+  if (!sessionId) return [];
+  const members: number[] = [];
+  let entries: string[] = [];
+  try {
+    entries = readdirSync('/proc');
+  } catch {
+    return members;
+  }
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number(entry);
+    if (pid === sessionId) continue;
+    try {
+      const stat = readFileSync(`/proc/${entry}/stat`, 'utf8');
+      const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+      // fields[0]=state [1]=ppid [2]=pgrp [3]=session
+      if (Number(fields[3]) === sessionId) members.push(pid);
+    } catch {
+      /* a process that exited while scanning */
+    }
+  }
+  return members;
 }
 
 /** Runs a command without a shell, bounded in time and output, and never throws. */
@@ -131,20 +163,45 @@ export async function runCommand(
     let stdout = '';
     let stderr = '';
     let timedOut = false;
+    let lingeringPids: number[] = [];
     const timer = setTimeout(() => {
       timedOut = true;
       // A shell command leaves grandchildren behind; killing the group (the
       // child is its leader) takes them too. The direct kill stays as a
       // fallback for a group that has already gone.
-      if (options.ownProcessGroup && child.pid) {
-        try {
-          process.kill(-child.pid, 'SIGKILL');
-        } catch {
-          child.kill('SIGKILL');
+      //
+      // A check child runs as the review identity, so a supervisor without
+      // CAP_KILL cannot signal it: the kill returns EPERM and the command keeps
+      // running after its timeout. Fall back to enumerating the child's session
+      // and reporting whatever survived, so a failed cleanup is visible instead
+      // of silently leaking a process tree.
+      const target = child.pid ?? 0;
+      const attempt = (): void => {
+        if (options.ownProcessGroup && target) {
+          try {
+            process.kill(-target, 'SIGKILL');
+            return;
+          } catch {
+            /* fall through to the direct kill */
+          }
         }
-      } else {
-        child.kill('SIGKILL');
-      }
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          /* recorded below through lingeringPids */
+        }
+      };
+      attempt();
+      setTimeout(() => {
+        lingeringPids = sessionMembers(target);
+        for (const pid of lingeringPids) {
+          try {
+            process.kill(pid, 'SIGKILL');
+          } catch {
+            /* reported in the run summary */
+          }
+        }
+      }, 500).unref?.();
     }, options.timeoutMs);
     const collect = (chunk: Buffer, target: 'stdout' | 'stderr') => {
       const text = chunk.toString('utf8');
@@ -158,11 +215,11 @@ export async function runCommand(
     child.stderr.on('data', (chunk: Buffer) => collect(chunk, 'stderr'));
     child.on('error', (error) => {
       clearTimeout(timer);
-      resolve({ code: null, stdout: '', stderr: error.message, timedOut });
+      resolve({ code: null, stdout: '', stderr: error.message, timedOut, lingeringPids });
     });
     child.on('close', (code) => {
       clearTimeout(timer);
-      resolve({ code, stdout, stderr, timedOut });
+      resolve({ code, stdout, stderr, timedOut, lingeringPids });
     });
   });
 }

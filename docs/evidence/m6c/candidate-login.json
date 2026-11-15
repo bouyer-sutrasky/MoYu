@@ -1,0 +1,33 @@
+{
+  "origin": "https://moyu-m6c.117-72-211-55.sslip.io",
+  "startedAt": "2026-11-15T10:05:09.910Z",
+  "steps": [
+    {
+      "name": "credential-loaded",
+      "at": "2026-11-15T10:05:10.039Z",
+      "count": 1
+    },
+    {
+      "name": "landing",
+      "at": "2026-11-15T10:05:11.380Z",
+      "loginVisible": true
+    },
+    {
+      "name": "login-submitted",
+      "at": "2026-11-15T10:05:11.485Z"
+    },
+    {
+      "name": "me",
+      "at": "2026-11-15T10:05:11.518Z",
+      "status": 200,
+      "owner": "MoYu Owner"
+    }
+  ],
+  "owner": {
+    "id": "6da28b8b-e1f8-48b5-bd75-57b6ca00059d",
+    "displayName": "MoYu Owner"
+  },
+  "ok": true,
+  "authenticated": true,
+  "finishedAt": "2026-11-15T10:05:11.592Z"
+}

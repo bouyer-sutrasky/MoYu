@@ -59,6 +59,19 @@ export interface SupervisorClient {
   cleanupInspect(repositoryId: string, ticketId: string): Promise<SupervisorCleanupInspection>;
   cleanupDelete(repositoryId: string, ticketId: string): Promise<SupervisorCleanupRemoval>;
   cleanupTrash(repositoryId: string): Promise<SupervisorTrashResult>;
+  /**
+   * One instance settings-panel call. The supervisor owns the port and relays the
+   * runtime's own status, so a stale revision (409) or an invalid value (422)
+   * reaches the browser unchanged.
+   */
+  panel(repositoryId: string, request: PanelRequest): Promise<PanelResult>;
+  /** Instance Deployment snapshot; the supervisor reads it from the profile patch. */
+  deployment(repositoryId: string): Promise<PanelResult>;
+  /** Applies set/unset operations against a revision, then restarts the instance. */
+  saveDeployment(
+    repositoryId: string,
+    body: { ops: unknown[]; revision: number },
+  ): Promise<PanelResult>;
 }
 
 /** Host-side worktree inspection payload, as the supervisor reports it. */
@@ -119,6 +132,20 @@ export interface SupervisorTrashResult {
  * action only; the supervisor resolves profile, state, port, worktree and
  * credentials from its own configuration.
  */
+/** A relayed runtime-panel call, restricted to the supervisor's allow-list. */
+export type PanelRequest =
+  | {
+      kind: 'read';
+      page: 'state' | 'settings' | 'sources' | 'models' | 'prompts' | 'policy-history';
+    }
+  | { kind: 'save-settings'; block: string; body: unknown }
+  | { kind: 'save-prompts'; body: unknown };
+
+export interface PanelResult {
+  status: number;
+  body: unknown;
+}
+
 export function createSupervisorClient(config: ApiConfig): SupervisorClient | null {
   if (!config.supervisorUrl || !config.supervisorToken) return null;
   const base = config.supervisorUrl.replace(/\/+$/, '');
@@ -156,7 +183,75 @@ export function createSupervisorClient(config: ApiConfig): SupervisorClient | nu
       clearTimeout(timer);
     }
   };
+  /**
+   * Raw relay: unlike `request`, it keeps the supervisor's status and body so the
+   * browser can render a 409 revision conflict or a 422 validation failure.
+   */
+  const rawRequest = async (
+    path: string,
+    method: 'GET' | 'PUT',
+    body?: unknown,
+    timeoutMs = 20_000,
+  ): Promise<PanelResult> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(`${base}${path}`, {
+        method,
+        headers: {
+          authorization: `Bearer ${config.supervisorToken}`,
+          ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        signal: controller.signal,
+      });
+      const text = await response.text();
+      let parsed: unknown = null;
+      if (text) {
+        try {
+          parsed = JSON.parse(text) as unknown;
+        } catch {
+          parsed = { error: text.slice(0, 500) };
+        }
+      }
+      return { status: response.status, body: parsed };
+    } catch (error) {
+      return {
+        status: 503,
+        body: {
+          error: {
+            code: 'supervisor_unreachable',
+            message: `The host supervisor is unreachable: ${
+              error instanceof Error ? error.message.slice(0, 200) : 'unknown error'
+            }`,
+          },
+        },
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
   return {
+    deployment: (repositoryId) =>
+      rawRequest(`/control/v1/instances/${repositoryId}/deployment`, 'GET'),
+    saveDeployment: (repositoryId, body) =>
+      rawRequest(`/control/v1/instances/${repositoryId}/deployment`, 'PUT', body, 60_000),
+    panel: (repositoryId, panelRequest) => {
+      const prefix = `/control/v1/instances/${repositoryId}/panel`;
+      switch (panelRequest.kind) {
+        case 'read':
+          return rawRequest(`${prefix}/${panelRequest.page}`, 'GET');
+        case 'save-settings':
+          return rawRequest(
+            `${prefix}/settings/${encodeURIComponent(panelRequest.block)}`,
+            'PUT',
+            panelRequest.body,
+          );
+        case 'save-prompts':
+          return rawRequest(`${prefix}/prompts`, 'PUT', panelRequest.body);
+      }
+    },
     prepare: (repositoryId) => request(`/control/v1/instances/${repositoryId}/prepare`, 'POST', {}),
     wake: (repositoryId, reason) =>
       request(`/control/v1/instances/${repositoryId}/wake`, 'POST', {

@@ -1,4 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import Fastify, { type FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -11,6 +13,14 @@ import type { SupervisorLogger } from './logger';
 import type { InstanceManager } from './manager';
 import { createReviewService } from './review';
 import { createCleanupService } from './cleanup';
+import { applyDeploymentOps, readDeployment } from './deployment-config';
+import {
+  PANEL_PROMPTS_PATH,
+  PANEL_READ_PATHS,
+  isSettingsBlock,
+  panelCall,
+  panelErrorText,
+} from './panel-proxy';
 
 const wakeSchema = z
   .object({
@@ -148,6 +158,189 @@ export function buildSupervisorServer(options: {
   app.post('/control/v1/instances/:repositoryId/cleanup/trash', async (request) => {
     const repositoryId = repositoryIdOf(request);
     return { data: await cleanup.emptyTrash(repositoryId) };
+  });
+
+  /**
+   * Loopback proxy for one instance's settings panel. The browser reaches this
+   * only through the authenticated API; the port comes from the instance row and
+   * every path is checked against an allow-list.
+   */
+  const panelPortFor = async (repositoryId: string): Promise<number> => {
+    const row = await options.store.getInstance(repositoryId);
+    if (!row) {
+      throw Object.assign(new Error('Instance not found'), { statusCode: 404 });
+    }
+    if (row.state !== 'online' || !row.port) {
+      throw Object.assign(
+        new Error(
+          `The runtime is not online (state=${row.state}); settings can only be read or written while it is running`,
+        ),
+        { statusCode: 409 },
+      );
+    }
+    return row.port;
+  };
+
+  app.get('/control/v1/instances/:repositoryId/panel/:page', async (request, reply) => {
+    const repositoryId = repositoryIdOf(request);
+    const page = (request.params as { page?: string }).page ?? '';
+    const path = page === 'policy-history' ? '/policy/history' : `/${page}`;
+    if (!PANEL_READ_PATHS.has(path)) {
+      return reply.code(422).send({
+        error: { code: 'invalid_request', message: `Unsupported panel page: ${page}` },
+      });
+    }
+    const port = await panelPortFor(repositoryId);
+    const result = await panelCall({ port, path });
+    if (result.status >= 400) {
+      logger.info(
+        {
+          event: 'supervisor.panel_read_failed',
+          repositoryId,
+          page,
+          detail: panelErrorText(result),
+        },
+        'runtime panel read failed',
+      );
+    }
+    return reply.code(result.status).send(result.body);
+  });
+
+  app.put('/control/v1/instances/:repositoryId/panel/settings/:block', async (request, reply) => {
+    const repositoryId = repositoryIdOf(request);
+    const raw = (request.params as { block?: string }).block ?? '';
+    let block: string;
+    try {
+      block = decodeURIComponent(raw);
+    } catch {
+      return reply
+        .code(422)
+        .send({ error: { code: 'invalid_request', message: 'Malformed settings block' } });
+    }
+    if (!isSettingsBlock(block)) {
+      return reply.code(422).send({
+        error: { code: 'invalid_request', message: `Unsupported settings block: ${block}` },
+      });
+    }
+    const port = await panelPortFor(repositoryId);
+    const result = await panelCall({
+      port,
+      path: `/settings/${encodeURIComponent(block)}`,
+      method: 'PUT',
+      body: request.body ?? {},
+    });
+    logger.info(
+      {
+        event: 'supervisor.panel_settings_saved',
+        repositoryId,
+        block,
+        status: result.status,
+        ...(result.status >= 400 ? { detail: panelErrorText(result) } : {}),
+      },
+      'runtime settings save relayed',
+    );
+    return reply.code(result.status).send(result.body);
+  });
+
+  app.put('/control/v1/instances/:repositoryId/panel/prompts', async (request, reply) => {
+    const repositoryId = repositoryIdOf(request);
+    const port = await panelPortFor(repositoryId);
+    const result = await panelCall({
+      port,
+      path: PANEL_PROMPTS_PATH,
+      method: 'PUT',
+      body: request.body ?? {},
+    });
+    return reply.code(result.status).send(result.body);
+  });
+
+  /** Reads the instance's Deployment snapshot from its own profile patch. */
+  const profilePatchFor = async (
+    repositoryId: string,
+  ): Promise<{ profile: string; path: string }> => {
+    const row = await options.store.getInstance(repositoryId);
+    if (!row?.profile) {
+      throw Object.assign(new Error('Instance profile is not prepared yet'), { statusCode: 404 });
+    }
+    return {
+      profile: row.profile,
+      path: join(config.dshHome, 'profiles', row.profile, 'cordis.patch.yml'),
+    };
+  };
+
+  app.get('/control/v1/instances/:repositoryId/deployment', async (request) => {
+    const repositoryId = repositoryIdOf(request);
+    const target = await profilePatchFor(repositoryId);
+    const text = readFileSync(target.path, 'utf8');
+    return { data: { ...readDeployment(text), profile: target.profile } };
+  });
+
+  app.put('/control/v1/instances/:repositoryId/deployment', async (request, reply) => {
+    const repositoryId = repositoryIdOf(request);
+    const body = z
+      .object({
+        ops: z
+          .array(
+            z.union([
+              z
+                .object({
+                  op: z.literal('set'),
+                  path: z.array(z.string()).min(1),
+                  value: z.unknown(),
+                })
+                .strict(),
+              z.object({ op: z.literal('unset'), path: z.array(z.string()).min(1) }).strict(),
+            ]),
+          )
+          .min(1)
+          .max(8),
+        revision: z.number().int().nonnegative(),
+      })
+      .strict()
+      .parse(request.body ?? {});
+    const target = await profilePatchFor(repositoryId);
+    const before = readFileSync(target.path, 'utf8');
+    const snapshot = readDeployment(before);
+    if (snapshot.revision !== body.revision) {
+      return reply.code(409).send({
+        error: 'The Deployment settings changed. Reload before saving.',
+        revision: snapshot.revision,
+      });
+    }
+    let applied;
+    try {
+      applied = applyDeploymentOps(before, body.ops as never);
+    } catch (error) {
+      return reply.code(422).send({
+        error: error instanceof Error ? error.message : 'Invalid Deployment change',
+      });
+    }
+    // Write to a sibling file and rename, so a crash cannot truncate the profile.
+    const temporary = `${target.path}.tmp-${process.pid}`;
+    writeFileSync(temporary, applied.text, { mode: 0o600 });
+    renameSync(temporary, target.path);
+    const restart = await manager.restart(repositoryId);
+    logger.info(
+      {
+        event: 'supervisor.deployment_saved',
+        repositoryId,
+        profile: target.profile,
+        applied: applied.applied,
+        restarting: restart.restarted,
+      },
+      'instance Deployment settings saved',
+    );
+    return {
+      data: {
+        saved: true,
+        revision: applied.revision,
+        applied: applied.applied,
+        restarting: restart.restarted,
+        ...(restart.restarted
+          ? {}
+          : { restartRequired: true, restartRefused: restart.reason ?? null }),
+      },
+    };
   });
 
   app.get('/control/v1/instances/:repositoryId', async (request) => {
