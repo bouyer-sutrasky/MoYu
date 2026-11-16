@@ -26,7 +26,9 @@ async function startFakeBridge(events: BridgeEvent[]): Promise<FakeBridge> {
       const limit = Number(url.searchParams.get('limit') ?? '100');
       const page = events.filter((event) => event.seq > after).slice(0, limit);
       response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({ events: page, next: page.at(-1)?.seq ?? after, hasMore: false }));
+      response.end(
+        JSON.stringify({ events: page, next: page.at(-1)?.seq ?? after, hasMore: false }),
+      );
       return;
     }
     response.writeHead(404, { 'content-type': 'application/json' });
@@ -103,10 +105,10 @@ describe('ignored admission releases the execution lease on real PostgreSQL', ()
        values ($1, $2, now() + interval '1 hour') returning id`,
       [repositoryId, `task:${taskId}`],
     );
-    await testDatabase.pool.query(
-      `update task_links set runtime_lease_id = $2 where id = $1`,
-      [taskId, lease.rows[0]!.id],
-    );
+    await testDatabase.pool.query(`update task_links set runtime_lease_id = $2 where id = $1`, [
+      taskId,
+      lease.rows[0]!.id,
+    ]);
 
     bridge.events.push({
       seq: 1,

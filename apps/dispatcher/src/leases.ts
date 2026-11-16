@@ -422,7 +422,9 @@ export async function releaseTaskLease(
     const safe =
       options.proof !== undefined ||
       options.allowUnproven === true ||
-      ['waiting_input', 'awaiting_review', 'completed', 'closed_unmerged', 'not_accepted'].includes(row.state) ||
+      ['waiting_input', 'awaiting_review', 'completed', 'closed_unmerged', 'not_accepted'].includes(
+        row.state,
+      ) ||
       (row.state === 'stopped' && row.stopped_at !== null);
     if (!safe) {
       await client.query('commit');
