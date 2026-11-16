@@ -146,7 +146,7 @@ export type PanelRequest =
 
 /** Fixed, server-owned panel operations; no browser-supplied path or URL. */
 export type PanelAction =
-  | { kind: 'prompts-preview'; body: { config: unknown } }
+  | { kind: 'prompts-preview'; body: unknown }
   | { kind: 'source-labels'; sourceId: string }
   | { kind: 'policy-sync'; sourceId: string }
   | { kind: 'executor-pause'; paused: boolean }
