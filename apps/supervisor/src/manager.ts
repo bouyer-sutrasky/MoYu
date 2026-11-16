@@ -814,6 +814,9 @@ export class InstanceManager {
   async tick(): Promise<void> {
     if (this.stopped) return;
     await this.withLock(async () => {
+      // A wake/timer can queue a tick while shutdown is waiting for the lock.
+      // Re-check after acquiring it so no query runs against an ended pool.
+      if (this.stopped) return;
       const rows = await this.store.listInstances();
       await this.sampleResources(rows).catch((error) => {
         this.logger.warn(
@@ -1159,6 +1162,14 @@ export class InstanceManager {
         },
         'removed a stale runtime lock before start',
       );
+    }
+    if (prepared.runtimeUid !== undefined && prepared.runtimeGid !== undefined) {
+      // The shared state parent is traverse-only. Pre-create the runtime's own
+      // lock directory with its identity so it can open the lock without being
+      // able to write arbitrary entries into another repository's state.
+      mkdirSync(staleLock, { recursive: true, mode: 0o700 });
+      chownSync(staleLock, prepared.runtimeUid, prepared.runtimeGid);
+      chmodSync(staleLock, 0o700);
     }
     const runtimeHome = prepared.runtimeHome ?? this.config.dshHome;
     const env: Record<string, string> = {

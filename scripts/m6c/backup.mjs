@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { chmodSync, existsSync, readFileSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import {
   assertAllowedPath,
@@ -131,7 +131,7 @@ try {
         database.close();
       }
       chmodSync(target, 0o600);
-      addPart(`sqlite:${basename(source)}`, 'sqlite-backup', target, { source });
+      addPart(`sqlite:${source.slice(dshHome.length + 1)}`, 'sqlite-backup', target, { source });
     }
   }
 

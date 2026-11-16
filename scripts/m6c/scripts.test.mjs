@@ -104,6 +104,20 @@ test('matrix checker fails a Pass row without evidence', () => {
   assert.match(result.stderr, /evidence is missing/);
 });
 
+test('run logs redact PostgreSQL credentials', () => {
+  const result = spawnSync(
+    process.execPath,
+    [
+      '-e',
+      "import('./scripts/m6c/lib.mjs').then((m) => m.run('true', ['postgresql://user:s3cret@127.0.0.1/db']))",
+    ],
+    { cwd: join(import.meta.dirname, '..', '..'), encoding: 'utf8', env },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /[REDACTED]/);
+  assert.doesNotMatch(result.stderr, /s3cret/);
+});
+
 test('backup status prints its resolved target without writing', () => {
   const dsh = join(root, 'dsh');
   mkdirSync(dsh, { recursive: true });

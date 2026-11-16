@@ -158,9 +158,16 @@ export function assertDatabaseTarget(url, options = {}) {
   return { url, database: name, host: parsed.hostname, port: parsed.port || '5432' };
 }
 
+export function redact(value) {
+  return String(value)
+    .replace(/postgres(?:ql)?:\/\/[^\s'"]+/g, 'postgresql://[REDACTED]')
+    .replace(/(DATABASE_URL=)[^\s]+/g, '$1[REDACTED]');
+}
+
 export function run(command, args, options = {}) {
   const rendered = [command, ...args].join(' ');
-  if (!options.quiet) process.stderr.write(`+ ${rendered}\n`);
+  const safe = redact(rendered);
+  if (!options.quiet) process.stderr.write(`+ ${safe}\n`);
   const result = spawnSync(command, args, {
     encoding: 'utf8',
     shell: false,
@@ -169,14 +176,16 @@ export function run(command, args, options = {}) {
   });
   if (result.error) throw result.error;
   if (result.status !== 0 && options.allowFailure !== true) {
-    const detail = `${result.stderr ?? ''}${result.stdout ?? ''}`.trim().slice(-2000);
-    throw new Error(`command failed (exit ${result.status ?? 'unknown'}): ${rendered}\n${detail}`);
+    const detail = redact(`${result.stderr ?? ''}${result.stdout ?? ''}`)
+      .trim()
+      .slice(-2000);
+    throw new Error(`command failed (exit ${result.status ?? 'unknown'}): ${safe}\n${detail}`);
   }
   return {
     status: result.status ?? -1,
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
-    command: rendered,
+    command: safe,
   };
 }
 
