@@ -11,6 +11,9 @@ Group=moyu-m6c
 WorkingDirectory=/opt/moyu-m6c/current
 EnvironmentFile=/etc/moyu-m6c/dispatcher.env
 Slice=moyu-m6c.slice
+RuntimeDirectory=moyu-m6c
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
 ExecStart=/opt/moyu-m6c/runtime/node24/bin/node apps/dispatcher/dist/main.js
 Restart=on-failure
 RestartSec=3
@@ -27,6 +30,8 @@ AmbientCapabilities=
 UMask=0077
 ReadWritePaths=/var/lib/moyu-m6c /run/moyu-m6c
 MemoryMax=1G
+StandardOutput=append:/var/lib/moyu-m6c/logs/dispatcher.log
+StandardError=append:/var/lib/moyu-m6c/logs/dispatcher.log
 
 [Install]
 WantedBy=multi-user.target

@@ -13,6 +13,9 @@ SupplementaryGroups=moyu-m6c-check
 WorkingDirectory=/opt/moyu-m6c/current
 EnvironmentFile=/etc/moyu-m6c/supervisor.env
 Slice=moyu-m6c.slice
+RuntimeDirectory=moyu-m6c
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
 # The supervisor is the trusted launcher. CAP_SETUID/GID let it enter each
 # repository's low-privilege identity; CAP_SETPCAP lets setpriv drop the child's
 # bounding set; CAP_KILL cleans up a timed-out check; CAP_CHOWN/FOWNER create
@@ -20,6 +23,7 @@ Slice=moyu-m6c.slice
 # supervisor maintain the profile patch after handing the directory to the runtime. Runtime and check children clear
 # their own bounding/ambient sets before exec.
 Delegate=yes
+DelegateSubgroup=supervisor
 CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_KILL CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
 AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_KILL CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
 NoNewPrivileges=yes
@@ -30,11 +34,13 @@ ProtectKernelModules=yes
 ProtectControlGroups=no
 RestrictSUIDSGID=yes
 UMask=0002
-ReadWritePaths=/var/lib/moyu-m6c /run/moyu-m6c /var/lib/moyu-m6c-check
+ReadWritePaths=/var/lib/moyu-m6c /run/moyu-m6c /var/lib/moyu-m6c-check /sys/fs/cgroup
 ExecStart=/opt/moyu-m6c/runtime/node24/bin/node apps/supervisor/dist/main.js
 Restart=on-failure
 RestartSec=3
 MemoryMax=4G
+StandardOutput=append:/var/lib/moyu-m6c/logs/supervisor.log
+StandardError=append:/var/lib/moyu-m6c/logs/supervisor.log
 
 [Install]
 WantedBy=multi-user.target
