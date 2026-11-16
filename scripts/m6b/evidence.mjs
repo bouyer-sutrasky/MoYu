@@ -537,7 +537,7 @@ async function captureActivity(page, viewport, name, records, meta) {
 
 async function captureSettings(page, viewport, name, records, meta) {
   await openMobileNav(page);
-  await page.getByLabel('工作台导航').getByRole('button', { name: '设置' }).click();
+  await page.getByLabel('工作台导航').getByRole('button', { name: '设置', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '设置' });
   await dialog.waitFor({ state: 'visible' });
   await page.waitForTimeout(700);
@@ -826,7 +826,10 @@ async function main() {
     requestResult: 'denied',
   });
   await openMobileNav(denied.page);
-  await denied.page.getByLabel('工作台导航').getByRole('button', { name: '设置' }).click();
+  await denied.page
+    .getByLabel('工作台导航')
+    .getByRole('button', { name: '设置', exact: true })
+    .click();
   const deniedDialog = denied.page.getByRole('dialog', { name: '设置' });
   await deniedDialog.waitFor();
   await deniedDialog.getByRole('button', { name: '通知', exact: true }).click();
@@ -864,7 +867,10 @@ async function main() {
     requestResult: 'granted',
   });
   await openMobileNav(granted.page);
-  await granted.page.getByLabel('工作台导航').getByRole('button', { name: '设置' }).click();
+  await granted.page
+    .getByLabel('工作台导航')
+    .getByRole('button', { name: '设置', exact: true })
+    .click();
   const grantedDialog = granted.page.getByRole('dialog', { name: '设置' });
   await grantedDialog.waitFor();
   await grantedDialog.getByRole('button', { name: '通知', exact: true }).click();
@@ -973,7 +979,7 @@ async function main() {
   {
     const { context, page } = await openPage(browser, HEAD_URL, SESSION_TOKEN, desktop, 'light');
     await openMobileNav(page);
-    await page.getByLabel('工作台导航').getByRole('button', { name: '设置' }).click();
+    await page.getByLabel('工作台导航').getByRole('button', { name: '设置', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: '设置' });
     await dialog.waitFor();
     await dialog.getByRole('button', { name: '资源清理', exact: true }).click();

@@ -109,7 +109,7 @@ async function fetchJson(page, requestPath, options = {}) {
 
 async function openSettings(page, section) {
   const sidebar = page.getByLabel('工作台导航');
-  await sidebar.getByRole('button', { name: '设置' }).click();
+  await sidebar.getByRole('button', { name: '设置', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '设置' });
   await dialog.waitFor({ state: 'visible' });
   if (section) {
