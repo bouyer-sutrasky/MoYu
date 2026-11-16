@@ -441,7 +441,7 @@ export function buildSupervisorServer(options: {
         port: instance.port,
         path: '/prompts/preview',
         method: 'POST',
-        body: { config: body.data.config },
+        body: body.data.config,
       });
       return reply.code(result.status).send(result.body);
     },
