@@ -1544,8 +1544,8 @@ export class InstanceManager {
     const worktreeDir = join(this.config.worktreeRoot, prepared.profile);
     // The worktree root is group-shared with the review check identity. A fresh
     // profile directory must inherit that boundary too; 0700 here made checks
-    // fail before the first command even though the root was 2775.
-    mkdirSync(worktreeDir, { recursive: true, mode: 0o2775 });
+    // fail before the first command even though the root is 2775.
+    mkdirSync(worktreeDir, { recursive: true, mode: 0o2770 });
     const worktreeGid = prepared.checkGid ?? this.config.reviewCheckGid;
     if (worktreeGid !== undefined) {
       try {
@@ -1557,7 +1557,7 @@ export class InstanceManager {
       }
     }
     try {
-      chmodSync(worktreeDir, 0o2775);
+      chmodSync(worktreeDir, 0o2770);
     } catch {
       // Best effort on filesystems without group/ACL support; the check still
       // fails closed when it cannot traverse.
