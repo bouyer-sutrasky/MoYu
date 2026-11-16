@@ -111,6 +111,29 @@ function prepareRuntimeIdentity(
     chmodSync(ghTarget, 0o700);
   }
 
+  // Git/SSH material is per runtime home too. The shared config uses an
+  // absolute IdentityFile path; rewrite it to the isolated copy so the runtime
+  // can authenticate without read access to the supervisor home.
+  const sshSource = join(dirname(config.dshHome), '.ssh');
+  if (pathExists(sshSource)) {
+    const sshTarget = join(home, '.ssh');
+    cpSync(sshSource, sshTarget, { recursive: true });
+    const sshConfig = join(sshTarget, 'config');
+    if (pathExists(sshConfig)) {
+      const rewritten = readFileSync(sshConfig, 'utf8').replaceAll(
+        join(sshSource, 'id_ed25519'),
+        join(sshTarget, 'id_ed25519'),
+      );
+      writeFileSync(sshConfig, rewritten, { mode: 0o600 });
+    }
+    chownTree(sshTarget, uid, gid);
+    chmodSync(sshTarget, 0o700);
+    for (const entry of readdirSync(sshTarget, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      chmodSync(join(sshTarget, entry.name), entry.name === 'known_hosts' ? 0o644 : 0o600);
+    }
+  }
+
   // The DSH state root is per repository too. It must be writable by the
   // runtime so proper-lockfile can create <stateDir>.lock without giving the
   // runtime write access to the shared state parent.
