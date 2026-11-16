@@ -3,6 +3,20 @@
 本文件记录**当前真实环境**，供每个阶段任务直接引用，不必在 Issue 里重复交代。
 事实变更时（换域名、换端口、换机器）更新本文件并走 PR，不要散落在 Issue 里。
 
+## 0. 2026-11-16 现场校正
+
+- 公网 `https://moyu.sutrasky.com` 当前 nginx upstream 是 `127.0.0.1:4310`，由
+  `moyu-m6c-api.service` 提供服务；旧 `moyu.service`（4300）已停止但仍 enabled。
+- 三服务当前实际 release 不一致：API `/opt/moyu-m6c/releases/7a12dbcab461`，
+  supervisor `e3a677e03b4d-kill`，dispatcher `e910ccce6dad-lost`。这是 M6-C
+  收尾必须消除的版本混跑，不能当作已发布状态。
+- 在用数据库是 `moyu_m6c`，2026-11-16 回读 20 条迁移；0019 正向文件 hash
+  为 `e26aa1a486c36303d69dbae6b5f125187738d1c3460184f119e009a95fda7453`。
+- M6-C unit 模板在 `deploy/systemd/moyu-m6c-*.{service,slice}`；正式切换必须
+  三服务指向同一 release，并用 `scripts/m6c/verify-running.mjs` 回读 MainPID、
+  cwd、cmdline 和制品 hash。
+- 本节是现场事实；正式发布后必须用同一脚本重写，而不是沿用历史快照。
+
 ## 1. 仓库与流程
 
 | 项 | 值 |
@@ -39,9 +53,9 @@ remote: - 2 of 2 required status checks are expected.
 
 | 项 | 值 |
 | --- | --- |
-| 应用监听 | `127.0.0.1:4300` |
+| 应用监听 | `127.0.0.1:4310`（M6-C candidate；旧 4300 已停） |
 | nginx vhost | `/etc/nginx/sites-available/moyu.conf`（软链到 `sites-enabled/`） |
-| 反代目标 | `http://127.0.0.1:4300` |
+| 反代目标 | `http://127.0.0.1:4310`（2026-11-16 实测） |
 | WebSocket/SSE | 升级头已配；`proxy_read_timeout 3600s` |
 | 健康检查 | 应用起来前 `https://moyu.sutrasky.com` 返回 502，属预期 |
 

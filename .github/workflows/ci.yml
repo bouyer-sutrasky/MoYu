@@ -41,6 +41,9 @@ jobs:
       - name: Static checks and unit tests
         run: pnpm check
 
+      - name: M6-C CLI safety tests
+        run: pnpm test:m6c
+
       - name: Build
         run: pnpm build
 
@@ -84,5 +87,5 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Integration tests
+      - name: Integration tests (including supervisor settings boundary)
         run: pnpm test:integration

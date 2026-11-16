@@ -1,162 +1,223 @@
-# M6-C candidate runbook
+# MoYu M6-C runbook
 
-Scope: the **isolated candidate** stack on jd-mc. Production (`moyu.sutrasky.com`,
-`moyu.service`, port 3082) is out of scope and is not modified by these steps.
+This runbook describes the **current** candidate/production-capable stack on
+`jd-mc`. It is written to be executable without guessing paths, ports,
+migration counts or service identities. Re-read `docs/environment-baseline.md`
+and the latest `docs/evidence/m6c/<run-id>/release-manifest.json` before a
+release window; the values below are a 2026-11-16 baseline, not a permanent
+promise.
 
-## Components
+## Current entry and services
 
 | component | unit | user | listen |
 | --- | --- | --- | --- |
 | API + web | `moyu-m6c-api.service` | `moyu-m6c` | `127.0.0.1:4310` |
 | supervisor | `moyu-m6c-supervisor.service` | `moyu-m6c` | `127.0.0.1:4491` |
 | dispatcher | `moyu-m6c-dispatcher.service` | `moyu-m6c` | none |
-| runtime instances | started by the supervisor | `moyu-m6c` | `3461/3462`, `3463/3464`, `3465/3466` |
-| review checks | child of the supervisor | `moyu-m6c-check` (987:981) via `setpriv` | none |
+| runtime instances | started by the supervisor | per-repository identity when configured; otherwise the candidate fallback | `3461/3462`, `3463/3464`, `3465/3466` |
+| review checks | child of the supervisor | `moyu-m6c-check` / per-repository check identity when configured | none |
 
-Boundary slice `moyu-m6c.slice` (`MemoryMax=8G`, `MemoryHigh=6G`). HTTPS entry
-`https://moyu-m6c.117-72-211-55.sslip.io`, vhost `/etc/nginx/sites-available/moyu-m6c.conf`,
-own Let's Encrypt certificate, upstream `127.0.0.1:4310`.
+As of 2026-11-16 the public entry `https://moyu.sutrasky.com` is nginx →
+`127.0.0.1:4310` and therefore reaches the candidate stack. The old
+`moyu.service` is stopped but still enabled; do not start it while the M6-C
+stack owns the entry. The three M6-C services must always run from the same
+immutable release and manifest.
 
 ## Paths
 
 ```
-/opt/moyu-m6c/app                         staged build (root-owned, world-readable)
+/opt/moyu-m6c/current                     atomic symlink to one release
+/opt/moyu-m6c/releases/<sha>              immutable release directories
 /opt/moyu-m6c/artifacts/superagent-<sha>  pinned dsh-superagent artifact
-/opt/moyu-m6c/profile-template            DSH profile template (placeholders per profile)
-/opt/moyu-m6c/runtime/{node24,pnpm}       Node 24 copy and standalone pnpm 11.7.0
-/opt/moyu-m6c/bin/{node,pnpm,gh-agent}    PATH shims for the service and check identities
-/etc/moyu-m6c/{api,supervisor,dispatcher}.env   0600 root, values never committed
-/etc/moyu-m6c/instances.json              pinned repository -> profile/port mapping
+/opt/moyu-m6c/profile-template            DSH profile template
+/opt/moyu-m6c/runtime/{node24,pnpm}       Node 24 and standalone pnpm
+/etc/moyu-m6c/{api,supervisor,dispatcher}.env   0600 root-owned values
+/etc/moyu-m6c/instances.json              repository -> profile/port mapping
 /var/lib/moyu-m6c/{dsh,credentials,instances,logs,worktrees,artifacts}
 ```
 
-## Start / stop
+Never edit files inside `/opt/moyu-m6c/releases/<sha>` after it is built. A new
+release is a new directory; `current` changes atomically.
 
-Migrations must run before the supervisor starts (it reads
-`repositories.check_commands`, added by `0018`):
+## Start and stop
+
+Migrations run **before** the supervisor starts because it reads
+`repositories.check_commands`:
 
 ```bash
-cd /opt/moyu-m6c/app
+cd /opt/moyu-m6c/current
 set -a; . /etc/moyu-m6c/api.env; set +a
-/opt/moyu-m6c/runtime/node24/bin/node /opt/moyu-m6c/runtime/pnpm/node_modules/pnpm/bin/pnpm.cjs \
+/opt/moyu-m6c/runtime/node24/bin/node \
+  /opt/moyu-m6c/runtime/pnpm/node_modules/pnpm/bin/pnpm.cjs \
   --filter @moyu/db db:migrate
-systemctl start moyu-m6c.slice moyu-m6c-api moyu-m6c-supervisor moyu-m6c-dispatcher
+
+systemctl start moyu-m6c.slice
+systemctl start moyu-m6c-api.service
+# Wait for /readyz before starting the supervisor.
+systemctl start moyu-m6c-supervisor.service
+systemctl start moyu-m6c-dispatcher.service
 ```
 
-Instances start on demand when a wake request arrives (web task or reply). They are not
-enabled at boot on purpose: a sleeping repository must not be resurrected by a host reboot.
+Stop in the reverse order so no dispatcher delivers into a runtime whose
+supervisor is already gone:
 
-## Health
+```bash
+systemctl stop moyu-m6c-dispatcher.service
+systemctl stop moyu-m6c-supervisor.service
+systemctl stop moyu-m6c-api.service
+systemctl stop moyu-m6c.slice
+```
+
+Instances start on demand. They are deliberately not enabled at boot: a
+repository that was sleeping before a host reboot must not be resurrected by
+the reboot. The supervisor's persisted `desired_state` is authoritative.
+
+## Health and actual-artifact verification
 
 ```bash
 curl -fsS http://127.0.0.1:4310/readyz
 TOKEN=$(grep '^SUPERVISOR_TOKEN=' /etc/moyu-m6c/supervisor.env | cut -d= -f2-)
 curl -fsS -H "Authorization: Bearer $TOKEN" http://127.0.0.1:4491/control/v1/health
-curl -fsS https://moyu-m6c.117-72-211-55.sslip.io/healthz
+curl -fsS https://moyu.sutrasky.com/readyz
 ```
 
-The dispatcher has **no HTTP health endpoint**. Prove it with the process, its log
-(`dispatcher.ready` in `/var/lib/moyu-m6c/logs/dispatcher.log`), the durable cursors in
-`runtime_cursors`, and an actual `deliveries` row.
+The dispatcher has no HTTP health endpoint. Prove it with the process, its
+`dispatcher.ready` log, the durable `runtime_cursors`, and an actual
+`deliveries` row.
 
-## Logs
-
-`/var/lib/moyu-m6c/logs/{api,supervisor,dispatcher}.log` and
-`/var/lib/moyu-m6c/logs/<profile>.log` per instance. No logrotate rule is installed for the
-candidate yet.
-
-## Credentials
-
-`/var/lib/moyu-m6c/credentials/<repositoryId>.json` (0600, written by the supervisor) holds
-the per-repository Bridge token; the database stores only `file:<repositoryId>.json` and a
-sha256 of the callback token. `/var/lib/moyu-m6c/dsh/.env` holds `COMMAND_CODE_API_KEY`.
-Neither is in the repository and neither is printed by these steps.
-
-## Rollback (candidate only)
+For every release, run the manifest verifier. It reads `systemctl MainPID`,
+`/proc/<pid>/cwd`, `/proc/<pid>/cmdline`, the artifact SHA-256 under the actual
+cwd, and the health endpoints:
 
 ```bash
-systemctl stop moyu-m6c-dispatcher moyu-m6c-supervisor moyu-m6c-api
-rm -f /etc/nginx/sites-enabled/moyu-m6c.conf
-nginx -t && systemctl reload nginx
-systemctl disable --now moyu-m6c-api moyu-m6c-supervisor moyu-m6c-dispatcher
-systemctl stop moyu-m6c.slice
-dropdb --if-exists moyu_m6c
-userdel moyu-m6c-check; userdel moyu-m6c
-rm -rf /opt/moyu-m6c /var/lib/moyu-m6c /etc/moyu-m6c
+node scripts/m6c/verify-running.mjs \
+  --manifest docs/evidence/m6c/<run-id>/release-manifest.json \
+  --unit-prefix moyu-m6c \
+  --release-root /opt/moyu-m6c/current \
+  --supervisor-token-file /etc/moyu-m6c/supervisor-token
 ```
 
-Pre-change nginx state: `/root/m6c-nginx-sites-before.txt`; site config copy:
-`/root/m6c-backup-20261115/`.
+All three lines must say `OK`. A healthy HTTP response alone is not enough; a
+mixed-release stack can still answer one endpoint.
 
-## Known limitations
+## Logs and credentials
 
-- `repositories.status` stays `provisioning`; judge an instance by `runtime.reasonCode`.
-- Per-instance memory limits require the delegated cgroup above; without it the supervisor
-  refuses to start an instance ("refusing to start an unmetered instance").
-- The candidate certificate is for an `sslip.io` hostname. WebAuthn credentials registered
-  there are candidate-only and must never be used as the production passkey.
-- Acceptance automation uses a CDP virtual authenticator: it proves the ceremony works, it is
-  not a real-device passkey.
-- `moyu.sutrasky.com` is **not** pointed at this stack. Moving it there is the formal release
-  step and needs the owner's real-device passkey registration.
+Logs: `/var/lib/moyu-m6c/logs/{api,supervisor,dispatcher}.log` and
+`/var/lib/moyu-m6c/logs/<profile>.log`.
 
-## 备份、恢复与回滚（演练过的步骤）
+Per-repository Bridge credentials are written by the supervisor to
+`/var/lib/moyu-m6c/credentials/<repositoryId>.json` (0600). The database stores
+only `file:<repositoryId>.json` and a SHA-256 of the callback token. The DSH
+credential source is `/var/lib/moyu-m6c/dsh/.env`; never print or commit it.
 
-所有命令都在候选机上以 root 执行。生产库 `moyu` 不在这些步骤里被打开或写入。
+## Release switch and rollback
 
-### 备份
+A release switch is a **maintenance operation**, not a symlink-only action.
+
+1. Freeze new admission: stop `moyu-m6c-dispatcher.service` first. Wait for
+   in-flight deliveries and leases to settle; record the last cursor, delivery,
+   operation and lease generation per repository.
+2. Stop the supervisor and API. Verify no runtime worker or Bridge port remains.
+3. Take a fresh consistent backup set with `scripts/m6c/backup.mjs` and verify
+   every part hash before continuing.
+4. Point `current` at the already-built candidate release, then start
+   API → supervisor → dispatcher. Run `verify-running` after each service is
+   healthy.
+5. Run one real task, a stop/resume, and a settings readback before reopening
+   admission.
+
+Rollback to a **compatible** previous release uses the same sequence with the
+previous immutable release:
 
 ```bash
-DIR=/root/m6c-backups/$(date -u +%Y%m%dT%H%M%SZ); install -d -m 0700 "$DIR"
-export PGPASSWORD="$(cat /etc/moyu-m6c/.dbpass)"
-pg_dump -h 127.0.0.1 -U moyu_m6c -d moyu_m6c -Fc -f "$DIR/moyu_m6c.dump"
+systemctl stop moyu-m6c-dispatcher.service moyu-m6c-supervisor.service moyu-m6c-api.service
+readlink -f /opt/moyu-m6c/current                 # record current and target SHA
+ln -sfn /opt/moyu-m6c/releases/<previous-sha> /opt/moyu-m6c/current
+systemctl start moyu-m6c-api.service
+systemctl start moyu-m6c-supervisor.service
+systemctl start moyu-m6c-dispatcher.service
+node scripts/m6c/verify-running.mjs --manifest /opt/moyu-m6c/releases/<previous-sha>/release-manifest.json --release-root /opt/moyu-m6c/current
 ```
 
-`moyu_m6c` 角色没有 CREATEDB（正确）。恢复要建库时用 postgres 超级用户：
+The database migration ledger must be compatible with the target release. Do
+**not** delete the live database, delete users, or `rm -rf` the live release to
+“roll back”. If schema compatibility is not proven, restore the matching
+backup into a dedicated restore database, validate it, and perform an
+owner-approved data cutover.
+
+`dropdb`, `userdel`, `rm -rf /opt/moyu-m6c`, and similar commands are **not** part
+of upgrade or rollback. They are historical teardown actions that require a
+separate owner-approved decommissioning request, a fresh verified backup, and a
+confirmed replacement stack.
+
+## Backups and restores
+
+Use the scripts; do not copy a live SQLite file manually.
 
 ```bash
-sudo -u postgres psql -c "create database moyu_m6c_restore owner moyu_m6c"
-pg_restore -h 127.0.0.1 -U moyu_m6c -d moyu_m6c_restore --no-owner --no-privileges "$DIR/moyu_m6c.dump"
+node scripts/m6c/backup.mjs --status \
+  --db-url-file /etc/moyu-m6c/api.env \
+  --dsh-home /var/lib/moyu-m6c/dsh
+
+node scripts/m6c/backup.mjs \
+  --set RUN-<timestamp> \
+  --out /root/m6c-backups/RUN-<timestamp> \
+  --db-url-file /etc/moyu-m6c/api.env \
+  --dsh-home /var/lib/moyu-m6c/dsh \
+  --worktrees /var/lib/moyu-m6c/worktrees \
+  --release-root /opt/moyu-m6c/current \
+  --stop-writers --start-after
 ```
 
-恢复后必须证明**能被应用直接跑起来**，而不只是"表在"：用同一个 release 起一个临时 API
-（`API_PORT=<未占用端口>`），看 `/readyz` 200 与 `/api/v1/auth/state` 里的
-`initialized` / `activeCredentialCount`，然后杀掉进程、确认端口释放。
-
-### 平台回滚（发布版本）
+The backup set contains a PostgreSQL custom dump, consistent SQLite backups
+made with `node:sqlite`'s backup API, the DSH state archive, optional worktrees,
+and a `manifest.json` with every SHA-256. Restore into a dedicated database
+only:
 
 ```bash
-readlink /opt/moyu-m6c/current                      # 记下当前 release
-ln -sfn /opt/moyu-m6c/releases/<上一个> /opt/moyu-m6c/current
-systemctl restart moyu-m6c-api && sleep 6
-curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4310/readyz
-curl -sS https://moyu.sutrasky.com/ | grep -o 'assets/index-[A-Za-z0-9_-]*\.js' | head -1   # bundle 名应变化
+node scripts/m6c/restore.mjs \
+  --set-dir /root/m6c-backups/RUN-<timestamp> \
+  --target-db-url-file /root/m6c-restore-db.env \
+  --admin-url-file /root/m6c-admin.env \
+  --target-dsh-home /var/lib/moyu-m6c-restore/dsh \
+  --restore-state
 ```
 
-回滚是一次符号链接切换 + 一次服务重启；`/api/v1/auth/state` 不应变化。
+Before enabling delivery after a restore, reconcile the recorded GitHub
+Issue/PR/comment/commit ids and the `ticket/trigger/delivery/lease/cursor`
+rows. The restore script deliberately does not start services or consume
+GitHub.
 
-### 插件回滚（Superagent 运行时）
+## Plugin rollback
 
-每个 profile 通过 `profiles/<profile>/node_modules/dsh-superagent` 这个符号链接加载运行时：
+The runtime plugin is loaded through each profile's
+`node_modules/dsh-superagent` link. A plugin rollback must update **every**
+active profile, then sleep/wake or restart the affected instances and verify
+the new PID plus `panel/settings` and `/deployment` values:
 
 ```bash
-LINK=/var/lib/moyu-m6c/dsh/profiles/m6c-b/node_modules/dsh-superagent
-ln -sfn /opt/moyu-m6c/artifacts/<目标产物> "$LINK"
-# 让实例真正重新加载（sleep 的 body 是 {}，不是 {"reason":...}；带 reason 会 422）
-curl -sS -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{}' http://127.0.0.1:4491/control/v1/instances/<repo>/sleep
-curl -sS -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{"reason":"new_task"}' http://127.0.0.1:4491/control/v1/instances/<repo>/wake
+for link in /var/lib/moyu-m6c/dsh/profiles/*/node_modules/dsh-superagent; do
+  ln -sfn /opt/moyu-m6c/artifacts/<target-artifact> "$link"
+done
 ```
 
-判据：`repository_instances.pid` 换新（证明真的重新加载），并且 `panel/settings` 的
-`policyVersion` 与 `/deployment` 的 revision/value 不变。
+A link change alone is not evidence: the instance must reload, and the actual
+plugin entry hash must be read back from the running process.
 
-### 迁移
+## Migrations
 
-```bash
-DATABASE_URL=postgres://moyu_m6c:<pass>@127.0.0.1:5432/<db> pnpm db:migrate
-```
+The migration count is the number of entries in
+`packages/db/migrations/meta/_journal.json`, not a hard-coded 19. As of the
+2026-11-16 baseline the journal ends at
+`0019_event_dedupe_per_repository`; the live `moyu_m6c` ledger has 20 rows.
+Always verify the actual ledger and the target database name before running
+`db:migrate`. The `0019` rollback script is guarded and refuses when a later
+migration, a duplicate ledger row, a drifted index, or cross-repository event
+ids make the old global index unsafe.
 
-空库迁到 19 个迁移后，API 应以首启状态启动（`setupOpen:true`、`activeCredentialCount:0`）。
-没有 down 迁移：回滚 = 用备份覆盖，已演练通过。
+## Evidence
+
+Every operation belongs in `docs/evidence/m6c/<run-id>/`: environment, UTC
+time, full Git SHA, artifact hash, command, exit code, actual result, and a
+locatable path. Sensitive backups and credentials stay in a restricted store,
+never in the repository.

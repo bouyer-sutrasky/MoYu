@@ -1,0 +1,38 @@
+[Unit]
+Description=MoYu M6-C host supervisor
+After=network-online.target postgresql.service moyu-m6c-api.service
+Wants=network-online.target
+PartOf=moyu-m6c.slice
+Before=moyu-m6c-dispatcher.service
+
+[Service]
+Type=simple
+User=moyu-m6c
+Group=moyu-m6c
+SupplementaryGroups=moyu-m6c-check
+WorkingDirectory=/opt/moyu-m6c/current
+EnvironmentFile=/etc/moyu-m6c/supervisor.env
+Slice=moyu-m6c.slice
+# The supervisor is the trusted launcher. CAP_SETUID/GID let it enter each
+# repository's low-privilege identity; CAP_KILL lets it clean up a timed-out
+# check before setpriv drops the child to that identity. Runtime and check
+# children clear their own bounding/ambient sets before exec.
+Delegate=yes
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_KILL
+AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_KILL
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelModules=yes
+ProtectControlGroups=no
+RestrictSUIDSGID=yes
+UMask=0002
+ReadWritePaths=/var/lib/moyu-m6c /run/moyu-m6c /var/lib/moyu-m6c-check
+ExecStart=/opt/moyu-m6c/runtime/node24/bin/node apps/supervisor/dist/main.js
+Restart=on-failure
+RestartSec=3
+MemoryMax=4G
+
+[Install]
+WantedBy=multi-user.target

@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-/* global document, window, URL, fetch */
 /**
  * MoYu M6-C candidate sign-in with the saved automation credential.
  * Automation evidence only; the real-device passkey stays an owner action.

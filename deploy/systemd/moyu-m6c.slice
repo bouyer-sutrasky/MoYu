@@ -1,0 +1,11 @@
+[Unit]
+Description=MoYu M6-C platform slice (API, supervisor, dispatcher, runtimes)
+Before=slices.target
+
+[Slice]
+# The supervisor applies per-instance limits inside this delegated slice.
+MemoryAccounting=yes
+MemoryHigh=6G
+MemoryMax=8G
+TasksAccounting=yes
+TasksMax=4096
