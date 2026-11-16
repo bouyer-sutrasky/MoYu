@@ -2,7 +2,6 @@ import {
   chmodSync,
   chownSync,
   closeSync,
-  existsSync,
   mkdirSync,
   openSync,
   rmSync,
@@ -30,7 +29,13 @@ import {
   type ProcessIdentity,
   type StoredOwnership,
 } from './process';
-import { instanceLogPath, parseEnvFile, prepareInstance, type PreparedInstance } from './provision';
+import {
+  instanceLogPath,
+  parseEnvFile,
+  pathExists,
+  prepareInstance,
+  type PreparedInstance,
+} from './provision';
 import {
   aggregateMemory,
   applyInstanceMemoryLimit,
@@ -1152,7 +1157,7 @@ export class InstanceManager {
     // "Lock file is already being held". Both ports are free and the supervisor
     // owns this profile, so the lock cannot belong to a live runtime here.
     const staleLock = join(this.config.dshHome, 'state', `${prepared.profile}.lock`);
-    if (existsSync(staleLock)) {
+    if (pathExists(staleLock)) {
       rmSync(staleLock, { recursive: true, force: true });
       this.logger.info(
         {
@@ -1584,7 +1589,7 @@ export class InstanceManager {
       // supervisor just copied from the template gets first-run defaults; an
       // existing profile keeps every value the runtime already reports.
       const seedDefaults =
-        prepared.profileCreated && !existsSync(this.profileSeededPath(prepared.profile));
+        prepared.profileCreated && !pathExists(this.profileSeededPath(prepared.profile));
       await configureProfile({
         port: prepared.dshPort,
         repository: prepared.repository.fullName,

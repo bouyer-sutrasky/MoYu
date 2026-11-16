@@ -33,7 +33,6 @@ ProtectSystem=strict
 ProtectHome=read-only
 ProtectKernelModules=yes
 ProtectControlGroups=no
-RestrictSUIDSGID=yes
 UMask=0002
 ReadWritePaths=/var/lib/moyu-m6c /run/moyu-m6c /var/lib/moyu-m6c-check /sys/fs/cgroup
 ExecStart=/opt/moyu-m6c/runtime/node24/bin/node apps/supervisor/dist/main.js

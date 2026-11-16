@@ -3,7 +3,6 @@ import {
   chmodSync,
   chownSync,
   cpSync,
-  existsSync,
   lchownSync,
   lstatSync,
   mkdirSync,
@@ -48,6 +47,16 @@ function writePrivate(path: string, content: string): void {
   chmodSync(path, 0o600);
 }
 
+/** Existence check that uses lstat, not access(2): DAC_OVERRIDE does not satisfy access(2). */
+export function pathExists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Chown a tree without following symlinks; symlinked shared assets stay shared. */
 function chownTree(path: string, uid: number, gid: number): void {
   const stat = lstatSync(path);
@@ -86,7 +95,7 @@ function prepareRuntimeIdentity(
 
   for (const name of ['.env', '.credentials.yaml', '.anonymous-user-id']) {
     const source = join(config.dshHome, name);
-    if (!existsSync(source)) continue;
+    if (!pathExists(source)) continue;
     const target = join(home, name);
     cpSync(source, target);
     chmodSync(target, 0o400);
@@ -94,7 +103,7 @@ function prepareRuntimeIdentity(
   }
 
   const ghSource = join(dirname(config.dshHome), '.config', 'gh-agent');
-  if (existsSync(ghSource)) {
+  if (pathExists(ghSource)) {
     const ghTarget = join(home, '.config', 'gh-agent');
     cpSync(ghSource, ghTarget, { recursive: true });
     chownTree(join(home, '.config'), uid, gid);
@@ -103,7 +112,7 @@ function prepareRuntimeIdentity(
 
   for (const shared of ['profiles', 'state']) {
     const link = join(home, shared);
-    if (!existsSync(link)) symlinkSync(join(config.dshHome, shared), link);
+    if (!pathExists(link)) symlinkSync(join(config.dshHome, shared), link);
   }
   for (const privateDir of ['sessions', 'storages', 'logs', 'tmp', 'cache']) {
     const path = join(home, privateDir);
@@ -242,14 +251,14 @@ function installProfile(
 ): { profileDir: string; created: boolean } {
   const profileDir = join(config.dshHome, 'profiles', profile);
   let created = false;
-  if (!existsSync(profileDir)) {
-    if (!config.profileTemplateDir || !existsSync(config.profileTemplateDir)) {
+  if (!pathExists(profileDir)) {
+    if (!config.profileTemplateDir || !pathExists(config.profileTemplateDir)) {
       throw new Error(`Profile ${profile} does not exist and the template is unavailable`);
     }
     cpSync(config.profileTemplateDir, profileDir, { recursive: true });
     created = true;
     const patchPath = join(profileDir, 'cordis.patch.yml');
-    if (!existsSync(patchPath)) {
+    if (!pathExists(patchPath)) {
       rmSync(profileDir, { recursive: true, force: true });
       throw new Error(`Profile template has no cordis.patch.yml: ${config.profileTemplateDir}`);
     }
@@ -287,14 +296,14 @@ export async function prepareInstance(
   const { profileDir, created: profileCreated } = installProfile(config, profile, dshPort);
   const pinned = config.pinned?.get(repository.fullName);
   const identity = prepareRuntimeIdentity(config, profile, profileDir, pinned);
-  if (!existsSync(join(profileDir, 'node_modules', 'dsh-superagent'))) {
+  if (!pathExists(join(profileDir, 'node_modules', 'dsh-superagent'))) {
     throw new Error(`Profile ${profile} has no dsh-superagent installation`);
   }
 
   const credentialsFile = join(config.credentialsDir, `${repository.id}.json`);
   const envFile = join(config.instanceEnvDir, `${repository.id}.env`);
   let credentials: { bridgeToken: string; callbackToken: string } | null = null;
-  if (existsSync(credentialsFile)) {
+  if (pathExists(credentialsFile)) {
     const parsed = JSON.parse(readFileSync(credentialsFile, 'utf8')) as {
       bridgeToken?: string;
       callbackToken?: string;
