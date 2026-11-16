@@ -498,7 +498,7 @@ export function locateTicketWorktree(input: {
     }
     try {
       if (!statSync(resolved).isDirectory()) continue;
-      if (!existsSync(join(resolved, '.git'))) continue;
+      if (!pathExists(join(resolved, '.git'))) continue;
     } catch {
       continue;
     }
