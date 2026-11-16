@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "backupSetId": "M6C-RUN-20261116-FINAL",
+  "createdAt": "2026-11-16T05:46:16.726Z",
+  "completedAt": "2026-11-16T05:46:16.726Z",
+  "database": {
+    "name": "moyu_m6c",
+    "host": "127.0.0.1",
+    "port": "5432"
+  },
+  "writersStopped": true,
+  "release": {
+    "root": "/opt/moyu-m6c/releases/d14ead718696",
+    "gitHead": "d14ead71869686c3a3ec6dd70a1e50d7a7e607a6"
+  },
+  "parts": [
+    {
+      "name": "postgres",
+      "kind": "pg_dump",
+      "path": "/root/m6c-backups/M6C-RUN-20261116-FINAL/moyu_m6c.dump",
+      "sha256": "669db512fbad0e0792a0edce126037acf14fd1ed96f419525ec1caf5d058582b",
+      "bytes": 861341,
+      "database": "moyu_m6c"
+    },
+    {
+      "name": "sqlite:state/m6c-1/orchestrator.sqlite",
+      "kind": "sqlite-backup",
+      "path": "/root/m6c-backups/M6C-RUN-20261116-FINAL/sqlite/state__m6c-1__orchestrator.sqlite",
+      "sha256": "b72c3e22469383c47617be55a3645c5c9eabd71e5df363fafcb68763911e8a09",
+      "bytes": 135168,
+      "source": "/var/lib/moyu-m6c/dsh/state/m6c-1/orchestrator.sqlite"
+    },
+    {
+      "name": "sqlite:state/m6c-a/orchestrator.sqlite",
+      "kind": "sqlite-backup",
+      "path": "/root/m6c-backups/M6C-RUN-20261116-FINAL/sqlite/state__m6c-a__orchestrator.sqlite",
+      "sha256": "ecb0ed55828bd2d370ec1a615e0722ebf16f1164ce3978a6487f943fe2b2a52c",
+      "bytes": 155648,
+      "source": "/var/lib/moyu-m6c/dsh/state/m6c-a/orchestrator.sqlite"
+    },
+    {
+      "name": "sqlite:state/m6c-b/orchestrator.sqlite",
+      "kind": "sqlite-backup",
+      "path": "/root/m6c-backups/M6C-RUN-20261116-FINAL/sqlite/state__m6c-b__orchestrator.sqlite",
+      "sha256": "82f057cbe62598852970e821579e77ff19b5c60b2fed7b6e56af011cc08ecac5",
+      "bytes": 135168,
+      "source": "/var/lib/moyu-m6c/dsh/state/m6c-b/orchestrator.sqlite"
+    },
+    {
+      "name": "dsh-state",
+      "kind": "tar",
+      "path": "/root/m6c-backups/M6C-RUN-20261116-FINAL/dsh-state.tgz",
+      "sha256": "99888e72628e5e1a528e906f01383172eb2e950652130988e695c90bb0529dd7",
+      "bytes": 430617,
+      "source": "/var/lib/moyu-m6c/dsh"
+    },
+    {
+      "name": "worktrees",
+      "kind": "tar",
+      "path": "/root/m6c-backups/M6C-RUN-20261116-FINAL/worktrees.tgz",
+      "sha256": "53db486a3c3ee67e637607081df4bd7f66854668cb13d7f99e9fbd668cbb4a57",
+      "bytes": 73153,
+      "source": "/var/lib/moyu-m6c/worktrees"
+    }
+  ],
+  "notes": [
+    "The manifest records hashes and paths only; the directory is mode 0700.",
+    "Restore must verify the same backupSetId and every part hash before touching a target."
+  ]
+}

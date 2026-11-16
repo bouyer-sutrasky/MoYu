@@ -1,0 +1,28 @@
+ events 
+--------
+     79
+(1 row)
+
+ conversations 
+---------------
+             9
+(1 row)
+
+ tasks 
+-------
+     9
+(1 row)
+
+ deliveries 
+------------
+          9
+(1 row)
+
+      state      | count 
+-----------------+-------
+ awaiting_review |     2
+ failed          |     2
+ completed       |     3
+ not_accepted    |     2
+(4 rows)
+

@@ -1,0 +1,10 @@
+instance=69c5db02-8cec-410a-a586-ad99bbc90e11:m6c-b:2026-11-15T10:05:19.917Z
+revision=1377027635
+stale_http=409
+managed_http=422
+tickets?limit=5 http=200
+decisions?limit=5 http=200
+policy-history http=200
+sources http=200
+pause http=200
+resume http=200

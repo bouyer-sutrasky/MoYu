@@ -1,0 +1,13 @@
+conversation=77bfe158-6318-45d6-a74d-776728ebd74e
+                  id                  |   state   | attempt_count |         delivered_at          | handed_to_worker_at | read_at 
+--------------------------------------+-----------+---------------+-------------------------------+---------------------+---------
+ 89938aec-430c-4e2f-b5a5-e27ea7f67f87 | delivered |             1 | 2026-11-16 13:47:24.976041+08 |                     | 
+(1 row)
+
+task proof:
+                  id                  |   state   |        upstream_ticket_id        |         updated_at          
+--------------------------------------+-----------+----------------------------------+-----------------------------
+ 396547e5-a316-468e-8ddc-62cc609e09cd | completed | 3a378cbf09160f147eac52e62e6f9923 | 2026-11-16 13:48:44.1103+08
+(1 row)
+
+PR: https://github.com/Bouyer12/m5a-beta-adf10ad9/pull/10

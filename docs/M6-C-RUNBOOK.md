@@ -47,9 +47,11 @@ Migrations run **before** the supervisor starts because it reads
 ```bash
 cd /opt/moyu-m6c/current
 set -a; . /etc/moyu-m6c/api.env; set +a
+# The immutable release has no writable pnpm store. Run the built-in tsx CLI
+# directly from the release; it is the same migration entry the package uses.
 /opt/moyu-m6c/runtime/node24/bin/node \
-  /opt/moyu-m6c/runtime/pnpm/node_modules/pnpm/bin/pnpm.cjs \
-  --filter @moyu/db db:migrate
+  packages/db/node_modules/tsx/dist/cli.mjs \
+  packages/db/src/cli/migrate.ts
 
 systemctl start moyu-m6c.slice
 systemctl start moyu-m6c-api.service

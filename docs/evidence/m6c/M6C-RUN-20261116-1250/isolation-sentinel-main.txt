@@ -1,0 +1,47 @@
+utc=2026-11-16T05:45:54Z
+--- runtime identities ---
+pid=508663
+    PID USER     GROUP    COMMAND
+ 508663 moyu-m6+ moyu-m6+ /opt/moyu-m6c/runtime/node24/bin/node /usr/bin/dsh --profile m6c-1 --no-open
+Uid:	6204	6204	6204	6204
+Gid:	6204	6204	6204	6204
+Groups:	6204 
+CapEff:	0000000000000000
+CapBnd:	0000000000000000
+CapAmb:	0000000000000000
+NoNewPrivs:	1
+/var/lib/moyu-m6c/homes/m6c-1
+pid=508672
+    PID USER     GROUP    COMMAND
+ 508672 moyu-m6+ moyu-m6+ /opt/moyu-m6c/runtime/node24/bin/node /usr/bin/dsh --profile m6c-b --no-open
+Uid:	6202	6202	6202	6202
+Gid:	6202	6202	6202	6202
+Groups:	6202 
+CapEff:	0000000000000000
+CapBnd:	0000000000000000
+CapAmb:	0000000000000000
+NoNewPrivs:	1
+/var/lib/moyu-m6c/homes/m6c-b
+--- A -> B home .env (must fail) ---
+cat: /var/lib/moyu-m6c/homes/m6c-b/.env: Permission denied
+rc=1
+--- A -> B profile patch (must fail) ---
+head: cannot open '/var/lib/moyu-m6c/dsh/profiles/m6c-b/cordis.patch.yml' for reading: Permission denied
+rc=1
+--- A -> B worktree (must fail) ---
+ls: cannot open directory '/var/lib/moyu-m6c/worktrees/m6c-b': Permission denied
+rc=2
+--- A -> B proc environ (must fail) ---
+rc=1
+cat: /proc/508672/environ: Permission denied
+--- A -> A worktree (must pass) ---
+rc=0
+--- B check -> B worktree (must pass) ---
+rc=0
+--- A check -> B worktree (must fail) ---
+rc=1
+--- listeners ---
+tcp LISTEN 0      511    127.0.0.1:3472 0.0.0.0:* users:(("MainThread",pid=508663,fd=30))
+tcp LISTEN 0      511    127.0.0.1:3464 0.0.0.0:* users:(("MainThread",pid=508672,fd=30))
+tcp LISTEN 0      511    127.0.0.1:3471 0.0.0.0:* users:(("MainThread",pid=508663,fd=22))
+tcp LISTEN 0      511    127.0.0.1:3463 0.0.0.0:* users:(("MainThread",pid=508672,fd=22))

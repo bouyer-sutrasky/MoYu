@@ -1,0 +1,8 @@
+{"backupSetId":"M6C-RUN-20261116-1300","parts":6,"verified":true}
++ createdb --maintenance-db postgresql://[REDACTED] moyu_m6c_restore_20261116
++ pg_restore --exit-on-error --no-owner --no-privileges --dbname postgresql://[REDACTED] /root/m6c-backups/M6C-RUN-20261116-1300/moyu_m6c.dump
++ psql postgresql://[REDACTED] -X -Atc select count(*) || ':' || coalesce(max(id),0) from drizzle.__drizzle_migrations;
++ psql postgresql://[REDACTED] -X -Atc select count(*) from information_schema.tables where table_schema='public';
++ tar -C /var/lib/moyu-m6c-restore/dsh -xzf /root/m6c-backups/M6C-RUN-20261116-1300/dsh-state.tgz
++ tar -C /var/lib/moyu-m6c-restore/worktrees -xzf /root/m6c-backups/M6C-RUN-20261116-1300/worktrees.tgz
+{"backupSetId":"M6C-RUN-20261116-1300","targetDatabase":"moyu_m6c_restore_20261116","ledger":"20:20","publicTables":25,"stateRestored":true,"next":"Keep dispatcher/automatic wake disabled; reconcile GitHub Issue/PR/comment/commit ids before enabling consumption."}

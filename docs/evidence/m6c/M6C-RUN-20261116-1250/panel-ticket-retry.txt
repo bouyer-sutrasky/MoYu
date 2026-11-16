@@ -1,0 +1,4 @@
+command=POST /api/v1/repositories/<beta>/superagent/tickets/df200e4feaff2fca311c02bf122a704a/retry
+utc=2026-11-16T05:52:23Z
+{"error":{"code":"runtime_error","message":"Execution requires the execution lease admission: a lease id and a fencing token","retryable":false},"values":{},"requestId":"e549f465-f16e-479e-b39e-09e49d233ae4","runtime":{"error":"Execution requires the execution lease admission: a lease id and a fencing token","code":"admissionRequired","values":{}}}
+HTTP=400

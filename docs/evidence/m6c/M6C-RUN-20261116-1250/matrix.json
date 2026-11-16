@@ -1,0 +1,203 @@
+{
+  "runId": "M6C-RUN-20261116-1250",
+  "generatedAt": "2026-11-16T05:52:00Z",
+  "target": "jd-mc candidate stack, public entry https://moyu.sutrasky.com",
+  "rows": [
+    {
+      "id": "P01",
+      "title": "Static checks, format, types, unit tests and build",
+      "status": "Pass",
+      "environment": "jd-mc Linux, Node v24.22.2, pnpm 11.7.0, candidate",
+      "sha": "d14ead71869686c3a3ec6dd70a1e50d7a7e607a6",
+      "command": "pnpm check",
+      "exitCode": 0,
+      "evidence": "check-final.log"
+    },
+    {
+      "id": "P02",
+      "title": "Real PostgreSQL integration suite including supervisor boundary",
+      "status": "Pass",
+      "environment": "jd-mc Linux, isolated PostgreSQL 16 cluster on 127.0.0.1:55432",
+      "sha": "d14ead71869686c3a3ec6dd70a1e50d7a7e607a6",
+      "command": "pnpm test:integration",
+      "exitCode": 0,
+      "evidence": "integration-final.log"
+    },
+    {
+      "id": "P03",
+      "title": "0019 forward/rollback guards and migration ledger",
+      "status": "Pass",
+      "environment": "real PostgreSQL 16, test database per case",
+      "sha": "d14ead71869686c3a3ec6dd70a1e50d7a7e607a6",
+      "command": "pnpm test:integration (rollback-0019 + historical chain)",
+      "exitCode": 0,
+      "evidence": "db-ledger.txt"
+    },
+    {
+      "id": "P04",
+      "title": "Repository-scoped event dedupe, replay and unknown unique violation",
+      "status": "Pass",
+      "environment": "real PostgreSQL 16, fake HTTP Bridge, two repositories",
+      "sha": "d14ead71869686c3a3ec6dd70a1e50d7a7e607a6",
+      "command": "pnpm test:integration (event-repository-dedupe)",
+      "exitCode": 0,
+      "evidence": "integration-final.log"
+    },
+    {
+      "id": "P05",
+      "title": "Settings instance identity and managed-field boundaries",
+      "status": "Pass",
+      "environment": "final candidate release d14ead718696, public HTTPS session",
+      "sha": "d14ead71869686c3a3ec6dd70a1e50d7a7e607a6",
+      "command": "GET deployment; stale PUT deployment; managed PUT executor",
+      "exitCode": 0,
+      "evidence": "api-action-final.txt"
+    },
+    {
+      "id": "P06",
+      "title": "Opaque Deployment revision, settlement, lock and restart gate",
+      "status": "Pass",
+      "environment": "final candidate release, real supervisor + runtime",
+      "sha": "d14ead71869686c3a3ec6dd70a1e50d7a7e607a6",
+      "command": "GET deployment; stale PUT 409; supervisor integration settings-boundary",
+      "exitCode": 0,
+      "evidence": "deployment.json"
+    },
+    {
+      "id": "P07",
+      "title": "Five settings groups, A/B switch, desktop/mobile light/dark, keyboard and overflow",
+      "status": "Pass",
+      "environment": "Playwright Chromium 1194, 1440x900 and 390x844, automation session",
+      "sha": "d14ead71869686c3a3ec6dd70a1e50d7a7e607a6",
+      "command": "node scripts/m6c/browser-scenarios.mjs --allow-production ...",
+      "exitCode": 0,
+      "evidence": "browser/result.json"
+    },
+    {
+      "id": "P08",
+      "title": "Home pending query before pagination, priority and count",
+      "status": "Pass",
+      "environment": "real PostgreSQL 16 and final web/API artifacts",
+      "sha": "d14ead71869686c3a3ec6dd70a1e50d7a7e607a6",
+      "command": "pnpm test:integration (pending-conversations); browser requests",
+      "exitCode": 0,
+      "evidence": "browser/requests.json"
+    },
+    {
+      "id": "P09",
+      "title": "Per-repository runtime/check uid, cleared capabilities, homes, worktrees and SSH",
+      "status": "Pass",
+      "environment": "final candidate release, live runtimes 508663/508672",
+      "sha": "d14ead71869686c3a3ec6dd70a1e50d7a7e607a6",
+      "command": "setpriv sentinel checks as uids 6201/6211/6212 plus /proc status",
+      "exitCode": 0,
+      "evidence": "isolation-sentinel-main.txt"
+    },
+    {
+      "id": "P10",
+      "title": "One manifest for API, supervisor and dispatcher; actual cwd/cmdline/hash",
+      "status": "Pass",
+      "environment": "final candidate release d14ead718696, systemd units",
+      "sha": "d14ead71869686c3a3ec6dd70a1e50d7a7e607a6",
+      "command": "node scripts/m6c/verify-running.mjs --manifest ... --release-root ...",
+      "exitCode": 0,
+      "evidence": "verify-running-final.txt"
+    },
+    {
+      "id": "P11",
+      "title": "Consistent PostgreSQL/SQLite/state/worktree backup and dedicated restore drill",
+      "status": "Pass",
+      "environment": "final release d14ead718696; backup set M6C-RUN-20261116-FINAL",
+      "sha": "d14ead71869686c3a3ec6dd70a1e50d7a7e607a6",
+      "command": "backup.mjs --stop-writers; restore.mjs --verify-only; earlier full restore drill",
+      "exitCode": 0,
+      "evidence": "final-backup-manifest.json"
+    },
+    {
+      "id": "P12",
+      "title": "Real final-artifact GitHub task: clone, worker, commit, push, PR",
+      "status": "Pass",
+      "environment": "final release d14ead718696, Bouyer12/m5a-beta-adf10ad9",
+      "sha": "d14ead71869686c3a3ec6dd70a1e50d7a7e607a6",
+      "command": "web task -> dispatcher -> Bridge -> worker -> GitHub PR #10",
+      "exitCode": 0,
+      "evidence": "real-task-pr.json"
+    },
+    {
+      "id": "P13",
+      "title": "Protected PR checks and merge to main",
+      "status": "Pass",
+      "environment": "GitHub Actions run 43811903841, protected main",
+      "sha": "d14ead71869686c3a3ec6dd70a1e50d7a7e607a6",
+      "command": "gh pr view 70; both required checks SUCCESS; squash merge",
+      "exitCode": 0,
+      "evidence": "ci-pr70.json"
+    },
+    {
+      "id": "P14",
+      "title": "Real-device Passkey and phone reply",
+      "status": "Blocked",
+      "environment": "owner hardware, production RP ID moyu.sutrasky.com",
+      "sha": "d14ead71869686c3a3ec6dd70a1e50d7a7e607a6",
+      "command": "owner action: real passkey registration/login and phone reply",
+      "exitCode": null,
+      "evidence": "owner-actions.md",
+      "reason": "No real owner device, biometric confirmation, or phone is available to this agent. The automation session is explicitly not auth acceptance."
+    },
+    {
+      "id": "P15",
+      "title": "Formal production window, host reboot, 3082 decision and old service cleanup",
+      "status": "Blocked",
+      "environment": "jd-mc production host",
+      "sha": "d14ead71869686c3a3ec6dd70a1e50d7a7e607a6",
+      "command": "owner-approved production maintenance",
+      "exitCode": null,
+      "evidence": "owner-actions.md",
+      "reason": "Production window and host reboot require the owner; 3082 is still listening and old moyu.service remains enabled/inactive. No destructive action was taken without owner approval."
+    },
+    {
+      "id": "P16",
+      "title": "Real-host review-check cgroup cleanup under lingering child and pipe-holder stress",
+      "status": "Partial",
+      "environment": "final candidate release, candidate runtime identities",
+      "sha": "d14ead71869686c3a3ec6dd70a1e50d7a7e607a6",
+      "command": "review check cgroup stress scenario",
+      "exitCode": null,
+      "evidence": "review-cgroup-not-run.md",
+      "reason": "The implementation and unit coverage are present, but this run did not execute the real-host setsid/TERM-ignore/pipe-holder cleanup matrix after the final switch."
+    },
+    {
+      "id": "P17",
+      "title": "Panel ticket retry/stop for an execute task",
+      "status": "Blocked",
+      "environment": "final candidate release, failed execute ticket",
+      "sha": "d14ead71869686c3a3ec6dd70a1e50d7a7e607a6",
+      "command": "POST /superagent/tickets/:id/retry",
+      "exitCode": null,
+      "evidence": "panel-ticket-retry.txt",
+      "reason": "The panel route returns admissionRequired for execute tickets; the platform task command endpoint has the lease/admission logic, but the superagent ticket action is not yet mapped to it."
+    },
+    {
+      "id": "P18",
+      "title": "Worker handoff/read delivery receipt",
+      "status": "Partial",
+      "environment": "final candidate release, real task PR #10",
+      "sha": "d14ead71869686c3a3ec6dd70a1e50d7a7e607a6",
+      "command": "query deliveries.handed_to_worker_at/read_at after completed worker task",
+      "exitCode": null,
+      "evidence": "delivery-read-receipt.txt",
+      "reason": "Delivery reached delivered and the worker produced PR #10, but handed_to_worker_at/read_at are null. The runtime did not emit message.delivered/message.read events, so the DB read receipt is not proven."
+    },
+    {
+      "id": "P19",
+      "title": "Write-side prompts preview, source labels and policy sync on the final release",
+      "status": "Partial",
+      "environment": "final candidate release",
+      "sha": "d14ead71869686c3a3ec6dd70a1e50d7a7e607a6",
+      "command": "GET sources/tickets/decisions/policy-history; pause/resume",
+      "exitCode": null,
+      "evidence": "api-action-final.txt",
+      "reason": "The read routes and pause/resume were exercised; prompts preview, source-label refresh and policy-sync writes were not all exercised with a real source in this final run."
+    }
+  ]
+}

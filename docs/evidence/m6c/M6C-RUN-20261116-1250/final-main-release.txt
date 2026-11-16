@@ -1,0 +1,1 @@
+RELEASE=/opt/moyu-m6c/releases/d14ead718696

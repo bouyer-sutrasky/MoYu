@@ -1,0 +1,55 @@
+utc=2026-11-16T04:50:28Z
+host=lavm-flnape7bgu
+current=/opt/moyu-m6c/releases/7a12dbcab461
+unit=moyu-m6c-api
+MainPID=4166184
+WorkingDirectory=/opt/moyu-m6c/current
+User=moyu-m6c
+ActiveState=active
+UnitFileState=disabled
+cwd=/opt/moyu-m6c/releases/7a12dbcab461
+b83f71a2bfe00246e9e8da0174d0fbc86c4550f51b5c688102b5a5c324b9e1ea  /proc/4166184/cwd/apps/api/dist/server.js
+5db654312e9ba1a61af3fc797964a092096a961fdcc87264b6d054508513ad97  /proc/4166184/cwd/apps/supervisor/dist/main.js
+d574b6703a3479655ca68c5cd0de0314b63efc5af68e1a6aba92916884e8bf22  /proc/4166184/cwd/apps/dispatcher/dist/main.js
+unit=moyu-m6c-supervisor
+MainPID=4018234
+WorkingDirectory=/opt/moyu-m6c/current
+User=moyu-m6c
+ActiveState=active
+UnitFileState=disabled
+cwd=/opt/moyu-m6c/releases/e3a677e03b4d-kill
+c068ca2a985f7f1cbd2be68235094d62b1b5e1b16fdbf3ab20dbc78ca2fad93a  /proc/4018234/cwd/apps/api/dist/server.js
+e765988a251535fa19f38f869f2910f948cf35979628f8e7f1e666d016e21fa7  /proc/4018234/cwd/apps/supervisor/dist/main.js
+6e4302621a80e2ad9f5828b8b033c23780f9f28a8489037bd0c1643d230fb7a9  /proc/4018234/cwd/apps/dispatcher/dist/main.js
+unit=moyu-m6c-dispatcher
+MainPID=3940888
+WorkingDirectory=/opt/moyu-m6c/current
+User=moyu-m6c
+ActiveState=active
+UnitFileState=disabled
+cwd=/opt/moyu-m6c/releases/e910ccce6dad-lost
+5d273a887953fb91bfcd408ff12296fb76e06bbd23460120285bd2b2c358e8d0  /proc/3940888/cwd/apps/api/dist/server.js
+ae244be2ce1289de487c664e2bf54e170e9d5745cd553e9637d2a5f5c5209397  /proc/3940888/cwd/apps/supervisor/dist/main.js
+6e4302621a80e2ad9f5828b8b033c23780f9f28a8489037bd0c1643d230fb7a9  /proc/3940888/cwd/apps/dispatcher/dist/main.js
+unit=moyu.service
+MainPID=0
+WorkingDirectory=
+User=
+ActiveState=inactive
+UnitFileState=
+ports:
+tcp LISTEN 0      511    127.0.0.1:3464 0.0.0.0:* users:(("MainThread",pid=4094763,fd=30))
+tcp LISTEN 0      511    127.0.0.1:3463 0.0.0.0:* users:(("MainThread",pid=4094763,fd=22))
+tcp LISTEN 0      511    127.0.0.1:3082 0.0.0.0:* users:(("node",pid=2146551,fd=22))      
+tcp LISTEN 0      511    127.0.0.1:4491 0.0.0.0:* users:(("MainThread",pid=4018234,fd=26))
+tcp LISTEN 0      511    127.0.0.1:4310 0.0.0.0:* users:(("MainThread",pid=4166184,fd=21))
+nginx-upstream:
+8:        proxy_pass http://127.0.0.1:4310;
+db:
+moyu_m6c
+20/20
+release:
+a49de98b849bfd74502f52e703650313a572eff47b880280c5394a68cd752fd9  /opt/moyu-m6c/releases/57f62d35f36a/apps/api/dist/server.js
+b744474475249e80fa82b86a2c2aab8f3598df260c32a43301bd3aff5e48f34a  /opt/moyu-m6c/releases/57f62d35f36a/apps/supervisor/dist/main.js
+beb5edc9bf7b2963dc62c3e02ff5038a3d1a853062cb162b078a35a4c7c01120  /opt/moyu-m6c/releases/57f62d35f36a/apps/dispatcher/dist/main.js
+07f46473b150ec97e35f1fe45090946df8e966f847c5269bcd5b2190a9fdd49b  /opt/moyu-m6c/artifacts/superagent-ad9650631bc3/lib/index.js
