@@ -1,0 +1,11 @@
+#!/bin/sh
+# MoYu M6-C agent GitHub CLI wrapper.
+#
+# The control plane sets HOME to the repository's isolated DSH home when it
+# launches a runtime, and prepareRuntimeIdentity copies the agent config there.
+# Never hard-code the shared supervisor home: a runtime uid must not be able to
+# read the supervisor's credential store.
+: "${HOME:=/var/lib/moyu-m6c}"
+: "${GH_CONFIG_DIR:=$HOME/.config/gh-agent}"
+export HOME GH_CONFIG_DIR
+exec /usr/bin/gh "$@"

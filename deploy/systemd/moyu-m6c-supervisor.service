@@ -14,12 +14,14 @@ WorkingDirectory=/opt/moyu-m6c/current
 EnvironmentFile=/etc/moyu-m6c/supervisor.env
 Slice=moyu-m6c.slice
 # The supervisor is the trusted launcher. CAP_SETUID/GID let it enter each
-# repository's low-privilege identity; CAP_KILL lets it clean up a timed-out
-# check before setpriv drops the child to that identity. Runtime and check
-# children clear their own bounding/ambient sets before exec.
+# repository's low-privilege identity; CAP_SETPCAP lets setpriv drop the child's
+# bounding set; CAP_KILL cleans up a timed-out check; CAP_CHOWN/FOWNER create
+# the per-repository home and state ownership; CAP_DAC_OVERRIDE lets the
+# supervisor maintain the profile patch after handing the directory to the runtime. Runtime and check children clear
+# their own bounding/ambient sets before exec.
 Delegate=yes
-CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_KILL
-AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_KILL
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_KILL CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
+AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_KILL CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
