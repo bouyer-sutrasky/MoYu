@@ -690,7 +690,8 @@ async function applyIgnoredDecision(
   // ignore would strand that delivery forever.
   const updated = await client.query(
     `update task_links t
-        set state = 'not_accepted', version = version + 1, updated_at = now()
+        set state = 'not_accepted', version = version + 1, runtime_lease_id = null,
+            updated_at = now()
       where t.id = $1 and t.repository_id = $2 and t.state = 'pending_admission'
         and not exists (
           select 1 from messages m
@@ -713,6 +714,17 @@ async function applyIgnoredDecision(
     [task.id, repository.id, messageIds],
   );
   if ((updated.rowCount ?? 0) === 0) return;
+  // The ignored admission never became a runtime Ticket. Its execution lease
+  // must not keep the repository's single execution slot forever; release only
+  // the exact task holder, leaving unrelated active leases untouched.
+  const released = await client.query<{ id: string }>(
+    `update runtime_leases
+        set state = 'released', released_at = now(), heartbeat_at = now(),
+            waiting_for = null, recovery_reason = 'ignored_decision'
+      where repository_id = $1 and holder_id = $2 and state = 'active'
+      returning id`,
+    [repository.id, `task:${task.id}`],
+  );
   const next = await taskByConversation(client, targetId, repository.id);
   if (next) {
     await emit(client, repository, event, 'task.state_changed', targetId, next.id, {
@@ -726,6 +738,7 @@ async function applyIgnoredDecision(
       taskId: task.id,
       conversationId: targetId,
       messageId,
+      releasedLeaseId: released.rows[0]?.id ?? null,
     },
     'closed the pending admission named by the ignored decision',
   );
@@ -1093,6 +1106,58 @@ async function applyImportedEvent(
     'imported a GitHub-origin ticket into Work',
   );
   return undefined;
+}
+
+/**
+ * Releases active leases whose holder task reached a terminal ignored state
+ * before an older dispatcher had a chance to release them. The holder id is the
+ * only durable link when the task row has already cleared runtime_lease_id.
+ */
+export async function recoverIgnoredLeases(
+  pool: pg.Pool,
+  repositoryId: string,
+  logger: DispatcherLogger,
+): Promise<number> {
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const released = await client.query<{ id: string; task_id: string }>(
+      `update runtime_leases l
+          set state = 'released', released_at = now(), heartbeat_at = now(),
+              waiting_for = null, recovery_reason = 'ignored_decision_recovery'
+         from task_links t
+        where l.repository_id = $1
+          and l.state = 'active'
+          and l.holder_id = 'task:' || t.id::text
+          and t.state = 'not_accepted'
+        returning l.id, t.id as task_id`,
+      [repositoryId],
+    );
+    if (released.rows.length > 0) {
+      await client.query(
+        `update task_links set runtime_lease_id = null
+          where id = any($1::uuid[])`,
+        [released.rows.map((row) => row.task_id)],
+      );
+    }
+    await client.query('commit');
+    if (released.rows.length > 0) {
+      logger.info(
+        {
+          event: 'dispatcher.ignored_lease_recovered',
+          repositoryId,
+          leaseIds: released.rows.map((row) => row.id),
+        },
+        'released execution leases held by ignored admissions',
+      );
+    }
+    return released.rows.length;
+  } catch (error) {
+    await client.query('rollback').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function applyEvent(

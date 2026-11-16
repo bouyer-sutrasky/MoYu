@@ -13,7 +13,7 @@ import { maintainLeases, operationsOnce, reconcileTasks } from './operations';
 import { captureReportsOnce } from './reports';
 import { duplicatesOnce } from './duplicates';
 import { bridgeClient, listActiveRepositories, type RepositoryBinding } from './runtime';
-import { syncOnce } from './sync';
+import { recoverIgnoredLeases, syncOnce } from './sync';
 
 export interface RunDispatcherOptions {
   signal: AbortSignal;
@@ -120,6 +120,16 @@ async function runRepositoryWorker(
     return;
   }
 
+  await recoverIgnoredLeases(pool, repository.id, logger).catch((error) => {
+    logger.warn(
+      {
+        event: 'dispatcher.ignored_lease_recovery_failed',
+        repository: repository.fullName,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      'could not release an ignored admission lease; the execution slot may stay occupied',
+    );
+  });
   let admissionSupported = false;
   let attachmentsSupported = false;
   try {

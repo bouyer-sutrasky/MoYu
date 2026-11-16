@@ -324,7 +324,7 @@ async function applyOperationResult(
     await client.query('commit');
     const safeToRelease =
       (operation.kind === 'pause' && succeeded && pauseProven) ||
-      ['completed', 'closed_unmerged'].includes(updated.state);
+      ['completed', 'closed_unmerged', 'not_accepted'].includes(updated.state);
     if (safeToRelease) {
       await releaseTaskLease(
         pool,
