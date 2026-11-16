@@ -19,13 +19,14 @@ RuntimeDirectoryPreserve=yes
 # The supervisor is the trusted launcher. CAP_SETUID/GID let it enter each
 # repository's low-privilege identity; CAP_SETPCAP lets setpriv drop the child's
 # bounding set; CAP_KILL cleans up a timed-out check; CAP_CHOWN/FOWNER create
-# the per-repository home and state ownership; CAP_DAC_OVERRIDE lets the
+# the per-repository home and state ownership; CAP_FSETID preserves the setgid
+# bit on per-repository worktrees; CAP_DAC_OVERRIDE lets the
 # supervisor maintain the profile patch after handing the directory to the runtime. Runtime and check children clear
 # their own bounding/ambient sets before exec.
 Delegate=yes
 DelegateSubgroup=supervisor
-CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_KILL CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
-AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_KILL CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_KILL CAP_CHOWN CAP_FOWNER CAP_FSETID CAP_DAC_OVERRIDE
+AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_KILL CAP_CHOWN CAP_FOWNER CAP_FSETID CAP_DAC_OVERRIDE
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
