@@ -537,11 +537,18 @@ async function captureActivity(page, viewport, name, records, meta) {
 
 async function captureSettings(page, viewport, name, records, meta) {
   await openMobileNav(page);
-  await page.getByLabel('工作台导航').getByRole('button', { name: '设置' }).click();
+  await page.getByLabel('工作台导航').getByRole('button', { name: '设置', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '设置' });
   await dialog.waitFor({ state: 'visible' });
   await page.waitForTimeout(700);
-  const text = await dialog.innerText();
+  let text = await dialog.innerText();
+  const sections = dialog.getByRole('navigation', { name: '设置分区' });
+  if ((await sections.count()) > 0) {
+    for (const name of ['通知', '资源清理']) {
+      await sections.getByRole('button', { name, exact: true }).click();
+      text += `\n${await dialog.innerText()}`;
+    }
+  }
   await screenshot(page, name, records, meta);
   await dialog.getByRole('button', { name: '关闭', exact: true }).last().click();
   await dialog.waitFor({ state: 'detached' });
@@ -819,9 +826,13 @@ async function main() {
     requestResult: 'denied',
   });
   await openMobileNav(denied.page);
-  await denied.page.getByLabel('工作台导航').getByRole('button', { name: '设置' }).click();
+  await denied.page
+    .getByLabel('工作台导航')
+    .getByRole('button', { name: '设置', exact: true })
+    .click();
   const deniedDialog = denied.page.getByRole('dialog', { name: '设置' });
   await deniedDialog.waitFor();
+  await deniedDialog.getByRole('button', { name: '通知', exact: true }).click();
   const deniedText = await deniedDialog.innerText();
   const deniedRequests = await denied.page.evaluate(() => window.__m6b.permissionRequests);
   await deniedDialog.getByRole('button', { name: '关闭', exact: true }).last().click();
@@ -856,9 +867,13 @@ async function main() {
     requestResult: 'granted',
   });
   await openMobileNav(granted.page);
-  await granted.page.getByLabel('工作台导航').getByRole('button', { name: '设置' }).click();
+  await granted.page
+    .getByLabel('工作台导航')
+    .getByRole('button', { name: '设置', exact: true })
+    .click();
   const grantedDialog = granted.page.getByRole('dialog', { name: '设置' });
   await grantedDialog.waitFor();
+  await grantedDialog.getByRole('button', { name: '通知', exact: true }).click();
   const requestsBefore = await granted.page.evaluate(() => window.__m6b.permissionRequests);
   await grantedDialog.getByRole('button', { name: '允许通知' }).click();
   await sleep(400);
@@ -964,9 +979,10 @@ async function main() {
   {
     const { context, page } = await openPage(browser, HEAD_URL, SESSION_TOKEN, desktop, 'light');
     await openMobileNav(page);
-    await page.getByLabel('工作台导航').getByRole('button', { name: '设置' }).click();
+    await page.getByLabel('工作台导航').getByRole('button', { name: '设置', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: '设置' });
     await dialog.waitFor();
+    await dialog.getByRole('button', { name: '资源清理', exact: true }).click();
     await dialog.getByRole('button', { name: '干跑预览可清理目录' }).click();
     await dialog.getByText('预览：').first().waitFor({ timeout: 25_000 });
     await page.waitForTimeout(1200);

@@ -107,11 +107,17 @@ async function fetchJson(page, requestPath, options = {}) {
   );
 }
 
-async function openSettings(page) {
+async function openSettings(page, section) {
   const sidebar = page.getByLabel('工作台导航');
-  await sidebar.getByRole('button', { name: '设置' }).click();
+  await sidebar.getByRole('button', { name: '设置', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '设置' });
   await dialog.waitFor({ state: 'visible' });
+  if (section) {
+    await dialog
+      .getByRole('navigation', { name: '设置分区' })
+      .getByRole('button', { name: section, exact: true })
+      .click();
+  }
   return dialog;
 }
 
@@ -372,7 +378,7 @@ async function main() {
     const meB = await fetchJson(pageB, '/api/v1/auth/me');
     assert(meB.status === 200, 'The second browser session is not authenticated.');
 
-    const settingsB = await openSettings(pageB);
+    const settingsB = await openSettings(pageB, 'Passkey 凭据');
     const credentialRow = settingsB
       .locator('li')
       .filter({ hasText: 'E2E virtual authenticator' })
@@ -437,8 +443,7 @@ async function main() {
     );
     checks.attachmentBeforeRevocation = true;
 
-    const settingsRevoke = await openSettings(pageB);
-    await settingsRevoke.getByRole('heading', { name: '浏览器会话' }).waitFor({ state: 'visible' });
+    const settingsRevoke = await openSettings(pageB, '浏览器会话');
     const otherSessionRow = settingsRevoke.locator('li').filter({ hasText: '其他浏览器' }).first();
     await otherSessionRow.waitFor({ state: 'visible', timeout: 15_000 });
     await otherSessionRow.getByRole('button', { name: '撤销' }).click();
