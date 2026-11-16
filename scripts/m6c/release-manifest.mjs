@@ -114,7 +114,7 @@ if (pluginDir) {
 
 const units = existsSync(unitsDir)
   ? readdirSync(unitsDir)
-      .filter((name) => /^moyu-m6c-.*\.(service|slice)$/.test(name))
+      .filter((name) => /^moyu-m6c.*\.(service|slice)$/.test(name))
       .sort()
       .map((name) => ({ name, sha256: sha256File(join(unitsDir, name)) }))
   : [];
