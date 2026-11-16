@@ -349,6 +349,53 @@ describe('M4 task commands', () => {
     expect(operations).toHaveLength(0);
   }, 30_000);
 
+  it('maps a Superagent ticket retry/stop to the platform task command and operation log', async () => {
+    const failedConversation = await createConversation(harness, 'execute');
+    const failed = await makeRuntimeAccepted(harness, failedConversation.id, 'failed');
+    const retry = await harness.app.inject({
+      method: 'POST',
+      url: `/api/v1/repositories/${harness.repositoryId}/superagent/tickets/${failed.upstreamTicketId}/retry`,
+      ...authCookie(harness),
+      payload: {},
+    });
+    expect(retry.statusCode).toBe(202);
+    expect(retry.json()).toMatchObject({ data: { retried: true } });
+    const [retryOperation] = await harness.database
+      .select()
+      .from(taskOperations)
+      .where(eq(taskOperations.taskId, failed.id));
+    expect(retryOperation?.kind).toBe('retry');
+
+    const runningConversation = await createConversation(harness, 'execute');
+    const running = await makeRuntimeAccepted(harness, runningConversation.id, 'running');
+    const stop = await harness.app.inject({
+      method: 'POST',
+      url: `/api/v1/repositories/${harness.repositoryId}/superagent/tickets/${running.upstreamTicketId}/stop`,
+      ...authCookie(harness),
+      payload: {},
+    });
+    expect(stop.statusCode).toBe(202);
+    expect(stop.json()).toMatchObject({ data: { stopped: true } });
+    const [stopped] = await harness.database
+      .select()
+      .from(taskLinks)
+      .where(eq(taskLinks.id, running.id));
+    expect(stopped?.state).toBe('stopping');
+    const [stopOperation] = await harness.database
+      .select()
+      .from(taskOperations)
+      .where(eq(taskOperations.taskId, running.id));
+    expect(stopOperation?.kind).toBe('pause');
+
+    const missing = await harness.app.inject({
+      method: 'POST',
+      url: `/api/v1/repositories/${harness.repositoryId}/superagent/tickets/no-such-ticket/retry`,
+      ...authCookie(harness),
+      payload: {},
+    });
+    expect(missing.statusCode).toBe(404);
+  }, 30_000);
+
   it('keeps one active command per task', async () => {
     const conversation = await createConversation(harness, 'execute');
     const task = await makeRuntimeAccepted(harness, conversation.id, 'running');

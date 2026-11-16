@@ -1,23 +1,31 @@
+import { randomUUID } from 'node:crypto';
+
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 
 import { uuidSchema } from '@moyu/contracts';
-import { type Database } from '@moyu/db';
+import { taskLinks, type Database } from '@moyu/db';
 
 import type { Authenticate } from '../auth/guards';
 import type { ApiConfig } from '../config';
+import type { AppEventBus } from '../events/bus';
 import { findOwnedRepository } from '../domain/repositories';
 import { ApiProblem } from '../lib/errors';
+import { sendData } from '../lib/http';
 import {
   createSupervisorClient,
   type PanelResult,
   type SupervisorClient,
 } from '../runtime/supervisor';
 
+import { runTaskCommand } from './tasks';
+
 export interface SuperagentSettingsDependencies {
   config: ApiConfig;
   database: Database;
   authenticate: Authenticate;
+  events: AppEventBus;
 }
 
 /**
@@ -151,7 +159,7 @@ export function registerSuperagentSettingsRoutes(
   app: FastifyInstance,
   dependencies: SuperagentSettingsDependencies,
 ): void {
-  const { config, database, authenticate } = dependencies;
+  const { config, database, authenticate, events } = dependencies;
 
   const ownedRepository = async (request: FastifyRequest) => {
     const auth = request.auth;
@@ -435,20 +443,59 @@ export function registerSuperagentSettingsRoutes(
     },
   );
 
+  const ticketCommandBodySchema = z
+    .object({
+      expectedVersion: z.number().int().nonnegative().optional(),
+      clientCommandId: z.string().trim().min(1).max(128).optional(),
+    })
+    .strict();
+
   for (const action of ['retry', 'stop'] as const) {
     app.post(
       `/api/v1/repositories/:id/superagent/tickets/:ticketId/${action}`,
       { preHandler: authenticate },
       async (request, reply) => {
         const repository = await ownedRepository(request);
+        const auth = request.auth;
+        if (!auth) throw ApiProblem.unauthorized();
         const params = z.object({ ticketId: ticketIdSchema }).safeParse(request.params);
         if (!params.success) throw ApiProblem.invalid('Invalid ticket id');
-        const supervisor = requireSupervisor(config);
-        const result = await supervisor.panelAction(repository.id, {
-          kind: action === 'retry' ? 'ticket-retry' : 'ticket-stop',
-          ticketId: params.data.ticketId,
-        });
-        return relay(reply, request, result);
+        const body = ticketCommandBodySchema.safeParse(request.body ?? {});
+        if (!body.success) {
+          throw ApiProblem.invalid(
+            'Ticket action accepts optional expectedVersion and clientCommandId',
+          );
+        }
+        const [task] = await database
+          .select()
+          .from(taskLinks)
+          .where(
+            and(
+              eq(taskLinks.repositoryId, repository.id),
+              eq(taskLinks.upstreamTicketId, params.data.ticketId),
+            ),
+          )
+          .limit(1);
+        if (!task) throw ApiProblem.notFound('Task not found for this ticket');
+        const kind = action === 'retry' ? 'retry' : 'pause';
+        const result = await runTaskCommand(
+          { config, database, events },
+          auth.owner.id,
+          task.id,
+          kind,
+          {
+            expectedVersion: body.data.expectedVersion ?? task.version,
+            clientCommandId:
+              body.data.clientCommandId ??
+              `superagent-${action}-${params.data.ticketId}-${randomUUID()}`,
+          },
+        );
+        return sendData(
+          reply,
+          request,
+          action === 'retry' ? { retried: true } : { stopped: true },
+          result.status,
+        );
       },
     );
   }

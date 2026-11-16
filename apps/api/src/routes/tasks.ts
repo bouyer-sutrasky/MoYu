@@ -151,36 +151,177 @@ function planCommand(
   return {};
 }
 
+function publishTaskEvent(events: AppEventBus, event: unknown): void {
+  const parsed = event
+    ? eventToWorkspaceEvent(event as Parameters<typeof eventToWorkspaceEvent>[0])
+    : null;
+  if (parsed) events.publishWorkspaceEvent(parsed);
+}
+
+async function wakeForTaskCommand(
+  dependencies: Pick<TaskRouteDependencies, 'config' | 'database'>,
+  repositoryId: string,
+  kind: CommandKind,
+): Promise<void> {
+  if (kind === 'pause' || !dependencies.config.supervisorUrl) return;
+  const [repository] = await dependencies.database
+    .select()
+    .from(repositories)
+    .where(eq(repositories.id, repositoryId))
+    .limit(1);
+  if (!repository) return;
+  await wakeRepository(
+    dependencies.database,
+    dependencies.config,
+    repository,
+    kind === 'retry' ? 'retry' : kind === 'resume' ? 'reply' : 'new_task',
+  );
+}
+
+export interface TaskCommandDependencies {
+  config: ApiConfig;
+  database: Database;
+  events: AppEventBus;
+}
+
+export interface TaskCommandResult {
+  status: 200 | 202;
+  data: unknown;
+  repositoryId: string;
+}
+
+/**
+ * The single command path shared by the public task routes and the
+ * repository-scoped Superagent ticket actions. Keeping the operation,
+ * version check and wake in one place prevents the ticket shortcut from
+ * bypassing task admission.
+ */
+export async function runTaskCommand(
+  dependencies: TaskCommandDependencies,
+  ownerId: string,
+  taskId: string,
+  kind: CommandKind,
+  input: CommandInput,
+): Promise<TaskCommandResult> {
+  const { database, events } = dependencies;
+  const loaded = await loadTask(database, ownerId, taskId);
+  const fingerprint = commandFingerprint(kind, input);
+
+  // Idempotent replay of the same command returns the first operation, even
+  // after the task moved on; a different payload under the same key conflicts.
+  const existing = await findOperation(database, taskId, input.clientCommandId);
+  if (existing) {
+    if (existing.requestFingerprint !== fingerprint) {
+      throw ApiProblem.conflict('clientCommandId was already used for a different task command');
+    }
+    const current = await loadTask(database, ownerId, taskId);
+    await wakeForTaskCommand(dependencies, loaded.conversation.repositoryId, kind);
+    return {
+      status: 200,
+      repositoryId: loaded.conversation.repositoryId,
+      data: taskCommandDataSchema.parse({
+        operation: toTaskOperationSummary(existing),
+        task: toTaskSummary(current.task, existing),
+      }),
+    };
+  }
+
+  const planned = planCommand(kind, loaded.task, input);
+
+  let result: {
+    operation: TaskOperation;
+    task: TaskLink;
+    event: unknown;
+  };
+  try {
+    result = await database.transaction(async (transaction) => {
+      const [current] = await transaction
+        .select()
+        .from(taskLinks)
+        .where(eq(taskLinks.id, taskId))
+        .for('update');
+      if (!current) {
+        throw ApiProblem.notFound('Task not found');
+      }
+      // Re-check under the row lock so two concurrent commands cannot both
+      // pass the version check; the active-operation index rejects the rest.
+      if (input.expectedVersion !== current.version) {
+        throw ApiProblem.conflict(`Task version changed (expected ${current.version})`);
+      }
+      const [operation] = await transaction
+        .insert(taskOperations)
+        .values({
+          taskId,
+          repositoryId: current.repositoryId,
+          kind,
+          clientCommandId: input.clientCommandId,
+          requestFingerprint: fingerprint,
+        })
+        .returning();
+      if (!operation) {
+        throw new Error('task operation insert returned no row');
+      }
+
+      const now = new Date();
+      const [updated] = await transaction
+        .update(taskLinks)
+        .set({
+          ...(planned.state ? { state: planned.state, version: current.version + 1 } : {}),
+          ...(planned.stopRequestedAt !== undefined
+            ? { stopRequestedAt: planned.stopRequestedAt, stopEvidence: {} }
+            : {}),
+          ...(planned.planRevision !== undefined ? { planRevision: planned.planRevision } : {}),
+          updatedAt: now,
+        })
+        .where(eq(taskLinks.id, taskId))
+        .returning();
+      if (!updated) {
+        throw new Error('task update returned no row');
+      }
+      if (planned.planRevision !== undefined) {
+        await transaction
+          .update(conversations)
+          .set({
+            planRevision: planned.planRevision,
+            baseCommit: loaded.conversation.baseCommit ?? current.baseCommit,
+            updatedAt: now,
+          })
+          .where(eq(conversations.id, current.conversationId));
+      }
+
+      const event = await appendEvent(transaction, {
+        type: 'task.state_changed',
+        repositoryId: current.repositoryId,
+        conversationId: current.conversationId,
+        taskId,
+        payload: { task: toTaskSummary(updated, operation) },
+      });
+      return { operation, task: updated, event };
+    });
+  } catch (error) {
+    if (postgresError(error).constraint === 'task_operations_active_task_uq') {
+      throw ApiProblem.conflict('Another task command is still being processed');
+    }
+    throw error;
+  }
+
+  await wakeForTaskCommand(dependencies, loaded.conversation.repositoryId, kind);
+  publishTaskEvent(events, result.event);
+  return {
+    status: 202,
+    repositoryId: loaded.conversation.repositoryId,
+    data: taskCommandDataSchema.parse({
+      operation: toTaskOperationSummary(result.operation),
+      task: toTaskSummary(result.task, result.operation),
+    }),
+  };
+}
+
 export function registerTaskRoutes(
   app: FastifyInstance,
   dependencies: TaskRouteDependencies,
 ): void {
   const { config, database, authenticate, events } = dependencies;
-
-  const publish = (event: unknown) => {
-    const parsed = event
-      ? eventToWorkspaceEvent(event as Parameters<typeof eventToWorkspaceEvent>[0])
-      : null;
-    if (parsed) {
-      events.publishWorkspaceEvent(parsed);
-    }
-  };
-
-  const wakeForCommand = async (repositoryId: string, kind: CommandKind): Promise<void> => {
-    if (kind === 'pause' || !config.supervisorUrl) return;
-    const [repository] = await database
-      .select()
-      .from(repositories)
-      .where(eq(repositories.id, repositoryId))
-      .limit(1);
-    if (!repository) return;
-    await wakeRepository(
-      database,
-      config,
-      repository,
-      kind === 'retry' ? 'retry' : kind === 'resume' ? 'reply' : 'new_task',
-    );
-  };
 
   const command =
     (kind: CommandKind, schema: z.ZodType<Record<string, unknown>>) =>
@@ -192,121 +333,14 @@ export function registerTaskRoutes(
       const params = request.params as { id?: string };
       const taskId = params.id ?? '';
       const input = parseInput(schema, request.body) as unknown as CommandInput;
-      const loaded = await loadTask(database, auth.owner.id, taskId);
-      const fingerprint = commandFingerprint(kind, input);
-
-      // Idempotent replay of the same command returns the first operation, even
-      // after the task moved on; a different payload under the same key conflicts.
-      const existing = await findOperation(database, taskId, input.clientCommandId);
-      if (existing) {
-        if (existing.requestFingerprint !== fingerprint) {
-          throw ApiProblem.conflict(
-            'clientCommandId was already used for a different task command',
-          );
-        }
-        const current = await loadTask(database, auth.owner.id, taskId);
-        await wakeForCommand(loaded.conversation.repositoryId, kind);
-        return sendData(
-          reply,
-          request,
-          taskCommandDataSchema.parse({
-            operation: toTaskOperationSummary(existing),
-            task: toTaskSummary(current.task, existing),
-          }),
-          200,
-        );
-      }
-
-      const planned = planCommand(kind, loaded.task, input);
-
-      let result: {
-        operation: TaskOperation;
-        task: TaskLink;
-        event: unknown;
-      };
-      try {
-        result = await database.transaction(async (transaction) => {
-          const [current] = await transaction
-            .select()
-            .from(taskLinks)
-            .where(eq(taskLinks.id, taskId))
-            .for('update');
-          if (!current) {
-            throw ApiProblem.notFound('Task not found');
-          }
-          // Re-check under the row lock so two concurrent commands cannot both
-          // pass the version check; the active-operation index rejects the rest.
-          if (input.expectedVersion !== current.version) {
-            throw ApiProblem.conflict(`Task version changed (expected ${current.version})`);
-          }
-          const [operation] = await transaction
-            .insert(taskOperations)
-            .values({
-              taskId,
-              repositoryId: current.repositoryId,
-              kind,
-              clientCommandId: input.clientCommandId,
-              requestFingerprint: fingerprint,
-            })
-            .returning();
-          if (!operation) {
-            throw new Error('task operation insert returned no row');
-          }
-
-          const now = new Date();
-          const [updated] = await transaction
-            .update(taskLinks)
-            .set({
-              ...(planned.state ? { state: planned.state, version: current.version + 1 } : {}),
-              ...(planned.stopRequestedAt !== undefined
-                ? { stopRequestedAt: planned.stopRequestedAt, stopEvidence: {} }
-                : {}),
-              ...(planned.planRevision !== undefined ? { planRevision: planned.planRevision } : {}),
-              updatedAt: now,
-            })
-            .where(eq(taskLinks.id, taskId))
-            .returning();
-          if (!updated) {
-            throw new Error('task update returned no row');
-          }
-          if (planned.planRevision !== undefined) {
-            await transaction
-              .update(conversations)
-              .set({
-                planRevision: planned.planRevision,
-                baseCommit: loaded.conversation.baseCommit ?? current.baseCommit,
-                updatedAt: now,
-              })
-              .where(eq(conversations.id, current.conversationId));
-          }
-
-          const event = await appendEvent(transaction, {
-            type: 'task.state_changed',
-            repositoryId: current.repositoryId,
-            conversationId: current.conversationId,
-            taskId,
-            payload: { task: toTaskSummary(updated, operation) },
-          });
-          return { operation, task: updated, event };
-        });
-      } catch (error) {
-        if (postgresError(error).constraint === 'task_operations_active_task_uq') {
-          throw ApiProblem.conflict('Another task command is still being processed');
-        }
-        throw error;
-      }
-
-      await wakeForCommand(loaded.conversation.repositoryId, kind);
-      publish(result.event);
-      return sendData(
-        reply,
-        request,
-        taskCommandDataSchema.parse({
-          operation: toTaskOperationSummary(result.operation),
-          task: toTaskSummary(result.task, result.operation),
-        }),
-        202,
+      const result = await runTaskCommand(
+        { config, database, events },
+        auth.owner.id,
+        taskId,
+        kind,
+        input,
       );
+      return sendData(reply, request, result.data, result.status);
     };
 
   app.post(

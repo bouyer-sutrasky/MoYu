@@ -1,0 +1,29 @@
+--- a/src/app/bridge.ts
++++ b/src/app/bridge.ts
+@@ -506,6 +506,26 @@
+         if (input.readAt) this.log.append(`message-read:${input.triggerId}`, 'message.read', input.readAt,
+           { triggerId: input.triggerId, messageId, at: input.readAt })
+       }
++      // The origin Trigger of a workspace Ticket is not represented in ticket.inputs.
++      // Project its handoff and read proof from the worker Assignment, otherwise the
++      // platform only ever sees message.delivered for follow-up Inputs, never for the
++      // first message that created the Ticket.
++      if (workspace) {
++        const originMeta = origin?.meta ?? {}
++        const originMessageId = typeof originMeta.messageId === 'string' ? originMeta.messageId : ''
++        const deliveredAt = ticket.assignments
++          .map(assignment => assignment.startedAt)
++          .filter((at): at is string => typeof at === 'string')
++          .sort()[0]
++        if (deliveredAt) this.log.append(`message-delivered:${ticket.origin.triggerId}:worker_inbox`, 'message.delivered', deliveredAt,
++          { triggerId: ticket.origin.triggerId, messageId: originMessageId, stage: 'worker_inbox', at: deliveredAt })
++        const readAt = ticket.assignments
++          .map(assignment => assignment.idleAt ?? (assignment.report && assignment.report.state !== 'failed' ? assignment.report.at : undefined))
++          .filter((at): at is string => typeof at === 'string')
++          .sort()[0]
++        if (readAt) this.log.append(`message-read:${ticket.origin.triggerId}`, 'message.read', readAt,
++          { triggerId: ticket.origin.triggerId, messageId: originMessageId, at: readAt })
++      }
+       if (ticket.paused) {
+         const paused = ticket.paused, operation = paused.operationId ?? paused.at
+         // The request and its settlement are two deterministic events: `stopping` first, with the evidence once it lands.

@@ -133,7 +133,7 @@ export function buildApp({
     const machineAuthenticate = createMachineAuthenticate(config);
     registerAuthRoutes(app, { config, database, sessions: sessionService });
     registerRepositoryRoutes(app, { config, database, authenticate });
-    registerSuperagentSettingsRoutes(app, { config, database, authenticate });
+    registerSuperagentSettingsRoutes(app, { config, database, authenticate, events: eventBus });
     registerPreferenceRoutes(app, { config, database, authenticate });
     registerEventRoutes(app, {
       database,
