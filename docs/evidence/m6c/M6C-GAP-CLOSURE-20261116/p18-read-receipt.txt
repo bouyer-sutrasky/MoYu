@@ -1,0 +1,21 @@
+# P18 worker handoff/read receipt
+release: /opt/moyu-m6c/releases/89f70f5663f8
+plugin: superagent-m6c-read-20261116064825 lib/index.js=9111822c7992c35ab94d291f6cde415d4c1d23b1f765597a39094a2bc2597c20
+
+## delivery row
+                  id                  |   state   | attempt_count |         delivered_at          |    handed_to_worker_at    |          read_at           
+--------------------------------------+-----------+---------------+-------------------------------+---------------------------+----------------------------
+ 5af27149-eed4-4095-8651-7543c92e81c2 | delivered |             1 | 2026-11-16 14:52:03.841375+08 | 2026-11-16 14:52:13.24+08 | 2026-11-16 14:53:23.881+08
+(1 row)
+
+## platform events derived from runtime receipts
+           type           |                       source_event_id                       |          created_at          
+--------------------------+-------------------------------------------------------------+------------------------------
+ message.delivery_changed | message-read:workspace:f2ac2f74-5dd0-4fc3-a960-5fb043f03c32 | 2026-11-16 14:53:25.30245+08
+(1 row)
+
+## runtime bridge events
+{"seq":28,"id":"message-delivered:workspace:f2ac2f74-5dd0-4fc3-a960-5fb043f03c32:worker_inbox","type":"message.delivered","at":"2026-11-16T06:52:13.240Z","data":{"triggerId":"workspace:f2ac2f74-5dd0-4fc3-a960-5fb043f03c32","messageId":"f2ac2f74-5dd0-4fc3-a960-5fb043f03c32","stage":"worker_inbox","at":"2026-11-16T06:52:13.240Z"}}
+{"seq":30,"id":"message-read:workspace:f2ac2f74-5dd0-4fc3-a960-5fb043f03c32","type":"message.read","at":"2026-11-16T06:53:23.881Z","data":{"triggerId":"workspace:f2ac2f74-5dd0-4fc3-a960-5fb043f03c32","messageId":"f2ac2f74-5dd0-4fc3-a960-5fb043f03c32","at":"2026-11-16T06:53:23.881Z"}}
+## real PR
+{"headRefName":"agent/m6c-read-receipt","number":11,"state":"OPEN","title":"M6-C read receipt","url":"https://github.com/Bouyer12/m5a-beta-adf10ad9/pull/11"}

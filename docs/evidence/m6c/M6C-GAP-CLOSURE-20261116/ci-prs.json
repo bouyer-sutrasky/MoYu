@@ -1,0 +1,122 @@
+[
+  {
+    "mergeCommit": {
+      "oid": "7076f6814ce364c1b36095655bf2ba40d0a11206"
+    },
+    "number": 72,
+    "state": "MERGED",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-16T07:01:11Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/bouyer-sutrasky/MoYu/actions/runs/43820705156/job/133142878643",
+        "name": "check (lint, format, types, unit tests, build)",
+        "startedAt": "2026-11-16T07:00:25Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-16T07:02:31Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/bouyer-sutrasky/MoYu/actions/runs/43820705156/job/133143205803",
+        "name": "integration (real PostgreSQL)",
+        "startedAt": "2026-11-16T07:01:14Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      }
+    ],
+    "title": "feat(m6c): close ticket command, runtime receipt and review path gaps"
+  },
+  {
+    "mergeCommit": {
+      "oid": "ff530df31dbd28f4b53ab15a3de0078a8e9812f9"
+    },
+    "number": 73,
+    "state": "MERGED",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-16T07:09:31Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/bouyer-sutrasky/MoYu/actions/runs/43821657308/job/133145899133",
+        "name": "check (lint, format, types, unit tests, build)",
+        "startedAt": "2026-11-16T07:08:22Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-16T07:10:41Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/bouyer-sutrasky/MoYu/actions/runs/43821657308/job/133146352041",
+        "name": "integration (real PostgreSQL)",
+        "startedAt": "2026-11-16T07:09:33Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      }
+    ],
+    "title": "fix(supervisor): use lstat for the worktree .git marker"
+  },
+  {
+    "mergeCommit": {
+      "oid": "43607c1a70acfb8945cbfba36a57f45c0bfb1945"
+    },
+    "number": 74,
+    "state": "MERGED",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-16T07:33:42Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/bouyer-sutrasky/MoYu/actions/runs/43824619096/job/133155349737",
+        "name": "check (lint, format, types, unit tests, build)",
+        "startedAt": "2026-11-16T07:32:42Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-16T07:34:47Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/bouyer-sutrasky/MoYu/actions/runs/43824619096/job/133155740663",
+        "name": "integration (real PostgreSQL)",
+        "startedAt": "2026-11-16T07:33:44Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      }
+    ],
+    "title": "fix(supervisor): kill background check descendants after normal exit"
+  },
+  {
+    "mergeCommit": {
+      "oid": "89f70f5663f8ad0ce984f62e39eb07042432a510"
+    },
+    "number": 75,
+    "state": "MERGED",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-16T07:43:37Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/bouyer-sutrasky/MoYu/actions/runs/43825691271/job/133158898137",
+        "name": "check (lint, format, types, unit tests, build)",
+        "startedAt": "2026-11-16T07:42:32Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-11-16T07:45:02Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/bouyer-sutrasky/MoYu/actions/runs/43825691271/job/133159313906",
+        "name": "integration (real PostgreSQL)",
+        "startedAt": "2026-11-16T07:43:40Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      }
+    ],
+    "title": "fix(superagent): unwrap prompt preview config at the supervisor boundary"
+  }
+]

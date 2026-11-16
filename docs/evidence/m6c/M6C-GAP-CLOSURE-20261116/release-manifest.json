@@ -1,0 +1,217 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-11-16T07:45:48.808Z",
+  "source": {
+    "directory": "/root/src/moyu-m6c-exec-20261116",
+    "gitHead": "89f70f5663f8ad0ce984f62e39eb07042432a510",
+    "gitTree": "6abc883ea651268284e5419cf7544eaf0f40f7e3",
+    "dirty": false,
+    "status": ""
+  },
+  "toolchain": {
+    "node": "v24.22.2",
+    "pnpm": "11.7.0"
+  },
+  "artifacts": {
+    "apps/api/dist/server.js": "2e1a758ba2f2697d1f43736c5f0758e8535902281482174798fd1ee4350ef948",
+    "apps/supervisor/dist/main.js": "49ec23a35d4090615b60d7d36e597858cc08b000e666c52ada8efbe4b7792cd8",
+    "apps/dispatcher/dist/main.js": "9e0d7cddc62e74516756e1ef28e4e15f4bcee145a7b27dd83bf7f55c2f2705cd",
+    "apps/web/dist/index.html": "2ef16a2d2de84562b37a641f1891cbe41591ec445cf6882d985a5ffa14efcfac"
+  },
+  "webAssets": [
+    {
+      "path": "apps/web/dist/assets/index-BjlN05Wr.css",
+      "sha256": "c8edef8f11b441941ae76097356daedb642115ba08243179bb9ea77f0132fdea"
+    },
+    {
+      "path": "apps/web/dist/assets/index-Cgsl00vd.js",
+      "sha256": "8a728d4bd07c00b7e0a89ccd30da77ea4936f344ba4c698a9db2de188852ede8"
+    },
+    {
+      "path": "apps/web/dist/theme-init.js",
+      "sha256": "84527741ad33e90faf8434fac21ec2ddc67c1f364ee769084d2c0448054c4e7b"
+    }
+  ],
+  "plugin": {
+    "directory": "/opt/moyu-m6c/artifacts/superagent-m6c-read-20261116064825",
+    "entry": "/opt/moyu-m6c/artifacts/superagent-m6c-read-20261116064825/lib/index.js",
+    "entrySha256": "9111822c7992c35ab94d291f6cde415d4c1d23b1f765597a39094a2bc2597c20",
+    "files": [
+      {
+        "path": "cordis.patch.yml",
+        "sha256": "c91fab94d3a27c7068b5f5391907fb4d69342112ad50f987fdfed9985c2c7905"
+      },
+      {
+        "path": "lib/client.js",
+        "sha256": "ceea72323f662469f9884ccbb2aed878b05d096234ae53d7047597e02d547460"
+      },
+      {
+        "path": "lib/feishu-CU6_pbdN.js",
+        "sha256": "bba306ec262ffbf2806f478ef991327ea4a4a1055b64af722aa3edf3e29d49fe"
+      },
+      {
+        "path": "lib/feishu-watch.d.ts",
+        "sha256": "7c4b027745388d9bc5bb255ebbff910d739b1bfe2a8ab9052955485a60db7d11"
+      },
+      {
+        "path": "lib/feishu-watch.js",
+        "sha256": "c54071f9b76337fc549722fdb2202558aefe96598ba6837b6fd0f784e03ea5ea"
+      },
+      {
+        "path": "lib/github-pull-BR9nZakB.js",
+        "sha256": "b308fa3060a79bf91e2524050d7a8912a08dbf78dfb2ec20e3bd097968af2ddd"
+      },
+      {
+        "path": "lib/github-watch.d.ts",
+        "sha256": "6c22430e138209133b787d97e8f65f0fac9a12f9c7f90fc83871bcaaffbb2462"
+      },
+      {
+        "path": "lib/github-watch.js",
+        "sha256": "5262bb1c1c46f0969e4622aec194dced5f9cb25d2961e52e983ef93710f621cd"
+      },
+      {
+        "path": "lib/host-B64LgdSs.js",
+        "sha256": "0573e44989f7eebff1d82934efbd38f462f933eef06e0f17ce21c856e318481f"
+      },
+      {
+        "path": "lib/index.d.ts",
+        "sha256": "7e6e126d7afef5af28b6612fa0df50eb0edf73d1b665a2efc1d4fbe065d587d5"
+      },
+      {
+        "path": "lib/index.js",
+        "sha256": "9111822c7992c35ab94d291f6cde415d4c1d23b1f765597a39094a2bc2597c20"
+      },
+      {
+        "path": "lib/intake-BfHiPeW6.d.ts",
+        "sha256": "f74f291fb8bebe8f5c38c45ba2a198c39a8d599579de634b3ebfddef0ab14db7"
+      },
+      {
+        "path": "lib/kind-DwFliPt0.d.ts",
+        "sha256": "cdde57d8dce8ee84221023110c5e0191af6365a3d570af6f8cdb02759428375f"
+      },
+      {
+        "path": "lib/poll-CtaLugLw.js",
+        "sha256": "c0859b1bffbb533031fa87b0d3be07f603fbd6c7421163016da9d5d36adeada1"
+      },
+      {
+        "path": "lib/workspace-watch.d.ts",
+        "sha256": "e845492aeadbde8ad89cbac4a59f8db7a5021d4341c12cceb65120e6943a7529"
+      },
+      {
+        "path": "lib/workspace-watch.js",
+        "sha256": "8d3ec8c2956977cc8158ea974f4ce7201667bd057994e6f217c276609c4aa90d"
+      },
+      {
+        "path": "locale/en.json",
+        "sha256": "5ec166f3eb0ae253fb56c7dc571cf81199bdedcd3f8509820a7cebf5b0de469d"
+      },
+      {
+        "path": "locale/zh.json",
+        "sha256": "35328461f46521f6771f33de477a1ac09411f23ddc53f9f494e8c22744decc6a"
+      },
+      {
+        "path": "package.json",
+        "sha256": "d428e669805ea1dfb6a4900bddbffe3cafb8f06a0b1eb139266c2b2f6b94b021"
+      },
+      {
+        "path": "prompts/admission.md",
+        "sha256": "cdd96f7626a89d5709377c178aa732cf6c247f5b371a07539975a4713c4c52b0"
+      },
+      {
+        "path": "prompts/cli.md",
+        "sha256": "a47ab1126c241ede5383de358d1421279791d582c722547f1b542154ad3fd51e"
+      },
+      {
+        "path": "prompts/dispatch.md",
+        "sha256": "c34fce83efd114cb5bb725673f1249f092b4e57205cac7cdc45d51160d94ec2a"
+      },
+      {
+        "path": "prompts/handoff-orchestrator.md",
+        "sha256": "6b283162d4fbc7274a8b17815fdc62ed57eff314d35a60031e90561805ca3282"
+      },
+      {
+        "path": "prompts/handoff-worker.md",
+        "sha256": "ff68068b528ae8f0140965d73f24af6be8e3462506aae40efbc4e054becf7f94"
+      },
+      {
+        "path": "prompts/handoff.md",
+        "sha256": "19af7408d146d5a03ff81f155a5582acccd008f608692bcdd4babe8ffb3b6a41"
+      },
+      {
+        "path": "prompts/orchestrator.md",
+        "sha256": "0d3a2eda1156ebbc841987f22cd930a16934defef96e8a6eff5210b8eee0edf9"
+      },
+      {
+        "path": "prompts/replies.md",
+        "sha256": "d570755d3959d061b13223441c4ce8a5c23ffefccf3427ab852bf3c5267b33e4"
+      },
+      {
+        "path": "prompts/shared.md",
+        "sha256": "c14dbc2c8176271e7165a4c0dca14dd608134c0e5a5c6eb7274d71db571e4d02"
+      },
+      {
+        "path": "prompts/subscriptions.md",
+        "sha256": "9e5bc9920a508eabc29bba4d2d63b3d46bccf70562389a2ff694b1b9feb578b1"
+      },
+      {
+        "path": "prompts/team/communication.md",
+        "sha256": "af77247e0c757bc136f77fae23be79a887b4d250bbf86579bb9a1a44da833653"
+      },
+      {
+        "path": "prompts/team/delivery.md",
+        "sha256": "aff7c953ce8dfc6e6838f843a5980b4d7c844a517e2d05f89560e8984a9bf55d"
+      },
+      {
+        "path": "prompts/team/scope.md",
+        "sha256": "46cb796cabdb960373cf213c43b5e35bd8954ec3072e20350c4904a4dc231425"
+      },
+      {
+        "path": "prompts/work.md",
+        "sha256": "b36fbc7ed4cf2d6f91ef2981a31fd5a70e11e2f3304afb921ab94ba135c69a2e"
+      },
+      {
+        "path": "prompts/worker.md",
+        "sha256": "3c6e02fbd2050bb17d4adf644909acc9903b603bfc7248d46df5ef0aa9ef846e"
+      },
+      {
+        "path": "skills/dsh-superagent-feishu/SKILL.md",
+        "sha256": "5cd538eef17f39d3a7c8beb0ff12ab2fff6e405139e59e8667009fd16ebd23c8"
+      },
+      {
+        "path": "skills/dsh-superagent-github/SKILL.md",
+        "sha256": "5081401e53813652f0afa3d73651147e0e7620577360f57cc43dd1c74fb41507"
+      }
+    ]
+  },
+  "migrations": {
+    "count": 20,
+    "last": "0019_event_dedupe_per_repository",
+    "journalSha256": "36a6beaeb36700f81ff59172dc30222cb8d6330ef7a69f07f72e023625f96edb"
+  },
+  "upstreamLock": {
+    "path": "/root/src/moyu-m6c-exec-20261116/integrations/superagent/upstream.lock.json",
+    "sha256": "c034f43be8c6b6090e335a4cc6d45ce8521e67d4cd05391fc976f064dd197f59",
+    "package": "@deepseek-ai/dsh",
+    "version": "0.2.1-rc.2",
+    "superagentCommit": "6337fc823ce20251c8de8085948165c81aaa701e"
+  },
+  "units": [
+    {
+      "name": "moyu-m6c-api.service",
+      "sha256": "f905ad9a38f03f12cfe89ab2d65fed122b90de22dbab13d2f5097d95612756c1"
+    },
+    {
+      "name": "moyu-m6c-dispatcher.service",
+      "sha256": "f77a38418b60537f2897f16b2a182e32c4eee59f8d1206c23158044924e251af"
+    },
+    {
+      "name": "moyu-m6c-supervisor.service",
+      "sha256": "80108a94645825ad8965a19798bcf111faf4bc962e06c1a62191c335075d5d69"
+    },
+    {
+      "name": "moyu-m6c.slice",
+      "sha256": "5522e565f2bcc4fb314c5490f82c2fce08f3cba9dccd794dcd25d6b976741a7a"
+    }
+  ],
+  "unitSummarySha256": "9617901c540bb2703f2d753c73d2e10721e8d590661ba24b2a074b20e38cde02"
+}
