@@ -111,10 +111,11 @@ export function Composer({
   const uploading = attachmentBucket.uploading;
   const attachmentError = attachmentBucket.error;
 
+  const notAccepted = conversation?.task?.state === 'not_accepted';
   const terminal =
     conversation?.task?.state === 'completed' ||
     conversation?.task?.state === 'closed_unmerged' ||
-    conversation?.task?.state === 'not_accepted';
+    notAccepted;
   const sending = conversation?.id != null && sendingConversations.has(conversation.id);
   const disabled = mode !== 'work' || !conversation || conversationLoading || terminal;
   // Read the persisted draft during render: a parked-only draft has empty
@@ -178,15 +179,17 @@ export function Composer({
   const hint =
     mode === 'chat'
       ? 'Chat 接口在后续阶段接入'
-      : terminal
-        ? '任务已结束；请新建关联任务或显式恢复已停止的任务'
-        : conversation?.task?.state === 'stopped'
-          ? '任务已停止：新消息会先保存，继续后按顺序投递'
-          : conversation?.task?.state === 'waiting_input'
-            ? '等待回复：发送内容会作为任务答复'
-            : conversation
-              ? '消息按投递证据更新，不提前显示已读取'
-              : '消息输入区未启用';
+      : notAccepted
+        ? '上一条请求未接单。请新建任务提交修改后的请求。'
+        : terminal
+          ? '任务已结束；可基于此任务新建'
+          : conversation?.task?.state === 'stopped'
+            ? '任务已停止：新消息会先保存，继续后按顺序投递'
+            : conversation?.task?.state === 'waiting_input'
+              ? '等待回复：发送内容会作为任务答复'
+              : conversation
+                ? '消息按投递证据更新，不提前显示已读取'
+                : '消息输入区未启用';
 
   function attachmentVersion(scope: string): number {
     return attachmentVersionsRef.current.get(scope) ?? 0;

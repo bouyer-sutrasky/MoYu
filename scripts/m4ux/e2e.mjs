@@ -161,6 +161,7 @@ async function startApi(worktree, port) {
       AUTH_COOKIE_SECURE: 'false',
       BRIDGE_URL: `http://127.0.0.1:${BRIDGE_PORT}`,
       BRIDGE_TOKEN,
+      M4UX_TEST_BRIDGE_TOKEN: BRIDGE_TOKEN,
       BRIDGE_TIMEOUT_MS: '5000',
       ARTIFACT_STORAGE_DIR: path.join(worktree, '.local/m4ux-artifacts'),
     },
@@ -204,6 +205,18 @@ let currentDatabase = null;
 /* -------------------------------- dispatcher ------------------------------- */
 
 async function startDispatcher(repositoryFullName) {
+  const database = new Client({ connectionString: currentDatabase.url });
+  await database.connect();
+  try {
+    await database.query(
+      `insert into repository_instances (repository_id, state, desired_state)
+       select id, 'online', 'online' from repositories where full_name = $1
+       on conflict (repository_id) do update set state = 'online', desired_state = 'online'`,
+      [repositoryFullName],
+    );
+  } finally {
+    await database.end();
+  }
   const child = spawn(process.execPath, ['apps/dispatcher/dist/main.js'], {
     cwd: ROOT,
     env: {
@@ -214,6 +227,7 @@ async function startDispatcher(repositoryFullName) {
       BRIDGE_REPOSITORY: repositoryFullName,
       BRIDGE_URL: `http://127.0.0.1:${BRIDGE_PORT}`,
       BRIDGE_TOKEN,
+      M4UX_TEST_BRIDGE_TOKEN: BRIDGE_TOKEN,
       DELIVERY_INTERVAL_MS: '200',
       EVENT_SYNC_INTERVAL_MS: '200',
       OPERATION_INTERVAL_MS: '500',
@@ -270,11 +284,11 @@ const bridgeState = {
   ],
   branches: ['main', 'release', 'feature-x'],
   calls: [],
-  // Real dispatch-path state: one trigger is accepted, then an optional read
-  // event is served so the actual dispatcher writes delivered/read transitions.
+  // Real dispatch-path state: trigger receipt, then optional worker receipts.
   deliveryCalls: 0,
   ticketCalls: 0,
   eventsCursor: 0,
+  handoffEvent: null,
   readEvent: null,
   lastTrigger: null,
 };
@@ -305,6 +319,7 @@ function startFakeBridge() {
           retry: true,
           readOnlyDiscussion: true,
           start: true,
+          admission: true,
           branches: bridgeState.capabilities.branches,
         },
         source: { kind: 'workspace', enabled: true },
@@ -333,6 +348,9 @@ function startFakeBridge() {
       const afterRaw = Number(url.searchParams.get('after') ?? '0');
       const after = Number.isFinite(afterRaw) ? afterRaw : 0;
       const events = [];
+      if (bridgeState.handoffEvent && after < bridgeState.handoffEvent.seq) {
+        events.push(bridgeState.handoffEvent);
+      }
       if (bridgeState.readEvent && after < bridgeState.readEvent.seq) {
         events.push(bridgeState.readEvent);
       }
@@ -405,13 +423,13 @@ async function seed(databaseUrl) {
   );
 
   const repoA = await query(
-    `insert into repositories (owner_id, full_name, default_branch, status, bridge_url)
-     values ($1, $2, 'main', 'active', $3) returning id`,
+    `insert into repositories (owner_id, full_name, default_branch, status, bridge_url, bridge_credential_ref)
+     values ($1, $2, 'main', 'active', $3, 'env:M4UX_TEST_BRIDGE_TOKEN') returning id`,
     [ownerId, 'bouyer-sutrasky/m4ux-main', `http://127.0.0.1:${BRIDGE_PORT}`],
   );
   const repoB = await query(
-    `insert into repositories (owner_id, full_name, default_branch, status, bridge_url)
-     values ($1, $2, 'main', 'active', $3) returning id`,
+    `insert into repositories (owner_id, full_name, default_branch, status, bridge_url, bridge_credential_ref)
+     values ($1, $2, 'main', 'active', $3, 'env:M4UX_TEST_BRIDGE_TOKEN') returning id`,
     [ownerId, 'bouyer-sutrasky/m4ux-other', `http://127.0.0.1:${BRIDGE_PORT}`],
   );
   const repositoryA = repoA.rows[0].id;
@@ -892,6 +910,37 @@ async function captureAfter(browser, { baseURL, token }) {
   );
   assert(overflow <= 1, `after: no horizontal overflow on mobile (got ${overflow})`);
 
+  const mobilePage = mobile.page;
+  await mobilePage.getByRole('button', { name: '打开导航' }).click();
+  await mobilePage.getByRole('button', { name: /^选择仓库，/ }).click();
+  const repositoryPicker = mobilePage.getByRole('dialog', { name: '选择仓库' });
+  await repositoryPicker.getByRole('button', { name: 'bouyer-sutrasky/m4ux-other' }).click();
+  await repositoryPicker.waitFor({ state: 'hidden' });
+  await mobilePage.getByRole('button', { name: '选择仓库，bouyer-sutrasky/m4ux-other' }).waitFor();
+  await sidebar(mobilePage).getByRole('button', { name: '新建任务', exact: true }).click();
+  await mobilePage.getByRole('button', { name: /^起点分支，/ }).click();
+  await mobilePage
+    .getByRole('dialog', { name: '起点分支' })
+    .getByRole('button', { name: 'release' })
+    .click();
+  await mobilePage.getByRole('button', { name: /^模型，/ }).click();
+  await mobilePage
+    .getByRole('dialog', { name: '模型' })
+    .getByRole('button', { name: /DeepSeek V4\.1 Flash/ })
+    .click();
+  const effortTrigger = mobilePage.getByRole('button', { name: /^推理强度，/ });
+  await effortTrigger.click();
+  const effortPicker = mobilePage.getByRole('dialog', { name: '推理强度' });
+  await effortPicker.getByRole('button', { name: 'high' }).click();
+  assert(
+    (await effortTrigger.innerText()).includes('high'),
+    'mobile selection shows selected effort',
+  );
+  await effortTrigger.click();
+  await effortPicker.getByRole('button', { name: '关闭选择' }).click();
+  assert((await effortTrigger.innerText()).includes('high'), 'mobile cancel keeps selected effort');
+  record('mobile repository and task pickers', 'pass', 'switch and cancel at 390px');
+
   await light.context.close();
   await dark.context.close();
   await mobile.context.close();
@@ -1097,29 +1146,45 @@ async function functional(browser, api, seeded) {
   );
   record('task list pagination and repository isolation', 'pass', '124 tasks reachable');
 
-  // 3b. An already displayed message follows stored -> delivered -> read via
+  // 3b. An already displayed message follows stored -> runtime -> worker -> read via
   // the real dispatcher and SSE, without reloading the page.
   await repositorySelect.selectOption(seeded.repositoryB);
   await openConversation(page, '另一个仓库的任务');
   await page.getByText('平台收件').first().waitFor();
   const dispatcher = await startDispatcher('bouyer-sutrasky/m4ux-other');
   try {
+    await page.getByText('运行时已接收', { exact: true }).first().waitFor({ timeout: 20_000 });
+    assert(
+      (await page.getByText('执行器已接收', { exact: true }).count()) === 0,
+      'no worker receipt yet',
+    );
+    bridgeState.handoffEvent = {
+      seq: 1,
+      id: 'handoff-1',
+      type: 'message.delivered',
+      at: new Date().toISOString(),
+      data: { messageId: seeded.otherMessageId, at: new Date().toISOString() },
+    };
     await page.getByText('执行器已接收').first().waitFor({ timeout: 20_000 });
     bridgeState.readEvent = {
-      seq: 1,
+      seq: 2,
       id: 'read-1',
       type: 'message.read',
       at: new Date().toISOString(),
       data: { messageId: seeded.otherMessageId, at: new Date().toISOString() },
     };
     await page.getByText('已读取').first().waitFor({ timeout: 20_000 });
+  } catch (error) {
+    throw new Error(`Delivery receipts did not reach the browser.\n${dispatcher.output()}`, {
+      cause: error,
+    });
   } finally {
     await dispatcher.stop();
   }
   record(
     'delivery and read update in place',
     'pass',
-    'stored -> delivered -> read through the real dispatcher and SSE',
+    'stored -> runtime -> worker -> read through the real dispatcher and SSE',
   );
 
   // 3b2. A stale delivered response must not overwrite the newer read
@@ -1161,7 +1226,7 @@ async function functional(browser, api, seeded) {
   try {
     await deliveredHeldPromise;
     bridgeState.readEvent = {
-      seq: 2,
+      seq: 3,
       id: 'read-2',
       type: 'message.read',
       at: new Date().toISOString(),
@@ -1176,7 +1241,7 @@ async function functional(browser, api, seeded) {
     await page.waitForTimeout(500);
     await reorderRow.getByText('已读取').waitFor();
     assert(
-      (await reorderRow.getByText('执行器已接收').count()) === 0,
+      (await reorderRow.getByText('运行时已接收').count()) === 0,
       'after: the stale delivered response did not overwrite read',
     );
   } finally {
@@ -2699,11 +2764,10 @@ async function functional(browser, api, seeded) {
   assert(!bodyText.includes('M4 接入'), 'after: no stale M4 repository copy');
   assert(bodyText.includes('添加仓库'), 'after: add-repository entry remains visible');
   const addButton = sidebar(page).locator('button', { hasText: '添加仓库' }).first();
-  assert(
-    (await addButton.getAttribute('title'))?.includes('M5'),
-    'after: add-repository explains M5 status',
-  );
-  assert(await addButton.isDisabled(), 'after: add-repository stays disabled');
+  await addButton.click();
+  const addRepositoryDialog = page.getByRole('dialog', { name: '添加仓库' });
+  await addRepositoryDialog.getByRole('button', { name: '关闭' }).click();
+  await addRepositoryDialog.waitFor({ state: 'hidden' });
 
   await openConversation(page, '已停止任务');
   assert(
@@ -2734,6 +2798,65 @@ async function functional(browser, api, seeded) {
   await light.context.close();
 }
 
+async function checkNotAcceptedOnMobile(browser, { baseURL, token }, repositoryId) {
+  const conversationId = await createWebConversation(baseURL, token, repositoryId);
+  const messageId = await insertPendingInboundMessage(
+    currentDatabase.url,
+    conversationId,
+    '手机验收：运行时已接收但未接单',
+  );
+  const database = new Client({ connectionString: currentDatabase.url });
+  await database.connect();
+  try {
+    await database.query(
+      `update deliveries set state = 'delivered', delivered_at = now() where message_id = $1`,
+      [messageId],
+    );
+    await database.query(
+      `update task_links set state = 'not_accepted' where conversation_id = $1`,
+      [conversationId],
+    );
+  } finally {
+    await database.end();
+  }
+
+  const { context, page } = await newContext(browser, {
+    baseURL,
+    token,
+    viewport: { width: 390, height: 844 },
+    theme: 'dark',
+  });
+  try {
+    await page.getByRole('button', { name: '打开导航' }).click();
+    await page.getByRole('button', { name: /^选择仓库，/ }).click();
+    const picker = page.getByRole('dialog', { name: '选择仓库' });
+    await picker.getByRole('button', { name: 'bouyer-sutrasky/m4ux-other' }).click();
+    await openConversationById(page, conversationId);
+    await page.getByText('运行时已接收', { exact: true }).waitFor();
+    await page.getByText('上一条请求未接单。请新建任务提交修改后的请求。').waitFor();
+    assert(
+      await page.getByRole('textbox', { name: '消息输入区' }).isDisabled(),
+      'not accepted is terminal',
+    );
+    await page.getByRole('main').getByRole('button', { name: '新建任务', exact: true }).click();
+    await page.getByText('本次创建实际配置').waitFor();
+    record(
+      'mobile not-accepted conversation',
+      'pass',
+      'runtime receipt and visible new-task action',
+    );
+  } finally {
+    await context.close();
+    const cleanup = new Client({ connectionString: currentDatabase.url });
+    await cleanup.connect();
+    try {
+      await cleanup.query('delete from conversations where id = $1', [conversationId]);
+    } finally {
+      await cleanup.end();
+    }
+  }
+}
+
 /* ----------------------------------- main ---------------------------------- */
 
 async function main() {
@@ -2746,6 +2869,7 @@ async function main() {
 
   if (!SKIP_BUILD) {
     buildWorktree(ROOT);
+    run('corepack', ['pnpm@11.7.0', '--filter', '@moyu/dispatcher', 'build']);
     if (!process.env.M4UX_SKIP_BEFORE) {
       ensureBeforeWorktree();
     }
@@ -2765,6 +2889,11 @@ async function main() {
     const after = await startApi(ROOT, AFTER_PORT);
     try {
       await captureAfter(browser, { baseURL: after.url, token: seeded.sessionToken });
+      await checkNotAcceptedOnMobile(
+        browser,
+        { baseURL: after.url, token: seeded.sessionToken },
+        seeded.repositoryB,
+      );
       await functional(browser, { baseURL: after.url, token: seeded.sessionToken }, seeded);
     } finally {
       await after.stop();

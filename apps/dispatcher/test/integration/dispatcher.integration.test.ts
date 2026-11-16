@@ -284,6 +284,13 @@ describe('dispatcher delivery and Bridge event catch-up on real PostgreSQL', () 
       },
       {
         seq: 2,
+        id: 'message-delivered:trigger-1',
+        type: 'message.delivered',
+        at: now.toISOString(),
+        data: { messageId: 'placeholder', at: now.toISOString() },
+      },
+      {
+        seq: 3,
         id: 'message-read:trigger-1',
         type: 'message.read',
         at: now.toISOString(),
@@ -294,14 +301,14 @@ describe('dispatcher delivery and Bridge event catch-up on real PostgreSQL', () 
         },
       },
       {
-        seq: 3,
+        seq: 4,
         id: 'progress-1',
         type: 'task.progress',
         at: now.toISOString(),
         data: { ticketId: 'ticket-1', text: 'Reading the repository', at: now.toISOString() },
       },
       {
-        seq: 4,
+        seq: 5,
         id: 'artifact-ticket-1',
         type: 'artifact.created',
         at: now.toISOString(),
@@ -314,7 +321,7 @@ describe('dispatcher delivery and Bridge event catch-up on real PostgreSQL', () 
         },
       },
       {
-        seq: 5,
+        seq: 6,
         id: 'ticket-ended:ticket-1',
         type: 'ticket.ended',
         at: now.toISOString(),
@@ -477,17 +484,21 @@ describe('dispatcher delivery and Bridge event catch-up on real PostgreSQL', () 
     });
     expect(task.rows[0]?.pr_url).toContain('/pull/7');
 
-    const read = await testDatabase.pool.query(
-      `select read_at from deliveries where message_id = $1`,
+    const receipt = await testDatabase.pool.query(
+      `select handed_to_worker_at, read_at from deliveries where message_id = $1`,
       [messageId],
     );
-    expect(read.rows[0]?.read_at).toBeTruthy();
+    expect(receipt.rows[0]?.handed_to_worker_at).toBeTruthy();
+    expect(receipt.rows[0]?.read_at).toBeTruthy();
 
-    const platformEvents = await testDatabase.pool.query<{ type: string; source_event_id: string }>(
-      `select type, source_event_id from events where source = 'bridge' order by seq`,
-    );
+    const platformEvents = await testDatabase.pool.query<{
+      type: string;
+      source_event_id: string;
+      payload: unknown;
+    }>(`select type, source_event_id, payload from events where source = 'bridge' order by seq`);
     expect(platformEvents.rows.map((row) => row.type)).toEqual([
       'task.linked',
+      'message.delivery_changed',
       'message.delivery_changed',
       'task.progress',
       'artifact.created',
@@ -495,17 +506,19 @@ describe('dispatcher delivery and Bridge event catch-up on real PostgreSQL', () 
     ]);
     expect(platformEvents.rows.map((row) => row.source_event_id)).toEqual([
       'ticket-linked:ticket-1',
+      'message-delivered:trigger-1',
       'message-read:trigger-1',
       'progress-1',
       'artifact-ticket-1',
       'ticket-ended:ticket-1',
     ]);
+    expect(platformEvents.rows[1]?.payload).toEqual({ messageId, deliveryState: 'delivered' });
 
     const cursor = await testDatabase.pool.query(
       `select cursor from runtime_cursors where repository_id = $1`,
       [repository.id],
     );
-    expect(String(cursor.rows[0]?.cursor)).toBe('5');
+    expect(String(cursor.rows[0]?.cursor)).toBe('6');
 
     const artifacts = await testDatabase.pool.query(
       `select type, metadata from artifacts where task_id = (select id from task_links where conversation_id = $1)`,

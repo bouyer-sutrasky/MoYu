@@ -378,19 +378,33 @@ async function applyReadEvent(
   });
 }
 
-async function applyDeliveredEvent(client: pg.PoolClient, event: BridgeEvent): Promise<void> {
+async function applyDeliveredEvent(
+  client: pg.PoolClient,
+  repository: RepositoryBinding,
+  event: BridgeEvent,
+): Promise<void> {
   const data = asRecord(event.data);
   const messageId = asString(data.messageId);
   if (!messageId) {
     return;
   }
   const at = asString(data.at);
-  await client.query(
-    `update deliveries
-        set handed_to_worker_at = coalesce(handed_to_worker_at, $2::timestamptz), updated_at = now()
-      where message_id = $1 and handed_to_worker_at is null`,
-    [messageId, at ?? new Date().toISOString()],
+  const updated = await client.query<{ conversation_id: string }>(
+    `update deliveries d
+        set handed_to_worker_at = $2::timestamptz, updated_at = now()
+       from messages m join conversations c on c.id = m.conversation_id
+      where d.message_id = m.id and m.id = $1 and c.repository_id = $3
+        and d.handed_to_worker_at is null
+      returning m.conversation_id`,
+    [messageId, at ?? new Date().toISOString(), repository.id],
   );
+  const conversationId = updated.rows[0]?.conversation_id;
+  if (conversationId) {
+    await emit(client, repository, event, 'message.delivery_changed', conversationId, null, {
+      messageId,
+      deliveryState: 'delivered',
+    });
+  }
 }
 
 /** Stores a Bridge event whose Ticket is not linked yet, so the cursor can advance safely. */
@@ -1198,7 +1212,7 @@ export async function applyEvent(
       await applyReadEvent(client, repository, event, logger);
       return;
     case 'message.delivered':
-      await applyDeliveredEvent(client, event);
+      await applyDeliveredEvent(client, repository, event);
       return;
     case 'task.progress':
       await applyProgressEvent(client, repository, event);

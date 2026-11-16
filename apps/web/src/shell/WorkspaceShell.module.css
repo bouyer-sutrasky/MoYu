@@ -225,16 +225,9 @@
 }
 
 .repositorySelect {
-  position: relative;
-  display: flex;
-  align-items: center;
-}
-
-.repositorySelect select {
   width: 100%;
   min-height: 38px;
-  padding: 7px 30px 7px 10px;
-  appearance: none;
+  padding: 7px 10px;
   border: 1px solid var(--dsw-alias-border-l3);
   border-radius: var(--dsw-radius-md);
   background: var(--dsw-alias-bg-layer-1);
@@ -243,15 +236,8 @@
   outline: none;
 }
 
-.repositorySelect select:focus {
+.repositorySelect:focus {
   border-color: var(--dsw-alias-state-business-primary);
-}
-
-.repositorySelect svg {
-  position: absolute;
-  right: 9px;
-  pointer-events: none;
-  color: var(--dsw-alias-label-tertiary);
 }
 
 .disabledAction {
