@@ -115,6 +115,12 @@ function prepareRuntimeIdentity(
   // runtime so proper-lockfile can create <stateDir>.lock without giving the
   // runtime write access to the shared state parent.
   const privateState = join(home, 'state');
+  // Profiles provisioned before per-repository state used a symlink to the
+  // shared state root. Remove that symlink before creating the isolated dir,
+  // otherwise mkdir/chmod would follow it and modify the shared parent.
+  if (pathExists(privateState) && lstatSync(privateState).isSymbolicLink()) {
+    rmSync(privateState, { force: true });
+  }
   mkdirSync(privateState, { recursive: true, mode: 0o700 });
   chmodSync(privateState, 0o700);
   chownSync(privateState, uid, gid);
