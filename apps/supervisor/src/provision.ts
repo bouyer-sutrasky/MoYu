@@ -32,6 +32,7 @@ export interface PreparedInstance {
   runtimeUid?: number;
   runtimeGid?: number;
   runtimeHome?: string;
+  stateDir?: string;
   checkUid?: number;
   checkGid?: number;
   checkHome?: string;
@@ -82,7 +83,7 @@ function prepareRuntimeIdentity(
   profile: string,
   profileDir: string,
   pinned: { runtimeUid?: number; runtimeGid?: number; runtimeHome?: string } | undefined,
-): { runtimeUid?: number; runtimeGid?: number; runtimeHome?: string } {
+): { runtimeUid?: number; runtimeGid?: number; runtimeHome?: string; stateDir?: string } {
   if (!pinned || pinned.runtimeUid === undefined || pinned.runtimeGid === undefined) {
     return {};
   }
@@ -110,10 +111,36 @@ function prepareRuntimeIdentity(
     chmodSync(ghTarget, 0o700);
   }
 
-  for (const shared of ['profiles', 'state']) {
-    const link = join(home, shared);
-    if (!pathExists(link)) symlinkSync(join(config.dshHome, shared), link);
+  // The DSH state root is per repository too. It must be writable by the
+  // runtime so proper-lockfile can create <stateDir>.lock without giving the
+  // runtime write access to the shared state parent.
+  const privateState = join(home, 'state');
+  mkdirSync(privateState, { recursive: true, mode: 0o700 });
+  chmodSync(privateState, 0o700);
+  chownSync(privateState, uid, gid);
+  const stateDir = join(privateState, profile);
+  const sharedState = join(config.dshHome, 'state', profile);
+  if (!pathExists(stateDir)) {
+    if (pathExists(sharedState)) {
+      cpSync(sharedState, stateDir, { recursive: true });
+    } else {
+      mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+    }
   }
+  chownTree(stateDir, uid, gid);
+  chmodSync(stateDir, 0o700);
+  rmSync(stateDir + '.lock', { recursive: true, force: true });
+
+  // Keep the existing per-profile state for continuity, but point the profile
+  // patch at the isolated copy. The shared state directory remains the
+  // supervisor-controlled fallback for unpinned instances.
+  const patchPath = join(profileDir, 'cordis.patch.yml');
+  if (pathExists(patchPath)) {
+    const patch = readFileSync(patchPath, 'utf8');
+    const next = patch.replace(/^(\s*stateDir:\s*).+$/m, '$1' + stateDir);
+    if (next !== patch) writePrivate(patchPath, next);
+  }
+
   for (const privateDir of ['sessions', 'storages', 'logs', 'tmp', 'cache']) {
     const path = join(home, privateDir);
     mkdirSync(path, { recursive: true, mode: 0o700 });
@@ -125,16 +152,8 @@ function prepareRuntimeIdentity(
   // but not list or enter another repository's directories.
   chownTree(profileDir, uid, gid);
   chmodSync(profileDir, 0o700);
-  const stateDir = join(config.dshHome, 'state', profile);
-  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-  chownTree(stateDir, uid, gid);
-  chmodSync(stateDir, 0o700);
-  const lockDir = join(config.dshHome, 'state', profile + '.lock');
-  mkdirSync(lockDir, { recursive: true, mode: 0o700 });
-  chownTree(lockDir, uid, gid);
-  chmodSync(lockDir, 0o700);
 
-  return { runtimeUid: uid, runtimeGid: gid, runtimeHome: home };
+  return { runtimeUid: uid, runtimeGid: gid, runtimeHome: home, stateDir };
 }
 
 /** The managed instance environment written under `INSTANCE_ENV_DIR`. */

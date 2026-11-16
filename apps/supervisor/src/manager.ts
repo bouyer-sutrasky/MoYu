@@ -1156,7 +1156,9 @@ export class InstanceManager {
     // A SIGKILL can leave it behind and the next start blocks forever with
     // "Lock file is already being held". Both ports are free and the supervisor
     // owns this profile, so the lock cannot belong to a live runtime here.
-    const staleLock = join(this.config.dshHome, 'state', `${prepared.profile}.lock`);
+    const staleLock = prepared.stateDir
+      ? prepared.stateDir + '.lock'
+      : join(this.config.dshHome, 'state', `${prepared.profile}.lock`);
     if (pathExists(staleLock)) {
       rmSync(staleLock, { recursive: true, force: true });
       this.logger.info(
@@ -1168,14 +1170,7 @@ export class InstanceManager {
         'removed a stale runtime lock before start',
       );
     }
-    if (prepared.runtimeUid !== undefined && prepared.runtimeGid !== undefined) {
-      // The shared state parent is traverse-only. Pre-create the runtime's own
-      // lock directory with its identity so it can open the lock without being
-      // able to write arbitrary entries into another repository's state.
-      mkdirSync(staleLock, { recursive: true, mode: 0o700 });
-      chownSync(staleLock, prepared.runtimeUid, prepared.runtimeGid);
-      chmodSync(staleLock, 0o700);
-    }
+
     const runtimeHome = prepared.runtimeHome ?? this.config.dshHome;
     const env: Record<string, string> = {
       ...baseEnvironment(),
@@ -1572,7 +1567,7 @@ export class InstanceManager {
       await waitForPanel(
         prepared.dshPort,
         this.config.startTimeoutMs,
-        join(this.config.dshHome, 'state', prepared.profile),
+        prepared.stateDir ?? join(this.config.dshHome, 'state', prepared.profile),
       );
       const deadline = Date.now() + this.config.startTimeoutMs;
       while (Date.now() < deadline && !(await portOpen(prepared.bridgePort))) {
