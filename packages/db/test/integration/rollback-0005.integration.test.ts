@@ -9,7 +9,7 @@ import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { migrateDatabase } from '../../src/migrate';
 import type { Database } from '../../src/client';
-import { createTestDatabaseUpTo, type TestDatabase } from './helpers';
+import { createTestDatabaseUpTo, expectedMigrationCount, type TestDatabase } from './helpers';
 
 const REPOSITORY_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 const FORWARD_MIGRATION = path.join(
@@ -22,6 +22,7 @@ const ROLLBACK_SCRIPT = path.join(
 );
 
 let forwardMigrationHash = '';
+let expectedMigrations = 0;
 const databases: TestDatabase[] = [];
 
 async function createDatabase(): Promise<TestDatabase> {
@@ -138,6 +139,7 @@ describe('0005 rollback script on real PostgreSQL', () => {
     forwardMigrationHash = createHash('sha256')
       .update(await readFile(FORWARD_MIGRATION))
       .digest('hex');
+    expectedMigrations = await expectedMigrationCount();
   });
 
   it('rolls back M4 DDL with the correct hash, keeps business rows, and re-applies the migration', async () => {
@@ -168,7 +170,7 @@ describe('0005 rollback script on real PostgreSQL', () => {
 
     await migrateDatabase(database.db);
     expect(await readState(database)).toMatchObject({
-      migrations: 19,
+      migrations: expectedMigrations,
       conversations: 1,
       taskLinks: 1,
       operationsTable: true,

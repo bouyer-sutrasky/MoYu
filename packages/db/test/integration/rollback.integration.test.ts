@@ -11,7 +11,7 @@ import { sql } from 'drizzle-orm';
 import type { Database } from '../../src/client';
 import { migrateDatabase } from '../../src/migrate';
 import { messages, owners } from '../../src/schema';
-import { createTestDatabaseUpTo, type TestDatabase } from './helpers';
+import { createTestDatabaseUpTo, expectedMigrationCount, type TestDatabase } from './helpers';
 
 const REPOSITORY_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 const FORWARD_MIGRATION = path.join(
@@ -24,6 +24,7 @@ const ROLLBACK_SCRIPT = path.join(
 );
 
 let forwardMigrationHash = '';
+let expectedMigrations = 0;
 const databases: TestDatabase[] = [];
 
 async function createDatabase(): Promise<TestDatabase> {
@@ -147,6 +148,7 @@ describe('0004 rollback script on real PostgreSQL', () => {
     forwardMigrationHash = createHash('sha256')
       .update(await readFile(FORWARD_MIGRATION))
       .digest('hex');
+    expectedMigrations = await expectedMigrationCount();
   });
 
   it('rolls back with the correct hash, keeps business data and re-applies the constraints', async () => {
@@ -175,7 +177,7 @@ describe('0004 rollback script on real PostgreSQL', () => {
     expect(await readState(database)).toMatchObject({
       constraints: 2,
       indexes: 2,
-      migrations: 19,
+      migrations: expectedMigrations,
       messages: 2,
       taskLinks: 1,
     });

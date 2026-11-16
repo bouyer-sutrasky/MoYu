@@ -27,6 +27,8 @@ export interface CursorPosition {
 export interface CursorValuePosition {
   timestamp: string;
   id: string | null;
+  /** Optional pending-priority rank carried by the conversation home cursor. */
+  rank: number | null;
 }
 
 export interface EncodeCursorValueInput {
@@ -34,6 +36,8 @@ export interface EncodeCursorValueInput {
   scope: string;
   timestamp: string;
   id: string;
+  /** Optional pending-priority rank; only pending conversation lists use it. */
+  rank?: number;
 }
 
 const CURSOR_VERSION = 1;
@@ -72,6 +76,7 @@ export function encodeCursorValue(input: EncodeCursorValueInput): string {
     s: input.scope,
     t: timestamp,
     i: input.id,
+    ...(typeof input.rank === 'number' ? { r: input.rank } : {}),
   };
   return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
 }
@@ -119,14 +124,15 @@ export function decodeCursorValue(
       if (!timestamp || typeof record.i !== 'string' || record.i.length === 0) {
         throw malformedCursor();
       }
-      return { timestamp, id: record.i };
+      const rank = typeof record.r === 'number' && Number.isInteger(record.r) ? record.r : null;
+      return { timestamp, id: record.i, rank };
     }
   }
 
   if (expected.kind === 'message') {
     const timestamp = isoTimestamp(value);
     if (timestamp) {
-      return { timestamp, id: null };
+      return { timestamp, id: null, rank: null };
     }
   }
 

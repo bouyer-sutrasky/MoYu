@@ -1,6 +1,15 @@
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { isAbsolute, join, relative, sep } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import {
   repositoryCheckCommandsSchema,
@@ -11,6 +20,14 @@ import {
 
 import type { SupervisorConfig } from './config';
 import type { SupervisorStore } from './store';
+import {
+  CGROUP_LAUNCHER,
+  cgroupEmpty,
+  cgroupPids,
+  ensureCgroup,
+  movePidToCgroup,
+  removeCgroup,
+} from './process';
 
 /**
  * Host-side review inspection for one ticket worktree.
@@ -45,13 +62,20 @@ export interface ChangesPayload {
   filesOmitted: number;
 }
 
+interface CommandCleanup {
+  state: 'clean' | 'residual' | 'unknown' | 'not_required';
+  lingeringPids: number[];
+  detail: string | null;
+}
+
 interface CommandResult {
   code: number | null;
   stdout: string;
   stderr: string;
   timedOut: boolean;
-  /** Processes still alive in the child's session after a timeout cleanup. */
+  /** Processes still alive after cleanup, measured inside the cgroup when available. */
   lingeringPids: number[];
+  cleanup: CommandCleanup;
 }
 
 const GIT_TIMEOUT_MS = 20_000;
@@ -135,7 +159,7 @@ export async function runCommand(
   },
 ): Promise<CommandResult> {
   const maxBytes = options.maxBytes ?? 4 * 1024 * 1024;
-  const command = options.identity
+  const identityPrefix = options.identity
     ? [
         options.identity.setpriv,
         '--reuid',
@@ -144,65 +168,36 @@ export async function runCommand(
         String(options.identity.gid),
         '--init-groups',
         '--no-new-privs',
-        // The supervisor's ambient caps are inherited across this exec; without
-        // these the child keeps CAP_SETUID/CAP_SETGID after the uid switch and
-        // could become another user (including the supervisor) again.
+        // Drop every capability set the child could otherwise keep or regain.
+        // Removing ambient/inheritable alone leaves the bounding set intact and
+        // an exec with file capabilities could reintroduce them.
+        '--bounding-set=-all',
         '--inh-caps=-all',
         '--ambient-caps=-all',
         '--',
-        ...argv,
       ]
-    : argv;
+    : [];
+  const command = [...identityPrefix, ...argv];
+
+  // A per-check cgroup is the only boundary that also contains setsid/pipe
+  // descendants. It is created before the launcher execs user code; if the host
+  // cannot provide one we fall back to the process-group scan and report
+  // cleanup as unknown rather than pretending the tree is empty.
+  const cgroup = ensureCgroup(`check-${randomUUID()}`);
+  const launcher = cgroup ? ['/bin/sh', '-c', CGROUP_LAUNCHER, 'moyu-check', ...command] : command;
+
   return new Promise((resolve) => {
-    const child = spawn(command[0]!, command.slice(1), {
-      cwd: options.cwd,
-      env: options.env ?? process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached: options.ownProcessGroup ?? false,
-    });
     let stdout = '';
     let stderr = '';
     let timedOut = false;
-    let lingeringPids: number[] = [];
-    const timer = setTimeout(() => {
-      timedOut = true;
-      // A shell command leaves grandchildren behind; killing the group (the
-      // child is its leader) takes them too. The direct kill stays as a
-      // fallback for a group that has already gone.
-      //
-      // A check child runs as the review identity, so a supervisor without
-      // CAP_KILL cannot signal it: the kill returns EPERM and the command keeps
-      // running after its timeout. Fall back to enumerating the child's session
-      // and reporting whatever survived, so a failed cleanup is visible instead
-      // of silently leaking a process tree.
-      const target = child.pid ?? 0;
-      const attempt = (): void => {
-        if (options.ownProcessGroup && target) {
-          try {
-            process.kill(-target, 'SIGKILL');
-            return;
-          } catch {
-            /* fall through to the direct kill */
-          }
-        }
-        try {
-          child.kill('SIGKILL');
-        } catch {
-          /* recorded below through lingeringPids */
-        }
-      };
-      attempt();
-      setTimeout(() => {
-        lingeringPids = sessionMembers(target);
-        for (const pid of lingeringPids) {
-          try {
-            process.kill(pid, 'SIGKILL');
-          } catch {
-            /* reported in the run summary */
-          }
-        }
-      }, 500).unref?.();
-    }, options.timeoutMs);
+    let finished = false;
+    let cleanupPromise: Promise<CommandCleanup> | undefined;
+    const child = spawn(launcher[0]!, launcher.slice(1), {
+      cwd: options.cwd,
+      env: options.env ?? process.env,
+      stdio: cgroup ? ['ignore', 'pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
+      detached: options.ownProcessGroup ?? false,
+    });
     const collect = (chunk: Buffer, target: 'stdout' | 'stderr') => {
       const text = chunk.toString('utf8');
       const available = maxBytes - (stdout.length + stderr.length);
@@ -211,15 +206,136 @@ export async function runCommand(
       if (target === 'stdout') stdout += slice;
       else stderr += slice;
     };
-    child.stdout.on('data', (chunk: Buffer) => collect(chunk, 'stdout'));
-    child.stderr.on('data', (chunk: Buffer) => collect(chunk, 'stderr'));
-    child.on('error', (error) => {
+    child.stdout?.on('data', (chunk: Buffer) => collect(chunk, 'stdout'));
+    child.stderr?.on('data', (chunk: Buffer) => collect(chunk, 'stderr'));
+
+    const killTree = (): void => {
+      const pid = child.pid ?? 0;
+      if (cgroup) {
+        try {
+          writeFileSync(join(cgroup, 'cgroup.kill'), '1');
+          return;
+        } catch {
+          // The delegated cgroup may not expose cgroup.kill; fall through.
+        }
+      }
+      if (options.ownProcessGroup && pid) {
+        try {
+          process.kill(-pid, 'SIGKILL');
+          return;
+        } catch {
+          // fall through to the direct kill
+        }
+      }
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // The cleanup result below reports whatever remains.
+      }
+    };
+
+    const waitForBoundaryEmpty = async (): Promise<CommandCleanup> => {
+      if (!cgroup) {
+        if (!timedOut) {
+          return { state: 'not_required', lingeringPids: [], detail: null };
+        }
+        // Without a cgroup we can only scan the session. A setsid descendant is
+        // invisible, so the honest result is unknown, not clean.
+        await delay(500);
+        const lingering = sessionMembers(child.pid ?? 0);
+        for (const pid of lingering) {
+          try {
+            process.kill(pid, 'SIGKILL');
+          } catch {
+            // reported below
+          }
+        }
+        await delay(100);
+        const remaining = sessionMembers(child.pid ?? 0);
+        return remaining.length === 0
+          ? {
+              state: 'unknown',
+              lingeringPids: [],
+              detail:
+                'No cgroup was available; session scan is empty but setsid descendants cannot be disproved',
+            }
+          : {
+              state: 'residual',
+              lingeringPids: remaining,
+              detail: 'No cgroup was available and session members survived cleanup',
+            };
+      }
+      const deadline = Date.now() + 5000;
+      let last = cgroupEmpty(cgroup);
+      while (Date.now() < deadline) {
+        if (last.ok && last.empty) {
+          return { state: 'clean', lingeringPids: [], detail: null };
+        }
+        await delay(50);
+        last = cgroupEmpty(cgroup);
+      }
+      const lingering = cgroupPids(cgroup);
+      return last.ok
+        ? {
+            state: lingering.length === 0 ? 'clean' : 'residual',
+            lingeringPids: lingering,
+            detail: lingering.length === 0 ? null : 'The check cgroup is still populated',
+          }
+        : {
+            state: 'unknown',
+            lingeringPids: lingering,
+            detail: 'The check cgroup could not be read after cleanup',
+          };
+    };
+
+    const finish = async (code: number | null, error?: Error): Promise<void> => {
+      if (finished) return;
+      finished = true;
       clearTimeout(timer);
-      resolve({ code: null, stdout: '', stderr: error.message, timedOut, lingeringPids });
+      const cleanup = cleanupPromise ? await cleanupPromise : await waitForBoundaryEmpty();
+      if (cgroup) removeCgroup(cgroup);
+      resolve({
+        code,
+        stdout,
+        stderr: error ? error.message : stderr,
+        timedOut,
+        lingeringPids: cleanup.lingeringPids,
+        cleanup,
+      });
+    };
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killTree();
+      cleanupPromise = waitForBoundaryEmpty();
+    }, options.timeoutMs);
+
+    const release = child.stdio[3];
+    if (cgroup) {
+      if (!child.pid || !release || !('write' in release)) {
+        child.kill('SIGKILL');
+        cleanupPromise = Promise.resolve({
+          state: 'unknown',
+          lingeringPids: [],
+          detail: 'The check launcher did not expose its cgroup release pipe',
+        });
+      } else if (!movePidToCgroup(cgroup, child.pid)) {
+        child.kill('SIGKILL');
+        cleanupPromise = Promise.resolve({
+          state: 'unknown',
+          lingeringPids: [],
+          detail: 'The check process could not be moved into its cgroup before exec',
+        });
+      } else {
+        release.end('go\n');
+      }
+    }
+
+    child.on('error', (error) => {
+      void finish(null, error);
     });
     child.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({ code, stdout, stderr, timedOut, lingeringPids });
+      void finish(code);
     });
   });
 }
@@ -768,7 +884,9 @@ export async function runChecks(input: {
     const finishedAt = new Date();
     const durationMs = Number((process.hrtime.bigint() - started) / 1_000_000n);
     const combined = `${result.stdout}${result.stderr}`.trim();
-    const passed = result.code === 0 && !result.timedOut;
+    const cleanupFailed =
+      result.cleanup.state !== 'clean' && result.cleanup.state !== 'not_required';
+    const passed = result.code === 0 && !result.timedOut && !cleanupFailed;
     const output = combined.slice(-OUTPUT_TAIL_BYTES);
     runs.push(
       reviewCheckRunSchema.parse({
@@ -781,12 +899,19 @@ export async function runChecks(input: {
         finishedAt: finishedAt.toISOString(),
         durationMs,
         summary: result.timedOut
-          ? `命令在 ${Math.round(timeoutMs / 1000)} 秒超时后被终止`
-          : passed
-            ? '通过'
-            : `失败（exit ${result.code ?? 'unknown'}）`,
+          ? cleanupFailed
+            ? `命令超时，且执行边界未能证明已清空（${result.cleanup.detail ?? result.cleanup.state}）`
+            : `命令在 ${Math.round(timeoutMs / 1000)} 秒超时后被终止，执行边界已清空`
+          : cleanupFailed
+            ? `命令已退出，但执行边界未能证明已清空（${result.cleanup.detail ?? result.cleanup.state}）`
+            : passed
+              ? '通过'
+              : `失败（exit ${result.code ?? 'unknown'}）`,
         output,
         outputTruncated: combined.length > OUTPUT_TAIL_BYTES,
+        cleanupState: result.cleanup.state,
+        lingeringPids: result.cleanup.lingeringPids,
+        cleanupDetail: result.cleanup.detail,
       }),
     );
   }
@@ -868,14 +993,16 @@ export function createReviewService(input: {
             statusCode: 409,
           });
         }
+        const pinned = config.pinned?.get(repository.fullName);
+        const checkUid = pinned?.checkUid ?? config.reviewCheckUid;
+        const checkGid = pinned?.checkGid ?? config.reviewCheckGid;
+        const checkHome = pinned?.checkHome ?? config.reviewCheckHome;
         const identity =
-          config.reviewCheckUid !== undefined &&
-          config.reviewCheckGid !== undefined &&
-          config.reviewCheckHome !== undefined
+          checkUid !== undefined && checkGid !== undefined && checkHome !== undefined
             ? {
-                uid: config.reviewCheckUid,
-                gid: config.reviewCheckGid,
-                home: config.reviewCheckHome,
+                uid: checkUid,
+                gid: checkGid,
+                home: checkHome,
                 setpriv: config.reviewCheckSetpriv ?? '/usr/bin/setpriv',
               }
             : undefined;

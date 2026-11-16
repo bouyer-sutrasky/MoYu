@@ -10,17 +10,6 @@ import {
 } from '../lib/format';
 import styles from './WorkspaceShell.module.css';
 
-/** Task states that want the owner's attention before anything else. */
-const ATTENTION_STATES = new Set([
-  'waiting_input',
-  'awaiting_review',
-  'blocked',
-  'failed',
-  'queued',
-  'running',
-  'stopping',
-]);
-
 /** How many rows each list shows: this page is a cockpit, not a history browser. */
 const HOME_ROWS = 3;
 
@@ -62,25 +51,43 @@ export function WorkbenchHome({
   repository,
   conversations,
   conversationsLoading,
+  pendingConversations,
+  pendingCount,
+  pendingHasMore,
+  pendingLoading,
   onNewTask,
   onOpenConversation,
+  onViewAllPending,
 }: {
   repository: RepositorySummary;
   conversations: ConversationSummary[];
   conversationsLoading: boolean;
+  /** Server-ordered pending tasks, independent of the loaded history page. */
+  pendingConversations: ConversationSummary[];
+  pendingCount: number;
+  pendingHasMore: boolean;
+  pendingLoading: boolean;
   onNewTask: () => void;
   onOpenConversation: (conversationId: string) => void;
+  onViewAllPending: () => void;
 }) {
   const runtime = repository.runtime ?? null;
   const instance = repositoryRuntimeLabel(runtime);
   const waiting = waitingForLabel(runtime?.waitingFor);
   const resource = runtimeResourceLabel(runtime?.resource);
-  const attention = conversations
-    .filter((conversation) => ATTENTION_STATES.has(conversation.task?.state ?? ''))
-    .slice(0, HOME_ROWS);
+  const attention = pendingConversations.slice(0, HOME_ROWS);
+  const pendingIds = new Set(attention.map((conversation) => conversation.id));
   const recent = conversations
-    .filter((conversation) => !attention.includes(conversation))
+    .filter((conversation) => !pendingIds.has(conversation.id))
     .slice(0, HOME_ROWS);
+  const executionSlot =
+    runtime?.executionSlot === 'busy'
+      ? '占用'
+      : runtime?.executionSlot === 'free'
+        ? '空闲'
+        : '未知';
+  const listener =
+    runtime?.listener === 'active' ? '接收中' : runtime?.listener === 'paused' ? '已暂停' : '未知';
 
   return (
     <div className={styles.home}>
@@ -108,11 +115,11 @@ export function WorkbenchHome({
         <dl className={styles.homeFacts}>
           <div>
             <dt>执行槽</dt>
-            <dd>{runtime?.executionSlot === 'busy' ? '占用' : '空闲'}</dd>
+            <dd>{executionSlot}</dd>
           </div>
           <div>
             <dt>监听</dt>
-            <dd>{runtime?.listener === 'active' ? '接收中' : '已暂停'}</dd>
+            <dd>{listener}</dd>
           </div>
           <div>
             <dt>检查命令</dt>
@@ -128,9 +135,14 @@ export function WorkbenchHome({
       <section className={styles.homeSection} aria-labelledby="home-attention-heading">
         <div className={styles.homeSectionHeading}>
           <h2 id="home-attention-heading">待处理</h2>
-          <span className={styles.homeCount}>{attention.length}</span>
+          <span className={styles.homeCount}>{pendingCount}</span>
+          {pendingHasMore || pendingCount > HOME_ROWS ? (
+            <button type="button" className={styles.secondaryButton} onClick={onViewAllPending}>
+              查看全部
+            </button>
+          ) : null}
         </div>
-        {conversationsLoading && attention.length === 0 ? (
+        {pendingLoading && pendingCount === 0 ? (
           <p className={styles.homeEmpty}>正在读取…</p>
         ) : attention.length === 0 ? (
           <p className={styles.homeEmpty}>没有需要你现在处理的任务。</p>
@@ -151,7 +163,9 @@ export function WorkbenchHome({
         <div className={styles.homeSectionHeading}>
           <h2 id="home-recent-heading">最近</h2>
         </div>
-        {recent.length === 0 ? (
+        {conversationsLoading && recent.length === 0 ? (
+          <p className={styles.homeEmpty}>正在读取…</p>
+        ) : recent.length === 0 ? (
           <p className={styles.homeEmpty}>这个仓库还没有会话。</p>
         ) : (
           <ul className={styles.homeList}>

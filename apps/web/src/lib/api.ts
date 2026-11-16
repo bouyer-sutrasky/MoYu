@@ -288,7 +288,7 @@ export const api = {
   },
   conversations(
     repositoryId: string,
-    options: { limit?: number; cursor?: string } = {},
+    options: { limit?: number; cursor?: string; pending?: boolean } = {},
   ): Promise<ConversationListData> {
     const query = new URLSearchParams({ repositoryId });
     if (options.limit) {
@@ -296,6 +296,9 @@ export const api = {
     }
     if (options.cursor) {
       query.set('cursor', options.cursor);
+    }
+    if (options.pending) {
+      query.set('pending', 'true');
     }
     return request(`/api/v1/conversations?${query.toString()}`, conversationListDataSchema);
   },

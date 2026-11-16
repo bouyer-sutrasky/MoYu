@@ -65,12 +65,14 @@ export interface SupervisorClient {
    * reaches the browser unchanged.
    */
   panel(repositoryId: string, request: PanelRequest): Promise<PanelResult>;
+  /** One fixed panel operation (preview, labels, policy sync, pause, checks, lists). */
+  panelAction(repositoryId: string, action: PanelAction): Promise<PanelResult>;
   /** Instance Deployment snapshot; the supervisor reads it from the profile patch. */
   deployment(repositoryId: string): Promise<PanelResult>;
   /** Applies set/unset operations against a revision, then restarts the instance. */
   saveDeployment(
     repositoryId: string,
-    body: { ops: unknown[]; revision: number },
+    body: { ops: unknown[]; revision: number; expectedInstanceId: string },
   ): Promise<PanelResult>;
 }
 
@@ -137,9 +139,23 @@ export type PanelRequest =
   | {
       kind: 'read';
       page: 'state' | 'settings' | 'sources' | 'models' | 'prompts' | 'policy-history';
+      query?: Record<string, string>;
     }
   | { kind: 'save-settings'; block: string; body: unknown }
   | { kind: 'save-prompts'; body: unknown };
+
+/** Fixed, server-owned panel operations; no browser-supplied path or URL. */
+export type PanelAction =
+  | { kind: 'prompts-preview'; body: { config: unknown } }
+  | { kind: 'source-labels'; sourceId: string }
+  | { kind: 'policy-sync'; sourceId: string }
+  | { kind: 'executor-pause'; paused: boolean }
+  | { kind: 'setup-check' }
+  | { kind: 'tickets'; query: Record<string, string> }
+  | { kind: 'ticket'; ticketId: string }
+  | { kind: 'ticket-retry'; ticketId: string }
+  | { kind: 'ticket-stop'; ticketId: string }
+  | { kind: 'decisions'; query: Record<string, string> };
 
 export interface PanelResult {
   status: number;
@@ -189,7 +205,7 @@ export function createSupervisorClient(config: ApiConfig): SupervisorClient | nu
    */
   const rawRequest = async (
     path: string,
-    method: 'GET' | 'PUT',
+    method: 'GET' | 'POST' | 'PUT',
     body?: unknown,
     timeoutMs = 20_000,
   ): Promise<PanelResult> => {
@@ -240,8 +256,10 @@ export function createSupervisorClient(config: ApiConfig): SupervisorClient | nu
     panel: (repositoryId, panelRequest) => {
       const prefix = `/control/v1/instances/${repositoryId}/panel`;
       switch (panelRequest.kind) {
-        case 'read':
-          return rawRequest(`${prefix}/${panelRequest.page}`, 'GET');
+        case 'read': {
+          const query = new URLSearchParams(panelRequest.query ?? {}).toString();
+          return rawRequest(`${prefix}/${panelRequest.page}${query ? `?${query}` : ''}`, 'GET');
+        }
         case 'save-settings':
           return rawRequest(
             `${prefix}/settings/${encodeURIComponent(panelRequest.block)}`,
@@ -250,6 +268,53 @@ export function createSupervisorClient(config: ApiConfig): SupervisorClient | nu
           );
         case 'save-prompts':
           return rawRequest(`${prefix}/prompts`, 'PUT', panelRequest.body);
+      }
+    },
+    panelAction: (repositoryId, action) => {
+      const prefix = `/control/v1/instances/${repositoryId}/panel-action`;
+      switch (action.kind) {
+        case 'prompts-preview':
+          return rawRequest(`${prefix}/prompts/preview`, 'POST', action.body);
+        case 'source-labels':
+          return rawRequest(
+            `${prefix}/sources/${encodeURIComponent(action.sourceId)}/labels`,
+            'POST',
+            {},
+          );
+        case 'policy-sync':
+          return rawRequest(
+            `${prefix}/policy-sync/${encodeURIComponent(action.sourceId)}`,
+            'POST',
+            {},
+          );
+        case 'executor-pause':
+          return rawRequest(`${prefix}/executor/pause`, 'POST', { paused: action.paused });
+        case 'setup-check':
+          return rawRequest(`${prefix}/setup/check`, 'POST', {}, 60_000);
+        case 'tickets': {
+          const query = new URLSearchParams(action.query).toString();
+          return rawRequest(`${prefix}/tickets${query ? `?${query}` : ''}`, 'GET');
+        }
+        case 'ticket':
+          return rawRequest(`${prefix}/tickets/${encodeURIComponent(action.ticketId)}`, 'GET');
+        case 'ticket-retry':
+          return rawRequest(
+            `${prefix}/tickets/${encodeURIComponent(action.ticketId)}/retry`,
+            'POST',
+            {},
+            60_000,
+          );
+        case 'ticket-stop':
+          return rawRequest(
+            `${prefix}/tickets/${encodeURIComponent(action.ticketId)}/stop`,
+            'POST',
+            {},
+            60_000,
+          );
+        case 'decisions': {
+          const query = new URLSearchParams(action.query).toString();
+          return rawRequest(`${prefix}/decisions${query ? `?${query}` : ''}`, 'GET');
+        }
       }
     },
     prepare: (repositoryId) => request(`/control/v1/instances/${repositoryId}/prepare`, 'POST', {}),

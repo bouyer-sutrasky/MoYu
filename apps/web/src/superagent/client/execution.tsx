@@ -239,12 +239,13 @@ export function ExecutionSettings() {
                 onChange={(model) => edit({ model })}
               />
             </Section>
-            <Field label={t('maxWorkers')} hint={t('maxWorkersHint')}>
+            <Field label={t('maxWorkers')} hint={t('maxWorkersHint')} note={t('managedField')}>
               <Input
                 type="number"
                 min={LIMITS.maxWorkers.min}
                 max={LIMITS.maxWorkers.max}
                 required
+                readOnly
                 value={value.maxWorkers}
                 onChange={(event) => edit({ maxWorkers: event.target.value })}
               />
@@ -258,11 +259,7 @@ export function ExecutionSettings() {
             <Field
               label={t('executionDirectory')}
               hint={t('executionDirectoryHint')}
-              note={
-                value.directory
-                  ? undefined
-                  : t('executionDirectoryDefault', { root: environment.root })
-              }
+              note={t('managedField')}
             >
               <Input
                 className="dt-mono"
@@ -270,10 +267,15 @@ export function ExecutionSettings() {
                 placeholder={t('executionDirectoryEmpty')}
                 spellCheck={false}
                 pattern="/.*"
+                readOnly
                 onChange={(event) => edit({ directory: event.target.value })}
               />
             </Field>
-            <Field label={t('prepareCommand')} hint={t('prepareCommandHint')}>
+            <Field
+              label={t('prepareCommand')}
+              hint={t('prepareCommandHint')}
+              note={t('managedField')}
+            >
               <textarea
                 ref={prepare}
                 className="dt-textarea dt-mono"
@@ -282,6 +284,7 @@ export function ExecutionSettings() {
                 spellCheck={false}
                 placeholder={t('prepareCommandEmpty')}
                 value={value.prepare}
+                readOnly
                 onChange={(event) => edit({ prepare: event.target.value })}
               />
             </Field>

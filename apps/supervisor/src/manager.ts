@@ -2,7 +2,6 @@ import {
   chmodSync,
   chownSync,
   closeSync,
-  existsSync,
   mkdirSync,
   openSync,
   rmSync,
@@ -30,7 +29,13 @@ import {
   type ProcessIdentity,
   type StoredOwnership,
 } from './process';
-import { instanceLogPath, parseEnvFile, prepareInstance, type PreparedInstance } from './provision';
+import {
+  instanceLogPath,
+  parseEnvFile,
+  pathExists,
+  prepareInstance,
+  type PreparedInstance,
+} from './provision';
 import {
   aggregateMemory,
   applyInstanceMemoryLimit,
@@ -43,6 +48,26 @@ import {
   type AdmissionDecision,
 } from './resources';
 import type { InstanceRow, SupervisorStore } from './store';
+
+/**
+ * The exact prepare command the supervisor writes into a new instance. It is
+ * also the platform-managed value the settings write boundary must preserve.
+ */
+export function buildInstancePrepareCommand(input: {
+  fullName: string;
+  githubAccount: string;
+  githubCommitEmail: string;
+}): string {
+  return [
+    'git -c safe.directory="*" clone --no-tags',
+    `"ssh://git@ssh.github.com:443/${input.fullName}.git"`,
+    '"$DSH_SUPERAGENT_DIR"',
+    '&& git -C "$DSH_SUPERAGENT_DIR" -c advice.detachedHead=false checkout "$DSH_SUPERAGENT_WORKSPACE_BASE_COMMIT"',
+    `&& git -C "$DSH_SUPERAGENT_DIR" config user.name "${input.githubAccount}"`,
+    `&& git -C "$DSH_SUPERAGENT_DIR" config user.email "${input.githubCommitEmail}"`,
+    '&& git -C "$DSH_SUPERAGENT_DIR" switch -c "agent/$DSH_SUPERAGENT_NAME"',
+  ].join(' ');
+}
 
 export interface ExecutionBinding {
   ticketId: string;
@@ -218,16 +243,27 @@ export class InstanceManager {
       this.config.instanceEnvDir,
       this.config.logDir,
       this.config.worktreeRoot,
+      this.config.dshHome,
+      join(this.config.dshHome, 'homes'),
       join(this.config.dshHome, 'profiles'),
       join(this.config.dshHome, 'state'),
     ]) {
       mkdirSync(directory, { recursive: true, mode: 0o700 });
-      // The worktree root is the one directory a dedicated review-check user
-      // must traverse and write. Hand it to that group and keep the setgid bit
-      // so every worktree the runtime creates inherits it; the other state
-      // directories stay private to the supervisor. Without a check identity
-      // the old 0700 behaviour is unchanged.
-      if (directory === this.config.worktreeRoot && this.config.reviewCheckGid !== undefined) {
+      // Shared parents are traverse-only. Each runtime reaches its own
+      // 0700 profile/state/worktree entry, but cannot list or enter another
+      // repository's entry. The worktree root stays group-shared so a
+      // per-repository check user can traverse to its own profile.
+      if (
+        directory === this.config.dshHome ||
+        directory === join(this.config.dshHome, 'homes') ||
+        directory === join(this.config.dshHome, 'profiles') ||
+        directory === join(this.config.dshHome, 'state')
+      ) {
+        chmodSync(directory, 0o711);
+      } else if (
+        directory === this.config.worktreeRoot &&
+        this.config.reviewCheckGid !== undefined
+      ) {
         chownSync(directory, -1, this.config.reviewCheckGid);
         chmodSync(directory, 0o2775);
       } else {
@@ -595,21 +631,71 @@ export class InstanceManager {
    * takes effect. Refuses while a task or owner command is active: restarting
    * would discard work the runtime may still need.
    */
-  async restart(repositoryId: string): Promise<{ restarted: boolean; reason?: string }> {
+  /**
+   * Why a Deployment restart cannot safely stop the runtime yet. Task rows and
+   * pending owner commands are not enough: a delivery can hold a live lease
+   * before its task row exists, so the lease is checked too.
+   */
+  private async restartGate(
+    repositoryId: string,
+  ): Promise<{ reason: string; waitingFor: string } | null> {
     const gate = await this.store.taskGate(repositoryId);
-    if (gate.active > 0 || gate.pendingOperations > 0) {
+    const lease = await this.store.activeExecutionLease(repositoryId);
+    if (gate.active > 0 || gate.pendingOperations > 0 || lease) {
+      const parts = [
+        gate.active > 0 ? `${gate.active} active task(s)` : null,
+        gate.pendingOperations > 0 ? `${gate.pendingOperations} pending operation(s)` : null,
+        lease ? `an active execution lease (${lease.holderId})` : null,
+      ].filter(Boolean);
       return {
-        restarted: false,
-        reason:
-          'A task or owner command is still active; the new Deployment limits apply after it finishes and the instance is restarted',
+        reason: `The saved Deployment limits are pending because ${parts.join(', ')} still exist; they apply after that work finishes and the instance restarts`,
+        waitingFor: 'execution',
       };
     }
+    return null;
+  }
+
+  async restart(repositoryId: string): Promise<{ restarted: boolean; reason?: string }> {
     return this.withLock(async () => {
       const row = await this.store.getInstance(repositoryId);
       if (!row) return { restarted: false, reason: 'No instance row for this repository' };
       if (row.state !== 'online' && row.state !== 'starting') {
         return { restarted: false, reason: `The instance is ${row.state}` };
       }
+
+      // Close the admission window before checking the gate: the dispatcher
+      // locks this same repository_instances row before taking a lease, and
+      // refuses to acquire while the state is not online. If there is work in
+      // flight we restore `online` and let the tick retry once it is safe.
+      if (row.state === 'online') {
+        await this.store.updateInstance(repositoryId, {
+          state: 'stopping',
+          desiredState: 'online',
+          reasonCode: 'restart_gate',
+          reasonDetail: 'Checking that no task, command or lease is active before restarting',
+          waitingFor: 'settings_restart',
+        });
+      }
+      const blocked = await this.restartGate(repositoryId);
+      if (blocked) {
+        if (row.state === 'online') {
+          await this.store.updateInstance(repositoryId, {
+            state: 'online',
+            desiredState: 'online',
+            reasonCode: 'restart_pending',
+            reasonDetail: blocked.reason,
+            waitingFor: blocked.waitingFor,
+          });
+        } else {
+          await this.store.updateInstance(repositoryId, {
+            reasonCode: 'restart_pending',
+            reasonDetail: blocked.reason,
+            waitingFor: blocked.waitingFor,
+          });
+        }
+        return { restarted: false, reason: blocked.reason };
+      }
+
       const stopped = await this.stopInstance(row, 'settings_restart', 'manual');
       if (!stopped) {
         return {
@@ -733,6 +819,9 @@ export class InstanceManager {
   async tick(): Promise<void> {
     if (this.stopped) return;
     await this.withLock(async () => {
+      // A wake/timer can queue a tick while shutdown is waiting for the lock.
+      // Re-check after acquiring it so no query runs against an ended pool.
+      if (this.stopped) return;
       const rows = await this.store.listInstances();
       await this.sampleResources(rows).catch((error) => {
         this.logger.warn(
@@ -884,6 +973,35 @@ export class InstanceManager {
                 : {}),
             });
           }
+        }
+
+        // A Deployment save that found active work leaves reasonCode
+        // restart_pending. Retry the restart on a later tick, never while a
+        // task/command/lease is still live.
+        if (row.state === 'online' && row.reasonCode === 'restart_pending') {
+          const blocked = await this.restartGate(row.repositoryId);
+          if (blocked) {
+            await this.store.updateInstance(row.repositoryId, {
+              reasonCode: 'restart_pending',
+              reasonDetail: blocked.reason,
+              waitingFor: blocked.waitingFor,
+            });
+            continue;
+          }
+          const stopped = await this.stopInstance(row, 'settings_restart', 'manual');
+          if (stopped) {
+            await this.store.updateInstance(row.repositoryId, {
+              desiredState: 'online',
+              reasonCode: 'restarting_for_settings',
+              reasonDetail: 'Restarting so the saved Deployment limits take effect',
+              waitingFor: null,
+            });
+            this.logger.info(
+              { event: 'supervisor.instance_restarting', repositoryId: row.repositoryId },
+              'restarting the runtime after the active work finished',
+            );
+          }
+          continue;
         }
 
         if (row.desiredState === 'sleeping') {
@@ -1038,8 +1156,10 @@ export class InstanceManager {
     // A SIGKILL can leave it behind and the next start blocks forever with
     // "Lock file is already being held". Both ports are free and the supervisor
     // owns this profile, so the lock cannot belong to a live runtime here.
-    const staleLock = join(this.config.dshHome, 'state', `${prepared.profile}.lock`);
-    if (existsSync(staleLock)) {
+    const staleLock = prepared.stateDir
+      ? prepared.stateDir + '.lock'
+      : join(this.config.dshHome, 'state', `${prepared.profile}.lock`);
+    if (pathExists(staleLock)) {
       rmSync(staleLock, { recursive: true, force: true });
       this.logger.info(
         {
@@ -1050,10 +1170,19 @@ export class InstanceManager {
         'removed a stale runtime lock before start',
       );
     }
-    const env = {
+
+    const runtimeHome = prepared.runtimeHome ?? this.config.dshHome;
+    const env: Record<string, string> = {
       ...baseEnvironment(),
-      DSH_HOME: this.config.dshHome,
+      HOME: runtimeHome,
+      DSH_HOME: runtimeHome,
       ...parseEnvFile(prepared.envFile),
+      ...(prepared.runtimeHome
+        ? {
+            TMPDIR: join(runtimeHome, 'tmp'),
+            XDG_CACHE_HOME: join(runtimeHome, 'cache'),
+          }
+        : {}),
     };
     let logFd: number;
     try {
@@ -1089,14 +1218,32 @@ export class InstanceManager {
     let exitedBeforeRelease = false;
     try {
       const dshArgs = ['--profile', prepared.profile, '--no-open'];
+      const identityPrefix =
+        prepared.runtimeUid !== undefined && prepared.runtimeGid !== undefined
+          ? [
+              this.config.reviewCheckSetpriv ?? '/usr/bin/setpriv',
+              '--reuid',
+              String(prepared.runtimeUid),
+              '--regid',
+              String(prepared.runtimeGid),
+              '--init-groups',
+              '--no-new-privs',
+              '--bounding-set=-all',
+              '--inh-caps=-all',
+              '--ambient-caps=-all',
+              '--',
+            ]
+          : [];
       // The launcher blocks on fd 3 before exec. The supervisor moves the
       // shell (same PID after exec) into the instance cgroup, then releases
       // it; no user code can fork before the process is inside the boundary.
+      // setpriv drops the runtime to its per-repository uid/gid and clears
+      // every capability set before dsh is exec'd.
       child = spawn(
         '/bin/sh',
-        ['-c', CGROUP_LAUNCHER, 'moyu-cgroup', this.config.dshBin, ...dshArgs],
+        ['-c', CGROUP_LAUNCHER, 'moyu-cgroup', ...identityPrefix, this.config.dshBin, ...dshArgs],
         {
-          cwd: this.config.dshHome,
+          cwd: runtimeHome,
           env,
           detached: true,
           stdio: ['ignore', logFd, logFd, 'pipe'],
@@ -1389,23 +1536,38 @@ export class InstanceManager {
   ): Promise<void> {
     const ownerId = await this.store.firstOwnerId();
     const model = modelParts(this.config.executorModel);
-    const prepare = [
-      'git -c safe.directory="*" clone --no-tags',
-      `"ssh://git@ssh.github.com:443/${prepared.repository.fullName}.git"`,
-      '"$DSH_SUPERAGENT_DIR"',
-      '&& git -C "$DSH_SUPERAGENT_DIR" -c advice.detachedHead=false checkout "$DSH_SUPERAGENT_WORKSPACE_BASE_COMMIT"',
-      `&& git -C "$DSH_SUPERAGENT_DIR" config user.name "${this.config.githubAccount}"`,
-      `&& git -C "$DSH_SUPERAGENT_DIR" config user.email "${this.config.githubCommitEmail}"`,
-      '&& git -C "$DSH_SUPERAGENT_DIR" switch -c "agent/$DSH_SUPERAGENT_NAME"',
-    ].join(' ');
+    const prepare = buildInstancePrepareCommand({
+      fullName: prepared.repository.fullName,
+      githubAccount: this.config.githubAccount,
+      githubCommitEmail: this.config.githubCommitEmail,
+    });
     const worktreeDir = join(this.config.worktreeRoot, prepared.profile);
-    mkdirSync(worktreeDir, { recursive: true, mode: 0o700 });
+    // The worktree root is group-shared with the review check identity. A fresh
+    // profile directory must inherit that boundary too; 0700 here made checks
+    // fail before the first command even though the root is 2775.
+    mkdirSync(worktreeDir, { recursive: true, mode: 0o2770 });
+    const worktreeGid = prepared.checkGid ?? this.config.reviewCheckGid;
+    if (worktreeGid !== undefined) {
+      try {
+        chownSync(worktreeDir, prepared.runtimeUid ?? -1, worktreeGid);
+      } catch {
+        // If the supervisor cannot hand the directory to the runtime/check
+        // identity, the check refuses the run instead of silently using its
+        // own uid.
+      }
+    }
+    try {
+      chmodSync(worktreeDir, 0o2770);
+    } catch {
+      // Best effort on filesystems without group/ACL support; the check still
+      // fails closed when it cannot traverse.
+    }
     try {
       if (this.stopped) return;
       await waitForPanel(
         prepared.dshPort,
         this.config.startTimeoutMs,
-        join(this.config.dshHome, 'state', prepared.profile),
+        prepared.stateDir ?? join(this.config.dshHome, 'state', prepared.profile),
       );
       const deadline = Date.now() + this.config.startTimeoutMs;
       while (Date.now() < deadline && !(await portOpen(prepared.bridgePort))) {
@@ -1417,7 +1579,12 @@ export class InstanceManager {
       if (!ownerId) throw new Error('No owner is registered for the instance policy');
       // First-run defaults are written once per instance; every later start only
       // re-asserts the platform invariants so owner edits survive sleep/wake/restart.
-      const seedDefaults = !existsSync(this.profileSeededPath(prepared.profile));
+      // Marker existence alone cannot distinguish a fresh profile from an old
+      // profile created before the marker existed. Only a profile directory the
+      // supervisor just copied from the template gets first-run defaults; an
+      // existing profile keeps every value the runtime already reports.
+      const seedDefaults =
+        prepared.profileCreated && !pathExists(this.profileSeededPath(prepared.profile));
       await configureProfile({
         port: prepared.dshPort,
         repository: prepared.repository.fullName,

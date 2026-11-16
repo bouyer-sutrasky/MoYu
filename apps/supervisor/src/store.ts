@@ -46,7 +46,20 @@ export interface InstanceRow {
   resourceState: string;
   resourceDetail: string | null;
   resourceCheckedAt: Date | null;
+  createdAt: Date;
   updatedAt: Date;
+}
+
+/**
+ * Stable identity for one prepared instance row. It changes when the row is
+ * recreated or its profile changes, but not when the process merely restarts,
+ * so a stale draft can be rejected after a real instance rebuild without
+ * treating every sleep/wake as a new instance.
+ */
+export function instanceIdentity(
+  row: Pick<InstanceRow, 'repositoryId' | 'profile' | 'createdAt'>,
+): string {
+  return `${row.repositoryId}:${row.profile ?? 'none'}:${new Date(row.createdAt).toISOString()}`;
 }
 
 export interface TaskGate {
@@ -67,7 +80,8 @@ const INSTANCE_COLUMNS = `
   i.memory_current_bytes as "memoryCurrentBytes", i.memory_peak_bytes as "memoryPeakBytes",
   i.memory_limit_bytes as "memoryLimitBytes", i.memory_events as "memoryEvents",
   i.resource_state as "resourceState", i.resource_detail as "resourceDetail",
-  i.resource_checked_at as "resourceCheckedAt", i.updated_at as "updatedAt"
+  i.resource_checked_at as "resourceCheckedAt", i.created_at as "createdAt",
+  i.updated_at as "updatedAt"
 `;
 
 /** Durable supervisor state. The platform API reads the same rows. */
@@ -326,6 +340,32 @@ export class SupervisorStore {
       waiting: Number(row?.waiting ?? 0),
       pendingOperations: Number(row?.ops ?? 0),
     };
+  }
+
+  /**
+   * The active execution lease, including a delivery that has not yet written a
+   * task row. Restart/sleep gates must inspect this row as well as task_links;
+   * otherwise a delivery admitted between the gate check and stop can be killed.
+   */
+  async activeExecutionLease(
+    repositoryId: string,
+  ): Promise<{ id: string; holderId: string; fencingToken: string } | null> {
+    const result = await this.pool.query<{
+      id: string;
+      holder_id: string;
+      fencing_token: string;
+    }>(
+      `select id, holder_id, fencing_token
+         from runtime_leases
+        where repository_id = $1 and state = 'active'
+          and (expires_at is null or expires_at > now())
+        limit 1`,
+      [repositoryId],
+    );
+    const row = result.rows[0];
+    return row
+      ? { id: row.id, holderId: row.holder_id, fencingToken: String(row.fencing_token) }
+      : null;
   }
 
   async pendingWakeInstances(): Promise<InstanceRow[]> {

@@ -119,7 +119,7 @@ export type DraftAction<V, M> =
   | { type: 'discard' | 'submit' }
   | { type: 'saved'; revision: number; restarting: boolean }
   | { type: 'refused'; notice: DraftNotice }
-  | { type: 'revisionArrived'; saved: V; revision: number };
+  | { type: 'revisionArrived'; saved: V; revision: number; opaque?: boolean };
 /**
  * State machine for a settings draft.
  * Holds submitted values in `awaitingRevision` until the polled revision catches up, and rebases active edits onto newer remote revisions via `merge3`.
@@ -164,10 +164,24 @@ export function draftReducer<V, M>(
       // Defer rebasing while a save is running; its completion will either advance to `awaitingRevision` or reload and merge.
       if (phase === 'saving') return state;
       const { revision, saved } = action;
-      if (state.sent)
-        return revision >= state.sent.revision
-          ? { phase: 'clean', seen: revision }
-          : { ...state, seen: revision };
+      if (state.sent) {
+        // Normal settings revisions are monotonically increasing integers. A
+        // Deployment revision is an opaque content hash, so only equality can
+        // prove the saved write is now visible; a numeric comparison on a hash
+        // is meaningless.
+        const reached = action.opaque
+          ? revision === state.sent.revision
+          : revision >= state.sent.revision;
+        if (reached) return { phase: 'clean', seen: revision };
+        if (action.opaque) {
+          return {
+            ...state,
+            seen: revision,
+            notice: { kind: 'conflict', revision, paths: [] },
+          };
+        }
+        return { ...state, seen: revision };
+      }
       if (!draft || draft.revision === revision) return { ...state, seen: revision };
       const paths: string[][] = [];
       const value = merge3(draft.base, draft.value, saved, paths) as V;
@@ -225,6 +239,8 @@ export interface DraftOptions<V> {
   key?: string;
   saved: V;
   revision: number | undefined;
+  /** Deployment revisions are opaque; all other blocks use increasing integers. */
+  revisionMode?: 'monotonic' | 'opaque';
   save: (
     value: V,
     revision: number,
@@ -237,6 +253,7 @@ export function useDraft<V, M = undefined>({
   key,
   saved,
   revision,
+  revisionMode = 'monotonic',
   save,
   reload,
 }: DraftOptions<V>) {
@@ -248,10 +265,20 @@ export function useDraft<V, M = undefined>({
       : { phase: 'clean' };
     return revision === undefined
       ? initial
-      : draftReducer(initial, { type: 'revisionArrived', saved, revision });
+      : draftReducer(initial, {
+          type: 'revisionArrived',
+          saved,
+          revision,
+          opaque: revisionMode === 'opaque',
+        });
   });
   if (state.phase !== 'saving' && revision !== undefined && revision !== state.seen)
-    dispatch({ type: 'revisionArrived', saved, revision });
+    dispatch({
+      type: 'revisionArrived',
+      saved,
+      revision,
+      opaque: revisionMode === 'opaque',
+    });
   useEffect(() => {
     if (!key) return;
     try {

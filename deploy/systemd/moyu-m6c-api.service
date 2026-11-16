@@ -1,0 +1,41 @@
+[Unit]
+Description=MoYu M6-C API and web
+After=network-online.target postgresql.service
+Wants=network-online.target
+PartOf=moyu-m6c.slice
+Before=moyu-m6c-supervisor.service moyu-m6c-dispatcher.service
+
+[Service]
+Type=simple
+User=moyu-m6c
+Group=moyu-m6c
+WorkingDirectory=/opt/moyu-m6c/current
+EnvironmentFile=/etc/moyu-m6c/api.env
+Slice=moyu-m6c.slice
+RuntimeDirectory=moyu-m6c
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+ExecStart=/opt/moyu-m6c/runtime/node24/bin/node apps/api/dist/server.js
+Restart=on-failure
+RestartSec=3
+# The API is a control-plane reader/writer of the database and artifact store;
+# it never needs a shell, a home directory or the host network beyond loopback
+# and the configured upstream services.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+ReadWritePaths=/var/lib/moyu-m6c /run/moyu-m6c
+MemoryMax=2G
+StandardOutput=append:/var/lib/moyu-m6c/logs/api.log
+StandardError=append:/var/lib/moyu-m6c/logs/api.log
+
+[Install]
+WantedBy=multi-user.target

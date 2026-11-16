@@ -1,6 +1,14 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
-import { readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import {
+  closeSync,
+  fsyncSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import Fastify, { type FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -8,12 +16,13 @@ import { z } from 'zod';
 import { uuidSchema } from '@moyu/contracts';
 
 import type { SupervisorConfig } from './config';
-import type { SupervisorStore } from './store';
+import { instanceIdentity, type SupervisorStore } from './store';
 import type { SupervisorLogger } from './logger';
-import type { InstanceManager } from './manager';
+import { buildInstancePrepareCommand, type InstanceManager } from './manager';
+import { managedSettingsIssues } from './managed-settings';
 import { createReviewService } from './review';
 import { createCleanupService } from './cleanup';
-import { applyDeploymentOps, readDeployment } from './deployment-config';
+import { applyDeploymentOps, readDeployment, withDeploymentLock } from './deployment-config';
 import {
   PANEL_PROMPTS_PATH,
   PANEL_READ_PATHS,
@@ -165,7 +174,7 @@ export function buildSupervisorServer(options: {
    * only through the authenticated API; the port comes from the instance row and
    * every path is checked against an allow-list.
    */
-  const panelPortFor = async (repositoryId: string): Promise<number> => {
+  const panelInstanceFor = async (repositoryId: string) => {
     const row = await options.store.getInstance(repositoryId);
     if (!row) {
       throw Object.assign(new Error('Instance not found'), { statusCode: 404 });
@@ -178,7 +187,35 @@ export function buildSupervisorServer(options: {
         { statusCode: 409 },
       );
     }
-    return row.port;
+    return { row, port: row.port, instanceId: instanceIdentity(row) };
+  };
+
+  /** Instance identity and the exact platform-managed values for a write. */
+  const managedInvariantsFor = async (repositoryId: string) => {
+    const instance = await panelInstanceFor(repositoryId);
+    const repository = await options.store.getRepository(repositoryId);
+    if (!repository) {
+      throw Object.assign(new Error('Repository not found'), { statusCode: 404 });
+    }
+    const profile = instance.row.profile;
+    if (!profile) {
+      throw Object.assign(new Error('Instance profile is not prepared yet'), { statusCode: 409 });
+    }
+    return {
+      instance,
+      invariants: {
+        repository: instance.row.fullName,
+        ownerId: repository.ownerId,
+        githubAllowedUsers: config.githubAllowedUsers,
+        githubCli: config.githubCli,
+        worktreeDir: join(config.worktreeRoot, profile),
+        prepare: buildInstancePrepareCommand({
+          fullName: instance.row.fullName,
+          githubAccount: config.githubAccount,
+          githubCommitEmail: config.githubCommitEmail,
+        }),
+      },
+    };
   };
 
   app.get('/control/v1/instances/:repositoryId/panel/:page', async (request, reply) => {
@@ -190,8 +227,35 @@ export function buildSupervisorServer(options: {
         error: { code: 'invalid_request', message: `Unsupported panel page: ${page}` },
       });
     }
-    const port = await panelPortFor(repositoryId);
-    const result = await panelCall({ port, path });
+    const query = z
+      .object({
+        revision:
+          page === 'prompts'
+            ? z.coerce.number().int().nonnegative().optional()
+            : z.never().optional(),
+        offset:
+          page === 'prompts'
+            ? z.coerce.number().int().nonnegative().optional()
+            : z.never().optional(),
+      })
+      .strict()
+      .safeParse(request.query ?? {});
+    if (!query.success) {
+      return reply.code(422).send({
+        error: {
+          code: 'invalid_request',
+          message: 'This panel page accepts no query parameters',
+        },
+      });
+    }
+    const queryString = new URLSearchParams(
+      Object.entries(query.data)
+        .filter(([, value]) => value !== undefined)
+        .map(([key, value]) => [key, String(value)] as [string, string]),
+    ).toString();
+    const targetPath = queryString ? `${path}?${queryString}` : path;
+    const instance = await panelInstanceFor(repositoryId);
+    const result = await panelCall({ port: instance.port, path: targetPath });
     if (result.status >= 400) {
       logger.info(
         {
@@ -203,7 +267,18 @@ export function buildSupervisorServer(options: {
         'runtime panel read failed',
       );
     }
-    return reply.code(result.status).send(result.body);
+    // The browser must bind drafts and writes to the exact prepared instance.
+    // The runtime's masterId is useful context, but the supervisor's prepared
+    // row identity also changes when a repository is re-provisioned.
+    const body =
+      result.status < 300 &&
+      (page === 'state' || page === 'prompts') &&
+      result.body &&
+      typeof result.body === 'object' &&
+      !Array.isArray(result.body)
+        ? { ...(result.body as Record<string, unknown>), moyuInstanceId: instance.instanceId }
+        : result.body;
+    return reply.code(result.status).send(body);
   });
 
   app.put('/control/v1/instances/:repositoryId/panel/settings/:block', async (request, reply) => {
@@ -222,12 +297,48 @@ export function buildSupervisorServer(options: {
         error: { code: 'invalid_request', message: `Unsupported settings block: ${block}` },
       });
     }
-    const port = await panelPortFor(repositoryId);
+    const body = z
+      .object({
+        value: z.record(z.string(), z.unknown()),
+        revision: z.number().int().nonnegative(),
+        expectedInstanceId: z.string().min(1),
+      })
+      .strict()
+      .safeParse(request.body ?? {});
+    if (!body.success) {
+      return reply.code(422).send({
+        error: {
+          code: 'invalid_request',
+          message: 'A settings save needs { value, revision, expectedInstanceId }',
+        },
+      });
+    }
+    const { instance, invariants } = await managedInvariantsFor(repositoryId);
+    if (body.data.expectedInstanceId !== instance.instanceId) {
+      return reply.code(409).send({
+        error: {
+          code: 'instance_changed',
+          message:
+            'The runtime instance changed since this draft was loaded; reload its settings before saving',
+        },
+        instanceId: instance.instanceId,
+      });
+    }
+    const issues = managedSettingsIssues(block, body.data.value, invariants);
+    if (issues.length > 0) {
+      return reply.code(422).send({
+        error: {
+          code: 'managed_field',
+          message: 'The request tries to change platform-managed settings',
+        },
+        issues,
+      });
+    }
     const result = await panelCall({
-      port,
+      port: instance.port,
       path: `/settings/${encodeURIComponent(block)}`,
       method: 'PUT',
-      body: request.body ?? {},
+      body: { value: body.data.value, revision: body.data.revision },
     });
     logger.info(
       {
@@ -244,20 +355,276 @@ export function buildSupervisorServer(options: {
 
   app.put('/control/v1/instances/:repositoryId/panel/prompts', async (request, reply) => {
     const repositoryId = repositoryIdOf(request);
-    const port = await panelPortFor(repositoryId);
+    const body = z
+      .object({
+        config: z.unknown(),
+        baseRevision: z.number().int().nonnegative(),
+        expectedInstanceId: z.string().min(1),
+      })
+      .strict()
+      .safeParse(request.body ?? {});
+    if (!body.success) {
+      return reply.code(422).send({
+        error: {
+          code: 'invalid_request',
+          message: 'A prompt save needs { config, baseRevision, expectedInstanceId }',
+        },
+      });
+    }
+    const instance = await panelInstanceFor(repositoryId);
+    if (body.data.expectedInstanceId !== instance.instanceId) {
+      return reply.code(409).send({
+        error: {
+          code: 'instance_changed',
+          message:
+            'The runtime instance changed since these prompts were loaded; reload before saving',
+        },
+        instanceId: instance.instanceId,
+      });
+    }
     const result = await panelCall({
-      port,
+      port: instance.port,
       path: PANEL_PROMPTS_PATH,
       method: 'PUT',
-      body: request.body ?? {},
+      body: { config: body.data.config, baseRevision: body.data.baseRevision },
     });
+    return reply.code(result.status).send(result.body);
+  });
+
+  const sourceIdSchema = z
+    .string()
+    .min(1)
+    .max(80)
+    .regex(/^[a-z][a-z0-9-]*$/, 'source id must be lowercase');
+  const ticketIdSchema = z
+    .string()
+    .min(1)
+    .max(200)
+    .regex(/^[A-Za-z0-9._:-]+$/, 'invalid ticket id');
+
+  const requireInstalledSource = async (repositoryId: string, sourceId: string) => {
+    const instance = await panelInstanceFor(repositoryId);
+    const settings = await panelCall({ port: instance.port, path: '/settings' });
+    if (settings.status >= 400) {
+      throw Object.assign(new Error('The runtime settings could not be read'), {
+        statusCode: settings.status,
+      });
+    }
+    const body = settings.body as { sources?: Array<{ id?: unknown }> } | null;
+    const installed = Array.isArray(body?.sources)
+      ? body.sources.some((source) => source.id === sourceId)
+      : false;
+    if (!installed) {
+      throw Object.assign(new Error(`Source ${sourceId} is not installed on this instance`), {
+        statusCode: 422,
+        issues: [{ path: 'id', message: `Source ${sourceId} is not installed` }],
+      });
+    }
+    return instance;
+  };
+
+  app.post(
+    '/control/v1/instances/:repositoryId/panel-action/prompts/preview',
+    async (request, reply) => {
+      const repositoryId = repositoryIdOf(request);
+      const body = z
+        .object({ config: z.unknown() })
+        .strict()
+        .safeParse(request.body ?? {});
+      if (!body.success) {
+        return reply
+          .code(422)
+          .send({ error: { code: 'invalid_request', message: 'config is required' } });
+      }
+      const instance = await panelInstanceFor(repositoryId);
+      const result = await panelCall({
+        port: instance.port,
+        path: '/prompts/preview',
+        method: 'POST',
+        body: { config: body.data.config },
+      });
+      return reply.code(result.status).send(result.body);
+    },
+  );
+
+  app.post(
+    '/control/v1/instances/:repositoryId/panel-action/sources/:sourceId/labels',
+    async (request, reply) => {
+      const repositoryId = repositoryIdOf(request);
+      const params = z.object({ sourceId: sourceIdSchema }).safeParse(request.params);
+      if (!params.success) {
+        return reply
+          .code(422)
+          .send({ error: { code: 'invalid_request', message: 'Invalid source id' } });
+      }
+      const instance = await requireInstalledSource(repositoryId, params.data.sourceId);
+      const result = await panelCall({
+        port: instance.port,
+        path: `/sources/${encodeURIComponent(params.data.sourceId)}/labels`,
+        method: 'POST',
+      });
+      return reply.code(result.status).send(result.body);
+    },
+  );
+
+  app.post(
+    '/control/v1/instances/:repositoryId/panel-action/policy-sync/:sourceId',
+    async (request, reply) => {
+      const repositoryId = repositoryIdOf(request);
+      const params = z.object({ sourceId: sourceIdSchema }).safeParse(request.params);
+      if (!params.success) {
+        return reply
+          .code(422)
+          .send({ error: { code: 'invalid_request', message: 'Invalid source id' } });
+      }
+      const instance = await requireInstalledSource(repositoryId, params.data.sourceId);
+      const result = await panelCall({
+        port: instance.port,
+        path: `/policy-sync/${encodeURIComponent(params.data.sourceId)}`,
+        method: 'POST',
+      });
+      return reply.code(result.status).send(result.body);
+    },
+  );
+
+  app.post(
+    '/control/v1/instances/:repositoryId/panel-action/executor/pause',
+    async (request, reply) => {
+      const repositoryId = repositoryIdOf(request);
+      const body = z
+        .object({ paused: z.boolean() })
+        .strict()
+        .safeParse(request.body ?? {});
+      if (!body.success) {
+        return reply.code(422).send({
+          error: { code: 'invalid_request', message: 'paused must be a boolean' },
+        });
+      }
+      const instance = await panelInstanceFor(repositoryId);
+      const result = await panelCall({
+        port: instance.port,
+        path: '/executor/pause',
+        method: 'POST',
+        body: { paused: body.data.paused },
+      });
+      return reply.code(result.status).send(result.body);
+    },
+  );
+
+  app.post(
+    '/control/v1/instances/:repositoryId/panel-action/setup/check',
+    async (request, reply) => {
+      const repositoryId = repositoryIdOf(request);
+      const instance = await panelInstanceFor(repositoryId);
+      const result = await panelCall({
+        port: instance.port,
+        path: '/setup/check',
+        method: 'POST',
+        body: {},
+        timeoutMs: 60_000,
+      });
+      return reply.code(result.status).send(result.body);
+    },
+  );
+
+  const panelQuery = async (
+    repositoryId: string,
+    path: string,
+    input: Record<string, string | number | undefined>,
+  ) => {
+    const instance = await panelInstanceFor(repositoryId);
+    const search = new URLSearchParams(
+      Object.entries(input)
+        .filter(([, value]) => value !== undefined && value !== '')
+        .map(([key, value]) => [key, String(value)] as [string, string]),
+    ).toString();
+    return panelCall({ port: instance.port, path: `${path}${search ? `?${search}` : ''}` });
+  };
+
+  app.get('/control/v1/instances/:repositoryId/panel-action/tickets', async (request, reply) => {
+    const repositoryId = repositoryIdOf(request);
+    const query = z
+      .object({
+        state: z.string().max(80).optional(),
+        limit: z.coerce.number().int().min(1).max(100).optional(),
+      })
+      .strict()
+      .safeParse(request.query ?? {});
+    if (!query.success) {
+      return reply
+        .code(422)
+        .send({ error: { code: 'invalid_request', message: 'Invalid ticket query' } });
+    }
+    const result = await panelQuery(repositoryId, '/tickets', query.data);
+    return reply.code(result.status).send(result.body);
+  });
+
+  app.get(
+    '/control/v1/instances/:repositoryId/panel-action/tickets/:ticketId',
+    async (request, reply) => {
+      const repositoryId = repositoryIdOf(request);
+      const params = z.object({ ticketId: ticketIdSchema }).safeParse(request.params);
+      if (!params.success) {
+        return reply
+          .code(422)
+          .send({ error: { code: 'invalid_request', message: 'Invalid ticket id' } });
+      }
+      const result = await panelQuery(
+        repositoryId,
+        `/tickets/${encodeURIComponent(params.data.ticketId)}`,
+        {},
+      );
+      return reply.code(result.status).send(result.body);
+    },
+  );
+
+  for (const action of ['retry', 'stop'] as const) {
+    app.post(
+      `/control/v1/instances/:repositoryId/panel-action/tickets/:ticketId/${action}`,
+      async (request, reply) => {
+        const repositoryId = repositoryIdOf(request);
+        const params = z.object({ ticketId: ticketIdSchema }).safeParse(request.params);
+        if (!params.success) {
+          return reply
+            .code(422)
+            .send({ error: { code: 'invalid_request', message: 'Invalid ticket id' } });
+        }
+        const instance = await panelInstanceFor(repositoryId);
+        const result = await panelCall({
+          port: instance.port,
+          path: `/tickets/${encodeURIComponent(params.data.ticketId)}/${action}`,
+          method: 'POST',
+          body: {},
+          timeoutMs: 60_000,
+        });
+        return reply.code(result.status).send(result.body);
+      },
+    );
+  }
+
+  app.get('/control/v1/instances/:repositoryId/panel-action/decisions', async (request, reply) => {
+    const repositoryId = repositoryIdOf(request);
+    const query = z
+      .object({
+        limit: z.coerce.number().int().min(1).max(100).optional(),
+        kind: z.string().max(200).optional(),
+        window: z.string().max(20).optional(),
+      })
+      .strict()
+      .safeParse(request.query ?? {});
+    if (!query.success) {
+      return reply
+        .code(422)
+        .send({ error: { code: 'invalid_request', message: 'Invalid decisions query' } });
+    }
+    const result = await panelQuery(repositoryId, '/decisions', query.data);
     return reply.code(result.status).send(result.body);
   });
 
   /** Reads the instance's Deployment snapshot from its own profile patch. */
   const profilePatchFor = async (
     repositoryId: string,
-  ): Promise<{ profile: string; path: string }> => {
+  ): Promise<{ profile: string; path: string; instanceId: string }> => {
     const row = await options.store.getInstance(repositoryId);
     if (!row?.profile) {
       throw Object.assign(new Error('Instance profile is not prepared yet'), { statusCode: 404 });
@@ -265,6 +632,7 @@ export function buildSupervisorServer(options: {
     return {
       profile: row.profile,
       path: join(config.dshHome, 'profiles', row.profile, 'cordis.patch.yml'),
+      instanceId: instanceIdentity(row),
     };
   };
 
@@ -272,7 +640,9 @@ export function buildSupervisorServer(options: {
     const repositoryId = repositoryIdOf(request);
     const target = await profilePatchFor(repositoryId);
     const text = readFileSync(target.path, 'utf8');
-    return { data: { ...readDeployment(text), profile: target.profile } };
+    return {
+      data: { ...readDeployment(text), profile: target.profile, instanceId: target.instanceId },
+    };
   });
 
   app.put('/control/v1/instances/:repositoryId/deployment', async (request, reply) => {
@@ -295,52 +665,126 @@ export function buildSupervisorServer(options: {
           .min(1)
           .max(8),
         revision: z.number().int().nonnegative(),
+        expectedInstanceId: z.string().min(1),
       })
       .strict()
       .parse(request.body ?? {});
-    const target = await profilePatchFor(repositoryId);
-    const before = readFileSync(target.path, 'utf8');
-    const snapshot = readDeployment(before);
-    if (snapshot.revision !== body.revision) {
-      return reply.code(409).send({
-        error: 'The Deployment settings changed. Reload before saving.',
-        revision: snapshot.revision,
-      });
-    }
-    let applied;
-    try {
-      applied = applyDeploymentOps(before, body.ops as never);
-    } catch (error) {
-      return reply.code(422).send({
-        error: error instanceof Error ? error.message : 'Invalid Deployment change',
-      });
-    }
-    // Write to a sibling file and rename, so a crash cannot truncate the profile.
-    const temporary = `${target.path}.tmp-${process.pid}`;
-    writeFileSync(temporary, applied.text, { mode: 0o600 });
-    renameSync(temporary, target.path);
-    const restart = await manager.restart(repositoryId);
-    logger.info(
-      {
-        event: 'supervisor.deployment_saved',
-        repositoryId,
-        profile: target.profile,
-        applied: applied.applied,
-        restarting: restart.restarted,
-      },
-      'instance Deployment settings saved',
-    );
-    return {
-      data: {
-        saved: true,
-        revision: applied.revision,
-        applied: applied.applied,
-        restarting: restart.restarted,
-        ...(restart.restarted
-          ? {}
-          : { restartRequired: true, restartRefused: restart.reason ?? null }),
-      },
-    };
+    return withDeploymentLock(repositoryId, async () => {
+      const target = await profilePatchFor(repositoryId);
+      if (body.expectedInstanceId !== target.instanceId) {
+        return reply.code(409).send({
+          error: {
+            code: 'instance_changed',
+            message:
+              'The runtime instance changed since this Deployment snapshot was loaded; reload before saving',
+          },
+          instanceId: target.instanceId,
+        });
+      }
+      const before = readFileSync(target.path, 'utf8');
+      const snapshot = readDeployment(before);
+      if (snapshot.revision !== body.revision) {
+        return reply.code(409).send({
+          error: {
+            code: 'settings_conflict',
+            message: 'The Deployment settings changed. Reload before saving.',
+          },
+          revision: snapshot.revision,
+        });
+      }
+      let applied;
+      try {
+        applied = applyDeploymentOps(before, body.ops as never);
+      } catch (error) {
+        return reply.code(422).send({
+          error: {
+            code: 'invalid_deployment',
+            message: error instanceof Error ? error.message : 'Invalid Deployment change',
+          },
+          revision: snapshot.revision,
+        });
+      }
+
+      // Write a unique sibling with mode 0600, fsync it, then rename. Two
+      // clients with the same revision are serialized by withDeploymentLock;
+      // a crash before rename leaves only an fenced temp file, never a
+      // truncated profile.
+      const temporary = `${target.path}.tmp-${process.pid}-${randomUUID()}`;
+      let descriptor: number | undefined;
+      try {
+        descriptor = openSync(temporary, 'wx', 0o600);
+        writeFileSync(descriptor, applied.text, 'utf8');
+        fsyncSync(descriptor);
+        closeSync(descriptor);
+        descriptor = undefined;
+        renameSync(temporary, target.path);
+        // Make the rename durable too. Directory fsync is best-effort on filesystems
+        // that do not support it; the file itself is already closed and fsynced.
+        try {
+          const directory = openSync(dirname(target.path), 'r');
+          try {
+            fsyncSync(directory);
+          } finally {
+            closeSync(directory);
+          }
+        } catch {
+          // The rename is still atomic; report the save rather than inventing a failure.
+        }
+      } catch (error) {
+        if (descriptor !== undefined) {
+          try {
+            closeSync(descriptor);
+          } catch {
+            // Already closed.
+          }
+        }
+        try {
+          unlinkSync(temporary);
+        } catch {
+          // The temp file may not exist or may already have been renamed.
+        }
+        throw error;
+      }
+
+      const savedSnapshot = readDeployment(readFileSync(target.path, 'utf8'));
+      // The file is already durable. A restart failure must not turn a
+      // committed save into a 500 that invites the browser to resend the PUT.
+      let restart: { restarted: boolean; reason?: string };
+      try {
+        restart = await manager.restart(repositoryId);
+      } catch (error) {
+        restart = {
+          restarted: false,
+          reason: `The Deployment settings were saved, but the restart request failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        };
+      }
+      logger.info(
+        {
+          event: 'supervisor.deployment_saved',
+          repositoryId,
+          profile: target.profile,
+          applied: applied.applied,
+          revision: savedSnapshot.revision,
+          restarting: restart.restarted,
+          restartRequired: !restart.restarted,
+        },
+        'instance Deployment settings saved',
+      );
+      return {
+        data: {
+          saved: true,
+          revision: savedSnapshot.revision,
+          snapshot: { ...savedSnapshot, instanceId: target.instanceId },
+          profile: target.profile,
+          applied: applied.applied,
+          restarting: restart.restarted,
+          restartRequired: !restart.restarted,
+          restartRefused: restart.restarted ? null : (restart.reason ?? null),
+        },
+      };
+    });
   });
 
   app.get('/control/v1/instances/:repositoryId', async (request) => {
@@ -363,6 +807,7 @@ export function buildSupervisorServer(options: {
         'supervisor request failed',
       );
     }
+    const issues = (error as { issues?: unknown }).issues;
     void reply.code(statusCode).send({
       error: {
         code:
@@ -373,6 +818,7 @@ export function buildSupervisorServer(options: {
               : 'internal_error',
         message: statusCode >= 500 ? 'supervisor request failed' : message,
       },
+      ...(Array.isArray(issues) ? { issues } : {}),
     });
   });
 

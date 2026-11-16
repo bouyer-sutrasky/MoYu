@@ -1,0 +1,46 @@
+[Unit]
+Description=MoYu M6-C host supervisor
+After=network-online.target postgresql.service moyu-m6c-api.service
+Wants=network-online.target
+PartOf=moyu-m6c.slice
+Before=moyu-m6c-dispatcher.service
+
+[Service]
+Type=simple
+User=moyu-m6c
+Group=moyu-m6c
+SupplementaryGroups=moyu-m6c-check
+WorkingDirectory=/opt/moyu-m6c/current
+EnvironmentFile=/etc/moyu-m6c/supervisor.env
+Slice=moyu-m6c.slice
+RuntimeDirectory=moyu-m6c
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+# The supervisor is the trusted launcher. CAP_SETUID/GID let it enter each
+# repository's low-privilege identity; CAP_SETPCAP lets setpriv drop the child's
+# bounding set; CAP_KILL cleans up a timed-out check; CAP_CHOWN/FOWNER create
+# the per-repository home and state ownership; CAP_FSETID preserves the setgid
+# bit on per-repository worktrees; CAP_DAC_OVERRIDE lets the
+# supervisor maintain the profile patch after handing the directory to the runtime. Runtime and check children clear
+# their own bounding/ambient sets before exec.
+Delegate=yes
+DelegateSubgroup=supervisor
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_KILL CAP_CHOWN CAP_FOWNER CAP_FSETID CAP_DAC_OVERRIDE
+AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_KILL CAP_CHOWN CAP_FOWNER CAP_FSETID CAP_DAC_OVERRIDE
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelModules=yes
+ProtectControlGroups=no
+UMask=0002
+ReadWritePaths=/var/lib/moyu-m6c /run/moyu-m6c /var/lib/moyu-m6c-check /sys/fs/cgroup
+ExecStart=/opt/moyu-m6c/runtime/node24/bin/node apps/supervisor/dist/main.js
+Restart=on-failure
+RestartSec=3
+MemoryMax=4G
+StandardOutput=append:/var/lib/moyu-m6c/logs/supervisor.log
+StandardError=append:/var/lib/moyu-m6c/logs/supervisor.log
+
+[Install]
+WantedBy=multi-user.target

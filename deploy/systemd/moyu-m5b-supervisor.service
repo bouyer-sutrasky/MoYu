@@ -22,12 +22,12 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
-# The supervisor itself is unprivileged. These two capabilities are the whole
+# The supervisor itself is unprivileged. These capabilities are the whole
 # launcher: setpriv drops each check child to REVIEW_CHECK_UID/GID. The bounding
 # set removes every other capability, and NoNewPrivileges stays on; without the
 # setpriv switch a check fails closed instead of running as the supervisor.
-CapabilityBoundingSet=CAP_SETUID CAP_SETGID
-AmbientCapabilities=CAP_SETUID CAP_SETGID
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_KILL
+AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_KILL
 # The runtime creates worktrees as moyu-m5b; the group and umask let the
 # dedicated check user read and write the same tree without a recursive chown.
 UMask=0002

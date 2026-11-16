@@ -14,6 +14,7 @@ let downSql = '';
 let downSql0016 = '';
 let downSql0017 = '';
 let downSql0018 = '';
+let downSql0019 = '';
 const databases: TestDatabase[] = [];
 
 const read = async (database: TestDatabase) => {
@@ -53,13 +54,18 @@ describe('0015 rollback script on real PostgreSQL', () => {
       path.join(ROOT, 'packages/db/migrations/rollback/0018_zippy_warhawk.down.sql'),
       'utf8',
     );
+    downSql0019 = await readFile(
+      path.join(ROOT, 'packages/db/migrations/rollback/0019_event_dedupe_per_repository.down.sql'),
+      'utf8',
+    );
   });
 
   it('refuses a second rollback instead of silently deleting nothing', async () => {
     const database = await createTestDatabase();
     databases.push(database);
 
-    // 0016 is newer: the supported order is to roll it back first.
+    // Later migrations are newer: the supported order is to roll them back first.
+    await database.pool.query(downSql0019);
     await database.pool.query(downSql0018);
     await database.pool.query(downSql0017);
     await database.pool.query(downSql0016);
@@ -79,6 +85,7 @@ describe('0015 rollback script on real PostgreSQL', () => {
     databases.push(database);
     expect(await read(database)).toEqual({ column_present: true, ledger_present: true });
 
+    await database.pool.query(downSql0019);
     await database.pool.query(downSql0018);
     await database.pool.query(downSql0017);
     await database.pool.query(downSql0016);

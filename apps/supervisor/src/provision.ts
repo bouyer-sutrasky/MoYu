@@ -3,13 +3,15 @@ import {
   chmodSync,
   chownSync,
   cpSync,
-  existsSync,
+  lchownSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import type { SupervisorConfig } from './config';
 import type { RepositoryRow, SupervisorStore } from './store';
@@ -24,6 +26,15 @@ export interface PreparedInstance {
   credentialsFile: string;
   bridgeToken: string;
   callbackToken: string;
+  /** True only when installProfile copied a new profile directory. */
+  profileCreated: boolean;
+  runtimeUid?: number;
+  runtimeGid?: number;
+  runtimeHome?: string;
+  stateDir?: string;
+  checkUid?: number;
+  checkGid?: number;
+  checkHome?: string;
 }
 
 function ensurePrivateDir(path: string): void {
@@ -34,6 +45,143 @@ function ensurePrivateDir(path: string): void {
 function writePrivate(path: string, content: string): void {
   writeFileSync(path, content, { mode: 0o600 });
   chmodSync(path, 0o600);
+}
+
+/** Existence check that uses lstat, not access(2): DAC_OVERRIDE does not satisfy access(2). */
+export function pathExists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Chown a tree without following symlinks; symlinked shared assets stay shared. */
+function chownTree(path: string, uid: number, gid: number): void {
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink()) {
+    lchownSync(path, uid, gid);
+    return;
+  }
+  chownSync(path, uid, gid);
+  if (!stat.isDirectory()) return;
+  for (const entry of readdirSync(path, { withFileTypes: true })) {
+    chownTree(join(path, entry.name), uid, gid);
+  }
+}
+
+/**
+ * Build a per-repository DSH home. The runtime gets its own .env, credentials,
+ * sessions and caches, and can only traverse its own profile/state directories.
+ * The shared dshHome remains the supervisor's control-plane root; parents are
+ * made traverse-only and the per-profile entries are owned by the runtime uid.
+ */
+function prepareRuntimeIdentity(
+  config: SupervisorConfig,
+  profile: string,
+  profileDir: string,
+  pinned: { runtimeUid?: number; runtimeGid?: number; runtimeHome?: string } | undefined,
+): { runtimeUid?: number; runtimeGid?: number; runtimeHome?: string; stateDir?: string } {
+  if (!pinned || pinned.runtimeUid === undefined || pinned.runtimeGid === undefined) {
+    return {};
+  }
+  const uid = pinned.runtimeUid;
+  const gid = pinned.runtimeGid;
+  const home = pinned.runtimeHome ?? join(config.dshHome, 'homes', profile);
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  chmodSync(home, 0o700);
+  chownSync(home, uid, gid);
+
+  for (const name of ['.env', '.credentials.yaml', '.anonymous-user-id']) {
+    const source = join(config.dshHome, name);
+    if (!pathExists(source)) continue;
+    const target = join(home, name);
+    cpSync(source, target);
+    chmodSync(target, 0o400);
+    chownSync(target, uid, gid);
+  }
+
+  const ghSource = join(dirname(config.dshHome), '.config', 'gh-agent');
+  if (pathExists(ghSource)) {
+    const ghTarget = join(home, '.config', 'gh-agent');
+    cpSync(ghSource, ghTarget, { recursive: true });
+    chownTree(join(home, '.config'), uid, gid);
+    chmodSync(ghTarget, 0o700);
+  }
+
+  // Git/SSH material is per runtime home too. The shared config uses an
+  // absolute IdentityFile path; rewrite it to the isolated copy so the runtime
+  // can authenticate without read access to the supervisor home.
+  const sshSource = join(dirname(config.dshHome), '.ssh');
+  if (pathExists(sshSource)) {
+    const sshTarget = join(home, '.ssh');
+    cpSync(sshSource, sshTarget, { recursive: true });
+    const sshConfig = join(sshTarget, 'config');
+    if (pathExists(sshConfig)) {
+      const rewritten = readFileSync(sshConfig, 'utf8').replaceAll(
+        join(sshSource, 'id_ed25519'),
+        join(sshTarget, 'id_ed25519'),
+      );
+      writeFileSync(sshConfig, rewritten, { mode: 0o600 });
+    }
+    chownTree(sshTarget, uid, gid);
+    chmodSync(sshTarget, 0o700);
+    for (const entry of readdirSync(sshTarget, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      chmodSync(join(sshTarget, entry.name), entry.name === 'known_hosts' ? 0o644 : 0o600);
+    }
+  }
+
+  // The DSH state root is per repository too. It must be writable by the
+  // runtime so proper-lockfile can create <stateDir>.lock without giving the
+  // runtime write access to the shared state parent.
+  const privateState = join(home, 'state');
+  // Profiles provisioned before per-repository state used a symlink to the
+  // shared state root. Remove that symlink before creating the isolated dir,
+  // otherwise mkdir/chmod would follow it and modify the shared parent.
+  if (pathExists(privateState) && lstatSync(privateState).isSymbolicLink()) {
+    rmSync(privateState, { force: true });
+  }
+  mkdirSync(privateState, { recursive: true, mode: 0o700 });
+  chmodSync(privateState, 0o700);
+  chownSync(privateState, uid, gid);
+  const stateDir = join(privateState, profile);
+  const sharedState = join(config.dshHome, 'state', profile);
+  if (!pathExists(stateDir)) {
+    if (pathExists(sharedState)) {
+      cpSync(sharedState, stateDir, { recursive: true });
+    } else {
+      mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+    }
+  }
+  chownTree(stateDir, uid, gid);
+  chmodSync(stateDir, 0o700);
+  rmSync(stateDir + '.lock', { recursive: true, force: true });
+
+  // Keep the existing per-profile state for continuity, but point the profile
+  // patch at the isolated copy. The shared state directory remains the
+  // supervisor-controlled fallback for unpinned instances.
+  const patchPath = join(profileDir, 'cordis.patch.yml');
+  if (pathExists(patchPath)) {
+    const patch = readFileSync(patchPath, 'utf8');
+    const next = patch.replace(/^(\s*stateDir:\s*).+$/m, '$1' + stateDir);
+    if (next !== patch) writePrivate(patchPath, next);
+  }
+
+  for (const privateDir of ['sessions', 'storages', 'logs', 'tmp', 'cache']) {
+    const path = join(home, privateDir);
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+    chmodSync(path, 0o700);
+    chownSync(path, uid, gid);
+  }
+
+  // The runtime must be able to enter its own 0700 profile/state directories,
+  // but not list or enter another repository's directories.
+  chownTree(profileDir, uid, gid);
+  chmodSync(profileDir, 0o700);
+
+  return { runtimeUid: uid, runtimeGid: gid, runtimeHome: home, stateDir };
 }
 
 /** The managed instance environment written under `INSTANCE_ENV_DIR`. */
@@ -96,7 +244,7 @@ async function allocate(
   store: SupervisorStore,
   repository: RepositoryRow,
 ): Promise<{ profile: string; dshPort: number; bridgePort: number }> {
-  const pinned = config.pinned.get(repository.fullName);
+  const pinned = config.pinned?.get(repository.fullName);
   if (pinned) {
     return { profile: pinned.profile, dshPort: pinned.dshPort, bridgePort: pinned.bridgePort };
   }
@@ -143,15 +291,21 @@ async function allocate(
   throw new Error('No free supervisor profile/port pair in the configured range');
 }
 
-function installProfile(config: SupervisorConfig, profile: string, dshPort: number): string {
+function installProfile(
+  config: SupervisorConfig,
+  profile: string,
+  dshPort: number,
+): { profileDir: string; created: boolean } {
   const profileDir = join(config.dshHome, 'profiles', profile);
-  if (!existsSync(profileDir)) {
-    if (!config.profileTemplateDir || !existsSync(config.profileTemplateDir)) {
+  let created = false;
+  if (!pathExists(profileDir)) {
+    if (!config.profileTemplateDir || !pathExists(config.profileTemplateDir)) {
       throw new Error(`Profile ${profile} does not exist and the template is unavailable`);
     }
     cpSync(config.profileTemplateDir, profileDir, { recursive: true });
+    created = true;
     const patchPath = join(profileDir, 'cordis.patch.yml');
-    if (!existsSync(patchPath)) {
+    if (!pathExists(patchPath)) {
       rmSync(profileDir, { recursive: true, force: true });
       throw new Error(`Profile template has no cordis.patch.yml: ${config.profileTemplateDir}`);
     }
@@ -161,7 +315,7 @@ function installProfile(config: SupervisorConfig, profile: string, dshPort: numb
     writePrivate(patchPath, patch);
     chmodSync(profileDir, 0o700);
   }
-  return profileDir;
+  return { profileDir, created };
 }
 
 /**
@@ -186,15 +340,17 @@ export async function prepareInstance(
   ensureSharedWorktreeRoot(config);
 
   const { profile, dshPort, bridgePort } = await allocate(config, store, repository);
-  const profileDir = installProfile(config, profile, dshPort);
-  if (!existsSync(join(profileDir, 'node_modules', 'dsh-superagent'))) {
+  const { profileDir, created: profileCreated } = installProfile(config, profile, dshPort);
+  const pinned = config.pinned?.get(repository.fullName);
+  const identity = prepareRuntimeIdentity(config, profile, profileDir, pinned);
+  if (!pathExists(join(profileDir, 'node_modules', 'dsh-superagent'))) {
     throw new Error(`Profile ${profile} has no dsh-superagent installation`);
   }
 
   const credentialsFile = join(config.credentialsDir, `${repository.id}.json`);
   const envFile = join(config.instanceEnvDir, `${repository.id}.env`);
   let credentials: { bridgeToken: string; callbackToken: string } | null = null;
-  if (existsSync(credentialsFile)) {
+  if (pathExists(credentialsFile)) {
     const parsed = JSON.parse(readFileSync(credentialsFile, 'utf8')) as {
       bridgeToken?: string;
       callbackToken?: string;
@@ -249,6 +405,11 @@ export async function prepareInstance(
     envFile,
     credentialsFile,
     ...credentials,
+    profileCreated,
+    ...identity,
+    ...(pinned?.checkUid !== undefined && pinned.checkGid !== undefined && pinned.checkHome
+      ? { checkUid: pinned.checkUid, checkGid: pinned.checkGid, checkHome: pinned.checkHome }
+      : {}),
   };
 }
 

@@ -70,6 +70,15 @@ export type ReviewChanges = z.infer<typeof reviewChangesSchema>;
 
 export const reviewCheckStateSchema = z.enum(['available', 'not_run', 'unavailable']);
 
+export const reviewCheckCleanupStateSchema = z.enum([
+  'clean',
+  'residual',
+  'unknown',
+  'not_required',
+]);
+
+export type ReviewCheckCleanupState = z.infer<typeof reviewCheckCleanupStateSchema>;
+
 export const reviewCheckRunSchema = z.object({
   id: z.string().min(1),
   command: z.string().min(1),
@@ -83,6 +92,10 @@ export const reviewCheckRunSchema = z.object({
   /** Tail of the combined output, bounded by the runtime. */
   output: z.string(),
   outputTruncated: z.boolean(),
+  /** Whether the check's process boundary was proven empty after it exited. */
+  cleanupState: reviewCheckCleanupStateSchema.optional(),
+  lingeringPids: z.array(z.number().int().positive()).optional(),
+  cleanupDetail: z.string().nullable().optional(),
 });
 
 export type ReviewCheckRun = z.infer<typeof reviewCheckRunSchema>;

@@ -203,6 +203,15 @@ describe('mergeProfileSettings — every later start', () => {
     expect(policy.sources.workspace!.allowed.map((entry) => entry.id)).toEqual(['owner-1']);
   });
 
+  it('keeps an explicit false GitHub listener on an old profile without a seed marker', () => {
+    const view = configured();
+    const githubSource = view.sources!.find((source) => source.id === 'github')!;
+    githubSource.value = { ...githubSource.value, enabled: false };
+    const merged = mergeProfileSettings(view, invariants, false);
+    const github = blockOf(merged, 'source:github')!.value as { enabled: boolean };
+    expect(github.enabled).toBe(false);
+  });
+
   it('sends no save at all when nothing changed', () => {
     const seeded = mergeProfileSettings(fresh(), invariants, true);
     const applied: PanelSettingsView = {

@@ -1,0 +1,37 @@
+[Unit]
+Description=MoYu M6-C dispatcher
+After=network-online.target postgresql.service moyu-m6c-supervisor.service
+Wants=network-online.target
+PartOf=moyu-m6c.slice
+
+[Service]
+Type=simple
+User=moyu-m6c
+Group=moyu-m6c
+WorkingDirectory=/opt/moyu-m6c/current
+EnvironmentFile=/etc/moyu-m6c/dispatcher.env
+Slice=moyu-m6c.slice
+RuntimeDirectory=moyu-m6c
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+ExecStart=/opt/moyu-m6c/runtime/node24/bin/node apps/dispatcher/dist/main.js
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+ReadWritePaths=/var/lib/moyu-m6c /run/moyu-m6c
+MemoryMax=1G
+StandardOutput=append:/var/lib/moyu-m6c/logs/dispatcher.log
+StandardError=append:/var/lib/moyu-m6c/logs/dispatcher.log
+
+[Install]
+WantedBy=multi-user.target

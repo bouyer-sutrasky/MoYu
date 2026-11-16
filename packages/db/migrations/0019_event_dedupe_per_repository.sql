@@ -1,0 +1,2 @@
+DROP INDEX "events_source_event_uq";--> statement-breakpoint
+CREATE UNIQUE INDEX "events_source_event_uq" ON "events" USING btree ("repository_id","source","source_event_id") WHERE "events"."source_event_id" is not null;

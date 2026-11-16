@@ -3,7 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type pg from 'pg';
 
 import { createPool } from '@moyu/db';
-import type { RuntimeBridgeClient } from '@moyu/runtime-client';
+import { RuntimeBridgeError, type RuntimeBridgeClient } from '@moyu/runtime-client';
 
 import type { DispatcherConfig } from './config';
 import { admitImportedOnce } from './admissions';
@@ -13,32 +13,79 @@ import { maintainLeases, operationsOnce, reconcileTasks } from './operations';
 import { captureReportsOnce } from './reports';
 import { duplicatesOnce } from './duplicates';
 import { bridgeClient, listActiveRepositories, type RepositoryBinding } from './runtime';
-import { syncOnce } from './sync';
+import { recoverIgnoredLeases, syncOnce } from './sync';
 
 export interface RunDispatcherOptions {
   signal: AbortSignal;
   logger?: DispatcherLogger;
 }
 
-async function runLoop(
+/**
+ * Consecutive failures after which a loop's failure is a real error rather than a
+ * transient one. A supervisor restart makes every Bridge call fail for a few
+ * seconds, and reporting that at error level once per second buries real errors.
+ */
+const TRANSIENT_FAILURES = 3;
+
+/**
+ * A retryable Bridge error (unreachable runtime, 5xx, timeout) is a transient
+ * outage. Contract violations, SQL errors and non-retryable 4xx responses are
+ * not: retrying cannot fix them, so they must stay at error level even on the
+ * first failure instead of being reported as a passing hiccup.
+ */
+function isTransientLoopError(error: unknown): boolean {
+  return error instanceof RuntimeBridgeError && error.retryable;
+}
+
+/** @internal Exported so the loop's level/backoff decisions have a direct test. */
+export async function runLoop(
   name: string,
   intervalMs: number,
   signal: AbortSignal,
   logger: DispatcherLogger,
   work: () => Promise<boolean>,
 ): Promise<void> {
+  let consecutiveFailures = 0;
   while (!signal.aborted) {
     let busy = false;
     try {
       busy = await work();
+      if (consecutiveFailures > 0) {
+        logger.info(
+          {
+            event: `dispatcher.${name}_recovered`,
+            consecutiveFailures,
+          },
+          `${name} loop recovered`,
+        );
+        consecutiveFailures = 0;
+      }
     } catch (error) {
-      logger.error(
-        {
-          event: `dispatcher.${name}_error`,
-          error: error instanceof Error ? error.message : String(error),
-        },
-        `${name} loop failed; retrying`,
-      );
+      const transient = isTransientLoopError(error);
+      const detail = {
+        event: `dispatcher.${name}_error`,
+        consecutiveFailures: transient ? consecutiveFailures + 1 : 0,
+        transient,
+        ...(error instanceof RuntimeBridgeError ? { code: error.code, status: error.status } : {}),
+        error: error instanceof Error ? error.message : String(error),
+      };
+      if (!transient) {
+        // Do not let a contract/SQL failure accumulate into the transient
+        // counter: the next short Bridge outage must start again at warning 1.
+        consecutiveFailures = 0;
+        logger.error(detail, `${name} loop failed with a non-transient error; retrying`);
+      } else {
+        consecutiveFailures += 1;
+        detail.consecutiveFailures = consecutiveFailures;
+        // A bridge that is briefly unreachable while an instance restarts is a
+        // warning; only a failure that persists past the transient window is an
+        // error the operator has to act on.
+        if (consecutiveFailures < TRANSIENT_FAILURES) {
+          logger.warn(detail, `${name} loop failed; retrying`);
+        } else {
+          logger.error(detail, `${name} loop failed ${consecutiveFailures} times; retrying`);
+        }
+      }
     }
     if (!busy) {
       await delay(intervalMs, undefined, { signal }).catch(() => undefined);
@@ -73,6 +120,16 @@ async function runRepositoryWorker(
     return;
   }
 
+  await recoverIgnoredLeases(pool, repository.id, logger).catch((error) => {
+    logger.warn(
+      {
+        event: 'dispatcher.ignored_lease_recovery_failed',
+        repository: repository.fullName,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      'could not release an ignored admission lease; the execution slot may stay occupied',
+    );
+  });
   let admissionSupported = false;
   let attachmentsSupported = false;
   try {

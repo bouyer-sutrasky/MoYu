@@ -75,6 +75,28 @@ export interface ConversationRouteDependencies {
 const MESSAGE_PAGE_DEFAULT = 100;
 const CONVERSATION_PAGE_DEFAULT = 50;
 
+/** Pending tasks ordered exactly as the workbench home presents them. */
+const PENDING_TASK_STATES = [
+  'waiting_input',
+  'awaiting_review',
+  'blocked',
+  'failed',
+  'queued',
+  'running',
+  'stopping',
+] as const;
+
+const pendingTaskRank = sql<number>`case ${taskLinks.state}::text
+  when 'waiting_input' then 0
+  when 'awaiting_review' then 1
+  when 'blocked' then 2
+  when 'failed' then 2
+  when 'queued' then 3
+  when 'running' then 3
+  when 'stopping' then 3
+  else 9
+end`;
+
 function conversationFingerprint(input: {
   repositoryId: string;
   mode: string;
@@ -465,7 +487,8 @@ export function registerConversationRoutes(
     // repository id (or the owner, when listing every repository) is part of the
     // cursor scope so a cursor cannot be replayed against another list.
     let scope = `owner:${auth.owner.id}`;
-    const conditions: SQL[] = [
+    const pending = query.pending === true;
+    const baseConditions: SQL[] = [
       isNull(conversations.mergedIntoConversationId),
       eq(conversations.ownerId, auth.owner.id),
     ];
@@ -474,29 +497,55 @@ export function registerConversationRoutes(
       if (!repository) {
         throw ApiProblem.notFound('Repository not found');
       }
-      scope = repository.id;
-      conditions.push(eq(conversations.repositoryId, repository.id));
+      scope = pending ? `${repository.id}:pending` : repository.id;
+      baseConditions.push(eq(conversations.repositoryId, repository.id));
+    } else if (pending) {
+      scope = `owner:${auth.owner.id}:pending`;
+    }
+    const conditions = [...baseConditions];
+    if (pending) {
+      conditions.push(inArray(sql<string>`${taskLinks.state}::text`, PENDING_TASK_STATES));
     }
 
     if (query.cursor) {
       const position = decodeCursorValue(query.cursor, { kind: 'conversation', scope });
-      conditions.push(
-        position.id === null
-          ? sql`${conversations.updatedAt} < ${position.timestamp}::timestamptz`
-          : sql`(${conversations.updatedAt} < ${position.timestamp}::timestamptz OR (${conversations.updatedAt} = ${position.timestamp}::timestamptz AND ${conversations.id} < ${position.id}::uuid))`,
-      );
+      if (pending && position.rank !== null && position.id !== null) {
+        conditions.push(
+          sql`(${pendingTaskRank} > ${position.rank} OR (${pendingTaskRank} = ${position.rank} AND (${conversations.updatedAt} < ${position.timestamp}::timestamptz OR (${conversations.updatedAt} = ${position.timestamp}::timestamptz AND ${conversations.id} < ${position.id}::uuid))))`,
+        );
+      } else {
+        conditions.push(
+          position.id === null
+            ? sql`${conversations.updatedAt} < ${position.timestamp}::timestamptz`
+            : sql`(${conversations.updatedAt} < ${position.timestamp}::timestamptz OR (${conversations.updatedAt} = ${position.timestamp}::timestamptz AND ${conversations.id} < ${position.id}::uuid))`,
+        );
+      }
     }
+
+    const pendingCountRows = await database
+      .select({ count: sql<number>`count(*)::int` })
+      .from(conversations)
+      .leftJoin(taskLinks, eq(taskLinks.conversationId, conversations.id))
+      .where(
+        and(...baseConditions, inArray(sql<string>`${taskLinks.state}::text`, PENDING_TASK_STATES)),
+      );
+    const pendingCount = Number(pendingCountRows[0]?.count ?? 0);
 
     const rows = await database
       .select({
         conversation: conversations,
         task: taskLinks,
         cursorTimestamp: conversationCursorTimestamp,
+        ...(pending ? { pendingRank: pendingTaskRank } : {}),
       })
       .from(conversations)
       .leftJoin(taskLinks, eq(taskLinks.conversationId, conversations.id))
       .where(and(...conditions))
-      .orderBy(desc(conversations.updatedAt), desc(conversations.id))
+      .orderBy(
+        ...(pending
+          ? [asc(pendingTaskRank), desc(conversations.updatedAt), desc(conversations.id)]
+          : [desc(conversations.updatedAt), desc(conversations.id)]),
+      )
       .limit(limit + 1);
 
     const hasMore = rows.length > limit;
@@ -509,6 +558,7 @@ export function registerConversationRoutes(
             scope,
             timestamp: oldest.cursorTimestamp,
             id: oldest.conversation.id,
+            ...(pending && 'pendingRank' in oldest ? { rank: Number(oldest.pendingRank) } : {}),
           })
         : null;
 
@@ -527,7 +577,12 @@ export function registerConversationRoutes(
     return sendData(
       reply,
       request,
-      conversationListDataSchema.parse({ conversations: items, nextCursor, hasMore }),
+      conversationListDataSchema.parse({
+        conversations: items,
+        nextCursor,
+        hasMore,
+        pendingCount,
+      }),
     );
   });
 

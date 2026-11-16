@@ -7,12 +7,13 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { migrateDatabase } from '../../src/migrate';
-import { createTestDatabaseUpTo, type TestDatabase } from './helpers';
+import { createTestDatabaseUpTo, expectedMigrationCount, type TestDatabase } from './helpers';
 
 const ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 const FORWARD = path.join(ROOT, 'packages/db/migrations/0009_far_typhoid_mary.sql');
 const ROLLBACK = path.join(ROOT, 'packages/db/migrations/rollback/0009_far_typhoid_mary.down.sql');
 let hash = '';
+let expectedMigrations = 0;
 const databases: TestDatabase[] = [];
 
 const createDatabase = async (): Promise<TestDatabase> => {
@@ -69,6 +70,7 @@ describe('0009 rollback script on real PostgreSQL', () => {
     hash = createHash('sha256')
       .update(await readFile(FORWARD))
       .digest('hex');
+    expectedMigrations = await expectedMigrationCount();
   });
 
   it('drops repository_preferences and the keyset index, then re-applies both', async () => {
@@ -95,7 +97,7 @@ describe('0009 rollback script on real PostgreSQL', () => {
       table: 1,
       index: 1,
       count: 1,
-      total: 19,
+      total: expectedMigrations,
     });
   }, 30_000);
 

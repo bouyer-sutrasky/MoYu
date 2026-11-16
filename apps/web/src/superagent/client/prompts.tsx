@@ -55,15 +55,19 @@ export function PromptsPage() {
 }
 
 function PromptsEditor({ view, reload }: { view: PromptsView; reload: () => Promise<void> }) {
-  const { t, call, notify } = usePanel();
+  const { t, call, notify, repositoryId } = usePanel();
   const saved = withOverrides(view.current.config);
+  const instanceId = view.moyuInstanceId;
   const draft = useDraft<PromptConfig, PromptNote>({
-    key: `dsh-superagent/prompts/${view.masterId}`,
+    key: `dsh-superagent/prompts/${repositoryId}/${instanceId ?? view.masterId}`,
     saved,
     revision: view.revision,
     reload,
     save: async (config, baseRevision) => {
-      const result = await call('PUT prompts', { body: { config, baseRevision } });
+      if (!instanceId) throw new Error(t('hostNotRunning'));
+      const result = await call('PUT prompts', {
+        body: { config, baseRevision, expectedInstanceId: instanceId },
+      });
       notify(t(result.context_delivery === 'pending' ? 'promptSavedPending' : 'saved'));
       return result;
     },

@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-/* global document, window, URL, fetch */
 /**
  * MoYu M6-C candidate: register the first owner passkey in a real browser.
  *

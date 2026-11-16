@@ -16,6 +16,19 @@ export interface TestDatabase {
   drop: () => Promise<void>;
 }
 
+/**
+ * Number of forward migrations committed right now. Tests that migrate a full
+ * historical database assert against this instead of a hand-written number so
+ * adding a migration cannot silently turn an unrelated rollback test red (or,
+ * worse, hide a real count change behind a mechanical 19 -> 20 edit).
+ */
+export async function expectedMigrationCount(): Promise<number> {
+  const journal = JSON.parse(
+    await readFile(path.join(defaultMigrationsFolder, 'meta', '_journal.json'), 'utf8'),
+  ) as { entries: unknown[] };
+  return journal.entries.length;
+}
+
 function requireAdminUrl(): string {
   const url = process.env.TEST_DATABASE_ADMIN_URL;
   if (!url) {

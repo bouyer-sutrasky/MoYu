@@ -229,6 +229,8 @@ export interface StateView {
   setup: SetupView;
   load: { running: number; queued: number; maxWorkers: number };
   masterId: string | null;
+  /** Supervisor-owned identity of the prepared row; write requests must echo it. */
+  moyuInstanceId?: string;
   paused: boolean;
   health: RuntimeHealth;
 }
@@ -281,6 +283,8 @@ export type PromptConfig = {
 
 export interface PromptsView {
   masterId: string;
+  /** Supervisor-owned instance identity added to the runtime's prompts view. */
+  moyuInstanceId?: string;
   current: { revision: number; config: PromptConfig };
   defaults: PromptConfig;
   sections: string[];
@@ -499,7 +503,7 @@ export interface Api {
   'POST tickets/:id/stop': { response: { stopped: true } };
   'POST executor/pause': { body: { paused: boolean }; response: { paused: boolean } };
   'PUT settings/:block': {
-    body: { value: unknown; revision: number };
+    body: { value: unknown; revision: number; expectedInstanceId: string };
     response: { revision: number; restarting: boolean };
   };
   'GET policy/history': { response: HistoryView };
@@ -508,7 +512,7 @@ export interface Api {
   'GET models': { response: ModelCatalog };
   'GET prompts': { query?: { revision?: number; offset?: number }; response: PromptsView };
   'PUT prompts': {
-    body: { config: PromptConfig; baseRevision: number };
+    body: { config: PromptConfig; baseRevision: number; expectedInstanceId: string };
     response: { revision: number; context_delivery: Delivery };
   };
   'POST prompts/preview': { body: PromptConfig; response: Loose };
@@ -539,19 +543,37 @@ export interface DeploymentSnapshot<V = Record<string, unknown>> {
   status: string;
   writable: boolean;
   mode?: string;
+  /** Opaque content revision from the supervisor; never increment it locally. */
   revision: number;
   value: V;
+  /** Prepared-instance identity returned by the supervisor. */
+  instanceId?: string;
+  /** Last readback failure while the previously loaded values stay visible. */
+  error?: string;
+  /** The PUT was accepted but the follow-up GET has not completed yet. */
+  savedPendingReadback?: boolean;
+}
+
+/** Settlement returned by a Deployment mutation; a boolean cannot express save vs restart state. */
+export interface DeploymentMutationResult {
+  saved: boolean;
+  revision: number;
+  restarting: boolean;
+  restartRequired?: boolean;
+  restartRefused?: string | null;
+  readbackPending?: boolean;
+  error?: string;
 }
 
 /** DSH plugin-manager config form: snapshot/subscribe/mutate against the host config. */
 export interface ConfigForm<V = Record<string, unknown>> {
   getSnapshot(): DeploymentSnapshot<V> | undefined;
   subscribe(listener: () => void): () => void;
-  mutate(ops: Array<Record<string, unknown>>, revision: number): Promise<boolean>;
+  mutate(ops: Array<Record<string, unknown>>, revision: number): Promise<DeploymentMutationResult>;
 }
 
 /** The page-shaped form the Deployment view consumes: a snapshot plus a mutate. */
 export interface ConfigPageForm<V = Record<string, unknown>> {
   state: DeploymentSnapshot<V> | undefined;
-  mutate(ops: Array<Record<string, unknown>>, revision: number): Promise<boolean>;
+  mutate(ops: Array<Record<string, unknown>>, revision: number): Promise<DeploymentMutationResult>;
 }

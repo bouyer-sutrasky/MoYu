@@ -32,6 +32,7 @@ export interface LeaseAccount {
     | 'stop_proof_required'
     | 'recovery_blocked'
     | 'recovery_in_progress'
+    | 'maintenance'
     | 'conflict';
   waitingFor: string | null;
   detail: string | null;
@@ -144,6 +145,24 @@ async function acquireOn(
   subject: LeaseSubject,
   ttlMs: number,
 ): Promise<LeaseAccount> {
+  // The supervisor marks an instance non-online (starting/stopping) while it
+  // restarts or applies Deployment settings. Lock the instance row before the
+  // lease row so a new admission cannot slip between the gate check and the
+  // lease insert. A legacy deployment with no instance row keeps the old path.
+  const instance = await client.query<{ state: string; reason_code: string }>(
+    `select state, reason_code from repository_instances
+      where repository_id = $1 for update`,
+    [repositoryId],
+  );
+  const instanceRow = instance.rows[0];
+  if (instanceRow && instanceRow.state !== 'online') {
+    return {
+      lease: null,
+      refused: 'maintenance',
+      waitingFor: 'runtime',
+      detail: `The runtime is ${instanceRow.state} (${instanceRow.reason_code}); new execution admission is paused`,
+    };
+  }
   const holderId = deriveHolderId(subject);
   const active = await client.query<LeaseRow & { expired: boolean }>(
     `select ${LEASE_COLUMNS}, (expires_at <= now()) as expired from runtime_leases
@@ -403,7 +422,9 @@ export async function releaseTaskLease(
     const safe =
       options.proof !== undefined ||
       options.allowUnproven === true ||
-      ['waiting_input', 'awaiting_review', 'completed', 'closed_unmerged'].includes(row.state) ||
+      ['waiting_input', 'awaiting_review', 'completed', 'closed_unmerged', 'not_accepted'].includes(
+        row.state,
+      ) ||
       (row.state === 'stopped' && row.stopped_at !== null);
     if (!safe) {
       await client.query('commit');

@@ -690,7 +690,8 @@ async function applyIgnoredDecision(
   // ignore would strand that delivery forever.
   const updated = await client.query(
     `update task_links t
-        set state = 'not_accepted', version = version + 1, updated_at = now()
+        set state = 'not_accepted', version = version + 1, runtime_lease_id = null,
+            updated_at = now()
       where t.id = $1 and t.repository_id = $2 and t.state = 'pending_admission'
         and not exists (
           select 1 from messages m
@@ -713,6 +714,17 @@ async function applyIgnoredDecision(
     [task.id, repository.id, messageIds],
   );
   if ((updated.rowCount ?? 0) === 0) return;
+  // The ignored admission never became a runtime Ticket. Its execution lease
+  // must not keep the repository's single execution slot forever; release only
+  // the exact task holder, leaving unrelated active leases untouched.
+  const released = await client.query<{ id: string }>(
+    `update runtime_leases
+        set state = 'released', released_at = now(), heartbeat_at = now(),
+            waiting_for = null, recovery_reason = 'ignored_decision'
+      where repository_id = $1 and holder_id = $2 and state = 'active'
+      returning id`,
+    [repository.id, `task:${task.id}`],
+  );
   const next = await taskByConversation(client, targetId, repository.id);
   if (next) {
     await emit(client, repository, event, 'task.state_changed', targetId, next.id, {
@@ -726,6 +738,7 @@ async function applyIgnoredDecision(
       taskId: task.id,
       conversationId: targetId,
       messageId,
+      releasedLeaseId: released.rows[0]?.id ?? null,
     },
     'closed the pending admission named by the ignored decision',
   );
@@ -1095,15 +1108,73 @@ async function applyImportedEvent(
   return undefined;
 }
 
+/**
+ * Releases active leases whose holder task reached a terminal ignored state
+ * before an older dispatcher had a chance to release them. The holder id is the
+ * only durable link when the task row has already cleared runtime_lease_id.
+ */
+export async function recoverIgnoredLeases(
+  pool: pg.Pool,
+  repositoryId: string,
+  logger: DispatcherLogger,
+): Promise<number> {
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const released = await client.query<{ id: string; task_id: string }>(
+      `update runtime_leases l
+          set state = 'released', released_at = now(), heartbeat_at = now(),
+              waiting_for = null, recovery_reason = 'ignored_decision_recovery'
+         from task_links t
+        where l.repository_id = $1
+          and l.state = 'active'
+          and l.holder_id = 'task:' || t.id::text
+          and t.state = 'not_accepted'
+        returning l.id, t.id as task_id`,
+      [repositoryId],
+    );
+    if (released.rows.length > 0) {
+      await client.query(
+        `update task_links set runtime_lease_id = null
+          where id = any($1::uuid[])`,
+        [released.rows.map((row) => row.task_id)],
+      );
+    }
+    await client.query('commit');
+    if (released.rows.length > 0) {
+      logger.info(
+        {
+          event: 'dispatcher.ignored_lease_recovered',
+          repositoryId,
+          leaseIds: released.rows.map((row) => row.id),
+        },
+        'released execution leases held by ignored admissions',
+      );
+    }
+    return released.rows.length;
+  } catch (error) {
+    await client.query('rollback').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function applyEvent(
   client: pg.PoolClient,
   repository: RepositoryBinding,
   event: BridgeEvent,
   logger: DispatcherLogger,
 ): Promise<string | undefined> {
+  // Provider event ids are only unique inside one repository. A global probe
+  // here made repository B silently skip an event that repository A had
+  // already projected under the same id; the durable index is scoped to
+  // (repository_id, source, source_event_id) for the same reason.
   const seen = await client.query(
-    `select 1 from events where source = 'bridge' and source_event_id = $1 limit 1`,
-    [event.id],
+    `select 1 from events
+      where repository_id = $1 and source = 'bridge' and source_event_id = $2
+      limit 1`,
+    [repository.id, event.id],
   );
   if ((seen.rowCount ?? 0) > 0) {
     return undefined;
@@ -1315,15 +1386,23 @@ export async function syncOnce(
         }
         await client.query('release savepoint bridge_event');
       } catch (error) {
-        if (!isUniqueViolation(error)) {
+        if (!isExpectedProjectionDuplicate(error)) {
+          // A unique violation on an unrelated constraint is a projection bug,
+          // not a replay. Rethrow it so the page transaction (and its cursor)
+          // rolls back and the event is not lost behind a warning.
           throw error;
         }
-        // An unexpected duplicate is one bad event, not a reason to keep the
-        // whole page (and its cursor) stuck forever. Keep the projection that
-        // already exists and advance past this event.
+        // A known idempotency constraint means this event was already projected
+        // (for example a message or imported ticket). Skip only this event and
+        // let the rest of the page advance.
         await client.query('rollback to savepoint bridge_event');
         logger.warn(
-          { event: 'bridge.event_duplicate', bridgeEvent: event.id, type: event.type },
+          {
+            event: 'bridge.event_duplicate',
+            bridgeEvent: event.id,
+            type: event.type,
+            constraint: projectionDuplicateConstraint(error),
+          },
           'skipped an event that conflicted with an existing row',
         );
       }
@@ -1345,13 +1424,37 @@ export async function syncOnce(
 
 export { githubRequirementUrl } from '@moyu/contracts';
 
-function isUniqueViolation(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    (error as { code?: unknown }).code === '23505'
-  );
+/**
+ * Unique constraints that genuinely mean "this Bridge event was already
+ * projected". Any other 23505 is a bug and must abort the page transaction
+ * instead of being logged as a harmless duplicate.
+ */
+const PROJECTION_DUPLICATE_CONSTRAINTS = new Set([
+  'events_source_event_uq',
+  'messages_conversation_source_event_uq',
+  'conversations_repository_external_uq',
+  'task_links_conversation_uq',
+  'task_links_repository_upstream_ticket_uq',
+  'duplicate_tickets_repository_ticket_uq',
+  'task_operations_task_client_command_uq',
+]);
+
+function projectionDuplicateConstraint(error: unknown): string | null {
+  if (typeof error !== 'object' || error === null) return null;
+  const constraint = (error as { constraint?: unknown }).constraint;
+  return typeof constraint === 'string' ? constraint : null;
+}
+
+function isExpectedProjectionDuplicate(error: unknown): boolean {
+  if (
+    typeof error !== 'object' ||
+    error === null ||
+    (error as { code?: unknown }).code !== '23505'
+  ) {
+    return false;
+  }
+  const constraint = projectionDuplicateConstraint(error);
+  return constraint !== null && PROJECTION_DUPLICATE_CONSTRAINTS.has(constraint);
 }
 
 export type { ProjectedTask };

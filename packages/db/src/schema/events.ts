@@ -39,8 +39,11 @@ export const events = pgTable(
   },
   (table) => [
     uniqueIndex('events_seq_uq').on(table.seq),
+    // Provider de-duplication is per repository: the same upstream event id in two
+    // repositories is two different events, and a global index would refuse the
+    // second one.
     uniqueIndex('events_source_event_uq')
-      .on(table.source, table.sourceEventId)
+      .on(table.repositoryId, table.source, table.sourceEventId)
       .where(sql`${table.sourceEventId} is not null`),
     index('events_repository_seq_idx').on(table.repositoryId, table.seq),
     index('events_conversation_seq_idx').on(table.conversationId, table.seq),

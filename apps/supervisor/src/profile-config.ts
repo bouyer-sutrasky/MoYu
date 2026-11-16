@@ -155,8 +155,9 @@ export function mergeProfileSettings(
     const base = seed ? seedDefaults(config, GITHUB_DEFAULTS) : config;
     const next = {
       ...current,
-      // First run turns the Source on; afterwards the owner's on/off choice wins,
-      // so a deliberately disabled GitHub listener is not silently re-enabled.
+      // First run turns the Source on; afterwards (including an old profile
+      // with no marker, which now arrives with seed=false) an explicit boolean
+      // is the owner's choice, so a disabled listener is not re-enabled.
       enabled: seed ? true : (current.enabled ?? true),
       config: { ...base, repository: invariants.repository, cli: invariants.githubCli },
     };

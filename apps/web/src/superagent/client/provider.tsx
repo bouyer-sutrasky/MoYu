@@ -24,6 +24,8 @@ import { errorText, setupText, valueLabel, type T } from './text.ts';
 
 export interface PanelContext {
   t: T;
+  /** Repository whose own runtime this panel is bound to; never inferred later. */
+  repositoryId: string;
   call: Call;
   navigate: (route: Route, replace?: boolean) => void;
   back: () => void;
@@ -37,6 +39,8 @@ export interface PanelData {
   error: Error | undefined;
   reload: () => Promise<void>;
   setup: SetupView | undefined;
+  /** Supervisor-owned prepared-instance identity used for draft/write binding. */
+  instanceId: string | undefined;
   /** Executor Sessions in an active turn, which a restart of `dsh-superagent` interrupts. */
   running: number;
   /** Incremented each time dsh-superagent recovers from a restart so dependent views refetch. */
@@ -127,6 +131,7 @@ const stay = () => {};
 const noSession = async () => {};
 export function PanelProvider({
   t,
+  repositoryId = '',
   interval = 5000,
   openSession = noSession,
   navigate = stay,
@@ -135,6 +140,7 @@ export function PanelProvider({
   children,
 }: {
   t: T;
+  repositoryId?: string;
   interval?: number;
   openSession?: (sessionId: string) => Promise<void>;
   navigate?: PanelContext['navigate'];
@@ -145,7 +151,9 @@ export function PanelProvider({
   // Read the current translator via ref so locale changes do not recreate `call` and restart polling.
   const copy = useRef(t);
   copy.current = t;
-  const call = useMemo(() => caller(() => messages(copy.current)), []);
+  // Capture the repository in the caller. A new repository creates a new Call,
+  // which changes the usePoll dependency and invalidates the old subscription.
+  const call = useMemo(() => caller(() => messages(copy.current), repositoryId), [repositoryId]);
   const [toast, setToast] = useState<{ text: string; id: number }>();
   const notify = useCallback((text: string) => setToast({ text, id: Date.now() }), []);
   // Poll at 1s during a restart until the server goes down and answers again, or time out after 30s if the restart completed between polls.
@@ -167,8 +175,8 @@ export function PanelProvider({
     return () => clearTimeout(timer);
   }, [restarting]);
   const context = useMemo(
-    () => ({ t, call, navigate, back, backLabel, openSession, notify, restart }),
-    [t, call, navigate, back, backLabel, openSession, notify, restart],
+    () => ({ t, repositoryId, call, navigate, back, backLabel, openSession, notify, restart }),
+    [t, repositoryId, call, navigate, back, backLabel, openSession, notify, restart],
   );
   const data = useMemo(
     () => ({
@@ -176,6 +184,7 @@ export function PanelProvider({
       error,
       reload,
       setup: state?.setup,
+      instanceId: state?.moyuInstanceId,
       running: state?.load.running ?? 0,
       restarts,
     }),
