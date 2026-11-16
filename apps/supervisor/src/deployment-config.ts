@@ -20,6 +20,25 @@ export type DeploymentKey = keyof typeof DEPLOYMENT_LIMITS;
 
 export const DEPLOYMENT_KEYS = Object.keys(DEPLOYMENT_LIMITS) as DeploymentKey[];
 
+/**
+ * Serializes Deployment read-check-write-rename for one repository inside this
+ * supervisor. The supervisor is the single writer for its DSH home; a second
+ * process must not edit the same profile patch without its own shared lock.
+ * The map keeps the chain bounded to repositories that are actually saving.
+ */
+const deploymentLocks = new Map<string, Promise<unknown>>();
+
+export function withDeploymentLock<T>(repositoryId: string, work: () => Promise<T>): Promise<T> {
+  const previous = deploymentLocks.get(repositoryId) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(work);
+  deploymentLocks.set(repositoryId, current);
+  return current.finally(() => {
+    if (deploymentLocks.get(repositoryId) === current) {
+      deploymentLocks.delete(repositoryId);
+    }
+  });
+}
+
 export interface DeploymentValue {
   promptMaxChars: number | null;
   admissionContextMaxPages: number | null;

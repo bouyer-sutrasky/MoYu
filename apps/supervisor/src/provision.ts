@@ -4,12 +4,16 @@ import {
   chownSync,
   cpSync,
   existsSync,
+  lchownSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import type { SupervisorConfig } from './config';
 import type { RepositoryRow, SupervisorStore } from './store';
@@ -24,6 +28,14 @@ export interface PreparedInstance {
   credentialsFile: string;
   bridgeToken: string;
   callbackToken: string;
+  /** True only when installProfile copied a new profile directory. */
+  profileCreated: boolean;
+  runtimeUid?: number;
+  runtimeGid?: number;
+  runtimeHome?: string;
+  checkUid?: number;
+  checkGid?: number;
+  checkHome?: string;
 }
 
 function ensurePrivateDir(path: string): void {
@@ -34,6 +46,86 @@ function ensurePrivateDir(path: string): void {
 function writePrivate(path: string, content: string): void {
   writeFileSync(path, content, { mode: 0o600 });
   chmodSync(path, 0o600);
+}
+
+/** Chown a tree without following symlinks; symlinked shared assets stay shared. */
+function chownTree(path: string, uid: number, gid: number): void {
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink()) {
+    lchownSync(path, uid, gid);
+    return;
+  }
+  chownSync(path, uid, gid);
+  if (!stat.isDirectory()) return;
+  for (const entry of readdirSync(path, { withFileTypes: true })) {
+    chownTree(join(path, entry.name), uid, gid);
+  }
+}
+
+/**
+ * Build a per-repository DSH home. The runtime gets its own .env, credentials,
+ * sessions and caches, and can only traverse its own profile/state directories.
+ * The shared dshHome remains the supervisor's control-plane root; parents are
+ * made traverse-only and the per-profile entries are owned by the runtime uid.
+ */
+function prepareRuntimeIdentity(
+  config: SupervisorConfig,
+  profile: string,
+  profileDir: string,
+  pinned: { runtimeUid?: number; runtimeGid?: number; runtimeHome?: string } | undefined,
+): { runtimeUid?: number; runtimeGid?: number; runtimeHome?: string } {
+  if (!pinned || pinned.runtimeUid === undefined || pinned.runtimeGid === undefined) {
+    return {};
+  }
+  const uid = pinned.runtimeUid;
+  const gid = pinned.runtimeGid;
+  const home = pinned.runtimeHome ?? join(config.dshHome, 'homes', profile);
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  chmodSync(home, 0o700);
+  chownSync(home, uid, gid);
+
+  for (const name of ['.env', '.credentials.yaml', '.anonymous-user-id']) {
+    const source = join(config.dshHome, name);
+    if (!existsSync(source)) continue;
+    const target = join(home, name);
+    cpSync(source, target);
+    chmodSync(target, 0o400);
+    chownSync(target, uid, gid);
+  }
+
+  const ghSource = join(dirname(config.dshHome), '.config', 'gh-agent');
+  if (existsSync(ghSource)) {
+    const ghTarget = join(home, '.config', 'gh-agent');
+    cpSync(ghSource, ghTarget, { recursive: true });
+    chownTree(join(home, '.config'), uid, gid);
+    chmodSync(ghTarget, 0o700);
+  }
+
+  for (const shared of ['profiles', 'state']) {
+    const link = join(home, shared);
+    if (!existsSync(link)) symlinkSync(join(config.dshHome, shared), link);
+  }
+  for (const privateDir of ['sessions', 'storages', 'logs', 'tmp', 'cache']) {
+    const path = join(home, privateDir);
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+    chmodSync(path, 0o700);
+    chownSync(path, uid, gid);
+  }
+
+  // The runtime must be able to enter its own 0700 profile/state directories,
+  // but not list or enter another repository's directories.
+  chownTree(profileDir, uid, gid);
+  chmodSync(profileDir, 0o700);
+  const stateDir = join(config.dshHome, 'state', profile);
+  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  chownTree(stateDir, uid, gid);
+  chmodSync(stateDir, 0o700);
+  const lockDir = join(config.dshHome, 'state', profile + '.lock');
+  mkdirSync(lockDir, { recursive: true, mode: 0o700 });
+  chownTree(lockDir, uid, gid);
+  chmodSync(lockDir, 0o700);
+
+  return { runtimeUid: uid, runtimeGid: gid, runtimeHome: home };
 }
 
 /** The managed instance environment written under `INSTANCE_ENV_DIR`. */
@@ -96,7 +188,7 @@ async function allocate(
   store: SupervisorStore,
   repository: RepositoryRow,
 ): Promise<{ profile: string; dshPort: number; bridgePort: number }> {
-  const pinned = config.pinned.get(repository.fullName);
+  const pinned = config.pinned?.get(repository.fullName);
   if (pinned) {
     return { profile: pinned.profile, dshPort: pinned.dshPort, bridgePort: pinned.bridgePort };
   }
@@ -143,13 +235,19 @@ async function allocate(
   throw new Error('No free supervisor profile/port pair in the configured range');
 }
 
-function installProfile(config: SupervisorConfig, profile: string, dshPort: number): string {
+function installProfile(
+  config: SupervisorConfig,
+  profile: string,
+  dshPort: number,
+): { profileDir: string; created: boolean } {
   const profileDir = join(config.dshHome, 'profiles', profile);
+  let created = false;
   if (!existsSync(profileDir)) {
     if (!config.profileTemplateDir || !existsSync(config.profileTemplateDir)) {
       throw new Error(`Profile ${profile} does not exist and the template is unavailable`);
     }
     cpSync(config.profileTemplateDir, profileDir, { recursive: true });
+    created = true;
     const patchPath = join(profileDir, 'cordis.patch.yml');
     if (!existsSync(patchPath)) {
       rmSync(profileDir, { recursive: true, force: true });
@@ -161,7 +259,7 @@ function installProfile(config: SupervisorConfig, profile: string, dshPort: numb
     writePrivate(patchPath, patch);
     chmodSync(profileDir, 0o700);
   }
-  return profileDir;
+  return { profileDir, created };
 }
 
 /**
@@ -186,7 +284,9 @@ export async function prepareInstance(
   ensureSharedWorktreeRoot(config);
 
   const { profile, dshPort, bridgePort } = await allocate(config, store, repository);
-  const profileDir = installProfile(config, profile, dshPort);
+  const { profileDir, created: profileCreated } = installProfile(config, profile, dshPort);
+  const pinned = config.pinned?.get(repository.fullName);
+  const identity = prepareRuntimeIdentity(config, profile, profileDir, pinned);
   if (!existsSync(join(profileDir, 'node_modules', 'dsh-superagent'))) {
     throw new Error(`Profile ${profile} has no dsh-superagent installation`);
   }
@@ -249,6 +349,11 @@ export async function prepareInstance(
     envFile,
     credentialsFile,
     ...credentials,
+    profileCreated,
+    ...identity,
+    ...(pinned?.checkUid !== undefined && pinned.checkGid !== undefined && pinned.checkHome
+      ? { checkUid: pinned.checkUid, checkGid: pinned.checkGid, checkHome: pinned.checkHome }
+      : {}),
   };
 }
 

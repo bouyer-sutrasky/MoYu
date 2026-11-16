@@ -59,7 +59,13 @@ interface ConversationPaneProps {
   /** Every conversation of the selected repository, for the home page rows. */
   conversations: ConversationSummary[];
   conversationsLoading: boolean;
+  /** Server-ordered pending tasks and total, independent of the loaded history. */
+  pendingConversations: ConversationSummary[];
+  pendingCount: number;
+  pendingHasMore: boolean;
+  pendingLoading: boolean;
   onOpenConversation: (conversationId: string) => void;
+  onViewAllPending: () => void;
 }
 
 function DeliveryBadge({ message }: { message: Message }) {
@@ -158,7 +164,12 @@ export function ConversationPane({
   onSessionLost,
   conversations,
   conversationsLoading,
+  pendingConversations,
+  pendingCount,
+  pendingHasMore,
+  pendingLoading,
   onOpenConversation,
+  onViewAllPending,
 }: ConversationPaneProps) {
   if (mode === 'chat') {
     return (
@@ -241,8 +252,13 @@ export function ConversationPane({
           repository={repository}
           conversations={conversations}
           conversationsLoading={conversationsLoading}
+          pendingConversations={pendingConversations}
+          pendingCount={pendingCount}
+          pendingHasMore={pendingHasMore}
+          pendingLoading={pendingLoading}
           onNewTask={onNewTask}
           onOpenConversation={onOpenConversation}
+          onViewAllPending={onViewAllPending}
         />
       </div>
     );

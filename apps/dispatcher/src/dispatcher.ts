@@ -3,7 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type pg from 'pg';
 
 import { createPool } from '@moyu/db';
-import type { RuntimeBridgeClient } from '@moyu/runtime-client';
+import { RuntimeBridgeError, type RuntimeBridgeClient } from '@moyu/runtime-client';
 
 import type { DispatcherConfig } from './config';
 import { admitImportedOnce } from './admissions';
@@ -27,7 +27,18 @@ export interface RunDispatcherOptions {
  */
 const TRANSIENT_FAILURES = 3;
 
-async function runLoop(
+/**
+ * A retryable Bridge error (unreachable runtime, 5xx, timeout) is a transient
+ * outage. Contract violations, SQL errors and non-retryable 4xx responses are
+ * not: retrying cannot fix them, so they must stay at error level even on the
+ * first failure instead of being reported as a passing hiccup.
+ */
+function isTransientLoopError(error: unknown): boolean {
+  return error instanceof RuntimeBridgeError && error.retryable;
+}
+
+/** @internal Exported so the loop's level/backoff decisions have a direct test. */
+export async function runLoop(
   name: string,
   intervalMs: number,
   signal: AbortSignal,
@@ -50,19 +61,30 @@ async function runLoop(
         consecutiveFailures = 0;
       }
     } catch (error) {
-      consecutiveFailures += 1;
+      const transient = isTransientLoopError(error);
       const detail = {
         event: `dispatcher.${name}_error`,
-        consecutiveFailures,
+        consecutiveFailures: transient ? consecutiveFailures + 1 : 0,
+        transient,
+        ...(error instanceof RuntimeBridgeError ? { code: error.code, status: error.status } : {}),
         error: error instanceof Error ? error.message : String(error),
       };
-      // A bridge that is briefly unreachable while an instance restarts is a
-      // warning; only a failure that persists past the transient window is an
-      // error the operator has to act on.
-      if (consecutiveFailures < TRANSIENT_FAILURES) {
-        logger.warn(detail, `${name} loop failed; retrying`);
+      if (!transient) {
+        // Do not let a contract/SQL failure accumulate into the transient
+        // counter: the next short Bridge outage must start again at warning 1.
+        consecutiveFailures = 0;
+        logger.error(detail, `${name} loop failed with a non-transient error; retrying`);
       } else {
-        logger.error(detail, `${name} loop failed ${consecutiveFailures} times; retrying`);
+        consecutiveFailures += 1;
+        detail.consecutiveFailures = consecutiveFailures;
+        // A bridge that is briefly unreachable while an instance restarts is a
+        // warning; only a failure that persists past the transient window is an
+        // error the operator has to act on.
+        if (consecutiveFailures < TRANSIENT_FAILURES) {
+          logger.warn(detail, `${name} loop failed; retrying`);
+        } else {
+          logger.error(detail, `${name} loop failed ${consecutiveFailures} times; retrying`);
+        }
       }
     }
     if (!busy) {

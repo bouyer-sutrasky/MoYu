@@ -14,8 +14,36 @@ const pinnedInstanceSchema = z
     profile: z.string().regex(/^[A-Za-z0-9._-]+$/),
     dshPort: z.number().int().min(1024).max(65_535),
     bridgePort: z.number().int().min(1024).max(65_535),
+    /** Optional per-repository low-privilege runtime identity. */
+    runtimeUid: z.number().int().min(1).max(2_147_483_647).optional(),
+    runtimeGid: z.number().int().min(1).max(2_147_483_647).optional(),
+    runtimeHome: z.string().min(1).optional(),
+    /** Optional per-repository check identity; must differ from the supervisor. */
+    checkUid: z.number().int().min(1).max(2_147_483_647).optional(),
+    checkGid: z.number().int().min(1).max(2_147_483_647).optional(),
+    checkHome: z.string().min(1).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    const runtimeParts = [value.runtimeUid, value.runtimeGid, value.runtimeHome].filter(
+      (item) => item !== undefined,
+    ).length;
+    if (runtimeParts !== 0 && runtimeParts !== 3) {
+      context.addIssue({
+        code: 'custom',
+        message: 'runtimeUid, runtimeGid and runtimeHome must be set together',
+      });
+    }
+    const checkParts = [value.checkUid, value.checkGid, value.checkHome].filter(
+      (item) => item !== undefined,
+    ).length;
+    if (checkParts !== 0 && checkParts !== 3) {
+      context.addIssue({
+        code: 'custom',
+        message: 'checkUid, checkGid and checkHome must be set together',
+      });
+    }
+  });
 
 const instancesFileSchema = z
   .object({
@@ -133,6 +161,12 @@ export interface PinnedInstance {
   profile: string;
   dshPort: number;
   bridgePort: number;
+  runtimeUid?: number;
+  runtimeGid?: number;
+  runtimeHome?: string;
+  checkUid?: number;
+  checkGid?: number;
+  checkHome?: string;
 }
 
 export interface SupervisorConfig {

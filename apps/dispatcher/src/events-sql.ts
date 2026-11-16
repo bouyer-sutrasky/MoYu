@@ -14,7 +14,8 @@ export interface EventInput {
 /**
  * Inserts a platform event inside the caller's transaction. The advisory lock
  * serializes commits with the API's event writer so sequence order and
- * visibility order agree; `(source, source_event_id)` dedupes Bridge replays.
+ * visibility order agree; the partial unique index dedupes Bridge replays
+ * inside one repository: `(repository_id, source, source_event_id)`.
  */
 export async function appendEventSql(client: pg.PoolClient, input: EventInput): Promise<boolean> {
   await client.query('select pg_advisory_xact_lock(918273646)');

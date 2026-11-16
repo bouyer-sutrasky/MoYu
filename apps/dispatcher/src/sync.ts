@@ -1101,9 +1101,15 @@ export async function applyEvent(
   event: BridgeEvent,
   logger: DispatcherLogger,
 ): Promise<string | undefined> {
+  // Provider event ids are only unique inside one repository. A global probe
+  // here made repository B silently skip an event that repository A had
+  // already projected under the same id; the durable index is scoped to
+  // (repository_id, source, source_event_id) for the same reason.
   const seen = await client.query(
-    `select 1 from events where source = 'bridge' and source_event_id = $1 limit 1`,
-    [event.id],
+    `select 1 from events
+      where repository_id = $1 and source = 'bridge' and source_event_id = $2
+      limit 1`,
+    [repository.id, event.id],
   );
   if ((seen.rowCount ?? 0) > 0) {
     return undefined;
@@ -1315,15 +1321,23 @@ export async function syncOnce(
         }
         await client.query('release savepoint bridge_event');
       } catch (error) {
-        if (!isUniqueViolation(error)) {
+        if (!isExpectedProjectionDuplicate(error)) {
+          // A unique violation on an unrelated constraint is a projection bug,
+          // not a replay. Rethrow it so the page transaction (and its cursor)
+          // rolls back and the event is not lost behind a warning.
           throw error;
         }
-        // An unexpected duplicate is one bad event, not a reason to keep the
-        // whole page (and its cursor) stuck forever. Keep the projection that
-        // already exists and advance past this event.
+        // A known idempotency constraint means this event was already projected
+        // (for example a message or imported ticket). Skip only this event and
+        // let the rest of the page advance.
         await client.query('rollback to savepoint bridge_event');
         logger.warn(
-          { event: 'bridge.event_duplicate', bridgeEvent: event.id, type: event.type },
+          {
+            event: 'bridge.event_duplicate',
+            bridgeEvent: event.id,
+            type: event.type,
+            constraint: projectionDuplicateConstraint(error),
+          },
           'skipped an event that conflicted with an existing row',
         );
       }
@@ -1345,13 +1359,37 @@ export async function syncOnce(
 
 export { githubRequirementUrl } from '@moyu/contracts';
 
-function isUniqueViolation(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    (error as { code?: unknown }).code === '23505'
-  );
+/**
+ * Unique constraints that genuinely mean "this Bridge event was already
+ * projected". Any other 23505 is a bug and must abort the page transaction
+ * instead of being logged as a harmless duplicate.
+ */
+const PROJECTION_DUPLICATE_CONSTRAINTS = new Set([
+  'events_source_event_uq',
+  'messages_conversation_source_event_uq',
+  'conversations_repository_external_uq',
+  'task_links_conversation_uq',
+  'task_links_repository_upstream_ticket_uq',
+  'duplicate_tickets_repository_ticket_uq',
+  'task_operations_task_client_command_uq',
+]);
+
+function projectionDuplicateConstraint(error: unknown): string | null {
+  if (typeof error !== 'object' || error === null) return null;
+  const constraint = (error as { constraint?: unknown }).constraint;
+  return typeof constraint === 'string' ? constraint : null;
+}
+
+function isExpectedProjectionDuplicate(error: unknown): boolean {
+  if (
+    typeof error !== 'object' ||
+    error === null ||
+    (error as { code?: unknown }).code !== '23505'
+  ) {
+    return false;
+  }
+  const constraint = projectionDuplicateConstraint(error);
+  return constraint !== null && PROJECTION_DUPLICATE_CONSTRAINTS.has(constraint);
 }
 
 export type { ProjectedTask };

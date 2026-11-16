@@ -65,18 +65,24 @@ export function useBlockDraft<V>(
   revision: number,
   toValue: (draft: V) => unknown = (draft) => draft,
 ) {
-  const { t, call, notify } = usePanel();
+  const { t, call, notify, repositoryId } = usePanel();
   const { state } = usePanelData();
   const { reload } = useSettings();
+  const instanceId = state?.moyuInstanceId ?? state?.masterId;
   return useDraft({
-    key: `dsh-superagent/draft/${state?.masterId ?? ''}/${block}`,
+    // Owner is enforced by the authenticated API, but repository and the
+    // supervisor-prepared instance identity must also be in the key: the same
+    // block name in another repository (or a rebuilt instance) is a different
+    // draft, even when its runtime masterId or port happens to match.
+    key: `dsh-superagent/draft/${repositoryId}/${instanceId ?? 'unbound'}/${block}`,
     saved,
     revision,
     reload,
     save: async (value, from) => {
+      if (!instanceId) throw new Error(t('hostNotRunning'));
       const result = await call('PUT settings/:block', {
         block,
-        body: { value: toValue(value), revision: from },
+        body: { value: toValue(value), revision: from, expectedInstanceId: instanceId },
       });
       notify(t(result.restarting ? 'savedRestarting' : 'saved'));
       return result;

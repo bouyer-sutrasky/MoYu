@@ -60,6 +60,46 @@ describe('supervisor config', () => {
     expect(config.portRange).toEqual({ start: 3411, end: 3499 });
   });
 
+  it('loads a complete per-repository runtime/check identity and rejects partial ones', () => {
+    const full = configFile({
+      instances: [
+        {
+          repository: 'acme/a',
+          profile: 'm5a',
+          dshPort: 3402,
+          bridgePort: 3401,
+          runtimeUid: 6201,
+          runtimeGid: 6201,
+          runtimeHome: '/var/lib/moyu/homes/m5a',
+          checkUid: 6211,
+          checkGid: 6201,
+          checkHome: '/var/lib/moyu-check/m5a',
+        },
+      ],
+    });
+    expect(loadSupervisorConfig(env(full)).pinned.get('acme/a')).toMatchObject({
+      runtimeUid: 6201,
+      runtimeGid: 6201,
+      runtimeHome: '/var/lib/moyu/homes/m5a',
+      checkUid: 6211,
+      checkGid: 6201,
+      checkHome: '/var/lib/moyu-check/m5a',
+    });
+
+    const partial = configFile({
+      instances: [
+        {
+          repository: 'acme/a',
+          profile: 'm5a',
+          dshPort: 3402,
+          bridgePort: 3401,
+          runtimeUid: 6201,
+        },
+      ],
+    });
+    expect(() => loadSupervisorConfig(env(partial))).toThrow(/set together/);
+  });
+
   it('rejects a duplicate repository and a shared port', () => {
     const duplicate = configFile({
       instances: [

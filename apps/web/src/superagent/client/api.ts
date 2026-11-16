@@ -52,6 +52,7 @@ const isUserError = (code: unknown): code is UserErrorCode =>
 /** Calls one management endpoint; the `x-orchestrator-request` header marks the request as originating from this page. */
 async function api<T>(
   messages: ApiMessages,
+  repositoryId: string,
   path: string,
   method: string,
   body?: unknown,
@@ -62,7 +63,7 @@ async function api<T>(
       ? {}
       : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
   try {
-    response = await fetch(panelUrl(path), {
+    response = await fetch(panelUrl(repositoryId, path), {
       method,
       ...json,
       headers: { 'x-orchestrator-request': '1', ...json.headers },
@@ -189,7 +190,7 @@ export type Call = <K extends keyof Api>(
   ...request: {} extends ApiRequest<K> ? [request?: ApiRequest<K>] : [request: ApiRequest<K>]
 ) => Promise<ApiResponse<K>>;
 /** Build a typed route caller that resolves localized error messages on each request. */
-export function caller(messages: () => ApiMessages): Call {
+export function caller(messages: () => ApiMessages, repositoryId: string): Call {
   return (route, ...[request]) => {
     const [method, pattern] = route.split(' ') as [string, string];
     const values = (request ?? {}) as Record<string, unknown> & {
@@ -203,7 +204,7 @@ export function caller(messages: () => ApiMessages): Call {
       .filter(([, value]) => value !== undefined && value !== '')
       .map(([name, value]) => `${name}=${encodeURIComponent(String(value))}`)
       .join('&');
-    return api(messages(), query ? `${path}?${query}` : path, method, values.body);
+    return api(messages(), repositoryId, query ? `${path}?${query}` : path, method, values.body);
   };
 }
 

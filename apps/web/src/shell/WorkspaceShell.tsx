@@ -134,6 +134,10 @@ export function WorkspaceShell({
   const [conversationsHasMore, setConversationsHasMore] = useState(false);
   const [conversationsMoreStatus, setConversationsMoreStatus] = useState<PageStatus>('idle');
   const [conversationsMoreError, setConversationsMoreError] = useState<string | null>(null);
+  const [pendingConversations, setPendingConversations] = useState<ConversationSummary[]>([]);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [pendingHasMore, setPendingHasMore] = useState(false);
+  const [pendingStatus, setPendingStatus] = useState<LoadStatus>('idle');
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
 
   const [conversation, setConversation] = useState<ConversationSummary | null>(null);
@@ -173,6 +177,7 @@ export function WorkspaceShell({
   const conversationRequestRef = useRef(0);
   const messagesRequestRef = useRef(0);
   const conversationsRequestRef = useRef(0);
+  const pendingRequestRef = useRef(0);
   const conversationsMoreRef = useRef(0);
   const conversationsMoreInFlightRef = useRef(false);
   const messagesOlderRef = useRef(0);
@@ -252,6 +257,42 @@ export function WorkspaceShell({
     [loadRepositories, onSessionLost],
   );
 
+  const loadPending = useCallback(
+    async (repositoryId: string, silent = false) => {
+      const token = ++pendingRequestRef.current;
+      if (!silent) setPendingStatus('loading');
+      try {
+        const result = await api.conversations(repositoryId, { limit: 4, pending: true });
+        if (
+          token !== pendingRequestRef.current ||
+          selectedRepositoryIdRef.current !== repositoryId
+        ) {
+          return;
+        }
+        setPendingConversations(result.conversations.slice(0, 3));
+        setPendingCount(
+          result.pendingCount ??
+            (result.hasMore ? result.conversations.length + 1 : result.conversations.length),
+        );
+        setPendingHasMore(result.hasMore || result.conversations.length > 3);
+        setPendingStatus('ready');
+      } catch (caught) {
+        if (
+          token !== pendingRequestRef.current ||
+          selectedRepositoryIdRef.current !== repositoryId
+        ) {
+          return;
+        }
+        if (caught instanceof ApiClientError && caught.status === 401) {
+          onSessionLost();
+          return;
+        }
+        setPendingStatus('error');
+      }
+    },
+    [onSessionLost],
+  );
+
   const loadConversations = useCallback(
     async (repositoryId: string, options: { silent?: boolean; cursor?: string | null } = {}) => {
       const cursor = options.cursor ?? null;
@@ -326,6 +367,7 @@ export function WorkspaceShell({
         setConversationsStatus('ready');
         setConversationsError(null);
         setConversationsMoreStatus('idle');
+        void loadPending(repositoryId, silent);
       } catch (caught) {
         if (token !== conversationsRequestRef.current) {
           return;
@@ -341,7 +383,7 @@ export function WorkspaceShell({
         setConversationsError(describeApiError(caught));
       }
     },
-    [onSessionLost],
+    [loadPending, onSessionLost],
   );
 
   const loadMoreConversations = useCallback(async () => {
@@ -729,6 +771,7 @@ export function WorkspaceShell({
 
   useEffect(() => {
     conversationsRequestRef.current += 1;
+    pendingRequestRef.current += 1;
     conversationsMoreRef.current += 1;
     conversationsMoreInFlightRef.current = false;
     setSelectedConversationId(null);
@@ -737,6 +780,10 @@ export function WorkspaceShell({
     setConversationsHasMore(false);
     setConversationsMoreStatus('idle');
     setConversationsMoreError(null);
+    setPendingConversations([]);
+    setPendingCount(0);
+    setPendingHasMore(false);
+    setPendingStatus('idle');
     if (!selectedRepositoryId) {
       setConversations([]);
       setConversationsStatus('idle');
@@ -752,7 +799,8 @@ export function WorkspaceShell({
       setSelectedConversationId(pending.conversationId);
     }
     void loadConversations(selectedRepositoryId);
-  }, [selectedRepositoryId, loadConversations]);
+    void loadPending(selectedRepositoryId);
+  }, [selectedRepositoryId, loadConversations, loadPending]);
 
   useEffect(() => {
     conversationRequestRef.current += 1;
@@ -898,6 +946,13 @@ export function WorkspaceShell({
     const onOpen = () => {
       if (!disposed) {
         setConnection('connected');
+        const repositoryId = selectedRepositoryIdRef.current;
+        if (repositoryId) {
+          // A reconnect may have missed events: re-read both the history page
+          // and the separate pending list instead of only changing the badge.
+          void loadConversations(repositoryId, { silent: true });
+          void loadPending(repositoryId, true);
+        }
       }
     };
     const onError = () => {
@@ -939,7 +994,7 @@ export function WorkspaceShell({
       source.removeEventListener('session.revoked', onSessionRevoked);
       source.close();
     };
-  }, [onSessionLost]);
+  }, [loadConversations, loadPending, onSessionLost]);
 
   const selectedRepository = useMemo(
     () => repositories.find((repository) => repository.id === selectedRepositoryId) ?? null,
@@ -1384,7 +1439,12 @@ export function WorkspaceShell({
               onSessionLost={onSessionLost}
               conversations={conversations}
               conversationsLoading={conversationsStatus === 'loading'}
+              pendingConversations={pendingConversations}
+              pendingCount={pendingCount}
+              pendingHasMore={pendingHasMore}
+              pendingLoading={pendingStatus === 'loading'}
               onOpenConversation={(conversationId) => setSelectedConversationId(conversationId)}
+              onViewAllPending={() => setActivityOpen(true)}
             />
           </main>
 

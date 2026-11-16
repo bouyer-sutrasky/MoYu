@@ -96,6 +96,15 @@ const TEXT = {
     'dsh-superagent is not answering: it may be restarting; if this persists, the DSH log names the cause, often a configuration error.',
   ],
   savedRestarting: ['已保存，dsh-superagent 正在重启', 'Saved; dsh-superagent is restarting'],
+  savedPendingRestart: [
+    '已保存，等待任务结束后重启生效',
+    'Saved; applies after the active task finishes and the instance restarts',
+  ],
+  savedReadbackPending: ['已保存，正在回读确认', 'Saved; confirming by reading the instance back'],
+  managedField: [
+    '平台受管：由仓库绑定和运行实例决定，修改会被服务端拒绝。',
+    'Platform-managed: bound to the repository/instance; the server rejects edits.',
+  ],
   problems: ['系统问题', 'System problems'],
   dismiss: ['不再提示', 'Dismiss'],
   saved: ['已保存', 'Saved'],

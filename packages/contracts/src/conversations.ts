@@ -56,6 +56,16 @@ export const conversationListQuerySchema = z.object({
   repositoryId: uuidSchema.optional(),
   cursor: pageCursorSchema.optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
+  /**
+   * When true, return only tasks that still want the owner (waiting_input,
+   * awaiting_review, blocked/failed, then queued/running/stopping) in priority
+   * order. The cursor carries the priority rank so later pages do not repeat or
+   * skip a rank boundary.
+   */
+  pending: z
+    .enum(['true', 'false', '1', '0'])
+    .transform((value) => value === 'true' || value === '1')
+    .optional(),
 });
 
 export type ConversationListQuery = z.infer<typeof conversationListQuerySchema>;
@@ -65,6 +75,8 @@ export const conversationListDataSchema = z.object({
   /** Pass as `cursor` to load the next older page; null when no more remain. */
   nextCursor: pageCursorSchema.nullable().default(null),
   hasMore: z.boolean().default(false),
+  /** Total pending tasks for this owner/repository, before pagination. */
+  pendingCount: z.number().int().nonnegative().optional(),
 });
 
 export type ConversationListData = z.infer<typeof conversationListDataSchema>;

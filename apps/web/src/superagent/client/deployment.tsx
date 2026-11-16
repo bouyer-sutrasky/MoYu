@@ -62,6 +62,9 @@ export function DeploymentPage({
   const draft = useDraft({
     saved: limitsOf(editable ? snapshot.value : setup.machine),
     revision: editable ? snapshot.revision : undefined,
+    // The supervisor returns a content hash, not a monotonically increasing
+    // integer. Never treat a lower hash as stale and never invent revision + 1.
+    revisionMode: 'opaque',
     reload: async () => {},
     save: async (value, revision, base) => {
       const ops: Op[] = MACHINE_LIMITS.filter((key) => value[key].trim() !== base[key].trim()).map(
@@ -70,9 +73,21 @@ export function DeploymentPage({
             ? { op: 'set', path: [key], value: Number(value[key]) }
             : { op: 'unset', path: [key] },
       );
-      if (!form || !(await form.mutate(ops, revision))) throw new Error(t('deploymentRefused'));
-      notify(t('saved'));
-      return { revision: revision + 1, restarting: false };
+      if (!form) throw new Error(t('deploymentRefused'));
+      const result = await form.mutate(ops, revision);
+      if (!result.saved) throw new Error(result.error ?? t('deploymentRefused'));
+      notify(
+        t(
+          result.restarting
+            ? 'savedRestarting'
+            : result.restartRequired
+              ? 'savedPendingRestart'
+              : result.readbackPending
+                ? 'savedReadbackPending'
+                : 'saved',
+        ),
+      );
+      return { revision: result.revision, restarting: result.restarting };
     },
   });
   const accounts = setup.accounts;
@@ -84,10 +99,12 @@ export function DeploymentPage({
       : snapshot?.status === 'loading'
         ? t('loading')
         : snapshot?.status === 'unavailable'
-          ? t('deploymentUnavailable')
+          ? (snapshot.error ?? t('deploymentUnavailable'))
           : !editable
             ? t('deploymentReadOnly')
-            : undefined;
+            : snapshot?.savedPendingReadback
+              ? t('savedReadbackPending')
+              : undefined;
   const limit = (key: (typeof MACHINE_LIMITS)[number], label: string) => (
     <Field label={label}>
       <Input

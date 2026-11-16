@@ -46,18 +46,31 @@ function SourceCard({ source }: { source: SourceView }) {
   const restarts = draft.dirty && source.restarts.some(changed);
   const description = localized(t, source.description);
   // Hide derived facts for unsaved field edits until the new value is saved.
-  const field = (spec: FieldSpec) => (
-    <SourceField
-      key={spec.key}
-      field={spec}
-      value={value.config[spec.key]}
-      saved={saved.config[spec.key]}
-      labels={source.labels}
-      refreshLabels={refreshLabels}
-      fact={spec.type === 'fact' || !changed(spec.key) ? source.facts[spec.key] : undefined}
-      onChange={(next) => draft.edit({ ...value, config: { ...value.config, [spec.key]: next } })}
-    />
-  );
+  const field = (spec: FieldSpec) => {
+    const managed =
+      (source.id === 'workspace' && spec.key === 'repository') ||
+      (source.id === 'github' && (spec.key === 'repository' || spec.key === 'cli'));
+    const rendered = (
+      <SourceField
+        key={spec.key}
+        field={managed && spec.type === 'text' ? { ...spec, readonly: true } : spec}
+        value={value.config[spec.key]}
+        saved={saved.config[spec.key]}
+        labels={source.labels}
+        refreshLabels={refreshLabels}
+        fact={spec.type === 'fact' || !changed(spec.key) ? source.facts[spec.key] : undefined}
+        onChange={(next) => draft.edit({ ...value, config: { ...value.config, [spec.key]: next } })}
+      />
+    );
+    return managed ? (
+      <div key={spec.key}>
+        <Hint>{t('managedField')}</Hint>
+        {rendered}
+      </div>
+    ) : (
+      rendered
+    );
+  };
   const advanced = source.fields.filter((spec) => spec.advanced);
   return (
     <form

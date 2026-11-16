@@ -15,6 +15,7 @@ let downSql0015 = '';
 let downSql0016 = '';
 let downSql0017 = '';
 let downSql0018 = '';
+let downSql0019 = '';
 const databases: TestDatabase[] = [];
 
 const read = async (database: TestDatabase) => {
@@ -37,13 +38,14 @@ const messageColumn = async (database: TestDatabase): Promise<boolean> => {
 };
 
 /**
- * 0015 is now the latest migration, and `migrateDatabase` only replays migrations
- * after the last applied ledger row: rolling 0014 back while 0015 is recorded
- * cannot be re-applied by the migrator. The supported order is 0015 first, then
- * 0014. Refusing a foreign or non-latest 0014 rollback in the script itself is
- * #37's scope, not this ticket's.
+ * `migrateDatabase` only replays migrations after the last applied ledger row,
+ * so rolling 0014 back while any later migration is recorded cannot be
+ * re-applied. The supported order is every later migration first, then 0014.
+ * Refusing a foreign or non-latest 0014 rollback in the script itself is #37's
+ * scope, not this ticket's.
  */
 async function rollBackThrough0014(database: TestDatabase): Promise<void> {
+  await database.pool.query(downSql0019);
   await database.pool.query(downSql0018);
   await database.pool.query(downSql0017);
   await database.pool.query(downSql0016);
@@ -80,6 +82,10 @@ describe('0014 rollback script on real PostgreSQL', () => {
     );
     downSql0018 = await readFile(
       path.join(ROOT, 'packages/db/migrations/rollback/0018_zippy_warhawk.down.sql'),
+      'utf8',
+    );
+    downSql0019 = await readFile(
+      path.join(ROOT, 'packages/db/migrations/rollback/0019_event_dedupe_per_repository.down.sql'),
       'utf8',
     );
   });
