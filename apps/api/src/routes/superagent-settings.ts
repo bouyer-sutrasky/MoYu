@@ -334,7 +334,7 @@ export function registerSuperagentSettingsRoutes(
       const supervisor = requireSupervisor(config);
       const result = await supervisor.panelAction(repository.id, {
         kind: 'prompts-preview',
-        body: { config: body.data.config },
+        body: body.data.config,
       });
       return relay(reply, request, result);
     },
