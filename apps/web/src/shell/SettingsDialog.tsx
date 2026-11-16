@@ -13,6 +13,7 @@ import { api, ApiClientError } from '../lib/api';
 import { describeAuthError, isWebAuthnSupported } from '../lib/errors';
 import { Icon } from '../components/Icon';
 import { Modal } from '../components/Modal';
+import { ResponsiveSelect } from '../components/ResponsiveSelect';
 import { useTheme, type ThemeMode } from '../theme/ThemeProvider';
 import { CleanupPanel } from './CleanupPanel';
 import { NotificationSettingsSection } from './NotificationSettingsSection';
@@ -231,19 +232,19 @@ export function SettingsDialog({
             <label className={styles.muted} htmlFor="superagent-repository">
               目标仓库
             </label>
-            <select
+            <ResponsiveSelect
               id="superagent-repository"
+              label="目标仓库"
               className={styles.input}
               value={superagentRepositoryId ?? ''}
-              onChange={(event) => setSuperagentRepositoryId(event.target.value || null)}
-            >
-              {repositories.length === 0 ? <option value="">尚未添加仓库</option> : null}
-              {repositories.map((repository) => (
-                <option key={repository.id} value={repository.id}>
-                  {repository.fullName}
-                </option>
-              ))}
-            </select>
+              options={
+                repositories.length > 0
+                  ? repositories.map(({ id, fullName }) => ({ value: id, label: fullName }))
+                  : [{ value: '', label: '尚未添加仓库' }]
+              }
+              disabled={repositories.length === 0}
+              onChange={(value) => setSuperagentRepositoryId(value || null)}
+            />
           </div>
           <SuperagentSettings
             repositoryId={superagentRepositoryId}

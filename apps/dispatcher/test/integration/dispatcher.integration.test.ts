@@ -448,6 +448,38 @@ describe('dispatcher delivery and Bridge event catch-up on real PostgreSQL', () 
     });
   });
 
+  it('emits one delivery change when the runtime hands a received message to a worker', async () => {
+    await testDatabase.pool.query(
+      `update deliveries set state = 'delivered', delivered_at = now() where message_id = $1`,
+      [messageId],
+    );
+    const at = new Date().toISOString();
+    fakeBridge.events.splice(0, fakeBridge.events.length, {
+      id: 'worker-handoff',
+      seq: 1,
+      type: 'message.delivered',
+      at,
+      data: { messageId, at },
+    });
+    const logger = createConsoleLogger('test');
+    expect(await syncOnce(testDatabase.pool, repository, client, logger)).toBe(true);
+    expect(await syncOnce(testDatabase.pool, repository, client, logger)).toBe(false);
+
+    const deliveries = await testDatabase.pool.query(
+      `select handed_to_worker_at, read_at from deliveries where message_id = $1`,
+      [messageId],
+    );
+    expect(deliveries.rows).toEqual([{ handed_to_worker_at: new Date(at), read_at: null }]);
+    const events = await testDatabase.pool.query(
+      `select conversation_id, payload from events
+        where repository_id = $1 and source = 'bridge' and type = 'message.delivery_changed'`,
+      [repository.id],
+    );
+    expect(events.rows).toEqual([
+      { conversation_id: conversationId, payload: { messageId, deliveryState: 'delivered' } },
+    ]);
+  });
+
   it('projects Bridge events once, advances the cursor and survives a repeat sync', async () => {
     // The fake events reference placeholders; make them point at this fixture.
     for (const event of fakeBridge.events) {

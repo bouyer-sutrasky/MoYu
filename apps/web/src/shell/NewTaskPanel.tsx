@@ -11,6 +11,7 @@ import type {
 import { api, ApiClientError } from '../lib/api';
 import { describeApiError } from '../lib/errors';
 import { Icon } from '../components/Icon';
+import { ResponsiveSelect } from '../components/ResponsiveSelect';
 import styles from './WorkspaceShell.module.css';
 
 interface NewTaskPanelProps {
@@ -435,32 +436,31 @@ export function NewTaskPanel({
             <span className={styles.fieldHint}>新建任务固定使用当前选择的仓库。</span>
           </label>
 
-          <label className={styles.field}>
+          <div className={styles.field}>
             <span className={styles.fieldLabel}>起点分支</span>
             {branchesStatus === 'ready' ? (
-              <select
+              <ResponsiveSelect
+                label="起点分支"
                 className={styles.selectInput}
                 value={branchValue}
-                data-field="base-branch"
-                onChange={(event) => {
+                field="base-branch"
+                options={[
+                  { value: '', label: '请选择分支' },
+                  ...branches.map((branch) => ({
+                    value: branch,
+                    label: branch === repository.defaultBranch ? `${branch}（默认分支）` : branch,
+                  })),
+                ]}
+                onChange={(value) => {
                   touchedRef.current = true;
                   setMissingSavedBranch(null);
-                  setBaseBranch(event.target.value);
+                  setBaseBranch(value);
                 }}
-                aria-invalid={
-                  branchMissing || missingSavedBranch !== null || branchValue.length === 0
-                }
-              >
-                <option value="">请选择分支</option>
-                {branches.map((branch) => (
-                  <option key={branch} value={branch}>
-                    {branch}
-                    {branch === repository.defaultBranch ? '（默认分支）' : ''}
-                  </option>
-                ))}
-              </select>
+                invalid={branchMissing || missingSavedBranch !== null || branchValue.length === 0}
+              />
             ) : (
               <input
+                aria-label="起点分支"
                 className={styles.textInput}
                 value={baseBranch}
                 data-field="base-branch"
@@ -500,36 +500,39 @@ export function NewTaskPanel({
                 重新读取分支
               </button>
             ) : null}
-          </label>
+          </div>
 
-          <label className={styles.field}>
+          <div className={styles.field}>
             <span className={styles.fieldLabel}>模型</span>
-            <select
+            <ResponsiveSelect
+              label="模型"
               className={styles.selectInput}
               value={modelKeyValue}
-              data-field="model"
-              onChange={(event) => {
+              field="model"
+              options={[
+                {
+                  value: '',
+                  label:
+                    modelsStatus === 'loading'
+                      ? '正在读取模型目录…'
+                      : modelsStatus === 'error'
+                        ? '模型目录不可用'
+                        : '实例默认模型',
+                },
+                ...models.map((model) => ({
+                  value: modelKey(model),
+                  label: model.displayName
+                    ? `${model.displayName} · ${model.provider}/${model.model}`
+                    : `${model.provider}/${model.model}`,
+                })),
+              ]}
+              onChange={(value) => {
                 touchedRef.current = true;
-                setModelKeyValue(event.target.value);
+                setModelKeyValue(value);
                 setReasoningEffort('');
               }}
               disabled={modelsStatus !== 'ready'}
-            >
-              {modelsStatus === 'loading' ? <option value="">正在读取模型目录…</option> : null}
-              {modelsStatus === 'error' ? <option value="">模型目录不可用</option> : null}
-              {modelsStatus === 'ready' ? (
-                <>
-                  <option value="">实例默认模型</option>
-                  {models.map((model) => (
-                    <option key={modelKey(model)} value={modelKey(model)}>
-                      {model.displayName
-                        ? `${model.displayName} · ${model.provider}/${model.model}`
-                        : `${model.provider}/${model.model}`}
-                    </option>
-                  ))}
-                </>
-              ) : null}
-            </select>
+            />
             <span className={styles.fieldHint} data-kind={modelMissing ? 'error' : undefined}>
               {modelMissing
                 ? '已保存的模型当前不可用，请重新选择有效模型。'
@@ -537,29 +540,27 @@ export function NewTaskPanel({
                   ? '已从仓库偏好载入；只列出运行时当前可用的模型。'
                   : '模型来自仓库运行时的已配置目录，不会回退到未知模型。'}
             </span>
-          </label>
+          </div>
 
           {reasoningEfforts.length > 0 ? (
-            <label className={styles.field}>
+            <div className={styles.field}>
               <span className={styles.fieldLabel}>推理强度</span>
-              <select
+              <ResponsiveSelect
+                label="推理强度"
                 className={styles.selectInput}
                 value={reasoningEffort}
-                data-field="reasoning"
-                onChange={(event) => {
+                field="reasoning"
+                options={[
+                  { value: '', label: '模型默认' },
+                  ...reasoningEfforts.map((effort) => ({ value: effort, label: effort })),
+                ]}
+                onChange={(value) => {
                   touchedRef.current = true;
-                  setReasoningEffort(event.target.value);
+                  setReasoningEffort(value);
                 }}
-              >
-                <option value="">模型默认</option>
-                {reasoningEfforts.map((effort) => (
-                  <option key={effort} value={effort}>
-                    {effort}
-                  </option>
-                ))}
-              </select>
+              />
               <span className={styles.fieldHint}>只列出该模型支持的推理强度。</span>
-            </label>
+            </div>
           ) : null}
 
           <fieldset className={styles.modeGroup}>

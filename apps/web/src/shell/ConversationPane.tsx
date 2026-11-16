@@ -79,7 +79,9 @@ function DeliveryBadge({ message }: { message: Message }) {
       data-state={delivery.state}
       title={delivery.lastError ?? undefined}
     >
-      {DELIVERY_STATE_LABELS[delivery.state]}
+      {delivery.state === 'delivered' && delivery.handedToWorkerAt
+        ? '执行器已接收'
+        : DELIVERY_STATE_LABELS[delivery.state]}
     </span>
   );
 }
@@ -316,6 +318,11 @@ export function ConversationPane({
                 data-testid="new-task-from-task"
               >
                 基于此任务新建
+              </button>
+            ) : null}
+            {taskState === 'not_accepted' ? (
+              <button type="button" className={styles.secondaryButton} onClick={onNewTask}>
+                新建任务
               </button>
             ) : null}
           </div>

@@ -3,6 +3,7 @@ import clsx from 'clsx';
 import type { ConversationSummary, RepositorySummary } from '@moyu/contracts';
 
 import { Icon } from '../components/Icon';
+import { ResponsiveSelect } from '../components/ResponsiveSelect';
 import {
   formatUpdatedAt,
   repositoryRuntimeLabel,
@@ -171,20 +172,13 @@ export function Sidebar({
             <span>网页新增仓库、实例调度与资源控制将在 M5 接入；当前使用已配置仓库。</span>
           </div>
         ) : (
-          <label className={styles.repositorySelect}>
-            <span className="visually-hidden">选择仓库</span>
-            <select
-              value={selectedRepositoryId ?? ''}
-              onChange={(event) => onSelectRepository(event.target.value)}
-            >
-              {repositories.map((repository) => (
-                <option key={repository.id} value={repository.id}>
-                  {repository.fullName}
-                </option>
-              ))}
-            </select>
-            <Icon name="chevron-down" size={15} />
-          </label>
+          <ResponsiveSelect
+            label="选择仓库"
+            className={styles.repositorySelect}
+            value={selectedRepositoryId ?? ''}
+            options={repositories.map(({ id, fullName }) => ({ value: id, label: fullName }))}
+            onChange={onSelectRepository}
+          />
         )}
 
         <button type="button" className={styles.addRepositoryButton} onClick={onOpenAddRepository}>

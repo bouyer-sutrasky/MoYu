@@ -27,7 +27,7 @@ export const TASK_STATE_LABELS: Record<TaskState, string> = {
 export const DELIVERY_STATE_LABELS: Record<DeliveryState, string> = {
   stored: '平台收件',
   delivering: '投递中',
-  delivered: '执行器已接收',
+  delivered: '运行时已接收',
   read: '已读取',
   failed: '投递失败',
 };
