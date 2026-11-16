@@ -941,6 +941,29 @@ async function captureAfter(browser, { baseURL, token }) {
   assert((await effortTrigger.innerText()).includes('high'), 'mobile cancel keeps selected effort');
   record('mobile repository and task pickers', 'pass', 'switch and cancel at 390px');
 
+  await mobilePage.getByRole('button', { name: '打开导航' }).click();
+  await sidebar(mobilePage).getByRole('button', { name: '设置', exact: true }).click();
+  const settings = mobilePage.getByRole('dialog', { name: '设置', exact: true });
+  const sections = settings.getByRole('navigation', { name: '设置分区' });
+  await sections.getByRole('button', { name: 'Superagent', exact: true }).click();
+  await settings.getByRole('button', { name: /^目标仓库，/ }).click();
+  const targetPicker = mobilePage.getByRole('dialog', { name: '目标仓库' });
+  await targetPicker.getByRole('button', { name: 'bouyer-sutrasky/m4ux-main' }).click();
+  await settings.getByRole('button', { name: '目标仓库，bouyer-sutrasky/m4ux-main' }).waitFor();
+  await sections.getByRole('button', { name: '通知', exact: true }).click();
+  await settings.getByRole('heading', { name: '通知', exact: true }).first().waitFor();
+  const settingsFit = await settings.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth,
+  );
+  assert(settingsFit, 'mobile settings panel fits the narrow viewport');
+  await mobilePage.keyboard.press('Escape');
+  await settings.waitFor({ state: 'hidden' });
+  record(
+    'mobile settings sections and repository picker',
+    'pass',
+    'navigate, switch and close at 390px',
+  );
+
   await light.context.close();
   await dark.context.close();
   await mobile.context.close();

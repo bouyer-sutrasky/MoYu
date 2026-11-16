@@ -435,3 +435,46 @@
   padding: 0 24px 24px;
   overflow-y: auto;
 }
+
+@media (max-width: 640px) {
+  .panel {
+    flex-direction: column;
+    width: calc(100% - 16px);
+    max-width: none;
+    height: calc(100dvh - 16px);
+  }
+
+  .nav {
+    width: 100%;
+    gap: 4px;
+    padding: 12px 8px 6px;
+    border-right: 0;
+    border-bottom: 1px solid var(--dsw-alias-border-l4);
+  }
+
+  .navList {
+    flex-direction: row;
+    overflow-x: auto;
+  }
+
+  .navCell {
+    flex: none;
+    min-height: 44px;
+  }
+
+  .navCell svg {
+    flex: none;
+  }
+
+  .content {
+    min-height: 0;
+  }
+
+  .header {
+    padding: 12px 8px 8px 16px;
+  }
+
+  .options {
+    padding: 0 16px max(16px, env(safe-area-inset-bottom));
+  }
+}

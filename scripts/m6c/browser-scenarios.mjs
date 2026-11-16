@@ -85,6 +85,8 @@ try {
   };
   const openSettings = async () => {
     await page.getByRole('button', { name: '设置', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: '设置', exact: true });
+    await dialog.getByRole('button', { name: 'Superagent', exact: true }).click();
     await page.locator('#superagent-repository').waitFor({ state: 'visible', timeout: 15_000 });
   };
   const chooseRepo = async (repositoryId) => {

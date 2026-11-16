@@ -118,9 +118,7 @@ export function SettingsDialog({
   const [section, setSection] = useState<SettingsSectionId>('appearance');
   const panelRef = useRef<HTMLDivElement>(null);
 
-  // The DSH shell keeps Escape and an entering focus on the panel; the mask click
-  // closes too. Modal's own shell is not used here because this panel is a rail
-  // plus a content column, not a header-plus-body dialog.
+  // Focus the settings panel when it opens and support closing it with Escape.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose();
