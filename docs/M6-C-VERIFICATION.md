@@ -1,6 +1,12 @@
 # M6-C verification record
 
-Status: **in progress**. Only rows marked Pass were executed and observed.
+> **Historical snapshot.** The final 2026-11-16 evidence, main SHA, release
+> hashes and the remaining Pass/Partial/Blocked rows are in
+> [`docs/M6-C-FINAL-STATUS-2026-11-16.md`](./M6-C-FINAL-STATUS-2026-11-16.md)
+> and `docs/evidence/m6c/M6C-RUN-20261116-1250/matrix.json`. This file must not
+> be used as a production sign-off.
+
+Status: **in progress** (historical). Only rows marked Pass were executed and observed.
 `Not run` means no evidence exists; it is never a pass.
 
 Run id: `M6C-CAND-20261115`. Host: jd-mc (117.72.211.55). Isolated candidate stack;
