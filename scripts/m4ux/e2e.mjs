@@ -2838,7 +2838,7 @@ async function checkNotAcceptedOnMobile(browser, { baseURL, token }, repositoryI
       await page.getByRole('textbox', { name: '消息输入区' }).isDisabled(),
       'not accepted is terminal',
     );
-    await page.getByRole('button', { name: '新建任务', exact: true }).click();
+    await page.getByRole('main').getByRole('button', { name: '新建任务', exact: true }).click();
     await page.getByText('本次创建实际配置').waitFor();
     record(
       'mobile not-accepted conversation',
@@ -2847,6 +2847,13 @@ async function checkNotAcceptedOnMobile(browser, { baseURL, token }, repositoryI
     );
   } finally {
     await context.close();
+    const cleanup = new Client({ connectionString: currentDatabase.url });
+    await cleanup.connect();
+    try {
+      await cleanup.query('delete from conversations where id = $1', [conversationId]);
+    } finally {
+      await cleanup.end();
+    }
   }
 }
 
@@ -2882,12 +2889,12 @@ async function main() {
     const after = await startApi(ROOT, AFTER_PORT);
     try {
       await captureAfter(browser, { baseURL: after.url, token: seeded.sessionToken });
-      await functional(browser, { baseURL: after.url, token: seeded.sessionToken }, seeded);
       await checkNotAcceptedOnMobile(
         browser,
         { baseURL: after.url, token: seeded.sessionToken },
         seeded.repositoryB,
       );
+      await functional(browser, { baseURL: after.url, token: seeded.sessionToken }, seeded);
     } finally {
       await after.stop();
     }
