@@ -1,0 +1,110 @@
+{
+  "runId": "M6C-GAP-CLOSURE-20261116",
+  "generatedAt": "2026-11-16T07:52:11Z",
+  "codeMain": "89f70f5663f8ad0ce984f62e39eb07042432a510",
+  "release": "/opt/moyu-m6c/releases/89f70f5663f8",
+  "target": "jd-mc isolated candidate stack, public entry https://moyu.sutrasky.com",
+  "rows": [
+    {
+      "id": "P17",
+      "title": "Execute-ticket retry/stop goes through platform task command and lease admission",
+      "status": "Pass",
+      "command": "POST /api/v1/repositories/:id/superagent/tickets/:ticketId/retry|stop",
+      "exitCode": 0,
+      "evidence": "p17-ticket-commands.txt",
+      "environment": "jd-mc Linux, Node 24.22.2, pnpm 11.7.0, isolated candidate",
+      "sha": "89f70f5663f8ad0ce984f62e39eb07042432a510"
+    },
+    {
+      "id": "P18",
+      "title": "Worker handoff and read receipts for the origin workspace trigger",
+      "status": "Pass",
+      "command": "real task -> delivery -> runtime events -> deliveries.read_at",
+      "exitCode": 0,
+      "evidence": "p18-read-receipt.txt",
+      "environment": "jd-mc Linux, Node 24.22.2, pnpm 11.7.0, isolated candidate",
+      "sha": "89f70f5663f8ad0ce984f62e39eb07042432a510"
+    },
+    {
+      "id": "P16",
+      "title": "Real-host review-check cgroup cleanup: setsid, TERM-ignore, pipe holder, timeout, retry",
+      "status": "Pass",
+      "command": "POST /api/v1/tasks/:id/review/checks under controlled stress commands",
+      "exitCode": 0,
+      "evidence": "p16-cgroup-matrix.json",
+      "environment": "jd-mc Linux, Node 24.22.2, pnpm 11.7.0, isolated candidate",
+      "sha": "89f70f5663f8ad0ce984f62e39eb07042432a510"
+    },
+    {
+      "id": "P19a",
+      "title": "Prompt preview reaches the real runtime with the public request shape",
+      "status": "Pass",
+      "command": "POST /api/v1/repositories/:id/superagent/prompts/preview",
+      "exitCode": 0,
+      "evidence": "p19-write-actions.txt",
+      "environment": "jd-mc Linux, Node 24.22.2, pnpm 11.7.0, isolated candidate",
+      "sha": "89f70f5663f8ad0ce984f62e39eb07042432a510"
+    },
+    {
+      "id": "P19b",
+      "title": "Source-label refresh and policy-sync write actions",
+      "status": "Partial",
+      "command": "POST .../sources/github/labels; POST .../policy-sync/github",
+      "exitCode": 400,
+      "evidence": "p19-write-actions.txt",
+      "reason": "The real source currently has no names to refresh and no policy input to sync; both routes fail closed (noLabels / nothingToSync). No positive write result is claimed.",
+      "environment": "jd-mc Linux, Node 24.22.2, pnpm 11.7.0, isolated candidate",
+      "sha": "89f70f5663f8ad0ce984f62e39eb07042432a510"
+    },
+    {
+      "id": "V01",
+      "title": "Static checks, formatting, types, unit tests and build",
+      "status": "Pass",
+      "command": "pnpm check",
+      "exitCode": 0,
+      "evidence": "check.log",
+      "environment": "jd-mc Linux, Node 24.22.2, pnpm 11.7.0, isolated candidate",
+      "sha": "89f70f5663f8ad0ce984f62e39eb07042432a510"
+    },
+    {
+      "id": "V02",
+      "title": "Real PostgreSQL integration suite",
+      "status": "Pass",
+      "command": "pnpm test:integration",
+      "exitCode": 0,
+      "evidence": "integration.log",
+      "environment": "jd-mc Linux, Node 24.22.2, pnpm 11.7.0, isolated candidate",
+      "sha": "89f70f5663f8ad0ce984f62e39eb07042432a510"
+    },
+    {
+      "id": "V03",
+      "title": "Protected PR required checks",
+      "status": "Pass",
+      "command": "GitHub CI on PRs #72-#75",
+      "exitCode": 0,
+      "evidence": "ci-prs.json",
+      "environment": "jd-mc Linux, Node 24.22.2, pnpm 11.7.0, isolated candidate",
+      "sha": "89f70f5663f8ad0ce984f62e39eb07042432a510"
+    },
+    {
+      "id": "V04",
+      "title": "Three services run one manifest and one immutable release",
+      "status": "Pass",
+      "command": "node scripts/m6c/verify-running.mjs --manifest ... --release-root ...",
+      "exitCode": 0,
+      "evidence": "verify-running.txt",
+      "environment": "jd-mc Linux, Node 24.22.2, pnpm 11.7.0, isolated candidate",
+      "sha": "89f70f5663f8ad0ce984f62e39eb07042432a510"
+    },
+    {
+      "id": "V05",
+      "title": "Database migration ledger",
+      "status": "Pass",
+      "command": "count(drizzle.__drizzle_migrations)",
+      "exitCode": 0,
+      "evidence": "db-ledger.txt",
+      "environment": "jd-mc Linux, Node 24.22.2, pnpm 11.7.0, isolated candidate",
+      "sha": "89f70f5663f8ad0ce984f62e39eb07042432a510"
+    }
+  ]
+}

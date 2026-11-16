@@ -1,0 +1,16 @@
+# P17 execute-ticket retry/stop via platform task command
+run: M6C-GAP-CLOSURE-20261116
+release: /opt/moyu-m6c/releases/89f70f5663f8
+
+## actual HTTP responses (temporary automation session; not auth acceptance)
+retry failed execute ticket df200e4feaff2fca311c02bf122a704a:
+{"data":{"retried":true},"requestId":"56273afe-11a6-4c5f-b0b4-684f7c4c24a4"}
+stop awaiting execute ticket 466b90f8340388ffcd70e8532b2e1536:
+{"data":{"stopped":true},"requestId":"3e7c5288-9848-4dc7-8cba-1936e0b2c20e"}
+## durable task_operations
+               task_id                | kind  |                                   client_command_id                                    |          created_at           
+--------------------------------------+-------+----------------------------------------------------------------------------------------+-------------------------------
+ 82dda573-0c8d-4867-863c-fe7890b70dad | pause | superagent-stop-466b90f8340388ffcd70e8532b2e1536-3e14b43f-90eb-4ac3-844e-a27198c83027  | 2026-11-16 15:07:14.959587+08
+ a24cde8c-dd3c-48ff-890d-f825ba2b3855 | retry | superagent-retry-df200e4feaff2fca311c02bf122a704a-84bf1d40-553a-422f-8022-8c39e91482e4 | 2026-11-16 15:07:14.869055+08
+(2 rows)
+

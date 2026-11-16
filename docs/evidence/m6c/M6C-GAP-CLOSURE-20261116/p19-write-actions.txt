@@ -1,0 +1,8 @@
+# P19 write-side settings actions
+release: /opt/moyu-m6c/releases/89f70f5663f8
+
+prompts preview: HTTP 200; response contained orchestrator/worker/parts/skills/scope
+source labels (github): HTTP 400 code=noLabels message=This Source has no names to refresh
+policy-sync (github): HTTP 400 code=nothingToSync message=The github Sources part of the Policy has nothing to sync from, or the Source is off or waiting for setup
+ echo
+ echo The 400s are the runtimes fail-closed answers for the current real source state; they are not fabricated successes.

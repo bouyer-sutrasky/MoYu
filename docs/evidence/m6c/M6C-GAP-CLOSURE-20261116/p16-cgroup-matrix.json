@@ -1,0 +1,65 @@
+{
+  "runId": "M6C-GAP-CLOSURE-20261116",
+  "release": "/opt/moyu-m6c/releases/89f70f5663f8",
+  "supervisorArtifact": "49ec23a35d4090615b60d7d36e597858cc08b000e666c52ada8efbe4b7792cd8",
+  "environmentNote": "REVIEW_CHECK_TIMEOUT_MS was temporarily set to 2000ms only for P16-3, then restored to 900000ms; repository check_commands were restored to [echo repo-b-check-ok] after each run.",
+  "rows": [
+    {
+      "id": "P16-1",
+      "case": "setsid child ignores SIGTERM; parent exits",
+      "evidence": "p16-setsid.json",
+      "command": "exec 3>&-; setsid sh -c 'trap \"\" TERM; sleep 300' >/dev/null 2>&1 &",
+      "http": 200,
+      "timedOut": false,
+      "passed": true,
+      "durationMs": 75,
+      "cleanupState": "clean",
+      "lingeringPids": [],
+      "output": ""
+    },
+    {
+      "id": "P16-2",
+      "case": "detached pipe holder (sleep | cat)",
+      "evidence": "p16-pipe-holder.json",
+      "command": "exec 3>&-; setsid -f sh -c 'sleep 300 | cat >/dev/null' </dev/null >/dev/null 2>&1",
+      "http": 200,
+      "timedOut": false,
+      "passed": true,
+      "durationMs": 65,
+      "cleanupState": "clean",
+      "lingeringPids": [],
+      "output": ""
+    },
+    {
+      "id": "P16-3",
+      "case": "supervisor timeout (REVIEW_CHECK_TIMEOUT_MS temporarily 2000)",
+      "evidence": "p16-timeout.json",
+      "command": "sleep 300",
+      "http": 200,
+      "timedOut": true,
+      "passed": false,
+      "durationMs": 2053,
+      "cleanupState": "clean",
+      "lingeringPids": [],
+      "output": ""
+    },
+    {
+      "id": "P16-4",
+      "case": "retry after timeout, no stale check lock",
+      "evidence": "p16-retry.json",
+      "command": "echo p16-retry-ok",
+      "http": 200,
+      "timedOut": false,
+      "passed": true,
+      "durationMs": 8,
+      "cleanupState": "clean",
+      "lingeringPids": [],
+      "output": "p16-retry-ok"
+    }
+  ],
+  "residualCheck": {
+    "sleep300": false,
+    "checkCgroup": false,
+    "checkedAt": "2026-11-16T07:52:11.052Z"
+  }
+}
