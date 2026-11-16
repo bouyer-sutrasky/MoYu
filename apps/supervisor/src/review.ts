@@ -19,6 +19,7 @@ import {
 } from '@moyu/contracts';
 
 import type { SupervisorConfig } from './config';
+import { pathExists } from './provision';
 import type { SupervisorStore } from './store';
 import {
   CGROUP_LAUNCHER,
@@ -426,7 +427,7 @@ export function locateTicketWorktree(input: {
     };
   }
   const configuredRoot = join(input.worktreeRoot, input.profile);
-  if (!existsSync(configuredRoot)) {
+  if (!pathExists(configuredRoot)) {
     return {
       state: 'cleaned',
       directory: null,
