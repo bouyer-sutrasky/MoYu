@@ -453,6 +453,38 @@ describe('supervisor check runs', () => {
     }
   });
 
+  it('kills a background descendant after a normal check exit and reports an empty boundary', async () => {
+    const directory = repository();
+    const pidFile = join(temporary('moyu-check-normal-exit'), 'background.pid');
+    let pid = 0;
+    try {
+      const runs = await runChecks({
+        directory,
+        commands: [`exec 3>&-; sleep 30 >/dev/null 2>&1 & echo $! > '${pidFile}'`],
+        timeoutMs: 5_000,
+        totalTimeoutMs: 60_000,
+      });
+      expect(runs[0]?.timedOut).toBe(false);
+      pid = Number(readFileSync(pidFile, 'utf8').trim());
+      expect(pid).toBeGreaterThan(0);
+      let state = processState(pid);
+      for (let attempt = 0; attempt < 50 && state !== null && state !== 'Z'; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        state = processState(pid);
+      }
+      expect([null, 'Z']).toContain(state);
+      expect(runs[0]?.cleanupState).not.toBe('residual');
+    } finally {
+      if (pid > 0 && pidAlive(pid)) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // Already gone.
+        }
+      }
+    }
+  }, 15_000);
+
   it('bounds the whole run by the total budget, not just each command', async () => {
     const directory = repository();
     const runs = await runChecks({

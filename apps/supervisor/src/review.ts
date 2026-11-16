@@ -237,11 +237,55 @@ export async function runCommand(
 
     const waitForBoundaryEmpty = async (): Promise<CommandCleanup> => {
       if (!cgroup) {
-        if (!timedOut) {
+        // The cgroup is the authoritative boundary. Without it, the owned
+        // process group still covers ordinary background children; a setsid
+        // descendant can escape it, so a nonzero result is unknown rather than
+        // a false clean.
+        let groupWasPopulated = false;
+        if (options.ownProcessGroup && child.pid) {
+          try {
+            process.kill(-child.pid, 0);
+            groupWasPopulated = true;
+          } catch {
+            // No process group left; the child closed normally.
+          }
+          if (groupWasPopulated) {
+            try {
+              process.kill(-child.pid, 'SIGKILL');
+            } catch {
+              // The final probe below reports the surviving group.
+            }
+          }
+        }
+        let groupAlive = groupWasPopulated;
+        for (let attempt = 0; attempt < 50 && groupAlive; attempt += 1) {
+          await delay(100);
+          if (!child.pid) break;
+          try {
+            process.kill(-child.pid, 0);
+          } catch {
+            groupAlive = false;
+          }
+        }
+        if (!timedOut && !groupWasPopulated) {
           return { state: 'not_required', lingeringPids: [], detail: null };
         }
-        // Without a cgroup we can only scan the session. A setsid descendant is
-        // invisible, so the honest result is unknown, not clean.
+        if (!timedOut && groupWasPopulated && !groupAlive) {
+          return {
+            state: 'unknown',
+            lingeringPids: [],
+            detail:
+              'No cgroup was available; the owned process group was cleaned but setsid descendants cannot be disproved',
+          };
+        }
+        if (groupAlive) {
+          return {
+            state: 'residual',
+            lingeringPids: [],
+            detail: 'No cgroup was available and the owned process group survived cleanup',
+          };
+        }
+        // Timeout without a cgroup: scan the session as the fallback evidence.
         await delay(500);
         const lingering = sessionMembers(child.pid ?? 0);
         for (const pid of lingering) {
@@ -266,26 +310,50 @@ export async function runCommand(
               detail: 'No cgroup was available and session members survived cleanup',
             };
       }
-      const deadline = Date.now() + 5000;
       let last = cgroupEmpty(cgroup);
+      if (last.ok && last.empty) {
+        return { state: 'clean', lingeringPids: [], detail: null };
+      }
+      if (!last.ok) {
+        return {
+          state: 'unknown',
+          lingeringPids: cgroupPids(cgroup),
+          detail: 'The check cgroup could not be read after cleanup',
+        };
+      }
+      // A check command can exit while a background descendant (including a
+      // setsid child or a process holding a pipe) is still alive. A normal exit
+      // is not proof that the execution boundary is empty; kill the whole
+      // cgroup before reporting success. Timeout paths already did this via
+      // killTree(), so the first probe is normally empty there.
+      let killError: string | null = null;
+      try {
+        writeFileSync(join(cgroup, 'cgroup.kill'), '1');
+      } catch (error) {
+        killError = error instanceof Error ? error.message : String(error);
+      }
+      const deadline = Date.now() + 5000;
       while (Date.now() < deadline) {
+        await delay(50);
+        last = cgroupEmpty(cgroup);
         if (last.ok && last.empty) {
           return { state: 'clean', lingeringPids: [], detail: null };
         }
-        await delay(50);
-        last = cgroupEmpty(cgroup);
       }
       const lingering = cgroupPids(cgroup);
       return last.ok
         ? {
             state: lingering.length === 0 ? 'clean' : 'residual',
             lingeringPids: lingering,
-            detail: lingering.length === 0 ? null : 'The check cgroup is still populated',
+            detail:
+              lingering.length === 0
+                ? null
+                : (killError ?? 'The check cgroup is still populated after cleanup'),
           }
         : {
             state: 'unknown',
             lingeringPids: lingering,
-            detail: 'The check cgroup could not be read after cleanup',
+            detail: killError ?? 'The check cgroup could not be read after cleanup',
           };
     };
 
