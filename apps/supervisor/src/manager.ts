@@ -29,6 +29,7 @@ import {
   type ProcessIdentity,
   type StoredOwnership,
 } from './process';
+import { githubCloneUrl, gitCachePath, RepositoryGitCache } from './git-cache';
 import {
   instanceLogPath,
   parseEnvFile,
@@ -57,16 +58,47 @@ export function buildInstancePrepareCommand(input: {
   fullName: string;
   githubAccount: string;
   githubCommitEmail: string;
+  /** The supervisor-owned mirror this repository's tasks clone from. */
+  cacheDir: string;
+  /** Test seam; production always uses the managed GitHub URL. */
+  remoteUrl?: string;
 }): string {
+  const quote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`;
+  const cache = quote(input.cacheDir);
+  const remote = quote(input.remoteUrl ?? githubCloneUrl(input.fullName));
+  const name = quote(input.githubAccount);
+  const email = quote(input.githubCommitEmail);
+  // A ticket workspace is built from the repository copy, never from a fresh
+  // remote clone. The frozen commit is present in the copy after preparation;
+  // only when it is missing (a commit newer than the last update, or a GitHub
+  // ticket whose default branch moved) is the needed object fetched. The clone
+  // goes to a sibling temporary directory and is renamed into place, so an
+  // interrupted launch can never leave a non-empty `$DSH_SUPERAGENT_DIR` that a
+  // later launch mistakes for a prepared workspace.
   return [
-    'git -c safe.directory="*" clone --no-tags',
-    `"ssh://git@ssh.github.com:443/${input.fullName}.git"`,
-    '"$DSH_SUPERAGENT_DIR"',
-    '&& git -C "$DSH_SUPERAGENT_DIR" -c advice.detachedHead=false checkout "$DSH_SUPERAGENT_WORKSPACE_BASE_COMMIT"',
-    `&& git -C "$DSH_SUPERAGENT_DIR" config user.name "${input.githubAccount}"`,
-    `&& git -C "$DSH_SUPERAGENT_DIR" config user.email "${input.githubCommitEmail}"`,
-    '&& git -C "$DSH_SUPERAGENT_DIR" switch -c "agent/$DSH_SUPERAGENT_NAME"',
-  ].join(' ');
+    'set -e',
+    'DEST="$DSH_SUPERAGENT_DIR"',
+    `CACHE=${cache}`,
+    `REMOTE=${remote}`,
+    'COMMIT="${DSH_SUPERAGENT_WORKSPACE_BASE_COMMIT:-HEAD}"',
+    'BRANCH="${DSH_SUPERAGENT_WORKSPACE_BASE_BRANCH:-HEAD}"',
+    'TMP="${DEST}.preparing-$$"',
+    'if [ ! -d "$CACHE" ]; then echo "仓库的 Git 副本尚未准备好（仓库准备未完成或失败），请先在仓库面板重试准备。" >&2; exit 75; fi',
+    'trap \'rm -rf "$TMP"\' EXIT HUP INT TERM',
+    'git -c safe.directory=\'*\' clone --no-tags --local "$CACHE" "$TMP"',
+    'git -C "$TMP" remote set-url origin "$REMOTE"',
+    'if ! git -C "$TMP" cat-file -e "${COMMIT}^{commit}" 2>/dev/null; then',
+    '  if [ "$BRANCH" != "HEAD" ]; then git -C "$TMP" fetch --no-tags origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"; fi',
+    '  if ! git -C "$TMP" cat-file -e "${COMMIT}^{commit}" 2>/dev/null; then git -C "$TMP" fetch --no-tags origin "$COMMIT"; fi',
+    'fi',
+    'git -C "$TMP" -c advice.detachedHead=false checkout "$COMMIT"',
+    `git -C "$TMP" config user.name ${name}`,
+    `git -C "$TMP" config user.email ${email}`,
+    'git -C "$TMP" switch -c "agent/$DSH_SUPERAGENT_NAME"',
+    'if [ -e "$DEST" ]; then echo "任务工作区已存在，拒绝覆盖；请用原任务继续或新建任务。" >&2; exit 74; fi',
+    'trap - EXIT HUP INT TERM',
+    'mv "$TMP" "$DEST"',
+  ].join('\n');
 }
 
 export interface ExecutionBinding {
@@ -217,11 +249,15 @@ export class InstanceManager {
   private lastResourceSampleAt = 0;
   private readonly resourceBlocked = new Set<string>();
 
+  private readonly gitCache: RepositoryGitCache;
+
   constructor(
     private readonly config: SupervisorConfig,
     private readonly store: SupervisorStore,
     private readonly logger: SupervisorLogger,
-  ) {}
+  ) {
+    this.gitCache = new RepositoryGitCache(config, store, logger);
+  }
 
   private async withLock<T>(work: () => Promise<T>): Promise<T> {
     const previous = this.lock;
@@ -276,6 +312,10 @@ export class InstanceManager {
         await this.reconcileRestart(row);
       }
     });
+    // A preparation child does not survive a supervisor restart. Record the
+    // interruption instead of leaving the row `preparing` for ever, so the
+    // repository panel offers a real retry and new execution stays gated.
+    await this.gitCache.recover();
     this.timer = setInterval(() => {
       void this.tick().catch((error) => {
         this.logger.error(
@@ -530,6 +570,35 @@ export class InstanceManager {
         },
         'repository instance prepared',
       );
+      // The instance is usable for settings immediately, but a new task must
+      // wait for the repository copy. Preparation is asynchronous and reports
+      // its own phases; a failure is retried from the repository panel.
+      if (instance.gitState !== 'ready') {
+        await this.gitCache.begin(repositoryId).catch((error: unknown) => {
+          this.logger.warn(
+            {
+              event: 'supervisor.git_prepare_start_failed',
+              repository: prepared.repository.fullName,
+              error: error instanceof Error ? error.message.slice(0, 300) : String(error),
+            },
+            'could not start repository Git copy preparation',
+          );
+        });
+      }
+      return (await this.store.getInstance(repositoryId)) ?? instance;
+    });
+  }
+
+  /**
+   * Repository-level retry of the Git copy. It deliberately bypasses the
+   * `ready` short-circuit: a person may want to refresh a stale copy, and the
+   * call coalesces with an in-flight preparation instead of cloning twice.
+   */
+  async prepareGit(repositoryId: string): Promise<InstanceRow> {
+    return this.withLock(async () => {
+      await this.gitCache.begin(repositoryId);
+      const instance = await this.store.getInstance(repositoryId);
+      if (!instance) throw new Error('Instance row was not created');
       return instance;
     });
   }
@@ -549,6 +618,19 @@ export class InstanceManager {
         );
         instance = await this.store.getInstance(repositoryId);
         if (!instance) throw new Error('Instance row was not created');
+        if (instance.gitState !== 'ready') {
+          await this.gitCache.begin(repositoryId).catch((error: unknown) => {
+            this.logger.warn(
+              {
+                event: 'supervisor.git_prepare_start_failed',
+                repository: prepared.repository.fullName,
+                error: error instanceof Error ? error.message.slice(0, 300) : String(error),
+              },
+              'could not start repository Git copy preparation on wake',
+            );
+          });
+          instance = (await this.store.getInstance(repositoryId)) ?? instance;
+        }
       }
       const now = new Date();
       await this.store.setLastActivity(repositoryId, now);
@@ -1540,6 +1622,7 @@ export class InstanceManager {
       fullName: prepared.repository.fullName,
       githubAccount: this.config.githubAccount,
       githubCommitEmail: this.config.githubCommitEmail,
+      cacheDir: gitCachePath(this.config.worktreeRoot, prepared.profile),
     });
     const worktreeDir = join(this.config.worktreeRoot, prepared.profile);
     // The worktree root is group-shared with the review check identity. A fresh

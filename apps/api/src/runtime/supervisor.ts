@@ -37,11 +37,21 @@ export interface SupervisorInstance {
   attemptCount: number;
   errorCode: string | null;
   errorDetail: string | null;
+  gitState: 'none' | 'preparing' | 'ready' | 'failed';
+  gitPhase: string | null;
+  gitProgress: number | null;
+  gitDetail: string | null;
+  gitStartedAt: string | null;
+  gitFinishedAt: string | null;
+  gitAttempts: number;
+  gitHead: string | null;
   updatedAt: string;
 }
 
 export interface SupervisorClient {
   prepare(repositoryId: string): Promise<SupervisorInstance>;
+  /** Repository-level retry/refresh of the reusable Git copy. */
+  prepareGit(repositoryId: string): Promise<SupervisorInstance>;
   wake(
     repositoryId: string,
     reason: 'new_task' | 'reply' | 'manual' | 'retry',
@@ -318,6 +328,8 @@ export function createSupervisorClient(config: ApiConfig): SupervisorClient | nu
       }
     },
     prepare: (repositoryId) => request(`/control/v1/instances/${repositoryId}/prepare`, 'POST', {}),
+    prepareGit: (repositoryId) =>
+      request(`/control/v1/instances/${repositoryId}/git/prepare`, 'POST', {}),
     wake: (repositoryId, reason) =>
       request(`/control/v1/instances/${repositoryId}/wake`, 'POST', {
         reason,

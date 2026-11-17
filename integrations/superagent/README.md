@@ -67,6 +67,7 @@ node --test integrations/superagent/tests/verify-lock.test.mjs
 | --- | --- |
 | `0025-workspace-attachments.patch` | L113 附件送达执行器：Bridge 接收可选 `attachments` 元数据（无内容、无 URL），用实例的平台机器令牌下载并校验 size/sha256（422 拒绝 / 503 暂不可用），把字节暂存到 stateDir；executor 在 trigger card 里给出工作区相对路径，并在交付前把文件复制到 `<workspace>/.moyu/attachments/<id>/<name>`（0600、git exclude、幂等）；`/bridge/v1/capabilities` 增加 `attachments: true` |
 | `0026-origin-message-receipts.patch` | 为 workspace Ticket 的 origin Trigger 投影 `message.delivered`/`message.read`：origin 不在 `ticket.inputs` 中，不能只依赖后续 Input 的回执；从 Assignment 的 `startedAt`/`idleAt` 或已完成 report 时间生成确定性事件，使平台 `handed_to_worker_at`/`read_at` 有真实回执 |
+| `0027-prepare-phases.patch` | 任务 checkout 阶段从 Bridge 传到会话：Executor 在准备开始、成功、失败/超时和 worker 启动时追加 `task.progress`（中文，含阶段与「worker 未启动」），失败仍按原路径标记 Ticket 失败；测试锁定成功、检出失败与核对失败三种文案 |
 
 ## 约束
 

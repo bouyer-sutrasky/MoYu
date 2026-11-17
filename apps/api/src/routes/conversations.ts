@@ -48,7 +48,7 @@ import type { Authenticate } from '../auth/guards';
 import type { ApiConfig } from '../config';
 import { toConversationSummary, toMessage } from '../domain/serialize';
 import { ensureConfiguredRepository, findOwnedRepository } from '../domain/repositories';
-import { requestWake } from '../domain/instances';
+import { assertExecutionPrepared, requestWake } from '../domain/instances';
 import {
   advertisesBranches,
   assertBranchAvailable,
@@ -622,6 +622,9 @@ export function registerConversationRoutes(
     }
 
     await verifyConversationSelection(config, repository, input, request.log);
+    if (input.executionMode === 'execute') {
+      await assertExecutionPrepared(database, config, repository);
+    }
 
     try {
       const created = await database.transaction(async (transaction) => {
@@ -899,6 +902,7 @@ export function registerConversationRoutes(
     const inheritance = await taskInheritance(database, task, sourceConversation);
     const targetRepository = await findOwnedRepository(database, auth.owner.id, input.repositoryId);
     if (!targetRepository) throw ApiProblem.notFound('Repository not found');
+    await assertExecutionPrepared(database, config, targetRepository);
     const baseCommit =
       input.baseCommit ?? (targetRepository.id === sourceRepository.id ? task.baseCommit : null);
     const modelId = encodeModel(input.model);

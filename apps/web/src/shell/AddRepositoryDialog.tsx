@@ -69,7 +69,7 @@ export function AddRepositoryDialog({ onClose, onAdded }: AddRepositoryDialogPro
   return (
     <Modal
       title="添加仓库"
-      description="使用专用 GitHub 账号查询并校验写权限；添加后由主机 supervisor 准备独立实例。"
+      description="使用专用 GitHub 账号查询并校验写权限；添加后由主机 supervisor 准备独立实例，并在仓库层准备可复用的 Git 副本。副本就绪前不会接受新任务。"
       onClose={onClose}
       wide
     >

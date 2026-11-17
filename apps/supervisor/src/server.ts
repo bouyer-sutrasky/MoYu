@@ -18,6 +18,7 @@ import { uuidSchema } from '@moyu/contracts';
 import type { SupervisorConfig } from './config';
 import { instanceIdentity, type SupervisorStore } from './store';
 import type { SupervisorLogger } from './logger';
+import { gitCachePath } from './git-cache';
 import { buildInstancePrepareCommand, type InstanceManager } from './manager';
 import { managedSettingsIssues } from './managed-settings';
 import { createReviewService } from './review';
@@ -92,6 +93,16 @@ export function buildSupervisorServer(options: {
   app.post('/control/v1/instances/:repositoryId/prepare', async (request) => {
     const repositoryId = repositoryIdOf(request);
     const instance = await manager.prepare(repositoryId);
+    return { data: instance };
+  });
+
+  /**
+   * Repository-level retry of the reusable Git copy. It only names a repository;
+   * the supervisor owns the path, remote, credential identity and timeout.
+   */
+  app.post('/control/v1/instances/:repositoryId/git/prepare', async (request) => {
+    const repositoryId = repositoryIdOf(request);
+    const instance = await manager.prepareGit(repositoryId);
     return { data: instance };
   });
 
@@ -213,6 +224,7 @@ export function buildSupervisorServer(options: {
           fullName: instance.row.fullName,
           githubAccount: config.githubAccount,
           githubCommitEmail: config.githubCommitEmail,
+          cacheDir: gitCachePath(config.worktreeRoot, profile),
         }),
       },
     };

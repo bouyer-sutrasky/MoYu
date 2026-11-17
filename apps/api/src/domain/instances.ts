@@ -1,6 +1,7 @@
 import { and, desc, eq, max } from 'drizzle-orm';
 
 import type {
+  RepositoryGitPreparation,
   RepositoryRuntime,
   RepositoryRuntimeAction,
   RuntimeInstanceState,
@@ -34,7 +35,7 @@ function safeDetail(value: string | null | undefined): string | null {
     .slice(0, 400);
 }
 
-function actionsFor(
+function baseActionsFor(
   state: RuntimeInstanceState,
   reasonCode: string,
   executionSlot: 'free' | 'busy' | 'unknown',
@@ -94,6 +95,104 @@ function actionsFor(
     default:
       return [wake(false, '状态未知'), sleep(false, '状态未知')];
   }
+}
+
+const GIT_PHASE_LABELS: Record<string, string> = {
+  connecting: '连接远端',
+  receiving: '接收对象',
+  resolving: '解析差异',
+  finalizing: '写入对象',
+  verifying: '核对副本',
+  ready: '就绪',
+};
+
+/** The owner-facing preparation action; readiness gates new execution, not settings. */
+function preparationAction(preparation: RepositoryGitPreparation): RepositoryRuntimeAction {
+  if (preparation.state === 'preparing') {
+    const phase = preparation.phase
+      ? (GIT_PHASE_LABELS[preparation.phase] ?? preparation.phase)
+      : '准备中';
+    return {
+      action: 'prepare',
+      label: '仓库副本准备中…',
+      enabled: false,
+      unavailableReason: `仓库副本正在准备（${phase}）`,
+    };
+  }
+  if (preparation.state === 'failed') {
+    return {
+      action: 'prepare',
+      label: '重试准备仓库副本',
+      enabled: true,
+      unavailableReason: null,
+    };
+  }
+  if (preparation.state === 'ready') {
+    return {
+      action: 'prepare',
+      label: '刷新仓库副本',
+      enabled: true,
+      unavailableReason: null,
+    };
+  }
+  return {
+    action: 'prepare',
+    label: '准备仓库副本',
+    enabled: true,
+    unavailableReason: null,
+  };
+}
+
+function actionsFor(
+  state: RuntimeInstanceState,
+  reasonCode: string,
+  executionSlot: 'free' | 'busy' | 'unknown',
+  preparation: RepositoryGitPreparation,
+): RepositoryRuntimeAction[] {
+  return [...baseActionsFor(state, reasonCode, executionSlot), preparationAction(preparation)];
+}
+
+/** The Chinese explanation for a preparation that blocks a new execution. */
+function preparationReason(preparation: RepositoryGitPreparation): string | null {
+  if (preparation.state === 'preparing') {
+    const phase = preparation.phase
+      ? (GIT_PHASE_LABELS[preparation.phase] ?? preparation.phase)
+      : '准备中';
+    const percent = preparation.progress === null ? '' : ` ${preparation.progress}%`;
+    return `仓库副本准备中：${phase}${percent}。准备好之前不会接受新任务；无需重新添加仓库。`;
+  }
+  if (preparation.state === 'failed') {
+    const detail = (preparation.detail ?? '原因未知').replace(/^仓库副本准备失败[：:]\s*/, '');
+    return `仓库副本准备失败：${detail} 请使用「重试准备仓库副本」后继续。`;
+  }
+  return null;
+}
+
+export function emptyPreparation(): RepositoryGitPreparation {
+  return {
+    state: 'none',
+    phase: null,
+    progress: null,
+    detail: null,
+    startedAt: null,
+    finishedAt: null,
+    attempts: 0,
+    headCommit: null,
+  };
+}
+
+/** The persisted preparation projection, shared by the runtime view and the execution gate. */
+export function preparationFor(instance: SupervisorInstance): RepositoryGitPreparation {
+  return {
+    state: instance.gitState,
+    phase: (instance.gitPhase as RepositoryGitPreparation['phase']) ?? null,
+    progress: instance.gitProgress,
+    detail: safeDetail(instance.gitDetail),
+    startedAt: instance.gitStartedAt,
+    finishedAt: instance.gitFinishedAt,
+    attempts: instance.gitAttempts,
+    headCommit: instance.gitHead,
+  };
 }
 
 function reasonFor(
@@ -270,6 +369,17 @@ async function loadInstance(
       attemptCount: row.attemptCount,
       errorCode: row.errorCode,
       errorDetail: row.errorDetail,
+      gitState:
+        row.gitState === 'preparing' || row.gitState === 'ready' || row.gitState === 'failed'
+          ? row.gitState
+          : 'none',
+      gitPhase: row.gitPhase,
+      gitProgress: row.gitProgress,
+      gitDetail: row.gitDetail,
+      gitStartedAt: iso(row.gitStartedAt),
+      gitFinishedAt: iso(row.gitFinishedAt),
+      gitAttempts: row.gitAttempts,
+      gitHead: row.gitHead,
       updatedAt: iso(row.updatedAt) ?? new Date().toISOString(),
     };
   }
@@ -284,6 +394,9 @@ async function loadInstance(
       desiredState: legacyOnline ? 'online' : 'sleeping',
       reasonCode: legacyOnline ? 'listening' : 'never_started',
       lastHealthAt: legacyOnline ? new Date() : null,
+      // Legacy single-repository deployments have no supervisor Git copy; the
+      // platform keeps its previous behaviour and does not gate execution.
+      gitState: 'none',
     })
     .onConflictDoNothing()
     .returning();
@@ -335,9 +448,15 @@ export async function projectRuntime(
     .limit(1);
   const lease = await leaseFor(database, repository.id);
   const taskFacts = await facts(database, repository.id);
-  const reason = reasonFor(instance);
+  const preparation = preparationFor(instance);
+  const preparationBlock = preparationReason(preparation);
+  const baseReason = reasonFor(instance);
+  const reason = preparationBlock ? { ...baseReason, reason: preparationBlock } : baseReason;
   let executionSlot = taskFacts.executionSlot;
   let waitingFor = instance.waitingFor;
+  if (preparation.state === 'preparing' || preparation.state === 'failed') {
+    waitingFor = 'repository_copy';
+  }
   if (taskFacts.waitingInput > 0) waitingFor = 'owner_input';
   else if (taskFacts.awaitingReview > 0) waitingFor = 'review';
   else if (instance.reasonCode === 'capacity_wait') waitingFor = 'capacity';
@@ -364,10 +483,51 @@ export async function projectRuntime(
     lastStartedAt: iso(instance.lastStartedAt),
     lastStoppedAt: iso(instance.lastStoppedAt),
     lastHealthAt: iso(instance.lastHealthAt),
-    actions: actionsFor(instance.state, instance.reasonCode, executionSlot),
+    actions: actionsFor(instance.state, instance.reasonCode, executionSlot, preparation),
     resource: resourceForRow(stateRow),
     lease,
+    preparation,
   };
+}
+
+/**
+ * A new execution may only start when the repository's reusable Git copy is
+ * ready. Discuss mode never touches the worktree, so callers skip this check
+ * for it. A legacy row with no preparation starts one now and reports that
+ * state instead of running a task that would fail inside the executor.
+ */
+export async function assertExecutionPrepared(
+  database: Database,
+  config: ApiConfig,
+  repository: Repository,
+): Promise<void> {
+  if (!config.supervisorUrl) return;
+  const instance = await loadInstance(database, config, repository);
+  const preparation = preparationFor(instance);
+  if (preparation.state === 'ready') return;
+  if (preparation.state === 'preparing') {
+    throw ApiProblem.conflict(
+      preparationReason(preparation) ??
+        '仓库副本准备中。准备好之前不会接受新任务；无需重新添加仓库。',
+    );
+  }
+  if (preparation.state === 'failed') {
+    throw ApiProblem.conflict(
+      preparationReason(preparation) ?? '仓库副本准备失败。请使用「重试准备仓库副本」后继续。',
+    );
+  }
+  const supervisor = createSupervisorClient(config);
+  if (supervisor) {
+    try {
+      await supervisor.prepareGit(repository.id);
+    } catch {
+      // The conflict below still tells the owner what to do; the repository
+      // panel is the recovery entry if the supervisor refused the request.
+    }
+  }
+  throw ApiProblem.conflict(
+    '仓库副本尚未准备，已请求仓库层开始准备；准备好后可重试，无需重新添加仓库。',
+  );
 }
 
 export async function requestWake(

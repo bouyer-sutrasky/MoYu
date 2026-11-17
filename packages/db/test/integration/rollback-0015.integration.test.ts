@@ -15,6 +15,7 @@ let downSql0016 = '';
 let downSql0017 = '';
 let downSql0018 = '';
 let downSql0019 = '';
+let downSql0020 = '';
 const databases: TestDatabase[] = [];
 
 const read = async (database: TestDatabase) => {
@@ -58,6 +59,10 @@ describe('0015 rollback script on real PostgreSQL', () => {
       path.join(ROOT, 'packages/db/migrations/rollback/0019_event_dedupe_per_repository.down.sql'),
       'utf8',
     );
+    downSql0020 = await readFile(
+      path.join(ROOT, 'packages/db/migrations/rollback/0020_worthless_carmella_unuscione.down.sql'),
+      'utf8',
+    );
   });
 
   it('refuses a second rollback instead of silently deleting nothing', async () => {
@@ -65,6 +70,7 @@ describe('0015 rollback script on real PostgreSQL', () => {
     databases.push(database);
 
     // Later migrations are newer: the supported order is to roll them back first.
+    await database.pool.query(downSql0020);
     await database.pool.query(downSql0019);
     await database.pool.query(downSql0018);
     await database.pool.query(downSql0017);
@@ -85,6 +91,7 @@ describe('0015 rollback script on real PostgreSQL', () => {
     databases.push(database);
     expect(await read(database)).toEqual({ column_present: true, ledger_present: true });
 
+    await database.pool.query(downSql0020);
     await database.pool.query(downSql0019);
     await database.pool.query(downSql0018);
     await database.pool.query(downSql0017);

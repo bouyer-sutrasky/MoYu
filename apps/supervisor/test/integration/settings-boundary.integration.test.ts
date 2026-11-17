@@ -137,6 +137,7 @@ describe('supervisor settings write boundary', () => {
       fullName: instance.fullName,
       githubAccount: 'Bouyer12',
       githubCommitEmail: 'agent@example.invalid',
+      cacheDir: join(root, 'worktrees', 'p1', '.repository.git'),
     });
     const response = await app.inject({
       method: 'PUT',

@@ -1,0 +1,221 @@
+diff --git a/docs/007-architecture.md b/docs/007-architecture.md
+index 237abfe..00496e5 100644
+--- a/docs/007-architecture.md
++++ b/docs/007-architecture.md
+@@ -423,6 +423,7 @@ Some generic modules still refer directly to GitHub or Feishu:
+ | `tests/pause.spec.ts` | A human pause and resume: Inputs and attention kept, the Executor pause, `stoppedAt` evidence and failures, resume admission and ticket identity, starting a discuss plan, non-retryability, and `DshExecutor.pause` stopping jobs with its evidence |
+ | `tests/admission.spec.ts` | Execution admission in the core: retry/start/admit without a usable token, an invalid or stale generation, the repository-wide fence for delayed Triggers, and pause-before-admit creating no Assignment |
+ | `tests/pause-start.spec.ts` | A stop before or during the start lands in bounded time: a Web ticket whose launch is still preparing settles `stoppedAt` and ends that start, a GitHub ticket paused in `pending_admission` with no Assignment settles too, another process of the shared harness cannot fail a clean stop, and the resume of a start that never reached a worker is accepted |
++| `tests/prepare-progress.spec.ts` | The Executor's checkout phase reported to the machine Bridge: a successful prepare says the workspace is ready and the worker is starting, a failed checkout names the phase and says no worker started, and a workspace that fails verification reports the same |
+ 
+ | `tests/stop-proof-red.spec.ts` | Recovery red evidence: a real recorded process has exited, but without an authoritative stop completion the proof stays unproven and replacement stays blocked |
+ | `tests/stop-proof.spec.ts` | Durable stop proof: an unproven record blocks replacement while a recorded job/pid lives, missing admitted proof blocks, and only gone identities settle the proof |
+diff --git a/src/app/bridge.ts b/src/app/bridge.ts
+index 5bc306b..4d7c307 100644
+--- a/src/app/bridge.ts
++++ b/src/app/bridge.ts
+@@ -378,6 +378,16 @@ export class Bridge {
+   get boundPort(): number | undefined { return this.port }
+   /** The event log, exposed for tests and for a shutdown flush. */
+   get events(): EventLog { return this.log }
++
++  /**
++   * Appends one task-checkout progress message for a workspace Ticket. The key is stable per step, so a repeated projection
++   * or a restart never appends the same phase twice; the platform spells the text out to the person (it is Chinese here
++   * because the worker-facing conversation is Chinese).
++   */
++  taskProgress(ticketId: string, key: string, text: string): void {
++    const at = new Date().toISOString()
++    try { this.log.append(`task-progress:${ticketId}:${key}`, 'task.progress', at, { ticketId, text, at }) } catch { /* Not listening yet. */ }
++  }
+   /** The operation log, exposed for tests; the platform reads it through `GET /bridge/v1/operations/:id`. */
+   get operationLog(): OperationLog { return this.operations }
+   /** The token this Bridge demands, for tests; undefined while not listening. */
+diff --git a/src/app/runtime.ts b/src/app/runtime.ts
+index 13ca981..f61bd71 100644
+--- a/src/app/runtime.ts
++++ b/src/app/runtime.ts
+@@ -130,7 +130,10 @@ export class Runtime extends Service implements SourceHost {
+         sourceHost: this, setup, requestPass: () => { this.passes.request() } })
+       this.executor = new DshExecutor({ context: ctx, get engine() { return runtime.engine }, store, effects, health: board.claim('worker'), machine,
+         lifetime: this.lifetime, sessions, closing: () => this.closing(), paused: () => this.paused(), environment, sourceLink: link,
+-        repliedTo: trigger => repliedTo({ store, sources }, trigger) })
++        repliedTo: trigger => repliedTo({ store, sources }, trigger),
++        // The Bridge is created below; by the time a launch prepares a workspace it exists. A failed append must never fail
++        // the launch, and a missing Bridge (tests) simply has no place to report to.
++        progress: (ticketId, key, text) => { if (this.bridge) this.bridge.taskProgress(ticketId, key, text) } })
+       this.assessor = new MasterAssessor({ get engine() { return runtime.engine }, commands, get deployment() { return setup.deployment }, effects,
+         settings: () => store.settings(), paused: () => this.paused(), threadContext: trigger => sources.threadContext(trigger),
+         deliver: (id, text) => sessions.prompt(masterId, id, text, 'steer'), candidateCard: candidate => candidateCard(links, candidate) })
+diff --git a/src/executor/dsh.ts b/src/executor/dsh.ts
+index edc4e05..cde519d 100644
+--- a/src/executor/dsh.ts
++++ b/src/executor/dsh.ts
+@@ -163,6 +163,8 @@ export interface ExecutorHost {
+   closing(): boolean
+   /** Whether processing is paused, which holds launches and input deliveries. */
+   paused(): boolean
++  /** Reports one task-level preparation step to the machine Bridge, when it is listening. */
++  progress?(ticketId: string, key: string, text: string): void
+   /** Execution environment variables for `ticket`, passed to its workspace prepare command. */
+   environment(ticket: Ticket): Variable[]
+   sourceLink(trigger: Trigger, signal?: AbortSignal): Promise<{ source_url?: string; source_url_read?: string }>
+@@ -359,21 +361,38 @@ export class DshExecutor implements Executor {
+     const command = this.host.store.settings().executor.prepare.trim()
+     const env = Object.fromEntries(this.host.environment(ticket).map(variable => [variable.key, variable.value]))
+     // Enforce a timeout so a hung prepare command (such as on a credential prompt) fails the ticket instead of holding a worker slot indefinitely.
+-    const signal = AbortSignal.any([this.host.lifetime, AbortSignal.timeout(PREPARE_TIMEOUT_MS), ...launch ? [launch] : []])
++    const timeout = AbortSignal.timeout(PREPARE_TIMEOUT_MS)
++    const signal = AbortSignal.any([this.host.lifetime, timeout, ...launch ? [launch] : []])
++    const attempt = latestAssignment(ticket)?.id ?? 'none'
++    this.host.progress?.(ticket.id, `${attempt}:prepare-start`, '准备任务工作区：从仓库副本检出冻结提交…')
+     if (command) await runAsWorker(this.host.context.subprocess, ['sh', '-c', command], dirname(directory), signal, env)
+       .catch(async (error: unknown) => {
+         // A pause ends the prepare before the worker ever sees the workspace: nothing of the ticket's work is in it, and a
+         // resume must check it out again instead of taking a half-prepared tree for a prepared one.
+         if (launch?.aborted && !existed) {
+           await rm(directory, { recursive: true, force: true }).catch(() => { /* Already gone, or held by someone else. */ })
++          this.host.progress?.(ticket.id, `${attempt}:prepare-aborted`, '任务工作区准备已随暂停中止；worker 未启动。')
+           throw new PrepareAborted(ticket.id)
+         }
+         // Remove an empty directory left by a failed prepare command so a later retry does not treat it as already prepared.
+         await rmdir(directory).catch(() => { /* Absent, or holding what the command wrote, which the output explains. */ })
+-        throw new PrepareFailed(`The prepare command failed: ${error instanceof Error ? error.message : String(error)}`)
++        // Say what the owner needs: the phase, whether it timed out, and that no worker was started.
++        const timedOut = (signal.reason as { name?: string } | undefined)?.name === 'TimeoutError'
++        const detail = error instanceof Error ? error.message : String(error)
++        this.host.progress?.(ticket.id, `${attempt}:prepare-failed`, `${timedOut
++          ? `任务工作区准备超时（阶段：检出工作区，${Math.round(PREPARE_TIMEOUT_MS / 1000)} 秒）`
++          : '任务工作区准备失败（阶段：检出工作区）'}；worker 未启动。${detail}`)
++        throw new PrepareFailed(`The prepare command failed: ${detail}`)
+       })
+     await mkdir(directory, { recursive: true })
+-    await verifyDirectory(directory, this.host.context.subprocess, this.host.lifetime)
++    try {
++      await verifyDirectory(directory, this.host.context.subprocess, this.host.lifetime)
++    } catch (error) {
++      const detail = error instanceof Error ? error.message : String(error)
++      this.host.progress?.(ticket.id, `${attempt}:prepare-failed`, `任务工作区准备失败（阶段：核对工作区）；worker 未启动。${detail}`)
++      throw new PrepareFailed(`The prepare command failed: ${detail}`)
++    }
++    this.host.progress?.(ticket.id, `${attempt}:prepare-ready`, '任务工作区已准备好（从仓库副本检出）；正在启动 worker…')
+   }
+   /** Enqueues a `launch` effect for an accepted or resumed assignment; launches start in queue order as worker slots free up. */
+   start(ticket: Ticket, assignment: Assignment): void {
+@@ -732,6 +751,7 @@ export class DshExecutor implements Executor {
+       () => { if (!current()) throw new Error('Launch authorization changed before worker delivery') },
+       () => { this.host.engine.assignmentStarted(ticket.id, assignment.id) })
+     this.host.engine.assignmentStarted(ticket.id, assignment.id)
++    this.host.progress?.(ticket.id, `${assignment.id}:worker-started`, 'worker 已启动，开始执行任务。')
+   }
+   /** Registers an assignment-scoped discussion run before any await that pause may interleave with. */
+   private startDiscussRun(ticket: Ticket, assignment: Assignment): DiscussRun {
+@@ -776,6 +796,7 @@ export class DshExecutor implements Executor {
+         ticket.planRevision ? `Approved plan revision: ${ticket.planRevision}` : '',
+         ticket.execution?.assignment ?? '', source?.text ? `Source request:\n${source.text}` : ''].filter(Boolean).join('\n\n')
+       this.host.engine.assignmentStarted(ticket.id, assignment.id)
++      this.host.progress?.(ticket.id, `${assignment.id}:worker-started`, '讨论 worker 已启动。')
+       if (!this.discussCurrent(ticket.id, assignment.id, run)) return
+       await writeFile(promptFile, prompt, { mode: 0o600 })
+       if (!this.discussCurrent(ticket.id, assignment.id, run)) return
+diff --git a/tests/prepare-progress.spec.ts b/tests/prepare-progress.spec.ts
+new file mode 100644
+index 0000000..b842be1
+--- /dev/null
++++ b/tests/prepare-progress.spec.ts
+@@ -0,0 +1,95 @@
++/**
++ * The owner has to be able to tell why a task is still "queued" and whether a
++ * worker ever started. These tests keep the Executor's prepare phase reporting:
++ * a successful checkout says the workspace is ready and the worker is starting,
++ * a failed one names the checkout phase and says no worker was started, so the
++ * platform's `task.progress` stream can explain it instead of a generic queue.
++ */
++import { mkdtempSync, rmSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import { describe, expect, it, vi } from 'vitest'
++import type { Ticket } from '../src/core/index.ts'
++import { DshExecutor } from '../src/executor/dsh.ts'
++import { SettingsSchema } from '../src/policy.ts'
++
++const reader = (text: string) => ({ readFrom: () => ({ text, nextOffset: text.length, lossy: false }) })
++
++/** A subprocess whose runs answer in order; the second one is `verifyDirectory`'s git config call. */
++function subprocess(runs: { code: number; stdout?: string; stderr?: string }[]) {
++  return {
++    spawn: vi.fn(() => {
++      const run = runs.shift() ?? { code: 1 }
++      return {
++        done: Promise.resolve({ exitCode: run.code }),
++        collected: { stdout: reader(run.stdout ?? ''), stderr: reader(run.stderr ?? '') },
++      }
++    }),
++  }
++}
++
++function harness(runs: { code: number; stdout?: string; stderr?: string }[]) {
++  const root = mkdtempSync(join(tmpdir(), 'moyu-prepare-progress-'))
++  const progress: { ticketId: string; key: string; text: string }[] = []
++  const host = {
++    context: { subprocess: subprocess(runs) },
++    store: {
++      settings: () => SettingsSchema.parse({ executor: { prepare: 'git clone' } }),
++      tickets: { open: () => [] },
++    },
++    effects: { handle: () => {} },
++    environment: () => [],
++    lifetime: new AbortController().signal,
++    progress: (ticketId: string, key: string, text: string) => progress.push({ ticketId, key, text }),
++    machine: { stateDir: root },
++  }
++  const executor = new DshExecutor(host as never)
++  const ticket = {
++    id: 't1',
++    assignments: [],
++    execution: { name: 'fix-t1', directory: join(root, 'worktree'), assignment: 'Fix it' },
++  } as unknown as Ticket
++  const prepare = () =>
++    (executor as unknown as { prepareDirectory(ticket: Ticket): Promise<void> }).prepareDirectory(ticket)
++  return { root, progress, prepare, done: () => rmSync(root, { recursive: true, force: true }) }
++}
++
++describe('the Executor checkout phase reported to the Bridge', () => {
++  it('reports the checkout start and ready phases before starting the worker', async () => {
++    const h = harness([{ code: 0 }, { code: 1 }])
++    try {
++      await h.prepare()
++      expect(h.progress.map(item => item.key.replace(/^none:/, ''))).toEqual(['prepare-start', 'prepare-ready'])
++      expect(h.progress[0]?.text).toContain('准备任务工作区')
++      expect(h.progress[1]?.text).toContain('正在启动 worker')
++    } finally {
++      h.done()
++    }
++  })
++
++  it('names the phase and says the worker never started when the checkout fails', async () => {
++    const h = harness([{ code: 128, stderr: 'fatal: could not fetch the frozen commit' }])
++    try {
++      await expect(h.prepare()).rejects.toThrow('The prepare command failed')
++      expect(h.progress).toHaveLength(2)
++      expect(h.progress[1]?.key).toMatch(/:prepare-failed$/)
++      expect(h.progress[1]?.text).toContain('阶段：检出工作区')
++      expect(h.progress[1]?.text).toContain('worker 未启动')
++      expect(h.progress[1]?.text).toContain('fatal: could not fetch the frozen commit')
++    } finally {
++      h.done()
++    }
++  })
++
++  it('says the worker never started when the prepared workspace fails verification', async () => {
++    const h = harness([{ code: 0 }, { code: 0, stdout: 'local\0credential.helper=leak\0' }])
++    try {
++      await expect(h.prepare()).rejects.toThrow('The prepare command failed')
++      expect(h.progress.at(-1)?.key).toMatch(/:prepare-failed$/)
++      expect(h.progress.at(-1)?.text).toContain('阶段：核对工作区')
++      expect(h.progress.at(-1)?.text).toContain('worker 未启动')
++    } finally {
++      h.done()
++    }
++  })
++})

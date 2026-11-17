@@ -58,7 +58,7 @@ export function pathExists(path: string): boolean {
 }
 
 /** Chown a tree without following symlinks; symlinked shared assets stay shared. */
-function chownTree(path: string, uid: number, gid: number): void {
+export function chownTree(path: string, uid: number, gid: number): void {
   const stat = lstatSync(path);
   if (stat.isSymbolicLink()) {
     lchownSync(path, uid, gid);

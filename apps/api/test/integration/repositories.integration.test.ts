@@ -47,7 +47,12 @@ function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function instance(repositoryId: string, state: string, reasonCode: string) {
+function instance(
+  repositoryId: string,
+  state: string,
+  reasonCode: string,
+  gitState: 'none' | 'preparing' | 'ready' | 'failed' = 'ready',
+) {
   return {
     repositoryId,
     fullName: 'Bouyer12/unknown',
@@ -71,6 +76,22 @@ function instance(repositoryId: string, state: string, reasonCode: string) {
     attemptCount: 0,
     errorCode: null,
     errorDetail: null,
+    gitState,
+    gitPhase: gitState === 'preparing' ? 'receiving' : gitState === 'ready' ? 'ready' : null,
+    gitProgress: gitState === 'preparing' ? 42 : gitState === 'ready' ? 100 : null,
+    gitDetail:
+      gitState === 'preparing'
+        ? '正在接收对象 42%'
+        : gitState === 'ready'
+          ? '仓库副本已就绪。'
+          : gitState === 'failed'
+            ? '网络不可达'
+            : null,
+    gitStartedAt: gitState === 'none' ? null : new Date().toISOString(),
+    gitFinishedAt:
+      gitState === 'preparing' || gitState === 'none' ? null : new Date().toISOString(),
+    gitAttempts: gitState === 'none' ? 0 : 1,
+    gitHead: gitState === 'ready' ? 'a'.repeat(40) : null,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -85,7 +106,9 @@ async function startFakeSupervisor(): Promise<{ server: Server; url: string; cal
       response.end(JSON.stringify({ error: { message: 'unauthorized' } }));
       return;
     }
-    const match = url.pathname.match(/instances\/([^/]+)\/(prepare|wake|sleep|touch|retry)$/);
+    const match = url.pathname.match(
+      /instances\/([^/]+)\/(prepare|wake|sleep|touch|retry|git\/prepare)$/,
+    );
     if (!match) {
       response.writeHead(404, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ error: { message: 'not found' } }));
@@ -104,6 +127,12 @@ async function startFakeSupervisor(): Promise<{ server: Server; url: string; cal
             instance: instance(repositoryId, 'online', 'sleep_refused'),
           },
         }),
+      );
+      return;
+    }
+    if (action === 'git/prepare') {
+      response.end(
+        JSON.stringify({ data: instance(repositoryId, 'sleeping', 'never_started', 'preparing') }),
       );
       return;
     }
@@ -318,6 +347,94 @@ describe('multi-repository lifecycle API on real PostgreSQL', () => {
     const online = await request('GET', `/api/v1/repositories/${harness.repositoryAId}/runtime`);
     expect(online.json().data.runtime.listener).toBe('active');
     expect(online.json().data.runtime.executionSlot).toBe('free');
+  });
+
+  it('explains and gates execution on the repository Git copy, and retries it at repository level', async () => {
+    await harness.database
+      .update(repositoryInstances)
+      .set({
+        gitState: 'preparing',
+        gitPhase: 'receiving',
+        gitProgress: 42,
+        gitDetail: 'Receiving objects: 42% (420/1000)',
+        gitStartedAt: new Date(),
+        gitAttempts: 1,
+      })
+      .where(eq(repositoryInstances.repositoryId, harness.repositoryAId));
+
+    const runtime = await request('GET', `/api/v1/repositories/${harness.repositoryAId}/runtime`);
+    expect(runtime.statusCode).toBe(200);
+    expect(runtime.json().data.runtime.preparation).toMatchObject({
+      state: 'preparing',
+      phase: 'receiving',
+      progress: 42,
+      attempts: 1,
+    });
+    expect(runtime.json().data.runtime.reason).toContain('仓库副本准备中');
+    expect(runtime.json().data.runtime.waitingFor).toBe('repository_copy');
+
+    const gated = await request('POST', '/api/v1/conversations', {
+      repositoryId: harness.repositoryAId,
+      mode: 'work',
+      executionMode: 'execute',
+      baseBranch: 'main',
+      clientRequestId: `prepare-gate-${randomUUID()}`,
+    });
+    expect(gated.statusCode).toBe(409);
+    expect(gated.json().error.message).toContain('仓库副本准备中');
+
+    const retry = await request('POST', `/api/v1/repositories/${harness.repositoryAId}/prepare`);
+    expect(retry.statusCode).toBe(202);
+    expect(retry.json().data.runtime.actions).toContainEqual(
+      expect.objectContaining({ action: 'prepare', enabled: false }),
+    );
+
+    await harness.database
+      .update(repositoryInstances)
+      .set({
+        gitState: 'failed',
+        gitPhase: null,
+        gitProgress: null,
+        gitDetail: '仓库副本准备失败（阶段 connecting）：网络不可达',
+        gitFinishedAt: new Date(),
+      })
+      .where(eq(repositoryInstances.repositoryId, harness.repositoryAId));
+    const failed = await request('POST', '/api/v1/conversations', {
+      repositoryId: harness.repositoryAId,
+      mode: 'work',
+      executionMode: 'execute',
+      baseBranch: 'main',
+      clientRequestId: `prepare-gate-${randomUUID()}`,
+    });
+    expect(failed.statusCode).toBe(409);
+    expect(failed.json().error.message).toContain('仓库副本准备失败');
+    const failedRuntime = await request(
+      'GET',
+      `/api/v1/repositories/${harness.repositoryAId}/runtime`,
+    );
+    expect(failedRuntime.json().data.runtime.actions).toContainEqual(
+      expect.objectContaining({ action: 'prepare', enabled: true }),
+    );
+
+    await harness.database
+      .update(repositoryInstances)
+      .set({
+        gitState: 'ready',
+        gitPhase: 'ready',
+        gitProgress: 100,
+        gitDetail: '仓库副本已就绪，可用于新任务。',
+        gitFinishedAt: new Date(),
+        gitHead: 'a'.repeat(40),
+      })
+      .where(eq(repositoryInstances.repositoryId, harness.repositoryAId));
+    const accepted = await request('POST', '/api/v1/conversations', {
+      repositoryId: harness.repositoryAId,
+      mode: 'work',
+      executionMode: 'execute',
+      baseBranch: 'main',
+      clientRequestId: `prepare-gate-${randomUUID()}`,
+    });
+    expect(accepted.statusCode).toBe(201);
   });
 
   it('accepts a wake and reports a refused sleep without pretending the instance stopped', async () => {

@@ -1,0 +1,275 @@
+{
+  "fullName": "Bouyer12/m6c-a-repo-cache-20261117",
+  "remote": "ssh://git@ssh.github.com:443/Bouyer12/m6c-a-repo-cache-20261117.git",
+  "prepareCommandExit": 0,
+  "preparation": {
+    "state": "ready",
+    "phase": "ready",
+    "attempts": 1,
+    "durationMs": 5415,
+    "cacheHead": "c8ff4ec28d47f5e4d73bb42488026b5df97fb005",
+    "cacheBytes": 41508,
+    "progress": [
+      {
+        "at": "2026-11-17T08:41:14.176Z",
+        "state": "preparing",
+        "phase": "connecting",
+        "progress": null,
+        "detail": "正在连接远端并准备可复用的仓库副本…"
+      },
+      {
+        "at": "2026-11-17T08:41:14.186Z",
+        "state": "preparing",
+        "phase": "connecting",
+        "progress": null,
+        "detail": "Cloning into bare repository '/tmp/m6c-a-evidence/real-run-2/worktrees/m6c-a/.repository.git.partial-1520386-1794904874177'..."
+      },
+      {
+        "at": "2026-11-17T08:41:19.158Z",
+        "state": "preparing",
+        "phase": "connecting",
+        "progress": null,
+        "detail": "remote: Enumerating objects: 9, done."
+      },
+      {
+        "at": "2026-11-17T08:41:19.158Z",
+        "state": "preparing",
+        "phase": "connecting",
+        "progress": null,
+        "detail": "remote: Counting objects: 11% (1/9)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.158Z",
+        "state": "preparing",
+        "phase": "connecting",
+        "progress": null,
+        "detail": "remote: Counting objects: 22% (2/9)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.158Z",
+        "state": "preparing",
+        "phase": "connecting",
+        "progress": null,
+        "detail": "remote: Counting objects: 33% (3/9)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.158Z",
+        "state": "preparing",
+        "phase": "connecting",
+        "progress": null,
+        "detail": "remote: Counting objects: 44% (4/9)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.158Z",
+        "state": "preparing",
+        "phase": "connecting",
+        "progress": null,
+        "detail": "remote: Counting objects: 55% (5/9)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.158Z",
+        "state": "preparing",
+        "phase": "connecting",
+        "progress": null,
+        "detail": "remote: Counting objects: 66% (6/9)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.158Z",
+        "state": "preparing",
+        "phase": "connecting",
+        "progress": null,
+        "detail": "remote: Counting objects: 77% (7/9)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.158Z",
+        "state": "preparing",
+        "phase": "connecting",
+        "progress": null,
+        "detail": "remote: Counting objects: 88% (8/9)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.158Z",
+        "state": "preparing",
+        "phase": "connecting",
+        "progress": null,
+        "detail": "remote: Counting objects: 100% (9/9)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.158Z",
+        "state": "preparing",
+        "phase": "connecting",
+        "progress": null,
+        "detail": "remote: Counting objects: 100% (9/9), done."
+      },
+      {
+        "at": "2026-11-17T08:41:19.158Z",
+        "state": "preparing",
+        "phase": "connecting",
+        "progress": null,
+        "detail": "remote: Compressing objects: 14% (1/7)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.158Z",
+        "state": "preparing",
+        "phase": "connecting",
+        "progress": null,
+        "detail": "remote: Compressing objects: 28% (2/7)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.158Z",
+        "state": "preparing",
+        "phase": "connecting",
+        "progress": null,
+        "detail": "remote: Compressing objects: 42% (3/7)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.158Z",
+        "state": "preparing",
+        "phase": "connecting",
+        "progress": null,
+        "detail": "remote: Compressing objects: 57% (4/7)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.158Z",
+        "state": "preparing",
+        "phase": "connecting",
+        "progress": null,
+        "detail": "remote: Compressing objects: 71% (5/7)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.158Z",
+        "state": "preparing",
+        "phase": "connecting",
+        "progress": null,
+        "detail": "remote: Compressing objects: 85% (6/7)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.158Z",
+        "state": "preparing",
+        "phase": "connecting",
+        "progress": null,
+        "detail": "remote: Compressing objects: 100% (7/7)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.158Z",
+        "state": "preparing",
+        "phase": "connecting",
+        "progress": null,
+        "detail": "remote: Compressing objects: 100% (7/7), done."
+      },
+      {
+        "at": "2026-11-17T08:41:19.289Z",
+        "state": "preparing",
+        "phase": "receiving",
+        "progress": 11,
+        "detail": "Receiving objects: 11% (1/9)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.289Z",
+        "state": "preparing",
+        "phase": "receiving",
+        "progress": 22,
+        "detail": "Receiving objects: 22% (2/9)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.289Z",
+        "state": "preparing",
+        "phase": "receiving",
+        "progress": 33,
+        "detail": "Receiving objects: 33% (3/9)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.289Z",
+        "state": "preparing",
+        "phase": "receiving",
+        "progress": 44,
+        "detail": "Receiving objects: 44% (4/9)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.289Z",
+        "state": "preparing",
+        "phase": "receiving",
+        "progress": 55,
+        "detail": "Receiving objects: 55% (5/9)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.563Z",
+        "state": "preparing",
+        "phase": "finalizing",
+        "progress": null,
+        "detail": "remote: Total 9 (delta 0), reused 6 (delta 0), pack-reused 0 (from 0)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.563Z",
+        "state": "preparing",
+        "phase": "receiving",
+        "progress": 66,
+        "detail": "Receiving objects: 66% (6/9)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.563Z",
+        "state": "preparing",
+        "phase": "receiving",
+        "progress": 77,
+        "detail": "Receiving objects: 77% (7/9)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.563Z",
+        "state": "preparing",
+        "phase": "receiving",
+        "progress": 88,
+        "detail": "Receiving objects: 88% (8/9)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.563Z",
+        "state": "preparing",
+        "phase": "finalizing",
+        "progress": 100,
+        "detail": "Receiving objects: 100% (9/9)"
+      },
+      {
+        "at": "2026-11-17T08:41:19.563Z",
+        "state": "preparing",
+        "phase": "finalizing",
+        "progress": 100,
+        "detail": "Receiving objects: 100% (9/9), 13.32 KiB | 48.00 KiB/s, done."
+      },
+      {
+        "at": "2026-11-17T08:41:19.574Z",
+        "state": "preparing",
+        "phase": "verifying",
+        "progress": null,
+        "detail": "正在核对仓库副本与默认分支 HEAD…"
+      },
+      {
+        "at": "2026-11-17T08:41:19.581Z",
+        "state": "preparing",
+        "phase": "ready",
+        "progress": 100,
+        "detail": "仓库副本已就绪。"
+      },
+      {
+        "at": "2026-11-17T08:41:19.581Z",
+        "state": "ready",
+        "phase": "ready",
+        "progress": 100,
+        "detail": "仓库副本已就绪，可用于新任务。"
+      }
+    ]
+  },
+  "firstTask": {
+    "command": "set -e\nDEST=\"$DSH_SUPERAGENT_DIR\"\nCACHE='/tmp/m6c-a-evidence/real-run-2/worktrees/m6c-a/.repository.git'\nREMOTE='ssh://git@ssh.github.com:443/Bouyer12/m6c-a-repo-cache-20261117.git'\nCOMMIT=\"${DSH_SUPERAGENT_WORKSPACE_BASE_COMMIT:-HEAD}\"\nBRANCH=\"${DSH_SUPERAGENT_WORKSPACE_BASE_BRANCH:-HEAD}\"\nTMP=\"${DEST}.preparing-$$\"\nif [ ! -d \"$CACHE\" ]; then echo \"仓库的 Git 副本尚未准备好（仓库准备未完成或失败），请先在仓库面板重试准备。\" >&2; exit 75; fi\ntrap 'rm -rf \"$TMP\"' EXIT HUP INT TERM\ngit -c safe.directory='*' clone --no-tags --local \"$CACHE\" \"$TMP\"\ngit -C \"$TMP\" remote set-url origin \"$REMOTE\"\nif ! git -C \"$TMP\" cat-file -e \"${COMMIT}^{commit}\" 2>/dev/null; then\n  if [ \"$BRANCH\" != \"HEAD\" ]; then git -C \"$TMP\" fetch --no-tags origin \"+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}\"; fi\n  if ! git -C \"$TMP\" cat-file -e \"${COMMIT}^{commit}\" 2>/dev/null; then git -C \"$TMP\" fetch --no-tags origin \"$COMMIT\"; fi\nfi\ngit -C \"$TMP\" -c advice.detachedHead=false checkout \"$COMMIT\"\ngit -C \"$TMP\" config user.name 'Bouyer12'\ngit -C \"$TMP\" config user.email '202233540+Bouyer12@users.noreply.github.com'\ngit -C \"$TMP\" switch -c \"agent/$DSH_SUPERAGENT_NAME\"\nif [ -e \"$DEST\" ]; then echo \"任务工作区已存在，拒绝覆盖；请用原任务继续或新建任务。\" >&2; exit 74; fi\ntrap - EXIT HUP INT TERM\nmv \"$TMP\" \"$DEST\"",
+    "exitCode": 0,
+    "durationMs": 26,
+    "head": "c8ff4ec28d47f5e4d73bb42488026b5df97fb005",
+    "branch": "agent/evidence-task",
+    "origin": "ssh://git@ssh.github.com:443/Bouyer12/m6c-a-repo-cache-20261117.git",
+    "author": "Bouyer12",
+    "email": "202233540+Bouyer12@users.noreply.github.com",
+    "clean": true,
+    "commitSubject": "evidence: seed files for repository preparation",
+    "remoteAccessDisabled": true,
+    "leftovers": [],
+    "taskBytes": 55777
+  }
+}
