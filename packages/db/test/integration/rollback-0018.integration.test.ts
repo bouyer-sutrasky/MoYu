@@ -12,6 +12,7 @@ const ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 let hash = '';
 let downSql = '';
 let downSql0019 = '';
+let downSql0020 = '';
 const databases: TestDatabase[] = [];
 
 const read = async (database: TestDatabase) => {
@@ -50,6 +51,10 @@ describe('0018 rollback script on real PostgreSQL', () => {
       path.join(ROOT, 'packages/db/migrations/rollback/0019_event_dedupe_per_repository.down.sql'),
       'utf8',
     );
+    downSql0020 = await readFile(
+      path.join(ROOT, 'packages/db/migrations/rollback/0020_worthless_carmella_unuscione.down.sql'),
+      'utf8',
+    );
   });
 
   it('drops the audit table and the column, refuses a second rollback, and re-applies cleanly', async () => {
@@ -61,6 +66,7 @@ describe('0018 rollback script on real PostgreSQL', () => {
       ledger_present: true,
     });
 
+    await database.pool.query(downSql0020);
     await database.pool.query(downSql0019);
     await database.pool.query(downSql);
     expect(await read(database)).toEqual({

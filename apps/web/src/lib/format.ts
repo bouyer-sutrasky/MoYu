@@ -66,6 +66,34 @@ export function repositoryRuntimeLabel(runtime: RepositoryRuntime | null | undef
   }
 }
 
+const GIT_PHASE_LABELS: Record<string, string> = {
+  connecting: '连接远端',
+  receiving: '接收对象',
+  resolving: '解析差异',
+  finalizing: '写入对象',
+  verifying: '核对副本',
+  ready: '就绪',
+};
+
+/** One line for the repository's reusable Git copy, from real phase/progress. */
+export function repositoryPreparationLabel(
+  preparation: RepositoryRuntime['preparation'],
+): string | null {
+  if (preparation.state === 'none') return null;
+  if (preparation.state === 'ready') {
+    return preparation.headCommit
+      ? `仓库副本已就绪 · ${shortCommit(preparation.headCommit)}`
+      : '仓库副本已就绪';
+  }
+  if (preparation.state === 'failed') return '仓库副本准备失败';
+  const phase = preparation.phase
+    ? (GIT_PHASE_LABELS[preparation.phase] ?? preparation.phase)
+    : '准备中';
+  return preparation.progress === null
+    ? `仓库副本准备中 · ${phase}`
+    : `仓库副本准备中 · ${phase} ${preparation.progress}%`;
+}
+
 export function waitingForLabel(waitingFor: string | null | undefined): string | null {
   switch (waitingFor) {
     case 'capacity':
@@ -88,6 +116,8 @@ export function waitingForLabel(waitingFor: string | null | undefined): string |
       return '等待运行时票据';
     case 'runtime':
       return '等待运行时';
+    case 'repository_copy':
+      return '等待仓库副本';
     default:
       return null;
   }

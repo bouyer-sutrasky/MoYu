@@ -2201,6 +2201,50 @@
   line-height: 1.6;
 }
 
+.preparation {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.preparationLine {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xxxs-11);
+}
+
+.preparation[data-state='failed'] .preparationLine {
+  color: var(--dsw-alias-state-error-primary, #d92d20);
+}
+
+.preparationDetail {
+  color: var(--dsw-alias-label-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.preparationBar {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(
+    --dsw-alias-bg-layer-2,
+    color-mix(in srgb, var(--dsw-alias-border-l2) 60%, transparent)
+  );
+}
+
+.preparationBar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--dsw-alias-state-warning-primary, #e8a317);
+  transition: width 200ms linear;
+}
+
 .runtimeMeta {
   display: flex;
   flex-wrap: wrap;

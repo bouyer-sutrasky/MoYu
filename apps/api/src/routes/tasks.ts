@@ -23,7 +23,7 @@ import {
 import type { Authenticate } from '../auth/guards';
 import type { ApiConfig } from '../config';
 import { toTaskOperationSummary, toTaskSummary } from '../domain/serialize';
-import { wakeRepository } from '../domain/instances';
+import { assertExecutionPrepared, wakeRepository } from '../domain/instances';
 import { appendEvent } from '../events/append';
 import { eventToWorkspaceEvent } from '../events/format';
 import type { AppEventBus } from '../events/bus';
@@ -227,6 +227,16 @@ export async function runTaskCommand(
   }
 
   const planned = planCommand(kind, loaded.task, input);
+  // Starting a discussion's execution or retrying a failed task needs the
+  // repository copy; pause/resume keep the existing worktree and are not gated.
+  if (kind === 'start' || kind === 'retry') {
+    const [repository] = await database
+      .select()
+      .from(repositories)
+      .where(eq(repositories.id, loaded.conversation.repositoryId))
+      .limit(1);
+    if (repository) await assertExecutionPrepared(database, dependencies.config, repository);
+  }
 
   let result: {
     operation: TaskOperation;

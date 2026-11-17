@@ -1,0 +1,9 @@
+-[ RECORD 1 ]---+-------------------------------
+git_state       | ready
+git_phase       | ready
+git_progress    | 100
+git_attempts    | 6
+git_detail      | 仓库副本已就绪，可用于新任务。
+git_started_at  | 2026-11-17 17:41:08.662+08
+git_finished_at | 2026-11-17 17:41:22.571+08
+

@@ -24,7 +24,7 @@ export type RuntimeDesiredState = z.infer<typeof runtimeDesiredStateSchema>;
 
 /** One allowed owner operation on a repository instance. */
 export const repositoryRuntimeActionSchema = z.object({
-  action: z.enum(['wake', 'sleep', 'retry', 'retry_stop']),
+  action: z.enum(['wake', 'sleep', 'retry', 'retry_stop', 'prepare']),
   label: z.string().min(1),
   enabled: z.boolean(),
   unavailableReason: z.string().nullable(),
@@ -58,6 +58,27 @@ export const runtimeLeaseSchema = z.object({
 export type RuntimeLeaseProjection = z.infer<typeof runtimeLeaseSchema>;
 
 /**
+ * Repository-level Git copy preparation. It is separate from the instance
+ * lifecycle: a sleeping instance can have a ready copy, and an online instance
+ * can still be preparing one. `phase`/`progress` come from Git's own output,
+ * so the UI shows a phase when no percentage exists rather than an estimate.
+ */
+export const repositoryGitPreparationSchema = z.object({
+  state: z.enum(['none', 'preparing', 'ready', 'failed']),
+  phase: z
+    .enum(['connecting', 'receiving', 'resolving', 'finalizing', 'verifying', 'ready'])
+    .nullable(),
+  progress: z.number().int().min(0).max(100).nullable(),
+  detail: z.string().nullable(),
+  startedAt: isoTimestampSchema.nullable(),
+  finishedAt: isoTimestampSchema.nullable(),
+  attempts: z.number().int().nonnegative(),
+  headCommit: z.string().nullable(),
+});
+
+export type RepositoryGitPreparation = z.infer<typeof repositoryGitPreparationSchema>;
+
+/**
  * The repository runtime projection. `reason` is already sanitised for display;
  * `reasonCode`/`waitingFor` stay machine-readable so the UI does not infer a
  * cause or invent an ETA. Unknown or stale facts are represented as unknown,
@@ -82,6 +103,8 @@ export const repositoryRuntimeSchema = z.object({
   resource: runtimeResourceSchema.nullable(),
   /** Current execution lease generation, when one exists for this repository. */
   lease: runtimeLeaseSchema.nullable(),
+  /** Reusable Git copy used to build task workspaces without a remote clone. */
+  preparation: repositoryGitPreparationSchema,
   actions: z.array(repositoryRuntimeActionSchema),
 });
 

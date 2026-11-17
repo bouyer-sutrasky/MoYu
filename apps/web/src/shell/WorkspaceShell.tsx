@@ -232,7 +232,7 @@ export function WorkspaceShell({
   }, [onSessionLost]);
 
   const handleRepositoryAction = useCallback(
-    async (action: 'wake' | 'sleep' | 'retry' | 'retry_stop') => {
+    async (action: 'wake' | 'sleep' | 'retry' | 'retry_stop' | 'prepare') => {
       const repositoryId = selectedRepositoryIdRef.current;
       if (!repositoryId) return;
       setRepositoryActionBusy(true);
@@ -240,6 +240,8 @@ export function WorkspaceShell({
       try {
         if (action === 'sleep' || action === 'retry_stop') {
           await api.sleepRepository(repositoryId);
+        } else if (action === 'prepare') {
+          await api.prepareRepository(repositoryId);
         } else {
           await api.wakeRepository(repositoryId);
         }
@@ -1000,6 +1002,37 @@ export function WorkspaceShell({
     () => repositories.find((repository) => repository.id === selectedRepositoryId) ?? null,
     [repositories, selectedRepositoryId],
   );
+
+  // A repository copy is prepared by the supervisor while the instance can be
+  // asleep or online. Poll only while it is preparing so the phase and the
+  // percentage come from Git's real progress, and stop when it settles.
+  const preparationState = selectedRepository?.runtime?.preparation.state;
+  useEffect(() => {
+    const repositoryId = selectedRepositoryId;
+    if (!repositoryId || preparationState !== 'preparing') return;
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      void api
+        .repositoryRuntime(repositoryId)
+        .then((result) => {
+          if (cancelled) return;
+          setRepositories((current) =>
+            current.map((repository) =>
+              repository.id === repositoryId
+                ? { ...repository, runtime: result.runtime }
+                : repository,
+            ),
+          );
+        })
+        .catch(() => {
+          // The next tick retries; the sidebar keeps the last real phase.
+        });
+    }, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [preparationState, selectedRepositoryId]);
 
   const sendMessage = useCallback(
     async (

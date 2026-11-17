@@ -1,0 +1,7 @@
+Snapshot after the repository recovery (the timeout state itself is timeout-preparation.sql.txt):
+total 16
+drwxrws--- 4 moyu-m6c moyu-m6c 4096 Nov 17 17:41 .
+drwxrwsr-x 3 moyu-m6c moyu-m6c 4096 Nov 17 17:31 ..
+drwxr-sr-x 3 moyu-m6c moyu-m6c 4096 Nov 17 17:37 add-real-run-note-25cf6ca2ac20
+drwxr-sr-x 7 moyu-m6c moyu-m6c 4096 Nov 17 17:41 .repository.git
+.partial entries now: 0

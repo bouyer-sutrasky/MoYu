@@ -1,0 +1,10 @@
+-[ RECORD 1 ]------+-------------------------------------------------------------
+id                 | 6895b931-bdbf-4f2e-a9b7-0dfec4581ce6
+state              | awaiting_review
+version            | 5
+upstream_ticket_id | 25cf6ca2ac20478aea758be823716829
+base_branch        | main
+base_commit        | c8ff4ec28d47f5e4d73bb42488026b5df97fb005
+pr_url             | https://github.com/Bouyer12/m6c-a-repo-cache-20261117/pull/1
+pr_number          | 1
+

@@ -1,0 +1,107 @@
+file:///opt/moyu-a/releases/c1a03401d285f530754361713fc24c0c91f88ca9/apps/supervisor/dist/main.js:4866
+    throw new Error(
+          ^
+
+Error: Cannot read INSTANCES_CONFIG /etc/moyu-a/instances.json: EACCES: permission denied, open '/etc/moyu-a/instances.json'
+    at loadSupervisorConfig (file:///opt/moyu-a/releases/c1a03401d285f530754361713fc24c0c91f88ca9/apps/supervisor/dist/main.js:4866:11)
+    at file:///opt/moyu-a/releases/c1a03401d285f530754361713fc24c0c91f88ca9/apps/supervisor/dist/main.js:10773:14
+    at ModuleJob.run (node:internal/modules/esm/module_job:561:25)
+    at async node:internal/modules/esm/loader:647:26
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
+
+Node.js v24.22.2
+file:///opt/moyu-a/releases/c1a03401d285f530754361713fc24c0c91f88ca9/apps/supervisor/dist/main.js:4866
+    throw new Error(
+          ^
+
+Error: Cannot read INSTANCES_CONFIG /etc/moyu-a/instances.json: EACCES: permission denied, open '/etc/moyu-a/instances.json'
+    at loadSupervisorConfig (file:///opt/moyu-a/releases/c1a03401d285f530754361713fc24c0c91f88ca9/apps/supervisor/dist/main.js:4866:11)
+    at file:///opt/moyu-a/releases/c1a03401d285f530754361713fc24c0c91f88ca9/apps/supervisor/dist/main.js:10773:14
+    at ModuleJob.run (node:internal/modules/esm/module_job:561:25)
+    at async node:internal/modules/esm/loader:647:26
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
+
+Node.js v24.22.2
+file:///opt/moyu-a/releases/c1a03401d285f530754361713fc24c0c91f88ca9/apps/supervisor/dist/main.js:4866
+    throw new Error(
+          ^
+
+Error: Cannot read INSTANCES_CONFIG /etc/moyu-a/instances.json: EACCES: permission denied, open '/etc/moyu-a/instances.json'
+    at loadSupervisorConfig (file:///opt/moyu-a/releases/c1a03401d285f530754361713fc24c0c91f88ca9/apps/supervisor/dist/main.js:4866:11)
+    at file:///opt/moyu-a/releases/c1a03401d285f530754361713fc24c0c91f88ca9/apps/supervisor/dist/main.js:10773:14
+    at ModuleJob.run (node:internal/modules/esm/module_job:561:25)
+    at async node:internal/modules/esm/loader:647:26
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
+
+Node.js v24.22.2
+file:///opt/moyu-a/releases/c1a03401d285f530754361713fc24c0c91f88ca9/apps/supervisor/dist/main.js:4866
+    throw new Error(
+          ^
+
+Error: Cannot read INSTANCES_CONFIG /etc/moyu-a/instances.json: EACCES: permission denied, open '/etc/moyu-a/instances.json'
+    at loadSupervisorConfig (file:///opt/moyu-a/releases/c1a03401d285f530754361713fc24c0c91f88ca9/apps/supervisor/dist/main.js:4866:11)
+    at file:///opt/moyu-a/releases/c1a03401d285f530754361713fc24c0c91f88ca9/apps/supervisor/dist/main.js:10773:14
+    at ModuleJob.run (node:internal/modules/esm/module_job:561:25)
+    at async node:internal/modules/esm/loader:647:26
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
+
+Node.js v24.22.2
+file:///opt/moyu-a/releases/c1a03401d285f530754361713fc24c0c91f88ca9/apps/supervisor/dist/main.js:4866
+    throw new Error(
+          ^
+
+Error: Cannot read INSTANCES_CONFIG /etc/moyu-a/instances.json: EACCES: permission denied, open '/etc/moyu-a/instances.json'
+    at loadSupervisorConfig (file:///opt/moyu-a/releases/c1a03401d285f530754361713fc24c0c91f88ca9/apps/supervisor/dist/main.js:4866:11)
+    at file:///opt/moyu-a/releases/c1a03401d285f530754361713fc24c0c91f88ca9/apps/supervisor/dist/main.js:10773:14
+    at ModuleJob.run (node:internal/modules/esm/module_job:561:25)
+    at async node:internal/modules/esm/loader:647:26
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
+
+Node.js v24.22.2
+{"at":"2026-11-17T09:30:44.003Z","level":"info","service":"moyu-supervisor","message":"supervisor is listening","event":"supervisor.ready","host":"127.0.0.1","port":4495,"maxOnline":1}
+terminate called after throwing an instance of 'std::filesystem::__cxx11::filesystem_error'
+  what():  filesystem error: status: Permission denied [/opt/moyu-a/artifacts/superagent-a2a360a-0027]
+{"at":"2026-11-17T09:31:06.703Z","level":"info","service":"moyu-supervisor","message":"supervisor is listening","event":"supervisor.ready","host":"127.0.0.1","port":4495,"maxOnline":1}
+{"at":"2026-11-17T09:31:28.026Z","level":"error","service":"moyu-supervisor","message":"supervisor request failed","event":"supervisor.request_failed","error":"Profile m6c-a2 has no dsh-superagent installation"}
+{"at":"2026-11-17T09:31:46.421Z","level":"info","service":"moyu-supervisor","message":"repository instance prepared","event":"supervisor.instance_prepared","repository":"Bouyer12/m6c-a-repo-cache-20261117","profile":"m6c-a2","dshPort":3491,"bridgePort":3492}
+{"at":"2026-11-17T09:31:53.141Z","level":"info","service":"moyu-supervisor","message":"repository Git copy is ready","event":"supervisor.git_prepare_ready","repository":"Bouyer12/m6c-a-repo-cache-20261117","profile":"m6c-a2","head":"c8ff4ec28d47f5e4d73bb42488026b5df97fb005","updated":false}
+{"at":"2026-11-17T09:32:16.628Z","level":"info","service":"moyu-supervisor","message":"repository wake requested","event":"supervisor.wake_requested","repositoryId":"87b05f90-4f4f-4f1c-83fa-5aac305c51b1","from":"sleeping","priority":20,"reason":"manual"}
+{"at":"2026-11-17T09:32:16.644Z","level":"error","service":"moyu-supervisor","message":"repository runtime failed","event":"supervisor.fault","repositoryId":"87b05f90-4f4f-4f1c-83fa-5aac305c51b1","code":"cgroup_unavailable","detail":"The per-instance cgroup could not be created; refusing to start outside the enforced boundary"}
+{"at":"2026-11-17T09:32:48.845Z","level":"info","service":"moyu-supervisor","message":"supervisor shutting down","event":"supervisor.shutdown","signal":"SIGTERM"}
+{"at":"2026-11-17T09:32:49.267Z","level":"info","service":"moyu-supervisor","message":"supervisor is listening","event":"supervisor.ready","host":"127.0.0.1","port":4495,"maxOnline":1}
+{"at":"2026-11-17T09:33:06.340Z","level":"info","service":"moyu-supervisor","message":"supervisor shutting down","event":"supervisor.shutdown","signal":"SIGTERM"}
+{"at":"2026-11-17T09:33:06.800Z","level":"info","service":"moyu-supervisor","message":"supervisor is listening","event":"supervisor.ready","host":"127.0.0.1","port":4495,"maxOnline":1}
+{"at":"2026-11-17T09:33:43.156Z","level":"info","service":"moyu-supervisor","message":"supervisor shutting down","event":"supervisor.shutdown","signal":"SIGTERM"}
+{"at":"2026-11-17T09:33:43.631Z","level":"info","service":"moyu-supervisor","message":"supervisor is listening","event":"supervisor.ready","host":"127.0.0.1","port":4495,"maxOnline":1}
+{"at":"2026-11-17T09:34:00.395Z","level":"info","service":"moyu-supervisor","message":"repository wake requested","event":"supervisor.wake_requested","repositoryId":"87b05f90-4f4f-4f1c-83fa-5aac305c51b1","from":"fault","priority":20,"reason":"manual"}
+{"at":"2026-11-17T09:34:00.431Z","level":"info","service":"moyu-supervisor","message":"repository runtime spawned","event":"supervisor.instance_spawned","repositoryId":"87b05f90-4f4f-4f1c-83fa-5aac305c51b1","pid":1574647,"profile":"m6c-a2","dshPort":3491,"bridgePort":3492}
+{"at":"2026-11-17T09:34:05.654Z","level":"error","service":"moyu-supervisor","message":"runtime startup verification or profile configuration failed","event":"supervisor.start_verify_failed","repositoryId":"87b05f90-4f4f-4f1c-83fa-5aac305c51b1","error":"panel PUT /settings/source%3Agithub failed: 400: The agent GitHub CLI cannot read its account.\nTo get started with GitHub CLI, please run:  gh auth login\nAlternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token."}
+{"at":"2026-11-17T09:34:05.890Z","level":"info","service":"moyu-supervisor","message":"repository runtime stopped","event":"supervisor.instance_sleeping","repositoryId":"87b05f90-4f4f-4f1c-83fa-5aac305c51b1","reason":"start_failed","pendingWake":false}
+{"at":"2026-11-17T09:34:05.893Z","level":"error","service":"moyu-supervisor","message":"repository runtime failed","event":"supervisor.fault","repositoryId":"87b05f90-4f4f-4f1c-83fa-5aac305c51b1","code":"start_failed","detail":"panel PUT /settings/source%3Agithub failed: 400: The agent GitHub CLI cannot read its account.\nTo get started with GitHub CLI, please run:  gh auth login\nAlternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token."}
+{"at":"2026-11-17T09:34:44.489Z","level":"info","service":"moyu-supervisor","message":"repository wake requested","event":"supervisor.wake_requested","repositoryId":"87b05f90-4f4f-4f1c-83fa-5aac305c51b1","from":"fault","priority":20,"reason":"manual"}
+{"at":"2026-11-17T09:34:44.519Z","level":"info","service":"moyu-supervisor","message":"repository runtime spawned","event":"supervisor.instance_spawned","repositoryId":"87b05f90-4f4f-4f1c-83fa-5aac305c51b1","pid":1575318,"profile":"m6c-a2","dshPort":3491,"bridgePort":3492}
+{"at":"2026-11-17T09:34:55.645Z","level":"info","service":"moyu-supervisor","message":"repository runtime is online","event":"supervisor.instance_online","repositoryId":"87b05f90-4f4f-4f1c-83fa-5aac305c51b1"}
+{"at":"2026-11-17T09:36:43.914Z","level":"info","service":"moyu-supervisor","message":"repository Git copy is ready","event":"supervisor.git_prepare_ready","repository":"Bouyer12/m6c-a-repo-cache-20261117","profile":"m6c-a2","head":"c8ff4ec28d47f5e4d73bb42488026b5df97fb005","updated":false}
+{"at":"2026-11-17T09:39:24.645Z","level":"info","service":"moyu-supervisor","message":"supervisor shutting down","event":"supervisor.shutdown","signal":"SIGTERM"}
+{"at":"2026-11-17T09:39:25.336Z","level":"warn","service":"moyu-supervisor","message":"recorded runtime process is gone; requeued the instance","event":"supervisor.instance_lost","repositoryId":"87b05f90-4f4f-4f1c-83fa-5aac305c51b1","pid":1575318}
+{"at":"2026-11-17T09:39:25.377Z","level":"info","service":"moyu-supervisor","message":"repository runtime spawned","event":"supervisor.instance_spawned","repositoryId":"87b05f90-4f4f-4f1c-83fa-5aac305c51b1","pid":1579100,"profile":"m6c-a2","dshPort":3491,"bridgePort":3492}
+{"at":"2026-11-17T09:39:25.426Z","level":"info","service":"moyu-supervisor","message":"supervisor is listening","event":"supervisor.ready","host":"127.0.0.1","port":4495,"maxOnline":1}
+{"at":"2026-11-17T09:39:31.502Z","level":"info","service":"moyu-supervisor","message":"repository runtime is online","event":"supervisor.instance_online","repositoryId":"87b05f90-4f4f-4f1c-83fa-5aac305c51b1"}
+{"at":"2026-11-17T09:39:34.484Z","level":"info","service":"moyu-supervisor","message":"repository Git copy is ready","event":"supervisor.git_prepare_ready","repository":"Bouyer12/m6c-a-repo-cache-20261117","profile":"m6c-a2","head":"c8ff4ec28d47f5e4d73bb42488026b5df97fb005","updated":false}
+{"at":"2026-11-17T09:39:56.113Z","level":"info","service":"moyu-supervisor","message":"supervisor shutting down","event":"supervisor.shutdown","signal":"SIGTERM"}
+{"at":"2026-11-17T09:39:56.740Z","level":"warn","service":"moyu-supervisor","message":"recorded runtime process is gone; requeued the instance","event":"supervisor.instance_lost","repositoryId":"87b05f90-4f4f-4f1c-83fa-5aac305c51b1","pid":1579100}
+{"at":"2026-11-17T09:39:56.783Z","level":"info","service":"moyu-supervisor","message":"repository runtime spawned","event":"supervisor.instance_spawned","repositoryId":"87b05f90-4f4f-4f1c-83fa-5aac305c51b1","pid":1579651,"profile":"m6c-a2","dshPort":3491,"bridgePort":3492}
+{"at":"2026-11-17T09:39:56.835Z","level":"info","service":"moyu-supervisor","message":"supervisor is listening","event":"supervisor.ready","host":"127.0.0.1","port":4495,"maxOnline":1}
+{"at":"2026-11-17T09:40:03.005Z","level":"info","service":"moyu-supervisor","message":"repository runtime is online","event":"supervisor.instance_online","repositoryId":"87b05f90-4f4f-4f1c-83fa-5aac305c51b1"}
+{"at":"2026-11-17T09:40:04.911Z","level":"info","service":"moyu-supervisor","message":"repository Git copy is ready","event":"supervisor.git_prepare_ready","repository":"Bouyer12/m6c-a-repo-cache-20261117","profile":"m6c-a2","head":"c8ff4ec28d47f5e4d73bb42488026b5df97fb005","updated":false}
+{"at":"2026-11-17T09:40:39.701Z","level":"info","service":"moyu-supervisor","message":"supervisor shutting down","event":"supervisor.shutdown","signal":"SIGTERM"}
+{"at":"2026-11-17T09:40:40.350Z","level":"warn","service":"moyu-supervisor","message":"recorded runtime process is gone; requeued the instance","event":"supervisor.instance_lost","repositoryId":"87b05f90-4f4f-4f1c-83fa-5aac305c51b1","pid":1579651}
+{"at":"2026-11-17T09:40:40.388Z","level":"info","service":"moyu-supervisor","message":"repository runtime spawned","event":"supervisor.instance_spawned","repositoryId":"87b05f90-4f4f-4f1c-83fa-5aac305c51b1","pid":1580218,"profile":"m6c-a2","dshPort":3491,"bridgePort":3492}
+{"at":"2026-11-17T09:40:40.436Z","level":"info","service":"moyu-supervisor","message":"supervisor is listening","event":"supervisor.ready","host":"127.0.0.1","port":4495,"maxOnline":1}
+{"at":"2026-11-17T09:40:46.550Z","level":"info","service":"moyu-supervisor","message":"repository runtime is online","event":"supervisor.instance_online","repositoryId":"87b05f90-4f4f-4f1c-83fa-5aac305c51b1"}
+{"at":"2026-11-17T09:41:04.382Z","level":"info","service":"moyu-supervisor","message":"supervisor shutting down","event":"supervisor.shutdown","signal":"SIGTERM"}
+{"at":"2026-11-17T09:41:05.008Z","level":"warn","service":"moyu-supervisor","message":"recorded runtime process is gone; requeued the instance","event":"supervisor.instance_lost","repositoryId":"87b05f90-4f4f-4f1c-83fa-5aac305c51b1","pid":1580218}
+{"at":"2026-11-17T09:41:05.048Z","level":"info","service":"moyu-supervisor","message":"repository runtime spawned","event":"supervisor.instance_spawned","repositoryId":"87b05f90-4f4f-4f1c-83fa-5aac305c51b1","pid":1580601,"profile":"m6c-a2","dshPort":3491,"bridgePort":3492}
+{"at":"2026-11-17T09:41:05.104Z","level":"info","service":"moyu-supervisor","message":"supervisor is listening","event":"supervisor.ready","host":"127.0.0.1","port":4495,"maxOnline":1}
+{"at":"2026-11-17T09:41:13.212Z","level":"info","service":"moyu-supervisor","message":"repository runtime is online","event":"supervisor.instance_online","repositoryId":"87b05f90-4f4f-4f1c-83fa-5aac305c51b1"}
+{"at":"2026-11-17T09:41:22.572Z","level":"info","service":"moyu-supervisor","message":"repository Git copy is ready","event":"supervisor.git_prepare_ready","repository":"Bouyer12/m6c-a-repo-cache-20261117","profile":"m6c-a2","head":"c8ff4ec28d47f5e4d73bb42488026b5df97fb005","updated":false}

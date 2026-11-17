@@ -1,0 +1,30 @@
+{
+  "workdir": "/tmp/m6c-a-evidence/baseline-repro",
+  "origin": "/tmp/m6c-a-evidence/baseline-repro/origin.git",
+  "commit": "749a957331b8b84f097cbcdf7e63c43bd23e5563",
+  "tasks": [
+    {
+      "name": "task-a",
+      "durationMs": 152,
+      "bytes": 45056,
+      "objects": "count: 0\nsize: 0\nin-pack: 1240\npacks: 1\nsize-pack: 113\nprune-packable: 0\ngarbage: 0\nsize-garbage: 0",
+      "head": "749a957331b8b84f097cbcdf7e63c43bd23e5563"
+    },
+    {
+      "name": "task-b",
+      "durationMs": 151,
+      "bytes": 45056,
+      "objects": "count: 0\nsize: 0\nin-pack: 1240\npacks: 1\nsize-pack: 113\nprune-packable: 0\ngarbage: 0\nsize-garbage: 0",
+      "head": "749a957331b8b84f097cbcdf7e63c43bd23e5563"
+    }
+  ],
+  "duplicateFullClone": true,
+  "interruptedClone": {
+    "durationMs": 3,
+    "filesWrittenBeforeKill": 1,
+    "directoryLeftBehind": true,
+    "filesLeftBehind": 1,
+    "usableGitCheckout": false,
+    "retryWouldTreatItAsPrepared": true
+  }
+}

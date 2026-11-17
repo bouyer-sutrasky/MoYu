@@ -6,6 +6,7 @@ import { Icon } from '../components/Icon';
 import { ResponsiveSelect } from '../components/ResponsiveSelect';
 import {
   formatUpdatedAt,
+  repositoryPreparationLabel,
   repositoryRuntimeLabel,
   taskStateLabel,
   runtimeResourceLabel,
@@ -39,7 +40,7 @@ interface SidebarProps {
   onNewTask: () => void;
   onOpenAddRepository: () => void;
   onOpenRepositorySettings: () => void;
-  onRepositoryAction: (action: 'wake' | 'sleep' | 'retry' | 'retry_stop') => void;
+  onRepositoryAction: (action: 'wake' | 'sleep' | 'retry' | 'retry_stop' | 'prepare') => void;
   repositoryActionBusy: boolean;
   repositoryActionError: string | null;
   onOpenActivity: () => void;
@@ -202,6 +203,34 @@ export function Sidebar({
                     : '监听状态未知'}
               </span>
             </div>
+            {(() => {
+              const preparation = runtime.preparation;
+              const label = repositoryPreparationLabel(preparation);
+              if (!label) return null;
+              return (
+                <div className={styles.preparation} data-state={preparation.state}>
+                  <div className={styles.preparationLine}>
+                    <span>{label}</span>
+                    {preparation.state === 'failed' && preparation.detail ? (
+                      <span className={styles.preparationDetail} title={preparation.detail}>
+                        {preparation.detail}
+                      </span>
+                    ) : null}
+                  </div>
+                  {preparation.state === 'preparing' && preparation.progress !== null ? (
+                    <div
+                      className={styles.preparationBar}
+                      role="progressbar"
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={preparation.progress}
+                    >
+                      <span style={{ width: `${preparation.progress}%` }} />
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })()}
             <p className={styles.runtimeReason}>{runtime.reason}</p>
             <div className={styles.runtimeMeta}>
               <span>

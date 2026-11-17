@@ -116,6 +116,12 @@ const environmentSchema = z
     REVIEW_CHECK_GID: z.coerce.number().int().min(1).optional(),
     REVIEW_CHECK_HOME: z.string().min(1).optional(),
     REVIEW_CHECK_SETPRIV: z.string().min(1).default('/usr/bin/setpriv'),
+    /**
+     * Budget for preparing one repository's reusable Git copy. It covers the
+     * whole clone/update, not one task; the copy is verified and only then used
+     * by task workspaces, so a failure here is retryable at repository level.
+     */
+    REPO_PREPARE_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(3_600_000).default(900_000),
 
     /** Aggregate memory policy, in MiB unless noted. These are one system-wide budget. */
     MEMORY_TARGET_MB: z.coerce.number().int().min(256).default(4096),
@@ -220,6 +226,7 @@ export interface SupervisorConfig {
   reviewCheckGid?: number;
   reviewCheckHome?: string;
   reviewCheckSetpriv: string;
+  repoPrepareTimeoutMs: number;
 }
 
 export function loadSupervisorConfig(
@@ -321,6 +328,7 @@ export function loadSupervisorConfig(
         }
       : {}),
     reviewCheckSetpriv: data.REVIEW_CHECK_SETPRIV,
+    repoPrepareTimeoutMs: data.REPO_PREPARE_TIMEOUT_MS,
     executorModel: data.EXECUTOR_MODEL,
     ...(data.EXECUTOR_REASONING_EFFORT
       ? { executorReasoningEffort: data.EXECUTOR_REASONING_EFFORT }

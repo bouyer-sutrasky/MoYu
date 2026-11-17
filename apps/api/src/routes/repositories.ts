@@ -240,6 +240,44 @@ export function registerRepositoryRoutes(
     },
   );
 
+  /**
+   * Repository-level retry of the reusable Git copy. Execution is gated on this
+   * state; the runtime action has the same effect from the repository panel.
+   */
+  app.post(
+    '/api/v1/repositories/:id/prepare',
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const auth = request.auth;
+      if (!auth) throw ApiProblem.unauthorized();
+      const params = request.params as { id?: string };
+      const repository = await findOwnedRepository(database, auth.owner.id, params.id ?? '');
+      if (!repository) throw ApiProblem.notFound('Repository not found');
+      const supervisor = createSupervisorClient(config);
+      if (!supervisor) {
+        throw ApiProblem.unavailable('The host supervisor is not configured');
+      }
+      try {
+        await supervisor.prepareGit(repository.id);
+      } catch (error) {
+        throw ApiProblem.unavailable(
+          `The host supervisor could not accept the repository preparation: ${
+            error instanceof Error ? error.message.slice(0, 300) : 'unknown error'
+          }`,
+        );
+      }
+      return sendData(
+        reply,
+        request,
+        repositoryRuntimeDataSchema.parse({
+          repositoryId: repository.id,
+          runtime: await projectRuntime(database, config, repository),
+        }),
+        202,
+      );
+    },
+  );
+
   app.post(
     '/api/v1/repositories/:id/wake',
     { preHandler: authenticate },

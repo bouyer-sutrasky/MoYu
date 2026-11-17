@@ -272,6 +272,13 @@ export const api = {
       repositoryRuntimeDataSchema,
     );
   },
+  prepareRepository(repositoryId: string): Promise<RepositoryRuntimeData> {
+    return request(
+      `/api/v1/repositories/${encodeURIComponent(repositoryId)}/prepare`,
+      repositoryRuntimeDataSchema,
+      { method: 'POST' },
+    );
+  },
   wakeRepository(repositoryId: string): Promise<RepositoryActionData> {
     return request(
       `/api/v1/repositories/${encodeURIComponent(repositoryId)}/wake`,

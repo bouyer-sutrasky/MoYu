@@ -1,0 +1,256 @@
+[WARN] Unsupported engine: wanted: {"node":"24.22.2"} (current: {"node":"v22.23.3","pnpm":"11.7.0"})
+$ pnpm lint && pnpm format:check && pnpm typecheck && pnpm test
+[WARN] Unsupported engine: wanted: {"node":"24.22.2"} (current: {"node":"v22.23.3","pnpm":"11.7.0"})
+$ eslint .
+
+/root/src/repo-clone-prep-861a45002427/apps/dispatcher/test/integration/dispatcher.integration.test.ts
+  805:7  warning  Unused eslint-disable directive (no problems were reported from 'no-console')
+
+✖ 1 problem (0 errors, 1 warning)
+  0 errors and 1 warning potentially fixable with the `--fix` option.
+
+[WARN] Unsupported engine: wanted: {"node":"24.22.2"} (current: {"node":"v22.23.3","pnpm":"11.7.0"})
+$ prettier --check "**/*.{ts,tsx,mjs,cjs,json,yml,yaml,css,html}"
+Checking formatting...
+All matched files use Prettier code style!
+[WARN] Unsupported engine: wanted: {"node":"24.22.2"} (current: {"node":"v22.23.3","pnpm":"11.7.0"})
+$ pnpm -r --if-present typecheck
+.                                        | [WARN] Unsupported engine: wanted: {"node":"24.22.2"} (current: {"node":"v22.23.3","pnpm":"11.7.0"})
+Scope: 8 of 9 workspace projects
+packages/contracts typecheck$ tsc --noEmit
+packages/db typecheck$ tsc --noEmit
+packages/theme typecheck$ tsc --noEmit
+packages/theme typecheck: Done
+packages/contracts typecheck: Done
+packages/db typecheck: Done
+apps/web typecheck$ tsc --noEmit
+packages/runtime-client typecheck$ tsc --noEmit
+packages/runtime-client typecheck: Done
+apps/web typecheck: Done
+apps/api typecheck$ tsc --noEmit
+apps/dispatcher typecheck$ tsc --noEmit
+apps/supervisor typecheck$ tsc --noEmit
+apps/dispatcher typecheck: Done
+apps/supervisor typecheck: Done
+apps/api typecheck: Done
+[WARN] Unsupported engine: wanted: {"node":"24.22.2"} (current: {"node":"v22.23.3","pnpm":"11.7.0"})
+$ pnpm -r --if-present test && node --test scripts/m3/guard.test.mjs integrations/superagent/tests/verify-lock.test.mjs scripts/m6c/scripts.test.mjs
+.                                        | [WARN] Unsupported engine: wanted: {"node":"24.22.2"} (current: {"node":"v22.23.3","pnpm":"11.7.0"})
+Scope: 8 of 9 workspace projects
+packages/contracts test$ vitest run
+packages/contracts test:  RUN  v3.2.7 /root/src/repo-clone-prep-861a45002427/packages/contracts
+packages/contracts test:  ✓ test/contracts.test.ts (26 tests) 46ms
+packages/contracts test:  Test Files  1 passed (1)
+packages/contracts test:       Tests  26 passed (26)
+packages/contracts test:    Start at  18:00:27
+packages/contracts test:    Duration  612ms (transform 165ms, setup 0ms, collect 284ms, tests 46ms, environment 0ms, prepare 72ms)
+packages/contracts test: Done
+packages/runtime-client test$ vitest run
+packages/runtime-client test:  RUN  v3.2.7 /root/src/repo-clone-prep-861a45002427/packages/runtime-client
+packages/runtime-client test:  ✓ test/credentials.test.ts (5 tests) 8ms
+packages/runtime-client test:  ✓ test/client.test.ts (8 tests) 29ms
+packages/runtime-client test:  Test Files  2 passed (2)
+packages/runtime-client test:       Tests  13 passed (13)
+packages/runtime-client test:    Start at  18:00:28
+packages/runtime-client test:    Duration  623ms (transform 237ms, setup 0ms, collect 404ms, tests 37ms, environment 0ms, prepare 160ms)
+packages/runtime-client test: Done
+apps/api test$ vitest run --exclude "test/integration/**"
+apps/dispatcher test$ vitest run --exclude "test/integration/**"
+apps/supervisor test$ vitest run --exclude "test/integration/**"
+apps/api test:  RUN  v3.2.7 /root/src/repo-clone-prep-861a45002427/apps/api
+apps/supervisor test:  RUN  v3.2.7 /root/src/repo-clone-prep-861a45002427/apps/supervisor
+apps/dispatcher test:  RUN  v3.2.7 /root/src/repo-clone-prep-861a45002427/apps/dispatcher
+apps/dispatcher test:  ✓ test/config.test.ts (3 tests) 20ms
+apps/api test:  ✓ test/cursor.test.ts (6 tests) 28ms
+apps/api test:  ✓ test/auth.test.ts (9 tests) 52ms
+apps/dispatcher test:  ✓ test/tasks.test.ts (2 tests) 15ms
+apps/dispatcher test:  ✓ test/dispatcher-logging.test.ts (2 tests) 13ms
+apps/dispatcher test:  Test Files  3 passed (3)
+apps/dispatcher test:       Tests  7 passed (7)
+apps/dispatcher test:    Start at  18:00:30
+apps/dispatcher test:    Duration  2.73s (transform 900ms, setup 0ms, collect 2.93s, tests 48ms, environment 1ms, prepare 706ms)
+apps/dispatcher test: Done
+apps/api test:  ✓ test/health.test.ts (5 tests) 116ms
+apps/api test:  Test Files  3 passed (3)
+apps/api test:       Tests  20 passed (20)
+apps/api test:    Start at  18:00:30
+apps/api test:    Duration  3.48s (transform 1.37s, setup 0ms, collect 3.71s, tests 196ms, environment 1ms, prepare 873ms)
+apps/api test: Done
+apps/supervisor test:  ✓ test/stop-proof.test.ts (4 tests) 2497ms
+apps/supervisor test:    ✓ supervisor cgroup stop proof > serializes independent processes with the kernel lock  2153ms
+apps/supervisor test:  ✓ test/review.test.ts (30 tests) 2836ms
+apps/supervisor test:    ✓ supervisor check runs > terminates a hung command and records the timeout  380ms
+apps/supervisor test:    ✓ supervisor check runs > kills a timed-out check command's whole process group  780ms
+apps/supervisor test:    ✓ supervisor check runs > bounds the whole run by the total budget, not just each command  382ms
+apps/supervisor test:    ✓ review service > rejects a second check for the same repository instead of running two  310ms
+apps/supervisor test:  ✓ test/cleanup.test.ts (10 tests) 967ms
+apps/supervisor test:  ✓ test/server-wake.test.ts (1 test) 104ms
+apps/supervisor test: Cloning into bare repository '/tmp/moyu-prepare-command-BguFHJ/cache.git'...
+apps/supervisor test: done.
+apps/supervisor test: Cloning into '/tmp/moyu-prepare-command-BguFHJ/task.preparing-1601344'...
+apps/supervisor test: done.
+apps/supervisor test: HEAD is now at f72db77 first
+apps/supervisor test: Switched to a new branch 'agent/fix-t1'
+apps/supervisor test: Cloning into bare repository '/tmp/moyu-prepare-fetch-nifM4j/cache.git'...
+apps/supervisor test: done.
+apps/supervisor test: Cloning into '/tmp/moyu-prepare-fetch-nifM4j/task.preparing-1601412'...
+apps/supervisor test: done.
+apps/supervisor test: From /tmp/moyu-prepare-fetch-nifM4j/origin
+apps/supervisor test:    0db393c..4055826  main       -> origin/main
+apps/supervisor test: HEAD is now at 4055826 next
+apps/supervisor test: Switched to a new branch 'agent/fix-t2'
+apps/supervisor test:  ✓ test/git-cache.test.ts (13 tests) 1038ms
+apps/supervisor test:  ✓ test/config.test.ts (6 tests) 26ms
+apps/supervisor test:  ✓ test/profile-config.test.ts (11 tests) 11ms
+apps/supervisor test:  ✓ test/deployment-config.test.ts (12 tests) 12ms
+apps/supervisor test:  ✓ test/resources.test.ts (8 tests) 7ms
+apps/supervisor test:  ✓ test/panel-proxy.test.ts (4 tests) 5ms
+apps/supervisor test:  ✓ test/provision-env.test.ts (1 test) 8ms
+apps/supervisor test:  ✓ test/process.test.ts (21 tests) 6854ms
+apps/supervisor test:    ✓ supervisor process evidence > never signals a reused root PID whose start time does not match  363ms
+apps/supervisor test:    ✓ supervisor process evidence > does not signal a reused process group after the owned members exited  337ms
+apps/supervisor test:    ✓ supervisor process evidence > does not report stopped when the timeout expires before the child exits  1817ms
+apps/supervisor test:    ✓ supervisor process evidence > kills a child that ignores SIGTERM before reporting stopped  1704ms
+apps/supervisor test:    ✓ supervisor process evidence > retains a newly started service regardless of its age  368ms
+apps/supervisor test:    ✓ cgroup launcher only accepts a positive release > exits without executing when the parent dies before release  542ms
+apps/supervisor test:  Test Files  12 passed (12)
+apps/supervisor test:       Tests  121 passed (121)
+apps/supervisor test:    Start at  18:00:30
+apps/supervisor test:    Duration  8.46s (transform 1.44s, setup 0ms, collect 3.09s, tests 14.36s, environment 9ms, prepare 1.67s)
+apps/supervisor test: Done
+TAP version 13
+# Subtest: verify-lock.sh gives the same result for plain, spaced, quoted and relative paths
+ok 1 - verify-lock.sh gives the same result for plain, spaced, quoted and relative paths
+  ---
+  duration_ms: 5588.519999
+  type: 'test'
+  ...
+# Subtest: accepts a dedicated profile linked to the patched build
+ok 2 - accepts a dedicated profile linked to the patched build
+  ---
+  duration_ms: 13.769011
+  type: 'test'
+  ...
+# Subtest: rejects the bootstrap home and profile
+ok 3 - rejects the bootstrap home and profile
+  ---
+  duration_ms: 2.457875
+  type: 'test'
+  ...
+# Subtest: rejects an unpatched build and a wrong Bridge port
+ok 4 - rejects an unpatched build and a wrong Bridge port
+  ---
+  duration_ms: 3.242913
+  type: 'test'
+  ...
+# Subtest: rejects an env file with broad permissions
+ok 5 - rejects an env file with broad permissions
+  ---
+  duration_ms: 1.836919
+  type: 'test'
+  ...
+# Subtest: rejects a target port that is already in use
+ok 6 - rejects a target port that is already in use
+  ---
+  duration_ms: 15.264984
+  type: 'test'
+  ...
+# Subtest: rejects instance env keys that could override the validated home/profile
+ok 7 - rejects instance env keys that could override the validated home/profile
+  ---
+  duration_ms: 1.823737
+  type: 'test'
+  ...
+# Subtest: rejects an instance env pointing at the production API or a conflicting process env
+ok 8 - rejects an instance env pointing at the production API or a conflicting process env
+  ---
+  duration_ms: 2.804616
+  type: 'test'
+  ...
+# Subtest: rejects a symlinked state parent and leaves the other instance untouched
+ok 9 - rejects a symlinked state parent and leaves the other instance untouched
+  ---
+  duration_ms: 2.584038
+  type: 'test'
+  ...
+# Subtest: rejects state/<profile> linked to another profile in the same home
+ok 10 - rejects state/<profile> linked to another profile in the same home
+  ---
+  duration_ms: 1.783714
+  type: 'test'
+  ...
+# Subtest: rejects sessions linked to another directory in the same home
+ok 11 - rejects sessions linked to another directory in the same home
+  ---
+  duration_ms: 1.754031
+  type: 'test'
+  ...
+# Subtest: rejects a cleanup target whose parent link stays inside the same home
+ok 12 - rejects a cleanup target whose parent link stays inside the same home
+  ---
+  duration_ms: 1.592481
+  type: 'test'
+  ...
+# Subtest: rejects a profile containing path separators
+ok 13 - rejects a profile containing path separators
+  ---
+  duration_ms: 2.444884
+  type: 'test'
+  ...
+# Subtest: the E2E script exits before any run directory for a bootstrap home or production API
+ok 14 - the E2E script exits before any run directory for a bootstrap home or production API
+  ---
+  duration_ms: 861.243479
+  type: 'test'
+  ...
+# Subtest: refuses a runtime whose stateDir is not the expected isolated profile
+ok 15 - refuses a runtime whose stateDir is not the expected isolated profile
+  ---
+  duration_ms: 0.517688
+  type: 'test'
+  ...
+# Subtest: every m6c CLI has a side-effect-free --help
+ok 16 - every m6c CLI has a side-effect-free --help
+  ---
+  duration_ms: 328.327804
+  type: 'test'
+  ...
+# Subtest: release manifest refuses a missing plugin artifact
+ok 17 - release manifest refuses a missing plugin artifact
+  ---
+  duration_ms: 56.33046
+  type: 'test'
+  ...
+# Subtest: restore verifies the backupSetId and every part hash
+ok 18 - restore verifies the backupSetId and every part hash
+  ---
+  duration_ms: 109.543644
+  type: 'test'
+  ...
+# Subtest: matrix checker fails a Pass row without evidence
+ok 19 - matrix checker fails a Pass row without evidence
+  ---
+  duration_ms: 57.011757
+  type: 'test'
+  ...
+# Subtest: run logs redact PostgreSQL credentials
+ok 20 - run logs redact PostgreSQL credentials
+  ---
+  duration_ms: 55.924344
+  type: 'test'
+  ...
+# Subtest: backup status prints its resolved target without writing
+ok 21 - backup status prints its resolved target without writing
+  ---
+  duration_ms: 50.155694
+  type: 'test'
+  ...
+1..21
+# tests 21
+# suites 0
+# pass 21
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 5669.427872

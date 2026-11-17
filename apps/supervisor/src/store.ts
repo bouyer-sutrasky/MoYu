@@ -46,6 +46,14 @@ export interface InstanceRow {
   resourceState: string;
   resourceDetail: string | null;
   resourceCheckedAt: Date | null;
+  gitState: 'none' | 'preparing' | 'ready' | 'failed';
+  gitPhase: string | null;
+  gitProgress: number | null;
+  gitDetail: string | null;
+  gitStartedAt: Date | null;
+  gitFinishedAt: Date | null;
+  gitAttempts: number;
+  gitHead: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -80,7 +88,11 @@ const INSTANCE_COLUMNS = `
   i.memory_current_bytes as "memoryCurrentBytes", i.memory_peak_bytes as "memoryPeakBytes",
   i.memory_limit_bytes as "memoryLimitBytes", i.memory_events as "memoryEvents",
   i.resource_state as "resourceState", i.resource_detail as "resourceDetail",
-  i.resource_checked_at as "resourceCheckedAt", i.created_at as "createdAt",
+  i.resource_checked_at as "resourceCheckedAt",
+  i.git_state as "gitState", i.git_phase as "gitPhase", i.git_progress as "gitProgress",
+  i.git_detail as "gitDetail", i.git_started_at as "gitStartedAt", i.git_finished_at as "gitFinishedAt",
+  i.git_attempts as "gitAttempts", i.git_head as "gitHead",
+  i.created_at as "createdAt",
   i.updated_at as "updatedAt"
 `;
 
@@ -208,6 +220,14 @@ export class SupervisorStore {
       resourceState: string;
       resourceDetail: string | null;
       resourceCheckedAt: Date | null;
+      gitState: InstanceRow['gitState'];
+      gitPhase: string | null;
+      gitProgress: number | null;
+      gitDetail: string | null;
+      gitStartedAt: Date | null;
+      gitFinishedAt: Date | null;
+      gitAttempts: number;
+      gitHead: string | null;
     }>,
   ): Promise<void> {
     const column: Record<string, string> = {
@@ -238,6 +258,14 @@ export class SupervisorStore {
       resourceState: 'resource_state',
       resourceDetail: 'resource_detail',
       resourceCheckedAt: 'resource_checked_at',
+      gitState: 'git_state',
+      gitPhase: 'git_phase',
+      gitProgress: 'git_progress',
+      gitDetail: 'git_detail',
+      gitStartedAt: 'git_started_at',
+      gitFinishedAt: 'git_finished_at',
+      gitAttempts: 'git_attempts',
+      gitHead: 'git_head',
     };
     const entries = Object.entries(fields).filter(([, value]) => value !== undefined);
     if (entries.length === 0) return;

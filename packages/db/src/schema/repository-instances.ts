@@ -1,5 +1,6 @@
 import {
   bigint,
+  check,
   index,
   integer,
   jsonb,
@@ -9,6 +10,7 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 import { runtimeDesiredState, runtimeInstanceState } from './enums';
 import { repositories } from './repositories';
@@ -72,6 +74,22 @@ export const repositoryInstances = pgTable(
     resourceState: text('resource_state').notNull().default('unknown'),
     resourceDetail: text('resource_detail'),
     resourceCheckedAt: timestamp('resource_checked_at', { withTimezone: true }),
+    /**
+     * Repository-level Git copy preparation. `none` means this deployment or
+     * repository has not prepared one (legacy row); `preparing` and `failed`
+     * block a new execution, `ready` allows it. `gitPhase`/`gitProgress` come
+     * from Git's own `--progress` output; an unknown percentage is null.
+     */
+    gitState: text('git_state').notNull().default('none'),
+    /** `connecting`, `receiving`, `resolving`, `finalizing`, `verifying`, `ready`. */
+    gitPhase: text('git_phase'),
+    gitProgress: integer('git_progress'),
+    gitDetail: text('git_detail'),
+    gitStartedAt: timestamp('git_started_at', { withTimezone: true }),
+    gitFinishedAt: timestamp('git_finished_at', { withTimezone: true }),
+    gitAttempts: integer('git_attempts').notNull().default(0),
+    /** Commit the mirrored copy's default branch pointed at when it was verified. */
+    gitHead: text('git_head'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -81,6 +99,19 @@ export const repositoryInstances = pgTable(
     uniqueIndex('repository_instances_profile_uq').on(table.profile),
     uniqueIndex('repository_instances_port_uq').on(table.port),
     uniqueIndex('repository_instances_bridge_port_uq').on(table.bridgePort),
+    check(
+      'repository_instances_git_state_check',
+      sql`${table.gitState} in ('none','preparing','ready','failed')`,
+    ),
+    check(
+      'repository_instances_git_progress_check',
+      sql`${table.gitProgress} is null or ${table.gitProgress} between 0 and 100`,
+    ),
+    check(
+      'repository_instances_git_phase_check',
+      sql`${table.gitPhase} is null or ${table.gitPhase} in ('connecting','receiving','resolving','finalizing','verifying','ready')`,
+    ),
+    check('repository_instances_git_attempts_check', sql`${table.gitAttempts} >= 0`),
   ],
 );
 

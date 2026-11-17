@@ -1,0 +1,13 @@
+1 task.progress {"ticketId": "25cf6ca2ac20478aea758be823716829", "text": "准备任务工作区：从仓库副本检出冻结提交…", "at": "2026-11-17T09:36:34.573Z"}
+2 task.progress {"ticketId": "25cf6ca2ac20478aea758be823716829", "text": "任务工作区准备失败（阶段：检出工作区）；worker 未启动。仓库的 Git 副本尚未准备好（仓库准备未完成或失败），请先在仓库面板重试准备。", "at": "2026-11-17T09:36:34.582Z"}
+3 ticket.linked {"ticketId": "25cf6ca2ac20478aea758be823716829", "state": "failed", "messageId": "afac4c56-3107-4e4b-9fab-9bfa8e9a22c3"}
+4 ticket.state_changed {"ticketId": "25cf6ca2ac20478aea758be823716829", "state": "queued", "previousState": "failed", "assignmentId": "7853c5a7a293c1a533385e51d05ba34c", "at": "2026-11-17T09:36:47.656Z"}
+5 task.progress {"ticketId": "25cf6ca2ac20478aea758be823716829", "text": "准备任务工作区：从仓库副本检出冻结提交…", "at": "2026-11-17T09:36:47.671Z"}
+6 task.progress {"ticketId": "25cf6ca2ac20478aea758be823716829", "text": "任务工作区已准备好（从仓库副本检出）；正在启动 worker…", "at": "2026-11-17T09:36:47.710Z"}
+7 task.progress {"ticketId": "25cf6ca2ac20478aea758be823716829", "text": "worker 已启动，开始执行任务。", "at": "2026-11-17T09:36:47.799Z"}
+8 message.delivered {"messageId": "afac4c56-3107-4e4b-9fab-9bfa8e9a22c3", "stage": "worker_inbox", "at": "2026-11-17T09:36:47.786Z"}
+9 ticket.state_changed {"ticketId": "25cf6ca2ac20478aea758be823716829", "state": "running", "previousState": "queued", "assignmentId": "7853c5a7a293c1a533385e51d05ba34c", "at": "2026-11-17T09:36:47.798Z"}
+10 message.read {"messageId": "afac4c56-3107-4e4b-9fab-9bfa8e9a22c3", "at": "2026-11-17T09:37:27.177Z"}
+11 artifact.created {"ticketId": "25cf6ca2ac20478aea758be823716829", "at": "2026-11-17T09:37:27.177Z"}
+12 ticket.state_changed {"ticketId": "25cf6ca2ac20478aea758be823716829", "state": "awaiting_review", "previousState": "running", "assignmentId": "7853c5a7a293c1a533385e51d05ba34c", "at": "2026-11-17T09:37:42.193Z"}
+13 task.progress {"ticketId": "25cf6ca2ac20478aea758be823716829", "text": "已完成：在仓库根目录创建 M6C-A-REAL-RUN.md（内容单行 `M6-C A real worker run`），提交到 `agent/add-real-run-note-25cf6ca2ac20` 分支并创建 PR #1，已报告 ready。\n\n- PR: https://github.com/Bouyer12/m6c-a-repo-cache-20261117/pull/1\n- 变更：1 个文件，+1/-0，无 CI 检查；需人工合并（本部署未指定 merge CLI）。", "at": "2026-11-17T09:37:47.909Z"}
