@@ -1,0 +1,19 @@
+Assignment accounting from bridge/events.jsonl (raw event ids carry the assignment key):
+
+fec3481621d2dbd4b8f3ef3c12ded303
+  phase: first attempt, prepare checkout
+  events: prepare-start, prepare-failed (worker 未启动)
+  worker started: 0
+  task side effects: 0 worktrees, 0 commits, 0 PRs
+
+7853c5a7a293c1a533385e51d05ba34c
+  phase: repository recovery + retry, same task id
+  events: prepare-start, prepare-ready, worker-started
+  worker started: 1
+  task side effects: 1 worktree, 1 commit 9141a6b, 1 PR #1
+
+assignment_count=2
+assignments_with_worker_started=1
+assignment_count is the number of upstream Assignment identities observed in
+the Bridge event log; only the second one reached the worker and produced
+external side effects. The first failed before a worker session existed.

@@ -18,9 +18,9 @@ upstream ticket `25cf6ca2ac20478aea758be823716829`。
 
 | 时间（+08） | 事实 | 证据 |
 | --- | --- | --- |
-| 17:31:46 | `moyu-m6c` 下实例准备，profile m6c-a2 | `supervisor.log` |
-| 17:31:53 | 真实 GitHub mirror 完成，head `c8ff4ec…` | `supervisor.log`, `repository-preparation.sql.txt` |
-| 17:34:55 | DSH runtime 在线，单进程 PID 1575318 | `processes.txt`, `supervisor.log` |
+| 17:31:46 | `moyu-m6c` 下实例准备，profile m6c-a2 | `supervisor.log.txt` |
+| 17:31:53 | 真实 GitHub mirror 完成，head `c8ff4ec…` | `supervisor.log.txt`, `repository-preparation.sql.txt` |
+| 17:34:55 | DSH runtime 在线，单进程 PID 1575318 | `processes.txt`, `supervisor.log.txt` |
 | 17:35:06 | 创建 execute 会话/task | `task.sql.txt` |
 | 17:36:34 | 删除副本后首任务失败：检出失败、worker 未启动 | `real-run-failed-page.txt`, `events.jsonl` seq 1–3 |
 | 17:36:43 | 仓库层重新准备完成（attempt 2） | `repository-preparation.sql.txt` |
@@ -29,8 +29,9 @@ upstream ticket `25cf6ca2ac20478aea758be823716829`。
 
 ## 副作用
 
-`side-effects.txt`：1 delivery、1 ticket、1 assignment、1 worktree、1 DSH
-进程、1 PR；仓库 clone 2 次（初始 + 恢复），没有按任务重复远端克隆。
+`side-effects.txt`：1 delivery、1 ticket、2 个 upstream Assignment（失败阶段
+`fec348…` 未启动 worker；重试阶段 `7853…` 启动了唯一一个 worker）、1 worktree、
+1 DSH 进程、1 PR；仓库 clone 2 次（初始 + 恢复），没有按任务重复远端克隆。
 `deliveries.sql.txt`、`task-operations.sql.txt`（仅 1 次 retry）、
 `worktree-commit.txt`、`pr.json`。
 
@@ -45,11 +46,20 @@ upstream ticket `25cf6ca2ac20478aea758be823716829`。
 
 `timeout/`：注入慢 SSH 并将仓库准备超时设为 10 s，`timeout-preparation.sql.txt`
 记录 `failed` 与中文超时原因；`timeout-recovery.sql.txt` 记录恢复后的 ready。
-`timeout/supervisor-timeout-window.log` 是同一时间窗的服务日志。
+`timeout/supervisor-timeout-window.log.txt` 是同一时间窗的服务日志。
 
 ## 并发测试
 
-`concurrency-test.log`：12/12 通过，其中
+`concurrency-test.log.txt`：13/13 通过，其中
 `joins two concurrent preparations instead of starting a second clone`
 使用 `Promise.all`，并断言 `gitAttempts === 1` 与实际 `clone`/`fetch`
-子进程计数为 1。
+子进程计数为 1；`keeps preparing when the status read-back fails after the
+reservation` 注入第二次 `getInstance()` 失败，准备仍继续到 ready。
+
+## 日志可访问性
+
+`.gitignore` 忽略 `*.log`，本目录的原始日志以 `*.log.txt` 提交，便于在
+GitHub 上直接打开：
+`supervisor.log.txt`、`timeout/supervisor-timeout-window.log.txt`、
+`concurrency-test.log.txt`、`pnpm-check-final.log.txt`、
+`pnpm-test-integration-final.log.txt`。

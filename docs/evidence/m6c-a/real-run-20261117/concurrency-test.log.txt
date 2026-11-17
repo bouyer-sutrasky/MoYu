@@ -1,0 +1,36 @@
+
+ RUN  v3.2.7 /root/src/repo-clone-prep-861a45002427/apps/supervisor
+
+ ✓ test/git-cache.test.ts > repository Git copy preparation > clones a bare mirror once and reports the real ready commit 121ms
+ ✓ test/git-cache.test.ts > repository Git copy preparation > joins two concurrent preparations instead of starting a second clone 123ms
+ ✓ test/git-cache.test.ts > repository Git copy preparation > keeps preparing when the status read-back fails after the reservation 110ms
+ ✓ test/git-cache.test.ts > repository Git copy preparation > updates a ready copy with new branch commits instead of cloning again 167ms
+ ✓ test/git-cache.test.ts > repository Git copy preparation > times out a slow preparation, cleans the partial copy and stays retryable 227ms
+ ✓ test/git-cache.test.ts > repository Git copy preparation > records a failed preparation without leaving a usable or partial copy 23ms
+Cloning into bare repository '/tmp/moyu-prepare-command-QAWGTR/cache.git'...
+done.
+Cloning into '/tmp/moyu-prepare-command-QAWGTR/task.preparing-1604345'...
+done.
+HEAD is now at f5b921c first
+Switched to a new branch 'agent/fix-t1'
+ ✓ test/git-cache.test.ts > repository Git copy preparation > retries at repository level after a failure and becomes ready 108ms
+ ✓ test/git-cache.test.ts > repository Git copy preparation > turns a preparation interrupted by a supervisor restart into a retryable failure 2ms
+ ✓ test/git-cache.test.ts > Git progress and failure explanation > maps Git progress lines to phases and keeps an absent percentage absent 3ms
+ ✓ test/git-cache.test.ts > Git progress and failure explanation > explains a timeout, an auth failure and a missing repository in Chinese 0ms
+Cloning into bare repository '/tmp/moyu-prepare-fetch-lHICa1/cache.git'...
+done.
+Cloning into '/tmp/moyu-prepare-fetch-lHICa1/task.preparing-1604402'...
+done.
+From /tmp/moyu-prepare-fetch-lHICa1/origin
+   f5b921c..330a461  main       -> origin/main
+HEAD is now at 330a461 next
+Switched to a new branch 'agent/fix-t2'
+ ✓ test/git-cache.test.ts > the task prepare command built from the repository copy > checks out the frozen commit from the copy without contacting the remote 135ms
+ ✓ test/git-cache.test.ts > the task prepare command built from the repository copy > fetches only the missing frozen commit when the copy is older than the branch 214ms
+ ✓ test/git-cache.test.ts > the task prepare command built from the repository copy > refuses to run when the repository copy is not ready and leaves no task directory 4ms
+
+ Test Files  1 passed (1)
+      Tests  13 passed (13)
+   Start at  18:01:11
+   Duration  2.06s (transform 391ms, setup 0ms, collect 434ms, tests 1.24s, environment 0ms, prepare 136ms)
+

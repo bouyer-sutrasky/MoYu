@@ -139,7 +139,15 @@ expect(cloneStarts).toBe(1);
 ```
 
 `cloneStarts` 由注入的 `spawn` 计数，只统计实际 `clone`/`fetch` 子进程。
-12/12 通过（`docs/evidence/m6c-a/real-run-20261117/concurrency-test.log`）。
+
+复验还发现：写入 `preparing` 后的状态回读一旦失败，`prepareOnce()` 不会启动，
+行会永久停在 `preparing` 且 Web 禁用重试。现在回读失败回退到 reservation 行，
+准备继续；任何在 reservation 交付后的意外异常都会写入明确 `failed`，保留重试入口。
+回归测试 `keeps preparing when the status read-back fails after the reservation`
+注入第二次 `getInstance()` 抛错并通过。
+
+`vitest run test/git-cache.test.ts --reporter=verbose`：13/13 通过
+（`docs/evidence/m6c-a/real-run-20261117/concurrency-test.log.txt`）。
 
 ## 4.2 返修：正式 supervisor 服务身份下的真实运行
 
