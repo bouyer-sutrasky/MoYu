@@ -1,0 +1,184 @@
+# M5-B 重启对账 — 隔离红测与修复（原始输出）
+
+Issue #39（`M5B-D02F07F-RESTART-RECONCILE`）。基线 `main@1001c2544c68b8f4d906e330566f6fdb6ff0c795`。
+本文件只记录实际执行过的命令、原始输出与退出码。**现场（真实 Bridge + dispatcher + 两库重启）
+本轮没有执行**，方案与判据见 [`../../../M5-B-RESTART-RECONCILE.md`](../../../M5-B-RESTART-RECONCILE.md) §5。
+
+被测对象：`apps/dispatcher/src/sync.ts`（接线）、`reservations.ts`（跟随与台账）、`leases.ts`（台账导出）。
+运行时与 Bridge 未改动，上游参考目录未修改，3082 bootstrap 未触碰。
+
+## 0. 环境
+
+| 项 | 值 |
+| --- | --- |
+| Node | v24.22.2（`/opt/moyu-node24`），pnpm 11.7.0（corepack） |
+| 数据库 | 隔离 PostgreSQL 16 `127.0.0.1:55432`（测试库由用例临时创建并删除） |
+| Bridge | 用例内的假 Bridge，只提供传输层（events/triggers/tickets/capabilities/start） |
+| 网络与凭据 | 不访问 GitHub、不用真实凭据、不写任何 token |
+| 工作树 | 红/绿同一工作树；「红」= `git stash push -- apps/dispatcher/src` 后运行 |
+
+## 1. 红：修复前
+
+```bash
+git stash push -- apps/dispatcher/src
+TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
+  pnpm --filter @moyu/dispatcher exec vitest run \
+  test/integration/restart-interrupted-reconcile.integration.test.ts
+git stash pop
+```
+
+```text
+
+ RUN  v3.2.7 /root/src/restart-reconcile-55aed1e267d1/apps/dispatcher
+
+ ❯ test/integration/restart-interrupted-reconcile.integration.test.ts (3 tests | 1 failed) 550ms
+   × restart reconciliation on real PostgreSQL > keeps an interrupted turn traceable, delivers the follow-up once, and advances the cursor 71ms
+     → expected 'assignment-before-restart' to be 'assignment-after-restart' // Object.is equality
+   ✓ restart reconciliation on real PostgreSQL > neither starts work nor drops the PR of an awaiting_review ticket across a restart, and ends it when the PR closes 32ms
+   ✓ restart reconciliation on real PostgreSQL > never adopts an Assignment from a generation that is not the live one 23ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/integration/restart-interrupted-reconcile.integration.test.ts > restart reconciliation on real PostgreSQL > keeps an interrupted turn traceable, delivers the follow-up once, and advances the cursor
+AssertionError: expected 'assignment-before-restart' to be 'assignment-after-restart' // Object.is equality
+
+Expected: "assignment-after-restart"
+Received: "assignment-before-restart"
+
+ ❯ test/integration/restart-interrupted-reconcile.integration.test.ts:345:48
+    343|       [repositoryId, `admit:${taskId}`],
+    344|     );
+    345|     expect(reservation.rows[0]?.assignment_id).toBe(assignmentAfterRes…
+       |                                                ^
+    346|     const supersessions = await db.pool.query<{ detail: Record<string,…
+    347|       `select detail from runtime_lease_events
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 2 passed (3)
+   Start at  13:28:17
+   Duration  1.92s (transform 337ms, setup 0ms, collect 1.11s, tests 550ms, environment 0ms, prepare 79ms)
+
+undefined
+/root/src/restart-reconcile-55aed1e267d1/apps/dispatcher:
+[ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL] Command failed with exit code 1: vitest run test/integration/restart-interrupted-reconcile.integration.test.ts
+```
+
+退出码 1。判定：用例 1 红，红的原因就是缺陷本身 —— 宿主重启在**同一租约**下重发 assignment 后，
+平台把预留行留在旧回合上，也没有任何旧代次台账。用例 2（`awaiting_review` 跨重启）与
+用例 3（非当前代次不得被采用）在修复前就是绿的：新逻辑没有把既有边界改坏。
+
+## 2. 绿：修复后
+
+```bash
+TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
+  pnpm --filter @moyu/dispatcher exec vitest run \
+  test/integration/restart-interrupted-reconcile.integration.test.ts
+```
+
+```text
+
+ RUN  v3.2.7 /root/src/restart-reconcile-55aed1e267d1/apps/dispatcher
+
+ ✓ test/integration/restart-interrupted-reconcile.integration.test.ts (3 tests) 592ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Start at  13:28:08
+   Duration  2.03s (transform 338ms, setup 0ms, collect 1.15s, tests 592ms, environment 0ms, prepare 78ms)
+```
+
+退出码 0，3/3 通过。
+
+## 3. 全量检查
+
+（下面两段是**锁顺序提交之后**的最终复跑；同一工作树、同一命令。）
+
+```bash
+corepack pnpm check
+```
+
+```text
+$ pnpm lint && pnpm format:check && pnpm typecheck && pnpm test
+$ eslint .
+  716:7  warning  Unused eslint-disable directive (no problems were reported from 'no-console')
+✖ 1 problem (0 errors, 1 warning)
+  0 errors and 1 warning potentially fixable with the `--fix` option.
+$ prettier --check "**/*.{ts,tsx,mjs,cjs,json,yml,yaml,css,html}"
+$ pnpm -r --if-present typecheck
+packages/theme typecheck: Done
+packages/contracts typecheck: Done
+packages/db typecheck: Done
+packages/runtime-client typecheck: Done
+apps/web typecheck: Done
+apps/supervisor typecheck: Done
+apps/dispatcher typecheck: Done
+apps/api typecheck: Done
+$ pnpm -r --if-present test && node --test scripts/m3/guard.test.mjs integrations/superagent/tests/verify-lock.test.mjs
+packages/contracts test:  Test Files  1 passed (1)
+packages/contracts test:       Tests  13 passed (13)
+packages/runtime-client test:  Test Files  2 passed (2)
+packages/runtime-client test:       Tests  13 passed (13)
+apps/dispatcher test:  Test Files  2 passed (2)
+apps/dispatcher test:       Tests  5 passed (5)
+apps/api test:  Test Files  3 passed (3)
+apps/api test:       Tests  20 passed (20)
+apps/supervisor test:  Test Files  6 passed (6)
+apps/supervisor test:       Tests  38 passed (38)
+check exit=0
+```
+
+`eslint` 只有仓库既有的一条 warning（`apps/dispatcher/test/integration/dispatcher.integration.test.ts:716`
+未使用的 eslint-disable），无 error；`prettier --check` 与 8 个项目 `typecheck` 通过。
+
+```bash
+TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres corepack pnpm test:integration
+```
+
+```text
+
+ ✓ test/integration/recovery-review-repeat-catch.integration.test.ts (1 test) 580ms
+ ✓ test/integration/expired-reservation-projection.integration.test.ts (3 tests) 520ms
+ ↓ test/integration/bridge-pause-resume.real.integration.test.ts (1 test | 1 skipped)
+ ✓ test/integration/recovery-projection-branches.integration.test.ts (3 tests) 465ms
+stdout | test/integration/recovery-review-idempotent.integration.test.ts > execution reservation on real PostgreSQL > review recovery repeated identical mismatch is idempotent
+REVIEW_REPEATED_MISMATCH {"before":{"version":1,"stop_evidence":{"admissionRecovery":"snapshot_mismatch"}},"after":{"version":1,"stop_evidence":{"admissionRecovery":"snapshot_mismatch"}}}
+
+ ✓ test/integration/recovery-review-idempotent.integration.test.ts (1 test) 404ms
+
+ Test Files  17 passed | 1 skipped (18)
+      Tests  83 passed | 1 skipped (84)
+   Start at  13:35:59
+   Duration  11.40s (transform 762ms, setup 0ms, collect 15.04s, tests 12.63s, environment 4ms, prepare 1.42s)
+
+integration exit=0
+```
+
+```bash
+corepack pnpm build
+```
+
+```text
+apps/web build: Done
+apps/dispatcher build: ESM ⚡️ Build success in 133ms
+apps/dispatcher build: Done
+apps/api build: ESM ⚡️ Build success in 149ms
+apps/api build: Done
+apps/supervisor build: ESM ⚡️ Build success in 213ms
+apps/supervisor build: Done
+build exit=0
+```
+
+## 4. 判定
+
+| 项 | 结果 |
+| --- | --- |
+| 同代次重发 assignment：预留行跟随 + `assignment_superseded` 台账 | 红 → 绿 |
+| 后续真实输入：一次投递、不再下发第二次、`upstream_trigger_id` 稳定 | 绿（用例 1） |
+| `runtime_cursors`：重启事件推进、后续运行事件再推进 | 绿（用例 1） |
+| 非当前代次仍按陈旧事件处理（不改状态、不动预留） | 绿（用例 3，修复前也绿，防回归） |
+| `awaiting_review` 跨重启：不自动开工、不丢 PR、释放名额、关闭后结票 | 绿（用例 2） |
+| 真实双库重启现场对账 | **未执行**（依赖 #36；见方案 §5） |
+| 运行时新回合是否真的起得来（上一轮现场停在 `queued`） | **未验证**（方案 §7 第 2 项） |
