@@ -350,8 +350,12 @@ export class RepositoryGitCache {
 
     let startedRow!: (row: InstanceRow) => void;
     let failedStart!: (error: unknown) => void;
+    let startedResolved = false;
     const started = new Promise<InstanceRow>((resolve, reject) => {
-      startedRow = resolve;
+      startedRow = (row) => {
+        startedResolved = true;
+        resolve(row);
+      };
       failedStart = reject;
     });
     let release!: () => void;
@@ -371,8 +375,8 @@ export class RepositoryGitCache {
           throw new Error('The repository instance is not prepared yet');
         }
         const startedAt = this.now();
-        await this.store.updateInstance(repositoryId, {
-          gitState: 'preparing',
+        const reservation = {
+          gitState: 'preparing' as const,
           gitPhase: 'connecting',
           gitProgress: null,
           gitDetail: '正在连接远端并准备可复用的仓库副本…',
@@ -380,14 +384,47 @@ export class RepositoryGitCache {
           gitFinishedAt: null,
           gitAttempts: instance.gitAttempts + 1,
           gitHead: instance.gitHead,
-        });
-        const preparing = (await this.store.getInstance(repositoryId)) ?? instance;
+        };
+        await this.store.updateInstance(repositoryId, reservation);
+        // The reservation is already durable. A failed status read-back must
+        // not abort the preparation: fall back to the reservation row so the
+        // caller gets a usable response and prepareOnce still runs. Otherwise
+        // the row would stay `preparing` with no job and no retry entry.
+        let preparing: InstanceRow = { ...instance, ...reservation };
+        try {
+          preparing = (await this.store.getInstance(repositoryId)) ?? preparing;
+        } catch (error) {
+          this.logger.warn(
+            {
+              event: 'supervisor.git_prepare_readback_failed',
+              repositoryId,
+              error: error instanceof Error ? error.message.slice(0, 300) : String(error),
+            },
+            'repository preparation status read-back failed; continuing from the reservation',
+          );
+        }
         startedRow(preparing);
         await this.prepareOnce(repositoryId, repository, instance);
       } catch (error) {
-        // Reject the reservation's start only when it never became durable;
-        // a later preparation failure is recorded on the row by prepareOnce.
-        failedStart(error);
+        // Reject the reservation's start only when it never became durable. If
+        // the reservation was already handed to the caller, a later unexpected
+        // failure must still leave a retryable row instead of `preparing`.
+        if (startedResolved) {
+          const detail = `仓库副本准备启动失败：${
+            error instanceof Error ? error.message : String(error)
+          }`;
+          await this.store
+            .updateInstance(repositoryId, {
+              gitState: 'failed',
+              gitPhase: null,
+              gitProgress: null,
+              gitDetail: sanitizeGitDetail(detail),
+              gitFinishedAt: this.now(),
+            })
+            .catch(() => {});
+        } else {
+          failedStart(error);
+        }
         this.logger.error(
           {
             event: 'supervisor.git_prepare_failed',

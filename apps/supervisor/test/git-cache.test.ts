@@ -209,6 +209,27 @@ describe('repository Git copy preparation', () => {
     expect(h.updates.filter((update) => update.gitAttempts !== undefined)).toHaveLength(1);
   });
 
+  it('keeps preparing when the status read-back fails after the reservation', async () => {
+    const h = harness('');
+    const { origin } = originRepository(h.root);
+    const read = h.store.getInstance.bind(h.store);
+    let calls = 0;
+    h.store.getInstance = async (repositoryId: string) => {
+      calls += 1;
+      // The reservation write succeeded; the immediate read-back fails once.
+      if (calls === 2) throw new Error('status read-back failed');
+      return read(repositoryId);
+    };
+    const cache = h.cacheFor(origin);
+    const started = await cache.begin(h.repositoryId);
+    // The caller still gets the reservation, not a rejected start.
+    expect(started.gitState).toBe('preparing');
+    await waitForRow(h.row, 'ready');
+    expect(h.row.gitAttempts).toBe(1);
+    expect(calls).toBeGreaterThanOrEqual(2);
+    expect(h.row.gitState).toBe('ready');
+  });
+
   it('updates a ready copy with new branch commits instead of cloning again', async () => {
     const h = harness('');
     const { origin, commit, work } = originRepository(h.root);
