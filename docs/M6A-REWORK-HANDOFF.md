@@ -1,5 +1,7 @@
 # M6-A 返修交接（#56 → 新会话）
 
+> 历史交接记录。该阶段结果见 [M6-A 验证记录](./M6-A-VERIFICATION.md)。
+
 写给接手 #56 的新会话。分支 `agent/attachments-review-panel-4bd4aae33eac`、PR **#44**（不新开 PR）。
 基线：分支 head `dfd5db935079c62248ab768adb87774db5486ad9`（本文件是其后的一个 docs-only 提交）、
 `main = 1001c2544c68b8f4d906e330566f6fdb6ff0c795`。

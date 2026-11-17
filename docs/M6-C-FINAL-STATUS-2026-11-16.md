@@ -1,5 +1,7 @@
 # M6-C final status — 2026-11-16
 
+> Historical snapshot for release `89f70f5663f8`. See [Deployment](./DEPLOYMENT.md) for the live release and [MoYu #79](https://github.com/bouyer-sutrasky/MoYu/issues/79) for subsequent hands-on findings.
+
 ## Conclusion
 
 The isolated candidate stack is running from one release built from code main

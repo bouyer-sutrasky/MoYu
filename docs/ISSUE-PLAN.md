@@ -1,6 +1,6 @@
 # 用户实际操作与分阶段 Issue
 
-本文件是用户复制给 superagent 的操作步骤。本次没有自动向 GitHub 发消息。本项目取值：仓库 `bouyer-sutrasky/MoYu`、agent `Bouyer12`、HTTPS 域名待定（M2 前确定）；历史记录中的账号不是本次确认的当前授权。
+> 历史建仓步骤和分阶段派单模板。现有项目使用 [MoYu Issues](https://github.com/bouyer-sutrasky/MoYu/issues)，当前仓库、执行账号和入口见 [部署说明](./DEPLOYMENT.md)。
 
 ## 第一步：建仓库并提交资料
 
