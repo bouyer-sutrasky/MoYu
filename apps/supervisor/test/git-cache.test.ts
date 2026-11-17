@@ -1,4 +1,10 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import {
+  execFileSync,
+  spawn,
+  spawnSync,
+  type ChildProcess,
+  type SpawnOptions,
+} from 'node:child_process';
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -172,16 +178,35 @@ describe('repository Git copy preparation', () => {
     expect(h.updates.some((update) => update.gitPhase === 'verifying')).toBe(true);
   });
 
-  it('joins an in-flight preparation instead of starting a second clone', async () => {
+  it('joins two concurrent preparations instead of starting a second clone', async () => {
     const h = harness('');
     const { origin } = originRepository(h.root);
-    const cache = h.cacheFor(origin);
-    const first = await cache.begin(h.repositoryId);
-    const second = await cache.begin(h.repositoryId);
+    let cloneStarts = 0;
+    const countingSpawn = (
+      command: string,
+      args: readonly string[],
+      options: SpawnOptions,
+    ): ChildProcess => {
+      if (args.includes('clone') || args.includes('fetch')) cloneStarts += 1;
+      return spawn(command, args, options);
+    };
+    const cache = new RepositoryGitCache(h.config, h.store, h.logger as never, {
+      remoteUrl: () => origin,
+      spawn: countingSpawn,
+    });
+    // Both calls enter before either has awaited the store update; this is the
+    // exact interleaving that used to start two clones and bump attempts twice.
+    const [first, second] = await Promise.all([
+      cache.begin(h.repositoryId),
+      cache.begin(h.repositoryId),
+    ]);
     expect(first.gitState).toBe('preparing');
     expect(second.gitState).toBe('preparing');
     await waitForRow(h.row, 'ready');
     expect(h.row.gitAttempts).toBe(1);
+    expect(cloneStarts).toBe(1);
+    // Exactly one durable transition into `preparing`, not two reservations.
+    expect(h.updates.filter((update) => update.gitAttempts !== undefined)).toHaveLength(1);
   });
 
   it('updates a ready copy with new branch commits instead of cloning again', async () => {

@@ -17,7 +17,7 @@
  * to the runtime identity when one is configured, so another repository cannot
  * read it and the task prepare command (which runs as that identity) can.
  */
-import { spawn } from 'node:child_process';
+import { spawn as defaultSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { readdirSync, renameSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
@@ -63,7 +63,16 @@ interface GitCacheOptions {
   now?: () => Date;
   /** Test seam: extra Git environment, such as allowing a local `ext::` helper. */
   env?: Record<string, string>;
+  /** Test seam: observes/stubs the process spawns used by one preparation. */
+  spawn?: GitSpawn;
 }
+
+/** The narrow spawn shape this module needs; `child_process.spawn` satisfies it. */
+export type GitSpawn = (
+  command: string,
+  args: readonly string[],
+  options: SpawnOptions,
+) => ChildProcess;
 
 interface Progress {
   phase: GitPhase;
@@ -183,7 +192,7 @@ interface RunGitInput {
 }
 
 /** Runs Git with a bounded timeout, its own process group, and line-oriented progress. */
-async function runGit(input: RunGitInput): Promise<GitRunResult> {
+async function runGit(input: RunGitInput, spawn: GitSpawn = defaultSpawn): Promise<GitRunResult> {
   const prefix = input.identity
     ? [
         input.identity.setpriv,
@@ -291,8 +300,21 @@ function baseEnvironment(): NodeJS.ProcessEnv {
  * One in-flight preparation per repository. A duplicate click joins it instead
  * of starting a second clone; the caller gets the row that says `preparing`.
  */
+interface ActivePreparation {
+  /** Resolves with the preparing row once the reservation is durable. */
+  started: Promise<InstanceRow>;
+  /** The whole preparation; concurrent callers join `started`, not this. */
+  job: Promise<void>;
+}
+
 export class RepositoryGitCache {
-  private readonly active = new Map<string, Promise<void>>();
+  /**
+   * Reservation map written before the first await. Two callers that enter
+   * `begin` together must observe the same entry, or both would increment
+   * attempts and start a clone. The entry is removed only after the job
+   * settles, whichever way it ends.
+   */
+  private readonly active = new Map<string, ActivePreparation>();
 
   constructor(
     private readonly config: SupervisorConfig,
@@ -323,42 +345,65 @@ export class RepositoryGitCache {
    * the work itself is not awaited.
    */
   async begin(repositoryId: string): Promise<InstanceRow> {
-    const repository = await this.store.getRepository(repositoryId);
-    if (!repository) throw new Error('Repository not found');
-    const instance = await this.store.getInstance(repositoryId);
-    if (!instance?.profile) {
-      throw new Error('The repository instance is not prepared yet');
-    }
-    if (this.active.has(repositoryId)) {
-      return (await this.store.getInstance(repositoryId)) ?? instance;
-    }
-    const startedAt = this.now();
-    await this.store.updateInstance(repositoryId, {
-      gitState: 'preparing',
-      gitPhase: 'connecting',
-      gitProgress: null,
-      gitDetail: '正在连接远端并准备可复用的仓库副本…',
-      gitStartedAt: startedAt,
-      gitFinishedAt: null,
-      gitAttempts: instance.gitAttempts + 1,
-      gitHead: instance.gitHead,
+    const inFlight = this.active.get(repositoryId);
+    if (inFlight) return inFlight.started;
+
+    let startedRow!: (row: InstanceRow) => void;
+    let failedStart!: (error: unknown) => void;
+    const started = new Promise<InstanceRow>((resolve, reject) => {
+      startedRow = resolve;
+      failedStart = reject;
     });
-    const job = this.prepareOnce(repositoryId, repository, instance)
-      .catch((error: unknown) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const entry: ActivePreparation = { started, job: Promise.resolve() };
+    const job = (async () => {
+      // Let `begin` install the reservation before the first asynchronous step.
+      await gate;
+      let repository: RepositoryRow | null = null;
+      try {
+        repository = await this.store.getRepository(repositoryId);
+        if (!repository) throw new Error('Repository not found');
+        const instance = await this.store.getInstance(repositoryId);
+        if (!instance?.profile) {
+          throw new Error('The repository instance is not prepared yet');
+        }
+        const startedAt = this.now();
+        await this.store.updateInstance(repositoryId, {
+          gitState: 'preparing',
+          gitPhase: 'connecting',
+          gitProgress: null,
+          gitDetail: '正在连接远端并准备可复用的仓库副本…',
+          gitStartedAt: startedAt,
+          gitFinishedAt: null,
+          gitAttempts: instance.gitAttempts + 1,
+          gitHead: instance.gitHead,
+        });
+        const preparing = (await this.store.getInstance(repositoryId)) ?? instance;
+        startedRow(preparing);
+        await this.prepareOnce(repositoryId, repository, instance);
+      } catch (error) {
+        // Reject the reservation's start only when it never became durable;
+        // a later preparation failure is recorded on the row by prepareOnce.
+        failedStart(error);
         this.logger.error(
           {
             event: 'supervisor.git_prepare_failed',
-            repository: repository.fullName,
+            repository: repository?.fullName ?? repositoryId,
             error: error instanceof Error ? error.message.slice(0, 300) : String(error),
           },
           'repository Git copy preparation failed',
         );
-      })
-      .finally(() => {
-        this.active.delete(repositoryId);
-      });
-    this.active.set(repositoryId, job);
-    return (await this.store.getInstance(repositoryId)) ?? instance;
+      }
+    })().finally(() => {
+      if (this.active.get(repositoryId) === entry) this.active.delete(repositoryId);
+    });
+    entry.job = job;
+    this.active.set(repositoryId, entry);
+    release();
+    return started;
   }
 
   /**
@@ -467,19 +512,22 @@ export class RepositoryGitCache {
       ...this.options.env,
     };
     const run = (argv: string[]): Promise<GitRunResult> =>
-      runGit({
-        argv,
-        cwd: this.config.worktreeRoot,
-        env,
-        timeoutMs: this.config.repoPrepareTimeoutMs,
-        ...(identity ? { identity } : {}),
-        onLine: (line) => {
-          const parsed = parseGitProgress(line, progress);
-          // Progress is best effort: a database hiccup must not fail the clone
-          // that is already running, and the final state is written below.
-          if (parsed) void writeProgress(parsed).catch(() => {});
+      runGit(
+        {
+          argv,
+          cwd: this.config.worktreeRoot,
+          env,
+          timeoutMs: this.config.repoPrepareTimeoutMs,
+          ...(identity ? { identity } : {}),
+          onLine: (line) => {
+            const parsed = parseGitProgress(line, progress);
+            // Progress is best effort: a database hiccup must not fail the clone
+            // that is already running, and the final state is written below.
+            if (parsed) void writeProgress(parsed).catch(() => {});
+          },
         },
-      });
+        this.options.spawn,
+      );
 
     let partial: string | null = null;
     try {
