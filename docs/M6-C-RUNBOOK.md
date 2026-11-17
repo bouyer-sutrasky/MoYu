@@ -1,11 +1,10 @@
 # MoYu M6-C runbook
 
-This runbook describes the **current** candidate/production-capable stack on
-`jd-mc`. It is written to be executable without guessing paths, ports,
-migration counts or service identities. Re-read `docs/environment-baseline.md`
-and the latest `docs/evidence/m6c/<run-id>/release-manifest.json` before a
-release window; the values below are a 2026-11-16 baseline, not a permanent
-promise.
+This runbook covers release, backup, and recovery for MoYu M6-C on `jd-mc`.
+See [Deployment](./DEPLOYMENT.md) for the latest live snapshot. Before a release,
+confirm the running units and read the manifest for the exact release you are
+deploying or restoring. The paths and identities below describe the 2026-11-16
+baseline.
 
 ## Current entry and services
 
@@ -17,8 +16,8 @@ promise.
 | runtime instances | started by the supervisor | per-repository identity when configured; otherwise the candidate fallback | `3461/3462`, `3463/3464`, `3465/3466` |
 | review checks | child of the supervisor | `moyu-m6c-check` / per-repository check identity when configured | none |
 
-As of 2026-11-16 the public entry `https://moyu.sutrasky.com` is nginx →
-`127.0.0.1:4310` and therefore reaches the candidate stack. The old
+As of 2026-11-17 the public entry `https://moyu.sutrasky.com` is nginx →
+`127.0.0.1:4310` and therefore reaches the M6-C stack. The old
 `moyu.service` is stopped but still enabled; do not start it while the M6-C
 stack owns the entry. The three M6-C services must always run from the same
 immutable release and manifest.
@@ -95,7 +94,7 @@ cwd, and the health endpoints:
 node scripts/m6c/verify-running.mjs \
   --manifest docs/evidence/m6c/<run-id>/release-manifest.json \
   --unit-prefix moyu-m6c \
-  --release-root /opt/moyu-m6c/current \
+  --release-root "$(readlink -f /opt/moyu-m6c/current)" \
   --supervisor-token-file /etc/moyu-m6c/supervisor-token
 ```
 
@@ -138,7 +137,7 @@ ln -sfn /opt/moyu-m6c/releases/<previous-sha> /opt/moyu-m6c/current
 systemctl start moyu-m6c-api.service
 systemctl start moyu-m6c-supervisor.service
 systemctl start moyu-m6c-dispatcher.service
-node scripts/m6c/verify-running.mjs --manifest /opt/moyu-m6c/releases/<previous-sha>/release-manifest.json --release-root /opt/moyu-m6c/current
+node scripts/m6c/verify-running.mjs --manifest /opt/moyu-m6c/releases/<previous-sha>/release-manifest.json --release-root "$(readlink -f /opt/moyu-m6c/current)"
 ```
 
 The database migration ledger must be compatible with the target release. Do
@@ -167,7 +166,7 @@ node scripts/m6c/backup.mjs \
   --db-url-file /etc/moyu-m6c/api.env \
   --dsh-home /var/lib/moyu-m6c/dsh \
   --worktrees /var/lib/moyu-m6c/worktrees \
-  --release-root /opt/moyu-m6c/current \
+  --release-root "$(readlink -f /opt/moyu-m6c/current)" \
   --stop-writers --start-after
 ```
 
