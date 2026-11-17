@@ -1,0 +1,9 @@
+-[ RECORD 1 ]---+--------------------------------------------------------------------------------------
+git_state       | failed
+git_phase       | connecting
+git_progress    | 
+git_attempts    | 5
+git_detail      | 仓库副本准备超时（阶段 connecting）；已中止并清理未完成的临时副本，可从仓库面板重试。
+git_started_at  | 2026-11-17 17:40:43.996+08
+git_finished_at | 2026-11-17 17:40:54.002+08
+

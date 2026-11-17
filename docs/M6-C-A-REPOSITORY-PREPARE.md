@@ -119,10 +119,64 @@ prepare 命令改为：从本地副本 `git clone --no-tags --local` 到
 Before 是 9b9bff9（没有仓库副本概念），After 是分支 HEAD（显示准备阶段和重试
 入口）。图片在 `docs/evidence/m6c-a/`。
 
+## 4.1 返修：真正并发的 prepare 去重
+
+`RepositoryGitCache.begin()` 现在在第一个 `await` 之前写入 reservation：
+
+- `active` 保存 `{ started, job }`；第二个并发调用直接等待同一个 `started`，
+  不会再次 `updateInstance`，也不会启动第二次 clone/fetch；
+- 初始化失败时 reject `started` 并删除 reservation，后续可重试；
+- 后续准备失败仍由 `prepareOnce` 写入 `failed`，异常路径不留下 reservation。
+
+回归测试 `test/git-cache.test.ts` 的
+`joins two concurrent preparations instead of starting a second clone`：
+
+```ts
+const [first, second] = await Promise.all([cache.begin(id), cache.begin(id)]);
+await waitForRow(row, 'ready');
+expect(row.gitAttempts).toBe(1);
+expect(cloneStarts).toBe(1);
+```
+
+`cloneStarts` 由注入的 `spawn` 计数，只统计实际 `clone`/`fetch` 子进程。
+12/12 通过（`docs/evidence/m6c-a/real-run-20261117/concurrency-test.log`）。
+
+## 4.2 返修：正式 supervisor 服务身份下的真实运行
+
+运行环境：主机 `lavm-flnape7bgu`，服务身份 `moyu-m6c`（uid 988），
+systemd 临时/正式 unit（`User=moyu-m6c`、`Delegate=yes`、
+`DelegateSubgroup=supervisor`、`NoNewPrivileges=yes`），隔离 release
+`/opt/moyu-a/releases/c1a03401d285f530754361713fc24c0c91f88ca9`、隔离数据库
+`moyu_a_repair`、隔离状态 `/var/lib/moyu-a`，未触碰正式 4310/4491 栈与
+`moyu_m6c` 库。
+
+- 真实仓库：`Bouyer12/m6c-a-repo-cache-20261117`（私有测试仓）；
+  repository id `87b05f90-4f4f-4f1c-83fa-5aac305c51b1`。
+- 仓库准备：`moyu-m6c` 运行 `git clone --mirror`，09:31:53 完成，
+  head `c8ff4ec28d47f5e4d73bb42488026b5df97fb005`；日志
+  `supervisor.log` 的 `supervisor.git_prepare_ready`。
+- 首任务失败：删除 `.repository.git` 后交付消息，任务
+  `6895b931-bdbf-4f2e-a9b7-0dfec4581ce6` 在 09:36 变为 `failed`；Bridge
+  `task.progress` 记录「阶段：检出工作区；worker 未启动」。
+- 仓库恢复：`POST /api/v1/repositories/:id/prepare` 重新准备，attempt 2 ready。
+- 原 task ID 重试：09:36:47 同任务 `retry`，worker 启动，09:37:42
+  `awaiting_review`，产出 PR
+  `https://github.com/Bouyer12/m6c-a-repo-cache-20261117/pull/1`。
+- 副作用：1 条 delivery、1 个 ticket、1 个 assignment、1 个 worktree、
+  1 个 DSH 运行进程、1 个 PR；仓库 clone 总共 2 次（初始 + 恢复），任务
+  工作区只从本地副本 clone。
+- `0027` 进度到达 Web：Bridge `events.jsonl` 6 条 `task.progress`，页面
+  截图 `real-run-failed-progress.png`、`real-run-retry-progress.png`、
+  `real-run-final.png`，页面文本同目录。
+- 真实超时：注入慢 SSH（`sleep 60`）并把 `REPO_PREPARE_TIMEOUT_MS` 设为
+  10 s，仓库准备在 10 s 后 `failed`，detail 为
+  「仓库副本准备超时（阶段 connecting）…」；移除注入后重试恢复 ready。
+  证据在 `real-run-20261117/timeout/`。
+
 ## 5. 未验证项
 
-- 未在正式部署的 supervisor 服务身份下执行真实克隆；本次真实 GitHub 证据在
-  本机隔离目录、使用同一 SSH 配置与同一命令完成。
+- 真实运行在正式服务身份/unit 语义下完成，但使用隔离 release、数据库与状态
+  目录；未替换线上 4310/4491 栈，也未触碰正式库。
 - 未验证两个 supervisor 进程同时对同一仓库 prepare 的跨进程互斥；当前部署为
   单 supervisor，进程内已合并重复请求。
 - 手机截图由 Playwright 视口模拟，不是真机；未由所有者做真机视觉签收。

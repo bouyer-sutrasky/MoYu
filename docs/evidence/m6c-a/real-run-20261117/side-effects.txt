@@ -1,0 +1,9 @@
+git_prepare_ready_count=2 (initial + repository recovery; none per task)
+delivery_count=1
+ticket_ids=1
+assignment_ids=1
+worker_started_progress_count=1
+worker_not_started_failure_progress_count=1
+retry_operation_count=1
+worktree_count=1
+pr_count=1

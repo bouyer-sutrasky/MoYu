@@ -1,0 +1,1 @@
+uid=988(moyu-m6c) gid=982(moyu-m6c) groups=982(moyu-m6c),981(moyu-m6c-check)

@@ -1,0 +1,6 @@
+-[ RECORD 1 ]-+-------------------------------------
+id            | 8f155a80-ffa7-4b0e-afbd-0f787633fadf
+message_id    | afac4c56-3107-4e4b-9fab-9bfa8e9a22c3
+state         | delivered
+attempt_count | 1
+

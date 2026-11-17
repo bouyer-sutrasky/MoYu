@@ -1,0 +1,13 @@
+ seq |     type      |                                                                              text                                                                               
+-----+---------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+   5 | task.progress | 准备任务工作区：从仓库副本检出冻结提交…
+   6 | task.progress | 任务工作区准备失败（阶段：检出工作区）；worker 未启动。仓库的 Git 副本尚未准备好（仓库准备未完成或失败），请先在仓库面板重试准备。
+  11 | task.progress | 准备任务工作区：从仓库副本检出冻结提交…
+  12 | task.progress | 任务工作区已准备好（从仓库副本检出）；正在启动 worker…
+  13 | task.progress | worker 已启动，开始执行任务。
+  20 | task.progress | 已完成：在仓库根目录创建 M6C-A-REAL-RUN.md（内容单行 `M6-C A real worker run`），提交到 `agent/add-real-run-note-25cf6ca2ac20` 分支并创建 PR #1，已报告 ready。+
+     |               |                                                                                                                                                                +
+     |               | - PR: https://github.com/Bouyer12/m6c-a-repo-cache-20261117/pull/1                                                                                             +
+     |               | - 变更：1 个文件，+1/-0，无 CI 检查；需人工合并（本部署未指定 merge CLI）。
+(6 rows)
+

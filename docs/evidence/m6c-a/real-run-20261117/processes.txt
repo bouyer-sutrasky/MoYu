@@ -1,0 +1,1 @@
+moyu-m6c 1575318 1574443 /opt/moyu-m6c/runtime/node24/bin/node /usr/bin/dsh --profile m6c-a2 --no-open

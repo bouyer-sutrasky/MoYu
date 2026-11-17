@@ -1,0 +1,5 @@
+9141a6b3f76c86d5b3a34406ae64283343030265 Bouyer12 <202233540+Bouyer12@users.noreply.github.com> Add M6C-A-REAL-RUN.md
+c8ff4ec28d47f5e4d73bb42488026b5df97fb005 Bouyer12 <202233540+Bouyer12@users.noreply.github.com> evidence: seed files for repository preparation
+b23e4d5521d2f5319414c22d1fe14c6e25a254fe Bouyer12 <3640075642@qq.com> Initial commit
+9141a6b3f76c86d5b3a34406ae64283343030265
+9141a6b3f76c86d5b3a34406ae64283343030265

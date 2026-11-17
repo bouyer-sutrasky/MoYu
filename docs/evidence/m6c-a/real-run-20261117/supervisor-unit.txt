@@ -1,0 +1,6 @@
+MainPID=1574443
+ExecStart={ path=/opt/moyu-m6c/runtime/node24/bin/node ; argv[]=/opt/moyu-m6c/runtime/node24/bin/node apps/supervisor/dist/main.js ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }
+ControlGroup=/system.slice/moyu-a-supervisor.service
+Delegate=yes
+DelegateSubgroup=supervisor
+User=moyu-m6c
