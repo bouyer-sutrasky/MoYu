@@ -216,6 +216,8 @@ export const bridgeTicketReportSchema = z.object({
   state: z.string().min(1),
   summary: z.string(),
   at: isoTimestampSchema,
+  /** The Assignment that produced this report, when the runtime reports it. */
+  assignmentId: z.string().min(1).optional(),
 });
 
 /** A recoverable human pause, as the runtime persists it. */

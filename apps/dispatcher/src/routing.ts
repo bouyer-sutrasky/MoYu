@@ -117,6 +117,7 @@ async function saveRouting(
     (patch.routingDetail !== undefined && patch.routingDetail !== before?.routingDetail) ||
     (patch.routingError !== undefined && patch.routingError !== before?.routingError) ||
     (patch.targetTaskId !== undefined && patch.targetTaskId !== before?.targetTaskId);
+  const { targetAssignmentId, ...decisionPatch } = patch;
   const client = await pool.connect();
   try {
     await client.query('begin');
@@ -127,9 +128,26 @@ async function saveRouting(
               updated_at = now()
         where id = $1
         returning ${TASK_COLUMNS.replaceAll('t.', 'task_links.')}`,
-      [source.id, JSON.stringify(patch)],
+      [source.id, JSON.stringify(decisionPatch)],
     );
-    const task = updated.rows[0];
+    let task = updated.rows[0];
+    if (targetAssignmentId) {
+      // A handoff assignment is only an inference. A delivery/read event may
+      // already have proved the actual assignment; a late routing update must
+      // never overwrite that evidence.
+      const assigned = await client.query<TaskRow>(
+        `update task_links
+            set decision = decision || jsonb_build_object(
+                  'targetAssignmentId', $2::text,
+                  'targetAssignmentSource', 'handoff'),
+                version = version + 1,
+                updated_at = now()
+          where id = $1 and not (decision ? 'targetAssignmentId')
+          returning ${TASK_COLUMNS.replaceAll('t.', 'task_links.')}`,
+        [source.id, targetAssignmentId],
+      );
+      if (assigned.rows[0]) task = assigned.rows[0];
+    }
     if (task && visible) {
       await appendEventSql(client, {
         type: 'task.state_changed',

@@ -510,6 +510,9 @@ describe('routed admission handoff on real PostgreSQL', () => {
       state: 'ready',
       summary: 'Revision completed on the same PR #12.',
       at: new Date(Date.now() + 60_000).toISOString(),
+      assignmentId: (await readDecision(fixture.source.taskId)).decision[
+        'targetAssignmentId'
+      ] as string,
     };
     snapshot.state = 'awaiting_review';
     expect(await captureReportsOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(
@@ -626,6 +629,7 @@ describe('routed admission handoff on real PostgreSQL', () => {
       state: 'ready',
       summary: 'Worker finished before the routing loop caught up',
       at: new Date(Date.now() + 60_000).toISOString(),
+      assignmentId: 'worker-first-assignment',
     };
     await testDatabase.pool.query(`update task_links set state = 'awaiting_review' where id = $1`, [
       fixture.target.taskId,
@@ -765,6 +769,7 @@ describe('routed admission handoff on real PostgreSQL', () => {
       state: 'ready',
       summary: 'Second rework result, first report tick was skipped',
       at: new Date(Date.now() + 120_000).toISOString(),
+      assignmentId: secondAssignment,
     };
     await testDatabase.pool.query(`update task_links set state = 'awaiting_review' where id = $1`, [
       fixture.target.taskId,
@@ -789,6 +794,7 @@ describe('routed admission handoff on real PostgreSQL', () => {
       state: 'ready',
       summary: 'First rework result recovered later',
       at: new Date(Date.now() + 180_000).toISOString(),
+      assignmentId: firstAssignment,
     };
     await captureReportsOnce(testDatabase.pool, fixture.repository, client, logger);
     firstNotices = await testDatabase.pool.query(
@@ -800,6 +806,80 @@ describe('routed admission handoff on real PostgreSQL', () => {
       [second.conversationId],
     );
     expect(firstNotices.rows).toHaveLength(1);
+    expect(secondNotices.rows).toHaveLength(1);
+  }, 30_000);
+
+  it('keeps delivery-proven assignment A when a late handoff sees assignment B', async () => {
+    const fixture = await seed();
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+    const snapshot = bridge.snapshots.get(fixture.target.ticketId)!;
+    snapshot.admissionRequired = false;
+    snapshot.assignmentId = 'assignment-a';
+    await testDatabase.pool.query(
+      `update deliveries set handed_to_worker_at = null, read_at = null where message_id = $1`,
+      [fixture.source.messageId],
+    );
+    const deliveredAt = new Date(Date.now() - 2_000).toISOString();
+    bridge.events.push({
+      seq: bridge.events.length + 1,
+      id: `delivered-assignment-a-${fixture.source.messageId}`,
+      type: 'message.delivered',
+      at: deliveredAt,
+      data: {
+        triggerId: `workspace:${fixture.source.messageId}`,
+        messageId: fixture.source.messageId,
+        conversationId: fixture.source.conversationId,
+        stage: 'worker_inbox',
+        at: deliveredAt,
+        assignmentId: 'assignment-a',
+      },
+    });
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+    expect((await readDecision(fixture.source.taskId)).decision['targetAssignmentId']).toBe(
+      'assignment-a',
+    );
+
+    // The target switched to assignment B before the routing loop recorded the
+    // handoff for the first source.
+    snapshot.assignmentId = 'assignment-b';
+    await testDatabase.pool.query(`update task_links set state = 'awaiting_review' where id = $1`, [
+      fixture.target.taskId,
+    ]);
+    expect(
+      await handoffRoutedOnce(testDatabase.pool, config, fixture.repository, client, true, logger),
+    ).toBe(true);
+    const first = await readDecision(fixture.source.taskId);
+    expect(first.decision['targetAssignmentId']).toBe('assignment-a');
+    expect(first.decision['targetAssignmentSource']).toBe('delivery');
+
+    // A second source legitimately belongs to assignment B.
+    const second = await seedSecondSource(fixture);
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+    expect(
+      await handoffRoutedOnce(testDatabase.pool, config, fixture.repository, client, true, logger),
+    ).toBe(true);
+    expect((await readDecision(second.taskId)).decision['targetAssignmentId']).toBe('assignment-b');
+
+    snapshot.state = 'awaiting_review';
+    snapshot.report = {
+      state: 'ready',
+      summary: 'Assignment B result',
+      at: new Date(Date.now() + 60_000).toISOString(),
+      assignmentId: 'assignment-b',
+    };
+    await testDatabase.pool.query(`update task_links set state = 'awaiting_review' where id = $1`, [
+      fixture.target.taskId,
+    ]);
+    await captureReportsOnce(testDatabase.pool, fixture.repository, client, logger);
+    const firstNotices = await testDatabase.pool.query(
+      `select 1 from messages where conversation_id = $1 and kind = 'notice'`,
+      [fixture.source.conversationId],
+    );
+    const secondNotices = await testDatabase.pool.query(
+      `select 1 from messages where conversation_id = $1 and kind = 'notice'`,
+      [second.conversationId],
+    );
+    expect(firstNotices.rows).toHaveLength(0);
     expect(secondNotices.rows).toHaveLength(1);
   }, 30_000);
 
@@ -819,6 +899,9 @@ describe('routed admission handoff on real PostgreSQL', () => {
       state: 'ready',
       summary: 'Old result from before this rework',
       at: new Date(Date.now() - 3_600_000).toISOString(),
+      assignmentId: (await readDecision(fixture.source.taskId)).decision[
+        'targetAssignmentId'
+      ] as string,
     };
     expect(await captureReportsOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(
       true,
@@ -856,6 +939,9 @@ describe('routed admission handoff on real PostgreSQL', () => {
       state: 'ready',
       summary: 'Revision completed after this rework',
       at: new Date(Date.now() + 120_000).toISOString(),
+      assignmentId: (await readDecision(fixture.source.taskId)).decision[
+        'targetAssignmentId'
+      ] as string,
     };
     await captureReportsOnce(testDatabase.pool, fixture.repository, client, logger);
     notices = await testDatabase.pool.query(

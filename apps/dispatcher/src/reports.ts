@@ -108,7 +108,7 @@ export async function captureReportsOnce(
           eventKey: `report:${report.at}`,
           notBefore: report.at,
           requireDelivery: true,
-          targetAssignmentId: snapshot.assignmentId ?? null,
+          targetAssignmentId: report.assignmentId ?? null,
         });
       }
       // The snapshot names its first followed PR, which can be historical. Only

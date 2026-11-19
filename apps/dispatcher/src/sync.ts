@@ -399,7 +399,9 @@ async function recordRoutedDelivery(
               || case when decision ? 'deliveryAt' then '{}'::jsonb
                       else jsonb_build_object('deliveryAt', $3::text) end
               || case when $4::text is null then '{}'::jsonb
-                      else jsonb_build_object('targetAssignmentId', $4::text) end,
+                      else jsonb_build_object(
+                        'targetAssignmentId', $4::text,
+                        'targetAssignmentSource', 'delivery') end,
             version = version + 1, updated_at = now()
       where conversation_id = $1 and decision->>'outcome' = 'routed'
       returning ${TASK_COLUMNS.replaceAll('t.', 'task_links.')}`,

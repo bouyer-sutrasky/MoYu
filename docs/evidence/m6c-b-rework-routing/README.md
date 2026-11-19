@@ -134,6 +134,20 @@ ticket snapshot、Outbox 回执和 UI 文本；红/绿各一次，最后用 0028
   第二个源会话。随后恢复第一份报告时只通知第一个源会话；重复轮询不新增回执。
   worker 先完成时仍能正确回执的回归保留并通过。
 
+### 第五轮复审（基于 1805dab）
+
+- 区分调度推断与实际交付证据：routed handoff 只在该 decision 还没有
+  `targetAssignmentId` 时写入推断值（`targetAssignmentSource=handoff`）；平台在
+  `message.delivered`/`message.read` 写入实际值（`targetAssignmentSource=delivery`），
+  且迟到的 handoff 更新使用 `where not (decision ? 'targetAssignmentId')`，不能覆盖
+  已证实的归属。
+- 报告归属改为来自报告自身：上游 0029 在 ticket snapshot 的 report 中返回产生该
+  report 的 `assignmentId`；平台只用 `report.assignmentId` 匹配，不再使用可能已切到
+  下一回合的 `snapshot.assignmentId`。没有报告 assignment 时不发送完成回执。
+- 回归：A 的交付事件写入 assignment A → 目标切到 B → 第一次来源的迟到 handoff 看到
+  B → 读取 B 报告；断言源 decision 仍是 A，B 报告只通知属于 B 的源，A 源不收到。
+  原 worker 先完成/跳过首轮报告的回归保留并通过。
+
 ## 未验项
 
 - 未做 C/D 段（页面位置恢复、主题白框、中文提示词、手机通知）。
