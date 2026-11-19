@@ -1,0 +1,6 @@
+worktree: /tmp/m6c-c-real/worktrees/m6cc/language-check-file-f33dffc16a2c
+file: /tmp/m6c-c-real/worktrees/m6cc/language-check-file-f33dffc16a2c/m6c-language-check.txt
+sha256: 682e9b5aad161de96183c734de6a3b8be11d2d6d56ab979431afc9f1ebec4c24
+content: 中文回执验证
+commit: 8ba6a8f9278485975b7418bf65e8cd0982fd0f7f Add m6c-language-check.txt with Chinese receipt text
+status: 0 modified entries

@@ -1,0 +1,16 @@
+{
+  "database": "moyu_m6c_c_real (isolated PostgreSQL 16 on 127.0.0.1:55432)",
+  "repository": "Bouyer12/m6c-c-real-task-1795085845 (private, disposable)",
+  "baselineCommit": "0411f35da720ab90db69bd58b0bf8d6d794d17b3",
+  "supervisor": "isolated process on 127.0.0.1:4494, profile m6cc, DSH port 3483, Bridge port 3484",
+  "api": "isolated process on 127.0.0.1:3102",
+  "dispatcher": "isolated process, delivery interval 300 ms",
+  "runtime": "profile m6cc from the pinned template, dsh-superagent -> /tmp/m6c-c-artifact (lib/index.js sha256 1fc0dbea8926deec4a724de700482f010d64fef032687e514782d523d6b54b66)",
+  "artifactIncludes": "0001-0030 patches, including 0030-language-section.patch",
+  "task": {
+    "conversationId": "178ee9e7-2edb-494f-ae5c-beb1a8a7dadc",
+    "taskId": "2104a4fa-6018-4141-9d00-2354a9a1f820",
+    "upstreamTicketId": "f33dffc16a2c51f23cecbf8bc075c9c3",
+    "state": "completed"
+  }
+}

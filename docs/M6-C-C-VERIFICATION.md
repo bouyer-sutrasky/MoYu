@@ -1,7 +1,7 @@
 # M6-C C 段验证：页面位置、主题与中文交互
 
 基线：`2e785306f59767f07b91198f275591c050f9f34f`（#82 合并后的 `main`）。
-本文件记录 C 段的实现、命令和实际结果；浏览器截图采集于 `c9669e2`，最终 head 的非可视修正不改变这些场景。浏览器证据在
+本文件记录 C 段的实现、命令和实际结果；路由/主题截图采集于 `c9669e2`，之后的修正不改变这些场景；临时故障重试提示另有 `browser/after-route-retry-503.png`。浏览器证据在
 [`docs/evidence/m6c-c/`](./evidence/m6c-c/README.md)。
 
 ## 1. 刷新与返回恢复
@@ -17,8 +17,10 @@
 - 只接受 UUID 形状的 id、已知设置分区和已知 Superagent 分组；其余值在解析时
   丢弃，不会成为目标。
 - `WorkspaceShell` 在仓库列表就绪后解析目标：仓库必须在当前 owner 的列表里；
-  会话先调用 `GET /api/v1/conversations/:id` 校验存在性和归属，再切换。校验失败
-  才回退到当前/第一个仓库，并用 `replaceState` 规范化地址，显示可见提示。
+  会话先调用 `GET /api/v1/conversations/:id` 校验存在性和归属，再切换。只有平台
+  确认的 403/404（不存在或无权访问）才回退到当前/第一个仓库，并用
+  `replaceState` 规范化地址；网络失败、超时或 5xx 保留原地址，显示可重试提示。
+  刷新本身也会重试，恢复后仍打开原会话。
 - 仓库、会话、设置分区、设置分组和设置目标仓库的每次用户导航都写入历史；
   `popstate` 从地址恢复，因此浏览器返回/前进与刷新一致。
 - 设置目标仓库独立于工作台仓库：`settingsRepo` 只影响设置弹窗，切换它不会切换
@@ -37,11 +39,13 @@
 | beta 设置→评估 URL | 设置弹窗不打开 | 弹窗打开，目标仓库 beta，分组「评估」`aria-current=page` |
 | 刷新设置 | — | 同一分区、仓库、分组 |
 | 浏览器返回（B1 → B → A1） | — | 地址和界面逐步回到对应位置 |
-| 非法/无权限会话 | — | 清掉会话参数，回到当前仓库，显示「不存在或没有访问权限」 |
+| 非法/无权限会话（404） | — | 清掉会话参数，回到当前仓库，显示「不存在或没有访问权限」 |
+| 冷启动首次 503 | — | URL 保留、显示「地址已保留，可重试」；刷新仍保留；恢复后点「重试」打开原 beta 会话 |
 | 草稿恢复 | — | beta/alpha 两会话各自恢复自己的草稿，互不串 |
 | 设置切仓 | — | `settingsRepo` 改为 A、分组回「来源」，工作台仍是原仓库 |
 
-记录：`browser/after-result.json`、`browser/before-result.json`；截图
+记录：`browser/after-result.json`、`browser/before-result.json`、
+`browser/transient-route.json`；截图
 `browser/after-restore-beta-conversation.png`、
 `browser/before-restore-beta-conversation.png`、`browser/after-restore-beta-settings-eval.png`。
 
@@ -108,18 +112,32 @@ token；截图见 `browser/after-new-task-dark-mobile.png` 与
 `docs/evidence/m6c-c/prompt-preview.json` 是 `Prompts.preview()` 的实际输出：
 两种角色的 parts 都包含 `runtime/language`，正文含
 “Chinese when the person wrote Chinese”，并覆盖接单、提问、进度/失败、完成四类
-正文。`upstream-prompt-tests.log` 记录上游提示词/编辑器测试结果。
+正文。`upstream-prompt-tests.txt` 记录上游提示词/编辑器测试结果。
 
-### 未验
+### 真实任务回执
 
-**真实任务回执未执行。** 本轮没有启动隔离的 supervisor/DSH 执行实例和可投递的
-测试仓库，因此没有让真实任务经过「接单 → 执行 → 完成回执」来观察中文正文。
-预览证明提示词已进入实际合成结果，但没有替代真实执行回执。生产发布后应在
-测试仓库跑一条真实任务，确认接单、提问/进度、失败和完成正文的语言。
+在隔离 Supervisor/DSH、隔离 API/Dispatcher、隔离 PostgreSQL 和一次性测试仓库
+`Bouyer12/m6c-c-real-task-1795085845` 上跑了一条真实任务：
+
+- 仓库副本 `ready`，head `0411f35…`；profile `m6cc` 使用含 0030 补丁的
+  `/tmp/m6c-c-artifact`（`lib/index.js` sha256 `1fc0dbea…`）。
+- 运行中实例的 HTTP prompts preview 明确包含 `runtime/language`（两种角色）。
+- 中文消息触发了真实任务；数据库中记录：
+  - 接单 acknowledgement（中文）；
+  - 4 条真实 `task.progress`（准备开始、工作区就绪、worker 启动、中文完成总结）；
+  - 完成 result（中文）与 reply（中文）；
+  - 任务 `completed`，文件 `m6c-language-check.txt` 内容“中文回执验证”，提交
+    `8ba6a8f`。
+- 本任务没有触发提问或失败/受阻；未创建 PR。这些情形在
+  `real-task/README.md` 中明确记录为未触发，而不是遗漏。
+
+证据：`docs/evidence/m6c-c/real-task/`（`real-task.json`、
+`progress-events.json`、`prompt-preview.json`、`worktree.txt`、`stack.json`）。
 
 ## 4. 检查与退出码
 
-见 `docs/evidence/m6c-c/README.md` 的命令表；`check.log`、`build.log`、
-`integration.log`、`upstream-build.log`、`verify-lock.log` 保留原始输出。
+见 `docs/evidence/m6c-c/README.md` 的命令表；`check.txt`、`build.txt`、
+`integration.txt`、`upstream-build.txt`、`verify-lock.txt` 保留原始输出。
 
-未验证项：真实任务回执、生产发布、真实手机通知（D 段）、生产数据库/服务。
+未验证项：生产发布、真实手机通知（D 段）、生产数据库/服务。真实任务回执已用
+隔离执行栈补齐；任务中未自然触发的提问/失败情形已单列。
