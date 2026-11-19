@@ -6,7 +6,7 @@
  * context: a repository scope, the locale function, an internal route state for
  * the group navigation, and an instance-level Deployment form adapter.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 
 import type {
   ConfigForm,
@@ -208,19 +208,20 @@ function SettingsBody({
 export function SuperagentSettings({
   repositoryId,
   repositoryName,
+  group,
+  onGroupChange,
 }: {
   repositoryId: string | null;
   repositoryName: string | null;
+  group: SettingsGroup;
+  onGroupChange: (group: SettingsGroup) => void;
 }) {
-  const [group, setGroup] = useState<SettingsGroup>('source');
-
-  useEffect(() => {
-    setGroup('source');
-  }, [repositoryId]);
-
-  const navigate = useCallback((route: Route) => {
-    if (route.page === 'settings') setGroup(route.query.group);
-  }, []);
+  const navigate = useCallback(
+    (route: Route) => {
+      if (route.page === 'settings') onGroupChange(route.query.group);
+    },
+    [onGroupChange],
+  );
 
   const deploymentForm = useMemo(() => new DeploymentForm(repositoryId ?? ''), [repositoryId]);
 

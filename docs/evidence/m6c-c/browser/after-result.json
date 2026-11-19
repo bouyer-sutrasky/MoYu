@@ -1,0 +1,121 @@
+{
+  "label": "after",
+  "origin": "http://localhost:5173",
+  "scenarios": {
+    "restore": {
+      "url": "http://localhost:5173/?repo=22222222-2222-4222-8222-222222222222&conversation=b1111111-1111-4111-8111-111111111111",
+      "breadcrumb": "MoYu / / / Work / / / Bouyer12/beta-fixture / / / Beta 会话",
+      "betaVisible": true
+    },
+    "settings": {
+      "url": "http://localhost:5173/?repo=11111111-1111-4111-8111-111111111111&settings=superagent&settingsRepo=22222222-2222-4222-8222-222222222222&group=eval",
+      "dialog": 1,
+      "repository": "22222222-2222-4222-8222-222222222222",
+      "evalCurrent": "page"
+    },
+    "newTaskDark": {
+      "styles": [
+        {
+          "field": "base-branch",
+          "background": "rgb(35, 35, 36)",
+          "color": "rgb(249, 250, 251)",
+          "border": "rgba(255, 255, 255, 0.16)"
+        },
+        {
+          "field": "model",
+          "background": "rgb(35, 35, 36)",
+          "color": "rgb(249, 250, 251)",
+          "border": "rgba(255, 255, 255, 0.16)"
+        },
+        {
+          "field": "reasoning",
+          "background": "rgb(35, 35, 36)",
+          "color": "rgb(249, 250, 251)",
+          "border": "rgba(255, 255, 255, 0.16)"
+        }
+      ],
+      "focusBefore": "rgba(255, 255, 255, 0.16)",
+      "focusAfter": "rgb(122, 170, 255)",
+      "count": 3
+    },
+    "newTaskMobileDark": {
+      "triggerCount": 1,
+      "dialogStyles": {
+        "background": "rgba(0, 0, 0, 0)",
+        "color": "rgb(249, 250, 251)",
+        "border": "rgb(249, 250, 251)"
+      }
+    },
+    "newTaskLight": {
+      "styles": [
+        {
+          "field": "base-branch",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(15, 17, 21)",
+          "border": "rgba(0, 0, 0, 0.12)"
+        },
+        {
+          "field": "model",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(15, 17, 21)",
+          "border": "rgba(0, 0, 0, 0.12)"
+        }
+      ]
+    },
+    "cancel": {
+      "created": 0,
+      "returnedToHome": true
+    },
+    "newTaskState:loading": {
+      "styles": [
+        {
+          "field": "model",
+          "background": "rgb(35, 35, 36)",
+          "color": "rgb(129, 133, 140)",
+          "border": "rgba(255, 255, 255, 0.16)"
+        }
+      ],
+      "text": "WORK · 新建任务\n\n在 Bouyer12/loading-fixture 开始任务\n\n会话创建后会先进入待接单；发送第一条消息后才会投递给执行器。仓库、起点分支、模型与执行方式会随会话冻结。\n\n取消\n仓库\n新建任务固定使用当前选择的仓库。\n起点分支\n正在读取分支列表…\n模型\n正在读取模型目录…\n模型来自仓库运行时的已配置目录，不会回退到未知模型。\n执行方式\n直接执行\n创建后可发送任务并投递，执行器可修改工作目录并创建 PR。\n先讨论\n只读讨论：没有写工具、shell 或写凭据；确认方案后才转执行。\n本次创建实际配置\n来源：仓库默认\n仓库\nBouyer12/loading-fixture\n分支\nmain\n模型\n实例默认模型\n推理\n实例默认\n执行方式\n直接执行\n创建成功后把以上分支、模型与执行方式保存为 Bouyer12/loading-fixture 的默认配置\n正在读取运行时模型目录…\n保存为默认\n创建任务"
+    },
+    "newTaskState:empty": {
+      "styles": [
+        {
+          "field": "base-branch",
+          "background": "rgb(35, 35, 36)",
+          "color": "rgb(249, 250, 251)",
+          "border": "rgba(255, 255, 255, 0.16)"
+        },
+        {
+          "field": "model",
+          "background": "rgb(35, 35, 36)",
+          "color": "rgb(249, 250, 251)",
+          "border": "rgba(255, 255, 255, 0.16)"
+        }
+      ],
+      "text": "WORK · 新建任务\n\n在 Bouyer12/empty-fixture 开始任务\n\n会话创建后会先进入待接单；发送第一条消息后才会投递给执行器。仓库、起点分支、模型与执行方式会随会话冻结。\n\n取消\n仓库\n新建任务固定使用当前选择的仓库。\n起点分支\n请选择分支\n已保存的分支 main 已不存在，请选择有效分支。\n模型\n实例默认模型\n模型来自仓库运行时的已配置目录，不会回退到未知模型。\n执行方式\n直接执行\n创建后可发送任务并投递，执行器可修改工作目录并创建 PR。\n先讨论\n只读讨论：没有写工具、shell 或写凭据；确认方案后才转执行。\n本次创建实际配置\n来源：仓库默认\n仓库\nBouyer12/empty-fixture\n分支\n未选择\n模型\n实例默认模型\n推理\n实例默认\n执行方式\n直接执行\n创建成功后把以上分支、模型与执行方式保存为 Bouyer12/empty-fixture 的默认配置\n请选择起点分支。\n保存为默认\n创建任务"
+    },
+    "newTaskState:failure": {
+      "styles": [
+        {
+          "field": "model",
+          "background": "rgb(35, 35, 36)",
+          "color": "rgb(129, 133, 140)",
+          "border": "rgba(255, 255, 255, 0.16)"
+        }
+      ],
+      "text": "WORK · 新建任务\n\n在 Bouyer12/failure-fixture 开始任务\n\n会话创建后会先进入待接单；发送第一条消息后才会投递给执行器。仓库、起点分支、模型与执行方式会随会话冻结。\n\n取消\n仓库\n新建任务固定使用当前选择的仓库。\n起点分支\n分支列表读取失败：运行时不可达或暂不可用（HTTP 503），请确认仓库实例已启动后重试。。可重试；当前按输入的起点分支创建。\n重新读取分支\n模型\n模型目录不可用\n模型来自仓库运行时的已配置目录，不会回退到未知模型。\n执行方式\n直接执行\n创建后可发送任务并投递，执行器可修改工作目录并创建 PR。\n先讨论\n只读讨论：没有写工具、shell 或写凭据；确认方案后才转执行。\n本次创建实际配置\n来源：仓库默认\n仓库\nBouyer12/failure-fixture\n分支\nmain\n模型\n实例默认模型\n推理\n实例默认\n执行方式\n直接执行\n创建成功后把以上分支、模型与执行方式保存为 Bouyer12/failure-fixture 的默认配置\n\n模型目录读取失败：运行时不可达或暂不可用（HTTP 503），请确认仓库实例已启动后重试。\n\n重新读取\n运行时不可达，无法确认可用模型；创建已禁用。\n保存为默认\n创建任务"
+    }
+  },
+  "requests": [],
+  "screenshots": [
+    "/tmp/m6c-c-evidence/after/restore-beta-conversation.png",
+    "/tmp/m6c-c-evidence/after/restore-beta-settings-eval.png",
+    "/tmp/m6c-c-evidence/after/new-task-dark-desktop.png",
+    "/tmp/m6c-c-evidence/after/new-task-dark-mobile-selector.png",
+    "/tmp/m6c-c-evidence/after/new-task-dark-mobile.png",
+    "/tmp/m6c-c-evidence/after/new-task-light-desktop.png",
+    "/tmp/m6c-c-evidence/after/new-task-loading-dark.png",
+    "/tmp/m6c-c-evidence/after/new-task-empty-dark.png",
+    "/tmp/m6c-c-evidence/after/new-task-failure-dark.png"
+  ]
+}

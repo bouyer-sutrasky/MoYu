@@ -1,0 +1,143 @@
+diff --git a/prompts/language.md b/prompts/language.md
+new file mode 100644
+index 0000000..0e05706
+--- /dev/null
++++ b/prompts/language.md
+@@ -0,0 +1,2 @@
++## language
++Human-facing prose follows the language of the source conversation: Chinese when the person wrote Chinese, otherwise the language they used. This covers the acceptance acknowledgement, questions for a human decision, progress and failure reports, and the final completion message. Keep code identifiers, file names, paths, commands and necessary technical terms in English; an internal engineering note may use the working language.
+diff --git a/src/app/context.ts b/src/app/context.ts
+index a60684b..bacbd30 100644
+--- a/src/app/context.ts
++++ b/src/app/context.ts
+@@ -7,6 +7,8 @@ export { textPage } from './cards.ts'
+ export const sharedPrompt = promptFile('shared')
+ export const masterPrompt = promptFile('orchestrator')
+ export const workerPrompt = promptFile('worker')
++/** Human-facing language rule shared by both roles; not a team-editable section. */
++export const languagePrompt = promptFile('language')
+ /** Built-in policy sections referenced by role prompts; a team may override them. */
+ export const guides: Readonly<Record<string, string>> = Object.fromEntries(['subscriptions', 'replies', 'dispatch', 'work']
+   .map(name => [name, promptFile(name)]))
+diff --git a/src/app/prompts.ts b/src/app/prompts.ts
+index 51fde05..725e52a 100644
+--- a/src/app/prompts.ts
++++ b/src/app/prompts.ts
+@@ -2,7 +2,7 @@
+ import { z } from 'zod'
+ import { UserError, key } from '../core/index.ts'
+ import { policyVersion, type Settings, type SettingsOrigin } from '../policy.ts'
+-import { masterPrompt, workerPrompt, sharedPrompt, guides, mainAdmissionPolicy, handoffPolicy, teamDefaults, sourceSkills, cliNotes } from './context.ts'
++import { masterPrompt, workerPrompt, sharedPrompt, languagePrompt, guides, mainAdmissionPolicy, handoffPolicy, teamDefaults, sourceSkills, cliNotes } from './context.ts'
+ import { environmentLines, type Variable } from './execution-environment.ts'
+ import { promptsNotice } from './notices.ts'
+ import type { Sessions } from './sessions.ts'
+@@ -21,7 +21,7 @@ export const SKILL_PREFIX = 'dsh-superagent-'
+ const SkillNameSchema = z.string().regex(SKILL_NAME).refine(name => !(Object.keys(sourceSkills) as string[]).includes(name),
+   'This name belongs to a built-in skill')
+ /** The built-in parts a team may override, by key: both roles' parts, the Source skills, and the generated parts' templates. */
+-const PART_KEYS = ['runtime/shared', 'runtime/orchestrator', 'runtime/worker', 'runtime/subscriptions', 'runtime/replies',
++const PART_KEYS = ['runtime/shared', 'runtime/language', 'runtime/orchestrator', 'runtime/worker', 'runtime/subscriptions', 'runtime/replies',
+   'runtime/dispatch', 'runtime/work', 'runtime/admission', 'runtime/handoff/orchestrator', 'runtime/handoff/worker', 'runtime/environment',
+   'runtime/policy', 'runtime/policy/none', 'skill/feishu', 'skill/github'] as const
+ export type PartKey = typeof PART_KEYS[number]
+@@ -53,7 +53,8 @@ let parts: Readonly<Record<PartKey, BuiltInPart>> | undefined
+  * system fills in, by the key an override names them by. Built on first use, as the texts it reads are imported in a cycle.
+  */
+ export const builtInParts = (): Readonly<Record<PartKey, BuiltInPart>> => parts ??= {
+-  'runtime/shared': { roles: BOTH, text: sharedPrompt }, 'runtime/orchestrator': { roles: MAIN, text: masterPrompt },
++  'runtime/shared': { roles: BOTH, text: sharedPrompt }, 'runtime/language': { roles: BOTH, text: languagePrompt },
++  'runtime/orchestrator': { roles: MAIN, text: masterPrompt },
+   'runtime/worker': { roles: WORKER, text: workerPrompt },
+   'runtime/subscriptions': { roles: BOTH, text: `## subscriptions\n${guides.subscriptions}` },
+   'runtime/replies': { roles: BOTH, text: `## replies\n${guides.replies}` },
+@@ -105,7 +106,7 @@ export function promptParts(config: PromptConfig, role: Role, environment?: stri
+   const team = (name: TeamSection) => ({ name, kind: 'team' as const, heading: `## ${TEAM_HEADINGS[name]}`,
+     text: config[name] ? `## ${TEAM_HEADINGS[name]}\n${config[name]}` : '' })
+   return [
+-    fixed('runtime/shared'), fixed(`runtime/${role}`),
++    fixed('runtime/shared'), fixed('runtime/language'), fixed(`runtime/${role}`),
+     ...TEAM_SECTIONS.map(team),
+     ...['subscriptions', 'replies', role === 'orchestrator' ? 'dispatch' : 'work'].map(name => fixed(`runtime/${name}`)),
+     ...role === 'orchestrator' ? [fixed('runtime/admission')] : [],
+diff --git a/src/client/locales.ts b/src/client/locales.ts
+index ade914e..0e6a654 100644
+--- a/src/client/locales.ts
++++ b/src/client/locales.ts
+@@ -505,6 +505,7 @@ const TEXT = {
+   'promptPart.delivery': ['交付要求', 'Delivery requirements'],
+   'promptPart.legacy': ['早期版本的完整配置（载入后是内置文本加它的技能）', 'A complete configuration of an earlier version (loading it gives the built-in text and its skills)'],
+   'promptPart.runtime/shared': ['共享约定', 'Shared rules'],
++  'promptPart.runtime/language': ['正文语言', 'Message language'],
+   'promptPart.runtime/orchestrator': ['主 Session 角色', 'Main Session role'],
+   'promptPart.runtime/worker': ['执行器角色', 'Executor role'],
+   'promptPart.runtime/subscriptions': ['订阅', 'Subscriptions'],
+diff --git a/tests/model-surface.spec.ts b/tests/model-surface.spec.ts
+index 13f9d41..f3d4018 100644
+--- a/tests/model-surface.spec.ts
++++ b/tests/model-surface.spec.ts
+@@ -240,7 +240,7 @@ function collect(host: Host, { a, b, workerA, workerB, refusal }: Awaited<Return
+   const { runtime } = host
+   const surfaces: Surface[] = []
+   const config = runtime.prompts.current().config
+-  const shared = new Set(['runtime/shared', 'communication', 'scope', 'delivery', 'runtime/subscriptions', 'runtime/replies'])
++  const shared = new Set(['runtime/shared', 'runtime/language', 'communication', 'scope', 'delivery', 'runtime/subscriptions', 'runtime/replies'])
+   for (const [role, sessionId] of [['orchestrator', runtime.masterId], ['worker', workerA], ['worker', workerB]] as const) {
+     const parts = promptParts(config, role)
+     for (const { name, text } of parts) {
+diff --git a/tests/panel-prompts.spec.tsx b/tests/panel-prompts.spec.tsx
+index 827a0fd..2a447da 100644
+--- a/tests/panel-prompts.spec.tsx
++++ b/tests/panel-prompts.spec.tsx
+@@ -19,7 +19,7 @@ it('lists the team sections, then the built-in parts, edits and saves them separ
+   await click(tab(zh.promptViewFull))
+   // The full prompt shows every part, team or built in, as editable, in the order the Session reads them.
+   const parts = all('.dt-preview-part').map(part => [part.querySelector('b')?.textContent, part.hasAttribute('data-editable')])
+-  expect(parts.slice(0, 5)).toEqual([['共享约定', true], ['主 Session 角色', true], ['沟通方式', true], ['工单范围', true], ['交付要求', true]])
++  expect(parts.slice(0, 6)).toEqual([['共享约定', true], ['正文语言', true], ['主 Session 角色', true], ['沟通方式', true], ['工单范围', true], ['交付要求', true]])
+   expect(text()).toContain('Custom communication rule')
+   await click(all('.dt-preview-part').find(part => part.querySelector('b')?.textContent === '沟通方式')!.querySelector('button')!)
+   await click(zh.promptResetSection)
+diff --git a/tests/prompts.spec.ts b/tests/prompts.spec.ts
+index f94d027..79a67e3 100644
+--- a/tests/prompts.spec.ts
++++ b/tests/prompts.spec.ts
+@@ -7,7 +7,7 @@ import { Prompts, builtInBase, composePrompt, defaultPrompts, policySection, pro
+ import { USER_ERRORS, UserError } from '../src/core/index.ts'
+ import { KV } from '../src/kv.ts'
+ import { SettingsSchema, policyVersion } from '../src/policy.ts'
+-import { guides, handoffPolicy, mainAdmissionPolicy, masterPrompt, sharedPrompt, workerPrompt } from '../src/app/context.ts'
++import { guides, handoffPolicy, languagePrompt, mainAdmissionPolicy, masterPrompt, sharedPrompt, workerPrompt } from '../src/app/context.ts'
+ import { promptFile } from '../src/app/skill-files.ts'
+ import { packagePath } from '../src/infra/paths.ts'
+ import type { Variable } from '../src/app/execution-environment.ts'
+@@ -48,15 +48,27 @@ it('assembles every role from fixed sections around the team sections, whatever
+   const config = { communication: 'Say little.', scope: '', delivery: 'Attach screenshots.', skills: {} }
+   for (const role of ['orchestrator', 'worker'] as const) {
+     const names = promptParts(config, role, 'env').map(part => part.name)
+-    expect(names).toEqual(['runtime/shared', `runtime/${role}`, 'communication', 'delivery', 'runtime/subscriptions', 'runtime/replies', role === 'orchestrator' ? 'runtime/dispatch' : 'runtime/work', ...role === 'orchestrator' ? ['runtime/admission'] : [], 'runtime/handoff', 'runtime/environment'])
++    expect(names).toEqual(['runtime/shared', 'runtime/language', `runtime/${role}`, 'communication', 'delivery', 'runtime/subscriptions', 'runtime/replies', role === 'orchestrator' ? 'runtime/dispatch' : 'runtime/work', ...role === 'orchestrator' ? ['runtime/admission'] : [], 'runtime/handoff', 'runtime/environment'])
+     const prompt = composePrompt(config, role)
+-    for (const fixed of [sharedPrompt, role === 'orchestrator' ? masterPrompt : workerPrompt, guides.subscriptions!, guides.replies!, handoffPolicy(role)]) expect(prompt).toContain(fixed)
++    for (const fixed of [sharedPrompt, languagePrompt, role === 'orchestrator' ? masterPrompt : workerPrompt, guides.subscriptions!, guides.replies!, handoffPolicy(role)]) expect(prompt).toContain(fixed)
+     expect(prompt.endsWith(handoffPolicy(role))).toBe(true)
+   }
+   expect(composePrompt(config, 'orchestrator')).toContain(mainAdmissionPolicy)
+   expect(composePrompt(config, 'worker')).not.toContain(mainAdmissionPolicy)
+ })
+ 
++it('requires the language of the source conversation in both roles, before any team-editable section', () => {
++  for (const role of ['orchestrator', 'worker'] as const) {
++    const parts = promptParts(defaultPrompts(), role)
++    expect(parts.find(part => part.name === 'runtime/language')?.text).toBe(languagePrompt)
++    expect(languagePrompt).toContain('Chinese when the person wrote Chinese')
++    expect(languagePrompt).toContain('acceptance acknowledgement, questions for a human decision, progress and failure reports, and the final completion message')
++    const prompt = composePrompt(defaultPrompts(), role)
++    expect(prompt.indexOf(languagePrompt)).toBeGreaterThan(prompt.indexOf(sharedPrompt))
++    expect(prompt.indexOf(languagePrompt)).toBeLessThan(prompt.indexOf('## Communication'))
++  }
++})
++
+ it('reads a prompt file whatever its line ends and blank lines, and names a missing or empty one', () => {
+   const dir = mkdtempSync(join(tmpdir(), 'prompt-file-'))
+   // promptFile resolves paths relative to prompts/; use a relative path to reach the temp dir.
