@@ -714,7 +714,7 @@ describe('multi-repository lifecycle API on real PostgreSQL', () => {
     });
     runtime = (await request('GET', `/api/v1/repositories/${harness.repositoryAId}/runtime`)).json()
       .data.runtime;
-    expect(runtime.activation.phase).toBe('starting');
+    expect(runtime.activation.phase).toBe('preparing');
     expect(runtime.activation.retryAction).toBe(null);
 
     await update({

@@ -1,0 +1,85 @@
+{
+  "isolated_stack": {
+    "supervisor_identity": {
+      "user": "moyu-m6c",
+      "uid": 988,
+      "gid": 982
+    },
+    "dsh_home": "/tmp/moyu-iso-pr88/dsh",
+    "database": "moyu_iso_pr88 (isolated PostgreSQL, port 55432)",
+    "profile_template": "/tmp/moyu-iso-pr88/profile-template (copy of the real M6-C template)",
+    "github_cli": "/opt/moyu-m6c/bin/gh-agent",
+    "github_config_source": "/var/lib/moyu-m6c/.config/gh-agent (read-only source, copied per home)",
+    "note": "real supervisor service identity, real dsh processes, real gh-agent account probes; no production DB, port or home was used"
+  },
+  "simultaneous_dynamic_instances": [
+    {
+      "repository": "Bouyer12/moyu-e2e-public-20261119",
+      "profile": "iso-1",
+      "state": "online",
+      "pid": 3705640,
+      "uid": 988,
+      "gid": 982,
+      "home": "/tmp/moyu-iso-pr88/dsh/homes/iso-1",
+      "dshHome": "/tmp/moyu-iso-pr88/dsh/homes/iso-1",
+      "tmpdir": "/tmp/moyu-iso-pr88/dsh/homes/iso-1/tmp",
+      "cacheHome": "/tmp/moyu-iso-pr88/dsh/homes/iso-1/cache",
+      "panel": {
+        "repository": "Bouyer12/moyu-e2e-public-20261119",
+        "agent": "Bouyer12",
+        "runtime": "ready",
+        "stateDir": "/tmp/moyu-iso-pr88/dsh/homes/iso-1/state/iso-1",
+        "problem": null
+      },
+      "githubSourceRepository": "Bouyer12/moyu-e2e-public-20261119"
+    },
+    {
+      "repository": "Bouyer12/moyu-e2e-private-20261119",
+      "profile": "iso-2",
+      "state": "online",
+      "pid": 3705650,
+      "uid": 988,
+      "gid": 982,
+      "home": "/tmp/moyu-iso-pr88/dsh/homes/iso-2",
+      "dshHome": "/tmp/moyu-iso-pr88/dsh/homes/iso-2",
+      "tmpdir": "/tmp/moyu-iso-pr88/dsh/homes/iso-2/tmp",
+      "cacheHome": "/tmp/moyu-iso-pr88/dsh/homes/iso-2/cache",
+      "panel": {
+        "repository": "Bouyer12/moyu-e2e-private-20261119",
+        "agent": "Bouyer12",
+        "runtime": "ready",
+        "stateDir": "/tmp/moyu-iso-pr88/dsh/homes/iso-2/state/iso-2",
+        "problem": null
+      },
+      "githubSourceRepository": "Bouyer12/moyu-e2e-private-20261119"
+    }
+  ],
+  "pinned_instance": {
+    "repository": "Bouyer12/m5a-beta-adf10ad9",
+    "profile": "iso-pin",
+    "state": "online",
+    "pid": 3706256,
+    "uid": 6201,
+    "gid": 6201,
+    "home": "/tmp/moyu-iso-pr88/homes/iso-pin",
+    "dshHome": "/tmp/moyu-iso-pr88/homes/iso-pin",
+    "tmpdir": "/tmp/moyu-iso-pr88/homes/iso-pin/tmp",
+    "cacheHome": "/tmp/moyu-iso-pr88/homes/iso-pin/cache",
+    "panel": {
+      "repository": "Bouyer12/m5a-beta-adf10ad9",
+      "agent": "Bouyer12",
+      "runtime": "ready",
+      "stateDir": "/tmp/moyu-iso-pr88/homes/iso-pin/state/iso-pin",
+      "problem": null
+    },
+    "githubSourceRepository": "Bouyer12/m5a-beta-adf10ad9"
+  },
+  "assertions": {
+    "both_dynamic_online": true,
+    "distinct_runtime_homes": true,
+    "dynamic_run_as_service_identity": true,
+    "pinned_run_as_repository_identity": true,
+    "source_github_written": true,
+    "account_probe": true
+  }
+}

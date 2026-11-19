@@ -33,7 +33,7 @@ import { githubCloneUrl, gitCachePath, RepositoryGitCache } from './git-cache';
 import { removeRepositoryPaths, repositoryRemovalPaths } from './removal';
 import {
   instanceLogPath,
-  parseEnvFile,
+  instanceProcessEnvironment,
   pathExists,
   prepareInstance,
   type PreparedInstance,
@@ -1353,19 +1353,7 @@ export class InstanceManager {
       );
     }
 
-    const runtimeHome = prepared.runtimeHome ?? this.config.dshHome;
-    const env: Record<string, string> = {
-      ...baseEnvironment(),
-      HOME: runtimeHome,
-      DSH_HOME: runtimeHome,
-      ...parseEnvFile(prepared.envFile),
-      ...(prepared.runtimeHome
-        ? {
-            TMPDIR: join(runtimeHome, 'tmp'),
-            XDG_CACHE_HOME: join(runtimeHome, 'cache'),
-          }
-        : {}),
-    };
+    const env = instanceProcessEnvironment(prepared, this.config, baseEnvironment());
     let logFd: number;
     try {
       const logPath = instanceLogPath(this.config, prepared.profile);
@@ -1425,7 +1413,7 @@ export class InstanceManager {
         '/bin/sh',
         ['-c', CGROUP_LAUNCHER, 'moyu-cgroup', ...identityPrefix, this.config.dshBin, ...dshArgs],
         {
-          cwd: runtimeHome,
+          cwd: env.HOME,
           env,
           detached: true,
           stdio: ['ignore', logFd, logFd, 'pipe'],

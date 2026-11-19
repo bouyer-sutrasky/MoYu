@@ -1,0 +1,75 @@
+{
+  "isolated_stack": {
+    "supervisor": "127.0.0.1:44992 as moyu-m6c (uid 988/gid 982)",
+    "api": "127.0.0.1:3101",
+    "database": "moyu_iso_pr89 (isolated PostgreSQL)",
+    "max_online": 2,
+    "repositories": [
+      "Bouyer12/moyu-e2e-public-20261119 (iso-1)",
+      "Bouyer12/moyu-e2e-private-20261119 (iso-2)",
+      "Bouyer12/m5a-alpha-adf10ad9 (iso-3)",
+      "Bouyer12/m5a-epsilon-adf10ad9 (iso-4)",
+      "Bouyer12/m5a-gamma-adf10ad9 (iso-5)"
+    ],
+    "note": "real API, real supervisor, real dsh processes, real gh-agent; GitHub remotes read-only"
+  },
+  "same_repository_cold_vs_warm": {
+    "repository": "Bouyer12/m5a-epsilon-adf10ad9",
+    "cold_with_git_prepare": {
+      "activationDurationMs": 12706,
+      "observed_phases": [
+        {"at_s": 0.07, "phase": "preparing", "state": "sleeping", "preparation": "preparing"},
+        {"at_s": 0.59, "phase": "starting", "state": "starting", "preparation": "preparing", "note": "old projection before the phase fix: preparing was hidden"},
+        {"at_s": 7.29, "phase": "starting", "state": "starting", "preparation": "ready"},
+        {"at_s": 12.95, "phase": "ready", "state": "online", "preparation": "ready"}
+      ]
+    },
+    "warm_with_ready_copy": {
+      "activationDurationMs": 7190,
+      "observed_phases": [
+        {"at_s": 0.06, "phase": "queued", "state": "sleeping", "preparation": "ready"},
+        {"at_s": 0.57, "phase": "starting", "state": "starting", "preparation": "ready"},
+        {"at_s": 7.28, "phase": "ready", "state": "online", "preparation": "ready"}
+      ],
+      "saved_ms": 5516
+    }
+  },
+  "preprepared_target_switch": {
+    "repository": "Bouyer12/m5a-alpha-adf10ad9",
+    "preparation_done_while_sleeping": true,
+    "activationDurationMs": 10771,
+    "observed_phases": [
+      {"at_s": 0.12, "phase": "queued", "state": "sleeping", "preparation": "ready"},
+      {"at_s": 0.65, "phase": "starting", "state": "starting", "preparation": "ready"},
+      {"at_s": 10.98, "phase": "ready", "state": "online", "preparation": "ready"}
+    ],
+    "note": "no preparing phase on switch; it was paid before the switch while offline"
+  },
+  "combined_starting_and_preparing_after_fix": {
+    "repository": "Bouyer12/m5a-gamma-adf10ad9",
+    "activationDurationMs": 9702,
+    "observed_phases": [
+      {"at_s": 0.13, "phase": "preparing", "state": "sleeping", "preparation": "preparing", "detail": "Cloning into bare repository ..."},
+      {"at_s": 0.65, "phase": "preparing", "state": "starting", "preparation": "preparing", "detail": "Cloning into bare repository ..."},
+      {"at_s": 6.36, "phase": "starting", "state": "starting", "preparation": "ready"},
+      {"at_s": 9.98, "phase": "ready", "state": "online", "preparation": "ready"}
+    ]
+  },
+  "capacity_and_config": {
+    "evicted_reason_code": "evicted",
+    "online_panels": [
+      {"repository": "Bouyer12/moyu-e2e-public-20261119", "agent": "Bouyer12", "source_github_repository": "Bouyer12/moyu-e2e-public-20261119", "runtime": "ready"},
+      {"repository": "Bouyer12/m5a-epsilon-adf10ad9", "agent": "Bouyer12", "source_github_repository": "Bouyer12/m5a-epsilon-adf10ad9", "runtime": "ready"}
+    ]
+  },
+  "task_routing": {
+    "target_repository": "Bouyer12/m5a-epsilon-adf10ad9",
+    "target_repository_id": "44444444-4444-4444-8444-444444444404",
+    "conversation_repository_id": "44444444-4444-4444-8444-444444444404",
+    "task_repository_id": "44444444-4444-4444-8444-444444444404",
+    "execution_mode": "execute",
+    "state": "pending_admission",
+    "http": 201
+  },
+  "limitation": "The native source:github repository mutation still is not an in-place handover of a live instance; this evidence covers the per-repository target activation, pre-prepared copy path, phase reporting and routing, not reassigning one live instance to another repository."
+}

@@ -33,10 +33,27 @@ immutable release and manifest.
 /etc/moyu-m6c/{api,supervisor,dispatcher}.env   0600 root-owned values
 /etc/moyu-m6c/instances.json              repository -> profile/port mapping
 /var/lib/moyu-m6c/{dsh,credentials,instances,logs,worktrees,artifacts}
+/var/lib/moyu-m6c/dsh/homes/<profile>     runtime HOME for a dynamic profile
 ```
 
 Never edit files inside `/opt/moyu-m6c/releases/<sha>` after it is built. A new
 release is a new directory; `current` changes atomically.
+
+## Runtime homes
+
+Each runtime starts with `HOME`/`DSH_HOME` set to its own home, so it reads
+`$HOME/.config/gh-agent` for the managed GitHub account instead of the shared
+supervisor home (which the runtime cannot read). Pinned profiles keep their
+`runtimeHome` from `instances.json`; dynamically allocated profiles get
+`DSH_HOME/homes/<profile>`. The home also contains the isolated `.env`,
+`.credentials.yaml`, `.ssh`, `state/<profile>` and a `profiles` symlink to the
+shared profile root.
+
+The supervisor copies the agent `gh` configuration from
+`<dirname(DSH_HOME)>/.config/gh-agent`; set `GITHUB_CONFIG_DIR` only when an
+isolated deployment keeps that credential store elsewhere. A missing source
+fails `prepare` with the source path rather than starting a runtime that cannot
+verify its GitHub account.
 
 ## Start and stop
 
