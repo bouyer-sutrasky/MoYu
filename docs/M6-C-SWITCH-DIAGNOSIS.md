@@ -65,8 +65,9 @@ Git 副本的协同迁移；按 `docs/adr/0002-per-repository-runtime.md` 的每
   并在 `supervisor.instance_online` 日志里带 `activationDurationMs`。
 - `GET /api/v1/repositories` 与 `GET /api/v1/repositories/:id/runtime` 的
   `runtime.activation` 返回 `phase`、`requestedAt`、`onlineAt`、`elapsedMs`、
-  `readyMs`、`detail` 和 `retryAction`。阶段优先级：故障/准备失败 → 启动中 →
-  仓库准备中 → 在线且副本就绪 → 等待名额 → 空闲。
+  `readyMs`、`detail` 和 `retryAction`。阶段优先级：故障/准备失败 →
+  仓库准备中 → 启动中 → 在线且副本就绪 → 等待名额 → 空闲；进程已 starting
+  但副本仍在准备时，界面显示仓库准备的真实内容和阶段，不再笼统显示启动中。
 - Web 侧栏和工作台首页显示「切换中 · 等待在线名额 / 仓库准备中 / 启动中」、
   真实已用时、失败原因和重试按钮；切换未完成时每 2 秒回读真实状态。
 - 已有任务、会话与仓库绑定不变；新任务仍按当前选择仓库的路由创建。
@@ -78,6 +79,13 @@ Git 副本的协同迁移；按 `docs/adr/0002-per-repository-runtime.md` 的每
 - `pnpm --filter @moyu/web test` 覆盖阶段文案和耗时格式。
 - 迁移正向/回滚在隔离数据库演练，见 PR 记录。
 
-未验：未在运行中的生产 release 上重新部署并记录真实切换前后耗时；需要按
-发布流程升级后，用两个在线 Superagent 和一个休眠仓库各测一次「请求 →
-可接单」，并把 `activationDurationMs`、`readyMs` 和实际阶段填入验收记录。
+隔离栈已记录真实切换：同一仓库冷启动 12706 ms，副本就绪后再次唤醒
+7190 ms（少 5516 ms）；休眠时预准备目标后切换为 10771 ms，切换期间不再出现
+preparing；修复后冷启动在 starting 期间持续显示 preparing 至 Git 完成。
+`docs/evidence/m6c-switch/runtime-timings.json` 保存采样。生产 release 尚未
+重新部署并按发布流程复测。
+
+**未完成**：本 PR 没有把在线实例原地改派给另一个仓库，仍采用每仓库实例和
+预准备目标副本的路径；`repository_instances`、Bridge 凭据、runtime home、
+worktree/mirror 与 dispatcher 路由的协同迁移拆到
+[bouyer-sutrasky/MoYu#91](https://github.com/bouyer-sutrasky/MoYu/issues/91)。
