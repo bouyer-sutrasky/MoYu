@@ -20,7 +20,7 @@ import {
 import type { Authenticate } from '../auth/guards';
 import type { ApiConfig } from '../config';
 import { sendStoredAttachment } from '../domain/attachments';
-import { toTaskSummary } from '../domain/serialize';
+import { toTaskDecision, toTaskSummary } from '../domain/serialize';
 import { appendEvent } from '../events/append';
 import { eventToWorkspaceEvent } from '../events/format';
 import type { AppEventBus } from '../events/bus';
@@ -99,7 +99,31 @@ export function registerRuntimeRoutes(
         throw ApiProblem.unauthorized('Machine token is not valid for this repository');
       }
       const task = await taskForConversation(database, conversation.id);
-      if (input.ticketId && task?.upstreamTicketId && task.upstreamTicketId !== input.ticketId) {
+      const sourceDecision = task ? toTaskDecision(task) : null;
+      // A message the runtime routed to another Ticket keeps this source
+      // conversation usable for the answer or completion receipt. Its task is
+      // not accepted (it has no Ticket of its own), but the callback's Ticket is
+      // the recorded target, not a conflict. Binding that id here would steal
+      // the target task's unique upstream ticket, so the routed source stays
+      // unlinked and the target's own conversation keeps the association.
+      const routedSource =
+        sourceDecision?.outcome === 'routed' &&
+        input.ticketId !== null &&
+        sourceDecision.targetTicketId === input.ticketId;
+      if (
+        sourceDecision?.outcome === 'routed' &&
+        input.ticketId &&
+        sourceDecision.targetTicketId &&
+        !routedSource
+      ) {
+        throw ApiProblem.conflict('The reply Ticket does not match the routed target Ticket');
+      }
+      if (
+        !routedSource &&
+        input.ticketId &&
+        task?.upstreamTicketId &&
+        task.upstreamTicketId !== input.ticketId
+      ) {
         throw ApiProblem.conflict('Ticket does not belong to this conversation');
       }
 
@@ -136,7 +160,7 @@ export function registerRuntimeRoutes(
           // has projected the Bridge's ticket.linked event. The callback's
           // ticketId is authoritative; linking it here keeps the acknowledgement
           // from being rejected and lets the later projection update it.
-          if (input.ticketId && task && !task.upstreamTicketId) {
+          if (input.ticketId && task && !task.upstreamTicketId && !routedSource) {
             const [linked] = await transaction
               .update(taskLinks)
               .set({

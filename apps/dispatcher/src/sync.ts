@@ -8,6 +8,7 @@ import type { DispatcherLogger } from './logger';
 import { bridgeErrorMessage, type RepositoryBinding } from './runtime';
 import { claimExecution, reconcileExecutionClaimOn } from './reservations';
 import { appendEventSql } from './events-sql';
+import { sendRoutedNotice } from './routed-notices';
 import { endedState, stateFromSnapshot, TASK_COLUMNS, taskSummary, type TaskRow } from './tasks';
 import { pauseEvidenceProblem, pauseEvidenceProven } from './pause-evidence';
 import { acquireExecutionLeaseOn } from './leases';
@@ -199,6 +200,10 @@ async function applyTaskEvent(
         activeLease !== undefined &&
         activeLease.id === leaseId &&
         String(activeLease.fencing_token) === fencingToken;
+      // Admission reservations are keyed either by task (older generations) or
+      // by task + fencing token (a later rework after the first lease ended).
+      // Prefer the generation key so a stale legacy row cannot mask the current
+      // admission.
       const reservation = await client.query<{
         assignment_id: string;
         lease_id: string;
@@ -207,8 +212,10 @@ async function applyTaskEvent(
       }>(
         `select assignment_id, lease_id, fencing_token, state
            from execution_reservations
-          where repository_id = $1 and request_key = $2`,
-        [repository.id, `admit:${existing.id}`],
+          where repository_id = $1 and request_key in ($2, $3)
+          order by case when request_key = $3 then 0 else 1 end
+          limit 1`,
+        [repository.id, `admit:${existing.id}`, `admit:${existing.id}:${fencingToken}`],
       );
       const reserved = reservation.rows[0];
       // Only queued/running advance a task. A generation that is not the current
@@ -276,16 +283,29 @@ async function applyTaskEvent(
     traceBranch(event.id, 'projected');
     next = await taskByTicket(client, ticketId, repository.id);
     if (next) {
+      await notifyRoutedSources(client, repository, next, existing.state);
       if (next.state === 'queued' || next.state === 'running') {
-        await reconcileExecutionClaimOn(
-          client,
-          repository.id,
+        // Claim the identity this generation reserved. The generation-scoped key
+        // is tried first; the task-only key keeps older reservations working.
+        const claimKey = asString(data.fencingToken);
+        for (const requestKey of [
+          ...(claimKey ? [`admit:${next.id}:${claimKey}`] : []),
           `admit:${next.id}`,
-          ticketId,
-          asString(data.assignmentId),
-          asString(data.leaseId),
-          asString(data.fencingToken),
-        );
+        ]) {
+          if (
+            await reconcileExecutionClaimOn(
+              client,
+              repository.id,
+              requestKey,
+              ticketId,
+              asString(data.assignmentId),
+              asString(data.leaseId),
+              asString(data.fencingToken),
+            )
+          ) {
+            break;
+          }
+        }
       }
       await emit(client, repository, event, 'task.state_changed', next.conversationId, next.id, {
         task: taskSummary(next),
@@ -344,6 +364,80 @@ async function applyTaskEvent(
   }
 }
 
+/** The owner-facing delivery projection of a source message, for a routed task. */
+function deliveryDecisionState(row: {
+  state: string;
+  handedToWorkerAt: Date | null;
+  readAt: Date | null;
+}): 'stored' | 'delivering' | 'delivered' | 'read' | 'failed' {
+  if (row.readAt) return 'read';
+  if (row.handedToWorkerAt) return 'delivered';
+  if (row.state === 'delivered') return 'delivered';
+  if (row.state === 'delivering') return 'delivering';
+  if (row.state === 'failed') return 'failed';
+  return 'stored';
+}
+
+/**
+ * Records delivery/read evidence on a routed source task without reviving it:
+ * the task stays not_accepted, and the decision says how far its message got in
+ * the target Ticket's worker.
+ */
+async function recordRoutedDelivery(
+  client: pg.PoolClient,
+  repository: RepositoryBinding,
+  event: BridgeEvent,
+  conversationId: string,
+  state: 'delivered' | 'read',
+): Promise<void> {
+  const data = asRecord(event.data);
+  const assignmentId = asString(data.assignmentId);
+  const updated = await client.query<TaskRow>(
+    `update task_links
+        set decision = decision
+              || jsonb_build_object('deliveryState', $2::text)
+              || case when decision ? 'deliveryAt' then '{}'::jsonb
+                      else jsonb_build_object('deliveryAt', $3::text) end
+              || case when $4::text is null then '{}'::jsonb
+                      else jsonb_build_object(
+                        'targetAssignmentId', $4::text,
+                        'targetAssignmentSource', 'delivery') end,
+            version = version + 1, updated_at = now()
+      where conversation_id = $1 and decision->>'outcome' = 'routed'
+      returning ${TASK_COLUMNS.replaceAll('t.', 'task_links.')}`,
+    [conversationId, state, new Date(event.at).toISOString(), assignmentId ?? null],
+  );
+  const task = updated.rows[0];
+  if (task) {
+    await emit(client, repository, event, 'task.state_changed', task.conversationId, task.id, {
+      task: taskSummary(task),
+    });
+  }
+}
+
+/**
+ * Sends the routed source conversation a Chinese outcome notice when its target
+ * fails or is blocked. Positive completion comes from `captureReportsOnce`,
+ * because a fast rework can finish without a state transition (the target was
+ * already awaiting_review) and its report is the authoritative result.
+ */
+async function notifyRoutedSources(
+  client: pg.PoolClient,
+  repository: RepositoryBinding,
+  target: TaskRow,
+  previousState: string,
+): Promise<void> {
+  if (previousState === target.state) return;
+  if (!['blocked', 'failed'].includes(target.state)) return;
+  await sendRoutedNotice(client, repository, target, {
+    body:
+      target.state === 'blocked'
+        ? '已转交的返修在目标工单受阻，请打开目标工单查看原因。'
+        : '已转交的返修在目标工单失败，请打开目标工单查看原因。',
+    eventKey: `state:${target.state}:${target.version}`,
+  });
+}
+
 async function applyReadEvent(
   client: pg.PoolClient,
   repository: RepositoryBinding,
@@ -358,7 +452,9 @@ async function applyReadEvent(
   const at = asString(data.at);
   const updated = await client.query<{ conversation_id: string }>(
     `update deliveries d
-        set read_at = coalesce(d.read_at, $2::timestamptz), updated_at = now()
+        set read_at = coalesce(d.read_at, $2::timestamptz),
+            handed_to_worker_at = coalesce(d.handed_to_worker_at, $2::timestamptz),
+            updated_at = now()
        from messages m
       where d.message_id = m.id and m.id = $1 and d.read_at is null
       returning m.conversation_id`,
@@ -376,6 +472,7 @@ async function applyReadEvent(
     messageId,
     deliveryState: 'read',
   });
+  await recordRoutedDelivery(client, repository, event, conversationId, 'read');
 }
 
 async function applyDeliveredEvent(
@@ -404,6 +501,7 @@ async function applyDeliveredEvent(
       messageId,
       deliveryState: 'delivered',
     });
+    await recordRoutedDelivery(client, repository, event, conversationId, 'delivered');
   }
 }
 
@@ -530,9 +628,18 @@ async function applyArtifactEvent(
   if (!artifactRow) {
     return;
   }
+  // The runtime projects every followed pull request as history. Only the
+  // newest one is the task's current delivery: an older event replayed after a
+  // restart must not silently replace the PR the owner is reviewing. The
+  // artifact row itself is always kept, so historical links stay locatable.
+  const occurredAt = new Date(event.at);
+  const at = Number.isNaN(occurredAt.getTime()) ? new Date() : occurredAt;
   await client.query(
-    `update task_links set pr_url = $2, pr_number = $3, updated_at = now() where id = $1`,
-    [task.id, url, number],
+    `update task_links
+        set pr_url = $2, pr_number = $3, pr_updated_at = $4, updated_at = now()
+      where id = $1
+        and (pr_updated_at is null or pr_updated_at <= $4::timestamptz)`,
+    [task.id, url, number, at.toISOString()],
   );
   const artifact: ArtifactSummary = {
     id: artifactRow.id,
@@ -668,6 +775,41 @@ async function lockConversationForWrite(
   return target?.id ?? null;
 }
 
+/** The structured reasons the Bridge projected with a decision, in order. */
+function decisionReasons(
+  value: unknown,
+): Array<{ code: string; values?: Record<string, unknown> }> {
+  if (!Array.isArray(value)) return [];
+  const reasons: Array<{ code: string; values?: Record<string, unknown> }> = [];
+  for (const item of value) {
+    const reason = asRecord(item);
+    const code = asString(reason.code);
+    if (!code) continue;
+    const values = asRecord(reason.values);
+    reasons.push({ code, ...(Object.keys(values).length > 0 ? { values } : {}) });
+  }
+  return reasons;
+}
+
+/** The Ticket a `routed` reason names, or null for any other reason. */
+function routedTicket(
+  reasons: Array<{ code: string; values?: Record<string, unknown> }>,
+): string | null {
+  for (const reason of reasons) {
+    if (reason.code !== 'routed') continue;
+    const ticket = asString(reason.values?.ticket);
+    if (ticket) return ticket;
+  }
+  return null;
+}
+
+/**
+ * Persists the decision that closed a pending admission. A `routed` decision
+ * means the runtime attached the message to another Ticket; the platform
+ * records that target so a later handoff can admit the target under its own
+ * execution lease and the owner gets a real "已转交" outcome instead of the
+ * generic "未接单".
+ */
 async function applyIgnoredDecision(
   client: pg.PoolClient,
   repository: RepositoryBinding,
@@ -699,13 +841,70 @@ async function applyIgnoredDecision(
     [targetId, messageIds],
   );
   if (members.rows[0]?.count !== messageIds.length) return;
+
+  const reasons = decisionReasons(data.reason);
+  const primary = reasons.find((reason) => reason.code === 'routed') ?? reasons[0];
+  const targetTicketId = routedTicket(reasons);
+  const decision: Record<string, unknown> = {
+    kind: 'ignore',
+    decisionId,
+    at: asString(data.at) ?? event.at,
+    reason: reasons,
+    code: primary?.code ?? 'unknown',
+    outcome: targetTicketId ? 'routed' : 'not_accepted',
+    ...(targetTicketId ? { targetTicketId, routingState: 'pending', routingAttempts: 0 } : {}),
+  };
+  if (messageId) {
+    const delivery = await client.query<{
+      state: string;
+      handed_to_worker_at: Date | null;
+      read_at: Date | null;
+    }>(`select state, handed_to_worker_at, read_at from deliveries where message_id = $1 limit 1`, [
+      messageId,
+    ]);
+    const row = delivery.rows[0];
+    if (row) {
+      decision.deliveryState = deliveryDecisionState({
+        state: row.state,
+        handedToWorkerAt: row.handed_to_worker_at,
+        readAt: row.read_at,
+      });
+      // Completion notices key off real delivery to the target worker, not the
+      // platform merely accepting the Trigger.
+      const deliveredAt = row.read_at ?? row.handed_to_worker_at;
+      if (deliveredAt) decision.deliveryAt = deliveredAt.toISOString();
+    }
+  }
+  if (targetTicketId) {
+    const targetTask = await taskByTicket(client, targetTicketId, repository.id);
+    if (targetTask && targetTask.id !== task.id) {
+      const targetConversation = await client.query<{ title: string | null }>(
+        `select title from conversations where id = $1`,
+        [targetTask.conversationId],
+      );
+      Object.assign(decision, {
+        targetTaskId: targetTask.id,
+        targetConversationId: targetTask.conversationId,
+        targetRepositoryId: targetTask.repositoryId,
+        targetTitle: targetConversation.rows[0]?.title ?? null,
+      });
+    } else if (targetTask?.id === task.id) {
+      // Routing a message to the admission that is still pending cannot hand
+      // off work; say so instead of pretending the target was woken.
+      Object.assign(decision, {
+        routingState: 'failed',
+        routingError: '目标工单就是这个尚未接单的任务，无法转交',
+      });
+    }
+  }
+
   // Close only the admission generation the decision names. A later message or
   // an accepted-but-not-yet-delivered message must keep the task open, or the
   // ignore would strand that delivery forever.
   const updated = await client.query(
     `update task_links t
         set state = 'not_accepted', version = version + 1, runtime_lease_id = null,
-            updated_at = now()
+            decision = $4::jsonb, updated_at = now()
       where t.id = $1 and t.repository_id = $2 and t.state = 'pending_admission'
         and not exists (
           select 1 from messages m
@@ -725,12 +924,13 @@ async function applyIgnoredDecision(
              and not (m.id = any($3::uuid[]))
              and d.state in ('pending', 'delivering')
         )`,
-    [task.id, repository.id, messageIds],
+    [task.id, repository.id, messageIds, JSON.stringify(decision)],
   );
   if ((updated.rowCount ?? 0) === 0) return;
   // The ignored admission never became a runtime Ticket. Its execution lease
   // must not keep the repository's single execution slot forever; release only
-  // the exact task holder, leaving unrelated active leases untouched.
+  // the exact task holder, leaving unrelated active leases untouched. A routed
+  // handoff then takes its own lease for the target Ticket.
   const released = await client.query<{ id: string }>(
     `update runtime_leases
         set state = 'released', released_at = now(), heartbeat_at = now(),
@@ -752,9 +952,12 @@ async function applyIgnoredDecision(
       taskId: task.id,
       conversationId: targetId,
       messageId,
+      routedTo: targetTicketId,
       releasedLeaseId: released.rows[0]?.id ?? null,
     },
-    'closed the pending admission named by the ignored decision',
+    targetTicketId
+      ? 'closed the pending admission and recorded a routed handoff target'
+      : 'closed the pending admission named by the ignored decision',
   );
 }
 
@@ -1251,11 +1454,15 @@ export async function recoverReservedTasks(
       assignment_id: string;
       lease_id: string;
       fencing_token: string;
+      requestKey: string;
     }>(
-      `select t.id, t.upstream_ticket_id, r.assignment_id, r.lease_id, r.fencing_token
+      `select t.id, t.upstream_ticket_id, r.assignment_id, r.lease_id, r.fencing_token,
+              r.request_key as "requestKey"
        from task_links t
        join execution_reservations r
-         on r.repository_id = t.repository_id and r.request_key = 'admit:' || t.id
+         on r.repository_id = t.repository_id
+        and (r.request_key = 'admit:' || t.id
+             or r.request_key = 'admit:' || t.id || ':' || r.fencing_token)
       where t.repository_id = $1 and t.state in ('queued', 'running') and r.state = 'reserved'
         and ($2::uuid is null or t.id > $2::uuid)
       order by t.id
@@ -1312,7 +1519,7 @@ export async function recoverReservedTasks(
     try {
       const claimed = await claimExecution(pool, {
         repositoryId: repository.id,
-        requestKey: `admit:${row.id}`,
+        requestKey: row.requestKey,
         taskId: row.id,
         ticketId: row.upstream_ticket_id,
         assignmentId: row.assignment_id,

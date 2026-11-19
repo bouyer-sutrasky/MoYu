@@ -1,0 +1,63 @@
+--- a/src/app/bridge.ts
++++ b/src/app/bridge.ts
+@@ -501,10 +501,11 @@
+         if (input.kind !== 'trigger') continue
+         const meta = this.host.store.triggers.get(input.triggerId)?.meta
+         const messageId = typeof meta?.messageId === 'string' ? meta.messageId : ''
++        const assignmentId = input.deliveredTo
+         if (input.deliveredAt) this.log.append(`message-delivered:${input.triggerId}:worker_inbox`, 'message.delivered', input.deliveredAt,
+-          { triggerId: input.triggerId, messageId, stage: 'worker_inbox', at: input.deliveredAt })
++          { triggerId: input.triggerId, messageId, stage: 'worker_inbox', at: input.deliveredAt, ...(assignmentId ? { assignmentId } : {}) })
+         if (input.readAt) this.log.append(`message-read:${input.triggerId}`, 'message.read', input.readAt,
+-          { triggerId: input.triggerId, messageId, at: input.readAt })
++          { triggerId: input.triggerId, messageId, at: input.readAt, ...(assignmentId ? { assignmentId } : {}) })
+       }
+       // The origin Trigger of a workspace Ticket is not represented in ticket.inputs.
+       // Project its handoff and read proof from the worker Assignment, otherwise the
+@@ -1091,6 +1092,8 @@
+     if (!ticket) return json(res, 404, { error: 'Ticket not found' })
+     const frozen = ticket as FrozenTicket
+     const pr = this.pullRequest(ticket)
++    const reported = ticket.assignments.findLast(assignment => assignment.report)
++    const report = reported?.report ? { ...reported.report, assignmentId: reported.id } : null
+     json(res, 200, {
+       ticketId: ticket.id,
+       title: ticket.title,
+@@ -1101,7 +1104,7 @@
+       base: frozen.base ?? null,
+       assignmentId: latestAssignment(ticket)?.id ?? null,
+       admission: ticket.admission ?? null,
+-      report: latestReport(ticket) ?? null,
++      report,
+       // M4 additions: the mode and plan revision, the human pause with its evidence, and the execution directory/name.
+       mode: ticket.mode ?? 'execute',
+       planRevision: ticket.planRevision ?? null,
+--- a/tests/bridge.spec.ts
++++ b/tests/bridge.spec.ts
+@@ -276,7 +276,7 @@
+     const origin = trigger()
+     h.repo.triggers.save(origin)
+     const inputs: Ticket['inputs'] = [{ id: 'i1', kind: 'trigger', triggerId: 'workspace:m1', at: '2026-11-03T12:00:01.000Z',
+-      deliveredAt: '2026-11-03T12:00:02.000Z', readAt: '2026-11-03T12:00:03.000Z' }]
++      deliveredAt: '2026-11-03T12:00:02.000Z', deliveredTo: 'a1', readAt: '2026-11-03T12:00:03.000Z' }]
+     h.repo.tickets.save(frozen(ticket('t1', { inputs, follows: [{ thread: 'github:7', own: true }] })))
+     const { bridge, call } = await serve(h)
+     // The first tick links the ticket as queued; the second sees the worker's question and reports both the question and the change.
+@@ -292,6 +292,8 @@
+     ])
+     expect(events[0]!.data).toMatchObject({ triggerId: 'workspace:m1', ticketId: 't1', conversationId: 'c1', messageId: 'm1',
+       state: 'queued', title: 'Fix t1', base: { branch: 'main', commit: 'abc123', model: 'commandcode/deepseek/deepseek-v4.1-flash' } })
++    expect(events[1]!.data).toMatchObject({ triggerId: 'workspace:m1', messageId: 'm1', assignmentId: 'a1' })
++    expect(events[2]!.data).toMatchObject({ triggerId: 'workspace:m1', messageId: 'm1', assignmentId: 'a1' })
+     expect(events[5]!.data).toMatchObject({ ticketId: 't1', previousState: 'queued', state: 'waiting_input', question: 'Which margin?' })
+   })
+ 
+@@ -376,7 +378,7 @@
+       ticketId: 't1', title: 'Fix t1', state: 'running', question: null, attentionId: null,
+       model: { provider: 'commandcode', model: 'deepseek/deepseek-v4.1-flash', reasoningEffort: 'high' },
+       base: { repository: 'acme/widgets', branch: 'main', commit: 'abc123' },
+-      assignmentId: 'as1', admission: null, report: { state: 'progress', summary: 'working', at: '2026-11-03T12:00:04.000Z' },
++      assignmentId: 'as1', admission: null, report: { state: 'progress', summary: 'working', at: '2026-11-03T12:00:04.000Z', assignmentId: 'as1' },
+       mode: 'execute', planRevision: null, paused: null, admissionRequired: false, execution: null,
+       pr: { number: 7, url: 'https://github.com/acme/widgets/pull/7' }, ended: null,
+     } })

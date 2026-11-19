@@ -32,7 +32,9 @@ function PendingRow({
           {conversation.title ?? task?.question ?? '未命名任务'}
         </span>
         <span className={styles.homeRowMeta}>
-          <span className={styles.homeRowState}>{taskStateLabel(task?.state ?? null)}</span>
+          <span className={styles.homeRowState}>
+            {taskStateLabel(task?.state ?? null, task?.decision)}
+          </span>
           {task?.prUrl ? <span className={styles.homeRowTag}>PR</span> : null}
           <span className={styles.homeRowTime}>{formatUpdatedAt(conversation.updatedAt)}</span>
         </span>

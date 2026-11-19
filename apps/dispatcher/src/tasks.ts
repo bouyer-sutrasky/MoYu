@@ -1,4 +1,10 @@
-import { taskStateSchema, type ModelSelection, type TaskSummary } from '@moyu/contracts';
+import {
+  taskDecisionSchema,
+  taskStateSchema,
+  type ModelSelection,
+  type TaskDecision,
+  type TaskSummary,
+} from '@moyu/contracts';
 
 import { decodeModelId } from './runtime';
 
@@ -18,10 +24,12 @@ export interface TaskRow {
   questionMessageId: string | null;
   prUrl: string | null;
   prNumber: number | null;
+  prUpdatedAt: Date | null;
   planRevision: number | null;
   stopRequestedAt: Date | null;
   stoppedAt: Date | null;
   stopEvidence: Record<string, unknown>;
+  decision: Record<string, unknown>;
   runtimeLeaseId: string | null;
   version: number;
   createdAt: Date;
@@ -34,10 +42,18 @@ export const TASK_COLUMNS = `
   t.base_branch as "baseBranch", t.base_commit as "baseCommit", t.model_id as "modelId",
   t.model_reasoning_effort as "modelReasoningEffort", t.execution_mode as "executionMode",
   t.question, t.question_message_id as "questionMessageId", t.pr_url as "prUrl", t.pr_number as "prNumber",
+  t.pr_updated_at as "prUpdatedAt",
   t.plan_revision as "planRevision", t.stop_requested_at as "stopRequestedAt", t.stopped_at as "stoppedAt",
-  t.stop_evidence as "stopEvidence", t.runtime_lease_id as "runtimeLeaseId",
+  t.stop_evidence as "stopEvidence", t.decision as "decision", t.runtime_lease_id as "runtimeLeaseId",
   t.version, t.created_at as "createdAt", t.updated_at as "updatedAt"
 `;
+
+/** The stored decision, parsed, or null for an empty or legacy value. */
+export function taskDecision(row: Pick<TaskRow, 'decision'>): TaskDecision | null {
+  if (!row.decision || Object.keys(row.decision).length === 0) return null;
+  const parsed = taskDecisionSchema.safeParse(row.decision);
+  return parsed.success ? parsed.data : null;
+}
 
 export function taskModel(row: TaskRow): ModelSelection | null {
   const identity = decodeModelId(row.modelId);
@@ -71,6 +87,7 @@ export function taskSummary(row: TaskRow): TaskSummary {
     stopRequestedAt: row.stopRequestedAt?.toISOString() ?? null,
     stoppedAt: row.stoppedAt?.toISOString() ?? null,
     stopEvidence: row.stopEvidence,
+    decision: taskDecision(row),
     lastOperation: null,
     version: row.version,
     createdAt: row.createdAt.toISOString(),

@@ -14,6 +14,7 @@ import { captureReportsOnce } from './reports';
 import { duplicatesOnce } from './duplicates';
 import { bridgeClient, listActiveRepositories, type RepositoryBinding } from './runtime';
 import { recoverIgnoredLeases, syncOnce } from './sync';
+import { handoffRoutedOnce } from './routing';
 
 export interface RunDispatcherOptions {
   signal: AbortSignal;
@@ -198,6 +199,9 @@ async function runRepositoryWorker(
     }),
     runLoop('admissions', 2000, signal, logger, () =>
       admitImportedOnce(pool, config, repository, bridge, admissionSupported, logger),
+    ),
+    runLoop('routing', 1000, signal, logger, () =>
+      handoffRoutedOnce(pool, config, repository, bridge, admissionSupported, logger),
     ),
     runLoop('reports', config.reportCaptureIntervalMs, signal, logger, () =>
       captureReportsOnce(pool, repository, bridge, logger),

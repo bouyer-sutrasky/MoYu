@@ -85,6 +85,59 @@ export const startTaskInputSchema = taskCommandInputSchema
 
 export type StartTaskInput = z.infer<typeof startTaskInputSchema>;
 
+/** One structured reason the runtime recorded for an ignored admission. */
+export const taskDecisionReasonSchema = z.object({
+  code: z.string().min(1),
+  values: z.record(z.string(), z.unknown()).optional(),
+});
+
+export type TaskDecisionReason = z.infer<typeof taskDecisionReasonSchema>;
+
+/**
+ * Whether a routed message's handoff to the target Ticket is still being
+ * attempted, was actually admitted, is waiting for the target's manual resume,
+ * or cannot be completed.
+ */
+export const taskRoutingStateSchema = z.enum(['pending', 'handed_off', 'deferred', 'failed']);
+
+export type TaskRoutingState = z.infer<typeof taskRoutingStateSchema>;
+
+/**
+ * The runtime decision that explains why an admission was ignored. A `routed`
+ * decision names the Ticket that received the message; the platform keeps the
+ * target task and the handoff state so the owner can follow it. The target task
+ * is always in the same repository.
+ */
+export const taskDecisionSchema = z.object({
+  kind: z.literal('ignore'),
+  decisionId: z.string().min(1),
+  at: isoTimestampSchema,
+  /** Every reason the runtime recorded, in its own order, without translation. */
+  reason: z.array(taskDecisionReasonSchema),
+  /** The primary reason's code, for owner-facing explanations. */
+  code: z.string().min(1),
+  outcome: z.enum(['not_accepted', 'routed']),
+  targetTicketId: z.string().min(1).nullable().optional(),
+  targetTaskId: uuidSchema.nullable().optional(),
+  targetConversationId: uuidSchema.nullable().optional(),
+  targetRepositoryId: uuidSchema.nullable().optional(),
+  targetTitle: z.string().nullable().optional(),
+  routingState: taskRoutingStateSchema.nullable().optional(),
+  /** Owner-facing explanation of the current handoff state. */
+  routingDetail: z.string().nullable().optional(),
+  routingError: z.string().nullable().optional(),
+  routingAttempts: z.number().int().nonnegative().optional(),
+  routingAttemptedAt: isoTimestampSchema.nullable().optional(),
+  handedOffAt: isoTimestampSchema.nullable().optional(),
+  /** Delivery evidence for the routed source message, from Bridge receipts. */
+  deliveryState: z
+    .enum(['stored', 'delivering', 'delivered', 'read', 'failed'])
+    .nullable()
+    .optional(),
+});
+
+export type TaskDecision = z.infer<typeof taskDecisionSchema>;
+
 export const taskSummarySchema = z.object({
   id: uuidSchema,
   conversationId: uuidSchema,
@@ -105,6 +158,8 @@ export const taskSummarySchema = z.object({
   stoppedAt: isoTimestampSchema.nullable(),
   /** Runtime proof the worker and its background work ended; empty until a stop completes. */
   stopEvidence: z.record(z.string(), z.unknown()),
+  /** Why an admission was ignored, and where a routed message was handed off. */
+  decision: taskDecisionSchema.nullable(),
   /** The latest owner command for this task, so the UI can show a pending stop or start. */
   lastOperation: taskOperationSummarySchema.nullable(),
   version: z.number().int().nonnegative(),

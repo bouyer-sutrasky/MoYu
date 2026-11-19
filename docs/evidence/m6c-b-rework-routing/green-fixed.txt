@@ -1,0 +1,24 @@
+修复后：同一隔离仓库/实例/库快照重跑同一返修（head 见 final-head.txt）
+====================================================================
+源会话 3c880a63-70b4-4d86-8481-322fa494b508 的结果：
+- task state=not_accepted，decision:
+  {"kind":"ignore","code":"routed","outcome":"routed",
+   "targetTicketId":"3dba7ebf7c3d4917e4b43e25bbffd8bf",
+   "targetTaskId":"2dd88ccd-4374-4ccb-a934-2f24ce813dc9",
+   "targetConversationId":"bf0ea463-cf70-4da7-a006-be7440abf868",
+   "targetTitle":"请只修改 src/value.ts ...",
+   "routingState":"handed_off","deliveryState":"read",
+   "handedOffAt":"2026-11-19T03:49:33Z", ...}
+- 源消息投递：state=delivered, delivered_at=有, handed_to_worker_at=有, read_at=有
+  （message.read 现在同时补齐 handed_to_worker_at）
+- 源会话消息：acknowledgement + notice：
+  “已转交的返修已完成，PR #1 已更新，等待审阅。”
+- UI：状态显示“已转交”，有“查看目标工单”按钮，显示原因/交接说明；
+  ui-after-routed-source.png（同 1440x900、浅色、同一入口）。
+- 目标工单：同一个 PR #1，head 3f52d5d，只改 src/value.ts（value 3），
+  report “Revision completed on existing PR #1 ...”。
+- 普通拒绝（另一会话 2283788d-53a8-4a34-a3f2-f68e5507e786）：
+  state=not_accepted，decision={"code":"said","outcome":"not_accepted",
+  "reason":[{"code":"said","values":{"text":"普通闲聊..."}}]}
+  UI：“未接单 · 普通闲聊...。下一步：可以新建一个更具体的任务，或到目标工单继续。”
+- 重复投影/重复 handoff 不产生第二个 admission 或第二条通知（集成测试断言）。

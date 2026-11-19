@@ -1,0 +1,14 @@
+MoYu M6-C B 段隔离验收基线
+================================
+基线 main：7e04a8a8b62bd7cfb0b00228668439d502adb714
+（PR #81 "feat(repositories): prepare reusable Git copy at onboarding" 合并后）
+工作分支：agent/pr-rework-routing-3cb6e2f7a321
+隔离数据库：PostgreSQL 16，127.0.0.1:55432
+  红基线库 moyu_m6c_b_reroute_red（从 pre-rework 快照恢复，22 条迁移）
+  修复库   moyu_m6c_b_reroute_green（同一快照，22 条迁移）
+隔离实例：DSH profile m6c-b1，DSH_HOME=/tmp/m6c-b-evidence/home，
+  panel 127.0.0.1:3491，Bridge 127.0.0.1:4492，MOYU_REQUIRE_ADMISSION=1
+隔离平台：API 127.0.0.1:4410，dispatcher 同库；未启动 supervisor
+测试仓库：Bouyer12/m6c-b-reroute-3cb6e2f7（私有，一次性）
+测试 PR：#1，分支 agent/change-value-to-2-3dba7ebf7c3d
+生产 3082、正式库、正式服务均未改动。

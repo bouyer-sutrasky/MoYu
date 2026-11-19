@@ -1,0 +1,19 @@
+上游补丁 0028 验证
+==================
+patch: integrations/superagent/patches/0028-workspace-trigger-null.patch
+build command: integrations/superagent/build-patched.sh <pristine 6337fc8 tree> /tmp/m6c-b-evidence/artifact-0028
+build exit: 0
+artifact lib/index.js sha256: d406608264508db2a4f5ad225c654a3af4c538a949f9276c818f2ac6d2e33f59
+artifact workspace-watch.js sha256: dd754970119e44df9db093ae42012592aefbe34395d377920edea533e61cdc4f
+
+upstream workspace spec:
+
+ RUN  v4.1.8 /tmp/patched-check
+
+ ✓ tests/workspace.spec.ts (8 tests) 81ms
+
+ Test Files  1 passed (1)
+      Tests  8 passed (8)
+   Start at  11:59:19
+   Duration  445ms (transform 71ms, setup 0ms, import 185ms, tests 81ms, environment 0ms)
+

@@ -343,7 +343,7 @@ export function Sidebar({
                         {conversation.title ?? '未命名任务'}
                       </span>
                       <span className={styles.conversationState} data-state={state ?? 'unknown'}>
-                        {taskStateLabel(state)}
+                        {taskStateLabel(state, conversation.task?.decision)}
                       </span>
                     </span>
                     <span className={styles.conversationTime}>

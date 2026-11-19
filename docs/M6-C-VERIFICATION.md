@@ -458,3 +458,22 @@ at error level plus 114 `report.capture_failed` warnings in the observed window,
 
 `pnpm check` passes after both changes (contracts 26, runtime-client 13, dispatcher 5, api 20, plus the
 supervisor and web suites).
+
+## 2026-11-19 — M6-C B 段：PR 返修路由与执行交接
+
+基线 `main = 7e04a8a8b62bd7cfb0b00228668439d502adb714`。在隔离仓库
+`Bouyer12/m6c-b-reroute-3cb6e2f7`、隔离 profile `m6c-b1`（panel 3491 / Bridge 4492）
+和隔离 PostgreSQL `moyu_m6c_b_reroute_{red,green}` 上，从同一运行时/数据库快照分别运行
+`main` 与本分支：
+
+- 红基线：新任务入口向“待审阅”旧工单转交返修后，平台只显示“未接单”，`decision` 为空，
+  源会话没有完成回执；目标的完成 reply 在 Outbox 里被结为 `channelGone`（平台对省略
+  `triggerId` 的合法回调返回 422）。
+- 本分支：源任务持久化 `decision.outcome=routed`、目标工单/会话和交接状态，UI 显示
+  “已转交”并可跳转；目标在单执行槽/手动暂停约束下被唤醒，输入 `delivered`/`read`，
+  同一 PR 被更新，源会话收到中文完成通知；普通非任务请求显示具体原因和中文下一步。
+
+原始命令、退出码、SQL/Outbox 摘录与 Before/After 截图见
+[`docs/evidence/m6c-b-rework-routing/README.md`](./evidence/m6c-b-rework-routing/README.md)。
+上游 `0028-workspace-trigger-null.patch` 的产物 hash 与 `workspace.spec.ts` 结果见同目录
+`upstream-0028.txt`。

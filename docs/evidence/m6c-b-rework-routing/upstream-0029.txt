@@ -1,0 +1,13 @@
+上游补丁 0029 验证
+==================
+patch: integrations/superagent/patches/0029-input-assignment.patch
+作用: message.delivered / message.read 事件携带 input.deliveredTo 对应的 assignmentId；
+      ticket snapshot 的 report 携带产生它的 assignmentId。
+build: integrations/superagent/build-patched.sh <pristine 6337fc8> /tmp/m6c-b-evidence/artifact-0029
+exit 0
+lib/index.js sha256 = 9829166e5bf713cd82570ef71d86c57781de35760c4851d7a5670145172bf893
+lib/workspace-watch.js sha256 = dd754970119e44df9db093ae42012592aefbe34395d377920edea533e61cdc4f
+
+upstream spec:
+CI=true corepack pnpm@11.7.0 exec vitest run tests/bridge.spec.ts
+Test Files 1 passed; Tests 25 passed（含 report.assignmentId 断言）

@@ -311,7 +311,7 @@ export function DetailsPanel({
           <dl className={styles.detailList}>
             <div className={styles.detailRow}>
               <dt>状态</dt>
-              <dd>{taskStateLabel(task?.state)}</dd>
+              <dd>{taskStateLabel(task?.state, task?.decision)}</dd>
             </div>
             <div className={styles.detailRow}>
               <dt>仓库</dt>

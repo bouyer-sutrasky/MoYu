@@ -18,6 +18,7 @@ const ROLLBACK = path.join(
 let hash = '';
 let downSql = '';
 let downSql0020 = '';
+let downSql0021 = '';
 const databases: TestDatabase[] = [];
 
 interface State {
@@ -90,6 +91,10 @@ describe('0019 rollback script on real PostgreSQL', () => {
       path.join(ROOT, 'packages/db/migrations/rollback/0020_worthless_carmella_unuscione.down.sql'),
       'utf8',
     );
+    downSql0021 = await readFile(
+      path.join(ROOT, 'packages/db/migrations/rollback/0021_task_decision_routing.down.sql'),
+      'utf8',
+    );
   });
 
   it('pins the deployed 0019 forward hash and restores the old global index', async () => {
@@ -110,6 +115,7 @@ describe('0019 rollback script on real PostgreSQL', () => {
       '(repository_id, source, source_event_id)',
     );
 
+    await database.pool.query(downSql0021);
     await database.pool.query(downSql0020);
     await database.pool.query(downSql);
     const rolledBack = await readState(database);
@@ -189,6 +195,7 @@ describe('0019 rollback script on real PostgreSQL', () => {
     await insertEvent(database, first, 'same-event-id');
     await insertEvent(database, second, 'same-event-id');
 
+    await database.pool.query(downSql0021);
     await database.pool.query(downSql0020);
     const before = await readState(database);
     expect(before.events).toBe(2);
@@ -213,6 +220,7 @@ describe('0019 rollback script on real PostgreSQL', () => {
         where source_event_id is not null`,
     );
 
+    await database.pool.query(downSql0021);
     await database.pool.query(downSql0020);
     const before = await readState(database);
     await expect(database.pool.query(downSql)).rejects.toThrow(

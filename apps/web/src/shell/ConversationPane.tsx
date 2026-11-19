@@ -11,6 +11,7 @@ import {
   formatModel,
   formatPrLabel,
   shortCommit,
+  taskDecisionSummary,
   taskStateLabel,
 } from '../lib/format';
 import { MarkdownMessage } from './markdown';
@@ -300,6 +301,15 @@ export function ConversationPane({
     retry: '重试',
   };
 
+  const decision = task?.decision ?? null;
+  const decisionSummary = taskDecisionSummary(decision);
+  const decisionTone =
+    decision?.outcome === 'routed'
+      ? (decision.routingState ?? 'handed_off')
+      : decision
+        ? 'rejected'
+        : null;
+
   return (
     <div className={styles.conversationView}>
       <header className={styles.conversationHeader}>
@@ -308,7 +318,7 @@ export function ConversationPane({
             <h1 className={styles.conversationHeading}>{conversation.title ?? '未命名任务'}</h1>
             <span className={styles.statePill} data-state={task?.state ?? 'unknown'}>
               <span className={styles.stateDot} aria-hidden="true" />
-              {taskStateLabel(task?.state)}
+              {taskStateLabel(task?.state, decision)}
             </span>
             {canStartFromTask && task ? (
               <button
@@ -364,6 +374,23 @@ export function ConversationPane({
               </a>
             ) : null}
           </div>
+          {decisionTone ? (
+            <div className={styles.taskDecisionNotice} data-tone={decisionTone}>
+              <div className={styles.taskDecisionHeadline}>
+                <strong>{decisionSummary.headline}</strong>
+                {decisionSummary.targetConversationId ? (
+                  <button
+                    type="button"
+                    className={styles.taskDecisionLink}
+                    onClick={() => onOpenConversation(decisionSummary.targetConversationId!)}
+                  >
+                    查看目标工单
+                  </button>
+                ) : null}
+              </div>
+              {decisionSummary.detail ? <p>{decisionSummary.detail}</p> : null}
+            </div>
+          ) : null}
         </div>
         <div className={styles.conversationActions}>
           {canStart ? (

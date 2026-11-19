@@ -49,6 +49,12 @@ export const taskLinks = pgTable(
     stoppedAt: timestamp('stopped_at', { withTimezone: true }),
     /** Runtime evidence for the stop (PID/cgroup, session idle, jobs before/after). */
     stopEvidence: jsonb('stop_evidence').$type<Record<string, unknown>>().notNull().default({}),
+    /**
+     * The last admission decision that explains this task: the runtime's reasons
+     * and, when it attached the message to another Ticket, the routing handoff.
+     * Empty until a decision names this task, and never inferred from state alone.
+     */
+    decision: jsonb('decision').$type<Record<string, unknown>>().notNull().default({}),
     /** Execution admission lease held while a resumed task runs. */
     runtimeLeaseId: uuid('runtime_lease_id').references(() => runtimeLeases.id, {
       onDelete: 'set null',
@@ -56,9 +62,14 @@ export const taskLinks = pgTable(
     /** Current question the worker asked a person, when the ticket waits for input. */
     question: text('question'),
     questionMessageId: uuid('question_message_id'),
-    /** Pull request the ticket delivered, when the runtime reported or bound one. */
+    /** Current pull request the ticket delivered, when the runtime reported or bound one. */
     prUrl: text('pr_url'),
     prNumber: integer('pr_number'),
+    /**
+     * When the current PR pointer was last set from an artifact event. An older
+     * historical PR event must not overwrite the current one on replay.
+     */
+    prUpdatedAt: timestamp('pr_updated_at', { withTimezone: true }),
     lastEventSeq: bigint('last_event_seq', { mode: 'bigint' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
