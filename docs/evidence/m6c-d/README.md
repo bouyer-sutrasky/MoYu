@@ -24,6 +24,7 @@
 | `denied-denied-result.json` | 权限拒绝 | `no-permission`，无通知，活动中心与未读正常 |
 | `unsupported-unsupported-result.json` | 浏览器无 `Notification` | `unsupported`，无通知，活动中心与未读正常 |
 | `closed-page.json` | 页面关闭后写入事件 | 活动中心有事件，`getNotifications()` 为空 |
+| `expired-session-result.json` | 同源工作台点击 + 会话过期登录页点击 + Passkey 登录 | 工作台确认消费且页面不重载；登录页 URL 带目标；登录后进入目标会话 |
 
 原始命令输出：`web-test.txt`、`check.txt`、`build.txt`、`integration.txt`。
 
@@ -35,6 +36,9 @@
   `after-duplicate-after-reload-mobile.png`、`after-reconnect-mobile.png`、
   `after-settings-mobile.png`
 - 拒绝授权 / 不支持：`denied-*.png`、`unsupported-*.png`
+- 返修回归：`click-in-place-before.png`、`click-in-place-after.png`、
+  `expired-login-before-click.png`、`expired-login-after-navigate.png`、
+  `expired-after-login-target.png`
 
 页面布局没有变化；Before/After 的差异在通知投递路径和点击回退。系统通知本身通过
 `ServiceWorkerRegistration.getNotifications()` 与 `__moyuNotifyDebug` 验证，未截取
@@ -59,6 +63,26 @@ DISPLAY=:99 M6C_RUNTIME_CALLBACK_TOKEN=... \
 `--label before --expect error` 用于基线；`--mode denied --expect no-permission`、
 `--mode unsupported --expect unsupported` 用于站内回退。token 只通过环境变量传入，
 不写入仓库或结果文件。
+
+会话过期回归使用隔离 `localhost` API、虚拟 Passkey 和同一个测试库：
+
+```bash
+# 一次性恢复码（仅操作者终端可见），再用 scripts/m6c/bootstrap-owner.mjs
+# 在 localhost 上登记虚拟 Passkey 并保存 credential JSON。
+DISPLAY=:99 M6C_RUNTIME_CALLBACK_TOKEN=... \
+  M6C_TEST_DATABASE_URL=postgres://moyu:x@127.0.0.1:55432/moyu_m6c_c_real \
+  node scripts/m6c/notifications-expired-session.mjs \
+  --base-url http://localhost:3104 \
+  --storage-state /tmp/storage.json \
+  --credentials /tmp/credentials.json \
+  --repository cccccccc-cccc-4ccc-8ccc-cccccccccccc \
+  --conversation 178ee9e7-2edb-494f-ae5c-beb1a8a7dadc \
+  --out /tmp/evidence
+```
+
+脚本会先恢复上一次撤销的 fixture 会话、把虚拟认证器的服务端 counter 归零，再执行
+“工作台确认消费 → 写通知 → 撤销会话 → 刷新登录页 → Worker 点击 → 登录页 URL 带目标 →
+Passkey 登录进入目标会话”。虚拟认证器只作自动化证据，不代表真机。
 
 ## 真机待验
 

@@ -1154,6 +1154,13 @@ export function WorkspaceShell({
         repositoryId: message.repositoryId,
         conversationId: message.conversationId,
       });
+      // The worker waits for this acknowledgement before it decides the
+      // in-page route succeeded. Without it, a login page (or a window whose
+      // listener has not mounted) would silently swallow the click and the
+      // address would keep no target for the next sign-in.
+      const port = event.ports[0];
+      port?.postMessage({ type: 'moyu:notification-consumed' });
+      port?.close();
     };
     navigator.serviceWorker.addEventListener('message', onMessage);
     return () => navigator.serviceWorker.removeEventListener('message', onMessage);

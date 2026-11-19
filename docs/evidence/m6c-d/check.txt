@@ -25,139 +25,147 @@ apps/web typecheck: Done
 apps/api typecheck$ tsc --noEmit
 apps/dispatcher typecheck$ tsc --noEmit
 apps/supervisor typecheck$ tsc --noEmit
-apps/dispatcher typecheck: Done
 apps/supervisor typecheck: Done
+apps/dispatcher typecheck: Done
 apps/api typecheck: Done
 $ pnpm -r --if-present test && node --test scripts/m3/guard.test.mjs integrations/superagent/tests/verify-lock.test.mjs scripts/m6c/scripts.test.mjs
 Scope: 8 of 9 workspace projects
 packages/contracts test$ vitest run
 packages/contracts test:  RUN  v3.2.7 /root/src/mobile-notifications-8fa6de58a343/packages/contracts
-packages/contracts test:  ✓ test/contracts.test.ts (26 tests) 45ms
+packages/contracts test:  ✓ test/contracts.test.ts (26 tests) 58ms
 packages/contracts test:  Test Files  1 passed (1)
 packages/contracts test:       Tests  26 passed (26)
-packages/contracts test:    Start at  19:57:18
-packages/contracts test:    Duration  581ms (transform 158ms, setup 0ms, collect 286ms, tests 45ms, environment 0ms, prepare 80ms)
+packages/contracts test:    Start at  21:23:02
+packages/contracts test:    Duration  742ms (transform 202ms, setup 0ms, collect 375ms, tests 58ms, environment 0ms, prepare 86ms)
 packages/contracts test: Done
 apps/web test$ node --import tsx --test src/shell/workspaceRoute.test.mjs src/lib/serviceWorker.test.mjs src/lib/notifications.test.mjs
 packages/runtime-client test$ vitest run
 packages/runtime-client test:  RUN  v3.2.7 /root/src/mobile-notifications-8fa6de58a343/packages/runtime-client
-apps/web test: ✔ an unsupported browser reports unsupported before any delivery attempt (2.675149ms)
-apps/web test: ✔ non-alerting events, disabled settings, background-only and denied permission stop early (0.461719ms)
-apps/web test: ✔ a page-level notification routes its click and claims the event once (1.130581ms)
-apps/web test: ✔ a mobile constructor failure falls back to the Service Worker and retries a rejected display (1.237155ms)
-apps/web test: ✔ install takes over immediately and activate claims existing clients (2.847901ms)
-apps/web test: ✔ a click focuses a workbench window and routes in place (2.288291ms)
-apps/web test: ✔ without a window it opens the addressable conversation URL (1.547244ms)
-apps/web test: ✔ a payload without ids opens the workbench instead of a corrupt URL (1.058454ms)
-apps/web test: ✔ a failed focus falls back to a fresh window (1.302173ms)
-apps/web test: ✔ an empty search restores no target and no settings dialog (1.795196ms)
-apps/web test: ✔ parses the workbench repository and conversation only when they are UUIDs (0.385843ms)
-apps/web test: ✔ restores a settings section, its independent repository and its group (0.348611ms)
-apps/web test: ✔ an unknown settings section leaves the dialog closed and ignores its sub-keys (0.284043ms)
-apps/web test: ✔ serializes in a stable order and round-trips every addressable field (0.549119ms)
-apps/web test: ✔ comparison uses the serialized address, not object identity (0.219435ms)
-apps/web test: ✔ only a confirmed 403/404 target failure may canonicalize the address away (0.199881ms)
-apps/web test: ℹ tests 16
+apps/web test: ✔ an unsupported browser reports unsupported before any delivery attempt (6.292469ms)
+apps/web test: ✔ non-alerting events, disabled settings, background-only and denied permission stop early (0.579793ms)
+apps/web test: ✔ a page-level notification routes its click and claims the event once (0.911466ms)
+apps/web test: ✔ a mobile constructor failure falls back to the Service Worker and retries a rejected display (14.073896ms)
+apps/web test: ✔ install takes over immediately and activate claims existing clients (8.74642ms)
+apps/web test: ✔ a click focuses a workbench window and routes in place (63.089163ms)
+apps/web test: ✔ without a window it opens the addressable conversation URL (4.667485ms)
+apps/web test: ✔ a payload without ids opens the workbench instead of a corrupt URL (1.162221ms)
+apps/web test: ✔ a window that cannot focus is navigated to the target URL (608.226567ms)
+packages/runtime-client test:  ✓ test/credentials.test.ts (5 tests) 8ms
+packages/runtime-client test:  ✓ test/client.test.ts (8 tests) 38ms
+packages/runtime-client test:  Test Files  2 passed (2)
+packages/runtime-client test:       Tests  13 passed (13)
+packages/runtime-client test:    Start at  21:23:04
+packages/runtime-client test:    Duration  928ms (transform 293ms, setup 0ms, collect 513ms, tests 46ms, environment 0ms, prepare 346ms)
+apps/web test: ✔ an unconfirmed window, such as the login page, is navigated to the target URL (602.506169ms)
+packages/runtime-client test: Done
+apps/web test: ✔ a later confirmed workbench window consumes the click without navigation (602.299448ms)
+apps/web test: ✔ a failed navigation falls back to opening a new window (600.810968ms)
+apps/web test: ✔ an empty search restores no target and no settings dialog (7.380292ms)
+apps/web test: ✔ parses the workbench repository and conversation only when they are UUIDs (5.013256ms)
+apps/web test: ✔ restores a settings section, its independent repository and its group (1.343676ms)
+apps/web test: ✔ an unknown settings section leaves the dialog closed and ignores its sub-keys (0.497322ms)
+apps/web test: ✔ serializes in a stable order and round-trips every addressable field (1.220246ms)
+apps/web test: ✔ comparison uses the serialized address, not object identity (0.249269ms)
+apps/web test: ✔ only a confirmed 403/404 target failure may canonicalize the address away (1.413009ms)
+apps/web test: ℹ tests 19
 apps/web test: ℹ suites 0
-apps/web test: ℹ pass 16
+apps/web test: ℹ pass 19
 apps/web test: ℹ fail 0
 apps/web test: ℹ cancelled 0
 apps/web test: ℹ skipped 0
 apps/web test: ℹ todo 0
-apps/web test: ℹ duration_ms 485.828228
+apps/web test: ℹ duration_ms 2783.324322
 apps/web test: Done
-packages/runtime-client test:  ✓ test/credentials.test.ts (5 tests) 7ms
-packages/runtime-client test:  ✓ test/client.test.ts (8 tests) 27ms
-packages/runtime-client test:  Test Files  2 passed (2)
-packages/runtime-client test:       Tests  13 passed (13)
-packages/runtime-client test:    Start at  19:57:19
-packages/runtime-client test:    Duration  657ms (transform 188ms, setup 0ms, collect 365ms, tests 34ms, environment 0ms, prepare 153ms)
-packages/runtime-client test: Done
 apps/api test$ vitest run --exclude "test/integration/**"
 apps/dispatcher test$ vitest run --exclude "test/integration/**"
 apps/supervisor test$ vitest run --exclude "test/integration/**"
-apps/dispatcher test:  RUN  v3.2.7 /root/src/mobile-notifications-8fa6de58a343/apps/dispatcher
 apps/api test:  RUN  v3.2.7 /root/src/mobile-notifications-8fa6de58a343/apps/api
+apps/dispatcher test:  RUN  v3.2.7 /root/src/mobile-notifications-8fa6de58a343/apps/dispatcher
 apps/supervisor test:  RUN  v3.2.7 /root/src/mobile-notifications-8fa6de58a343/apps/supervisor
-apps/api test:  ✓ test/cursor.test.ts (6 tests) 32ms
-apps/dispatcher test:  ✓ test/config.test.ts (3 tests) 10ms
-apps/api test:  ✓ test/auth.test.ts (9 tests) 52ms
-apps/dispatcher test:  ✓ test/tasks.test.ts (2 tests) 11ms
-apps/supervisor test: Cloning into bare repository '/tmp/moyu-prepare-command-y8oXca/cache.git'...
-apps/supervisor test: done.
-apps/supervisor test: Cloning into '/tmp/moyu-prepare-command-y8oXca/task.preparing-3532025'...
-apps/supervisor test: done.
-apps/supervisor test: HEAD is now at ded1fde first
-apps/supervisor test: Switched to a new branch 'agent/fix-t1'
-apps/supervisor test: Cloning into bare repository '/tmp/moyu-prepare-fetch-eBViVv/cache.git'...
-apps/supervisor test: done.
-apps/dispatcher test:  ✓ test/dispatcher-logging.test.ts (2 tests) 15ms
-apps/supervisor test: Cloning into '/tmp/moyu-prepare-fetch-eBViVv/task.preparing-3532090'...
-apps/supervisor test: done.
-apps/supervisor test: From /tmp/moyu-prepare-fetch-eBViVv/origin
-apps/supervisor test:    ded1fde..287078f  main       -> origin/main
-apps/supervisor test: HEAD is now at 287078f next
-apps/supervisor test: Switched to a new branch 'agent/fix-t2'
+apps/api test:  ✓ test/cursor.test.ts (6 tests) 27ms
+apps/dispatcher test:  ✓ test/config.test.ts (3 tests) 16ms
+apps/api test:  ✓ test/auth.test.ts (9 tests) 58ms
+apps/dispatcher test:  ✓ test/tasks.test.ts (2 tests) 18ms
+apps/supervisor test:  ✓ test/stop-proof.test.ts (4 tests) 3101ms
+apps/supervisor test:    ✓ supervisor cgroup stop proof > refuses a different cgroup object for the same complete identity  341ms
+apps/supervisor test:    ✓ supervisor cgroup stop proof > serializes independent processes with the kernel lock  2389ms
+apps/dispatcher test:  ✓ test/dispatcher-logging.test.ts (2 tests) 16ms
 apps/dispatcher test:  Test Files  3 passed (3)
 apps/dispatcher test:       Tests  7 passed (7)
-apps/dispatcher test:    Start at  19:57:20
-apps/dispatcher test:    Duration  2.74s (transform 1.07s, setup 0ms, collect 3.14s, tests 36ms, environment 1ms, prepare 652ms)
-apps/supervisor test:  ✓ test/git-cache.test.ts (13 tests) 1332ms
+apps/dispatcher test:    Start at  21:23:07
+apps/dispatcher test:    Duration  4.86s (transform 1.89s, setup 0ms, collect 5.41s, tests 50ms, environment 1ms, prepare 1.04s)
 apps/dispatcher test: Done
-apps/supervisor test:  ✓ test/profile-config.test.ts (11 tests) 12ms
-apps/api test:  ✓ test/health.test.ts (5 tests) 109ms
+apps/api test:  ✓ test/health.test.ts (5 tests) 134ms
 apps/api test:  Test Files  3 passed (3)
 apps/api test:       Tests  20 passed (20)
-apps/api test:    Start at  19:57:20
-apps/api test:    Duration  3.52s (transform 1.25s, setup 0ms, collect 3.56s, tests 194ms, environment 1ms, prepare 631ms)
+apps/api test:    Start at  21:23:07
+apps/api test:    Duration  5.98s (transform 2.39s, setup 0ms, collect 6.02s, tests 219ms, environment 1ms, prepare 1.04s)
 apps/api test: Done
-apps/supervisor test:  ✓ test/cleanup.test.ts (10 tests) 874ms
-apps/supervisor test:  ✓ test/resources.test.ts (8 tests) 7ms
-apps/supervisor test:  ✓ test/review.test.ts (30 tests) 2988ms
-apps/supervisor test:    ✓ supervisor check runs > terminates a hung command and records the timeout  413ms
-apps/supervisor test:    ✓ supervisor check runs > kills a timed-out check command's whole process group  736ms
-apps/supervisor test:    ✓ supervisor check runs > bounds the whole run by the total budget, not just each command  383ms
-apps/supervisor test:    ✓ review service > rejects a second check for the same repository instead of running two  310ms
-apps/supervisor test:  ✓ test/deployment-config.test.ts (12 tests) 12ms
-apps/supervisor test:  ✓ test/config.test.ts (6 tests) 25ms
-apps/supervisor test:  ✓ test/panel-proxy.test.ts (4 tests) 13ms
-apps/supervisor test:  ✓ test/server-wake.test.ts (1 test) 98ms
-apps/supervisor test:  ✓ test/provision-env.test.ts (1 test) 4ms
-apps/supervisor test:  ✓ test/stop-proof.test.ts (4 tests) 2273ms
-apps/supervisor test:    ✓ supervisor cgroup stop proof > serializes independent processes with the kernel lock  2150ms
-apps/supervisor test:  ✓ test/process.test.ts (21 tests) 6921ms
-apps/supervisor test:    ✓ supervisor process evidence > never signals a reused root PID whose start time does not match  395ms
-apps/supervisor test:    ✓ supervisor process evidence > does not signal a reused process group after the owned members exited  385ms
-apps/supervisor test:    ✓ supervisor process evidence > does not report stopped when the timeout expires before the child exits  1817ms
-apps/supervisor test:    ✓ supervisor process evidence > kills a child that ignores SIGTERM before reporting stopped  1689ms
-apps/supervisor test:    ✓ supervisor process evidence > retains a newly started service regardless of its age  368ms
-apps/supervisor test:    ✓ cgroup launcher only accepts a positive release > exits without executing when the parent dies before release  543ms
+apps/supervisor test: Cloning into bare repository '/tmp/moyu-prepare-command-pbblY8/cache.git'...
+apps/supervisor test: done.
+apps/supervisor test: Cloning into '/tmp/moyu-prepare-command-pbblY8/task.preparing-3590629'...
+apps/supervisor test: done.
+apps/supervisor test: HEAD is now at d54191a first
+apps/supervisor test: Switched to a new branch 'agent/fix-t1'
+apps/supervisor test: Cloning into bare repository '/tmp/moyu-prepare-fetch-56cbqD/cache.git'...
+apps/supervisor test: done.
+apps/supervisor test: Cloning into '/tmp/moyu-prepare-fetch-56cbqD/task.preparing-3590685'...
+apps/supervisor test: done.
+apps/supervisor test: From /tmp/moyu-prepare-fetch-56cbqD/origin
+apps/supervisor test:    d54191a..ab1c0fa  main       -> origin/main
+apps/supervisor test: HEAD is now at ab1c0fa next
+apps/supervisor test: Switched to a new branch 'agent/fix-t2'
+apps/supervisor test:  ✓ test/git-cache.test.ts (13 tests) 1502ms
+apps/supervisor test:  ✓ test/review.test.ts (30 tests) 3670ms
+apps/supervisor test:    ✓ supervisor check runs > terminates a hung command and records the timeout  395ms
+apps/supervisor test:    ✓ supervisor check runs > kills a timed-out check command's whole process group  808ms
+apps/supervisor test:    ✓ supervisor check runs > bounds the whole run by the total budget, not just each command  388ms
+apps/supervisor test:    ✓ review service > rejects a second check for the same repository instead of running two  322ms
+apps/supervisor test:  ✓ test/server-wake.test.ts (1 test) 135ms
+apps/supervisor test:  ✓ test/config.test.ts (6 tests) 33ms
+apps/supervisor test:  ✓ test/panel-proxy.test.ts (4 tests) 5ms
+apps/supervisor test:  ✓ test/profile-config.test.ts (11 tests) 14ms
+apps/supervisor test:  ✓ test/cleanup.test.ts (10 tests) 1807ms
+apps/supervisor test:    ✓ supervisor worktree cleanup > skips a worktree with uncommitted or untracked files and keeps it  342ms
+apps/supervisor test:  ✓ test/deployment-config.test.ts (12 tests) 16ms
+apps/supervisor test:  ✓ test/resources.test.ts (8 tests) 12ms
+apps/supervisor test:  ✓ test/provision-env.test.ts (1 test) 17ms
+apps/supervisor test:  ✓ test/process.test.ts (21 tests) 8282ms
+apps/supervisor test:    ✓ supervisor process evidence > lists a real child process and stops its detached process group  329ms
+apps/supervisor test:    ✓ supervisor process evidence > never signals a reused root PID whose start time does not match  525ms
+apps/supervisor test:    ✓ supervisor process evidence > does not signal a reused process group after the owned members exited  470ms
+apps/supervisor test:    ✓ supervisor process evidence > finds a setsid child through the per-instance cgroup after the root exits  382ms
+apps/supervisor test:    ✓ supervisor process evidence > finds a child forked after the snapshot even when the root already exited  505ms
+apps/supervisor test:    ✓ supervisor process evidence > does not report stopped when the timeout expires before the child exits  2016ms
+apps/supervisor test:    ✓ supervisor process evidence > kills a child that ignores SIGTERM before reporting stopped  1871ms
+apps/supervisor test:    ✓ supervisor process evidence > retains a newly started service regardless of its age  450ms
+apps/supervisor test:    ✓ cgroup launcher only accepts a positive release > exits without executing when the parent dies before release  577ms
 apps/supervisor test:  Test Files  12 passed (12)
 apps/supervisor test:       Tests  121 passed (121)
-apps/supervisor test:    Start at  19:57:20
-apps/supervisor test:    Duration  8.34s (transform 1.31s, setup 0ms, collect 2.90s, tests 14.56s, environment 2ms, prepare 1.43s)
+apps/supervisor test:    Start at  21:23:07
+apps/supervisor test:    Duration  10.67s (transform 1.81s, setup 0ms, collect 4.54s, tests 18.60s, environment 2ms, prepare 1.86s)
 apps/supervisor test: Done
-✔ verify-lock.sh gives the same result for plain, spaced, quoted and relative paths (5934.328971ms)
-✔ accepts a dedicated profile linked to the patched build (12.176212ms)
-✔ rejects the bootstrap home and profile (1.958907ms)
-✔ rejects an unpatched build and a wrong Bridge port (2.496861ms)
-✔ rejects an env file with broad permissions (1.301205ms)
-✔ rejects a target port that is already in use (11.501117ms)
-✔ rejects instance env keys that could override the validated home/profile (1.475267ms)
-✔ rejects an instance env pointing at the production API or a conflicting process env (2.559654ms)
-✔ rejects a symlinked state parent and leaves the other instance untouched (1.310871ms)
-✔ rejects state/<profile> linked to another profile in the same home (1.32713ms)
-✔ rejects sessions linked to another directory in the same home (1.319711ms)
-✔ rejects a cleanup target whose parent link stays inside the same home (1.205504ms)
-✔ rejects a profile containing path separators (1.004802ms)
-✔ the E2E script exits before any run directory for a bootstrap home or production API (829.249169ms)
-✔ refuses a runtime whose stateDir is not the expected isolated profile (0.582182ms)
-✔ every m6c CLI has a side-effect-free --help (339.626362ms)
-✔ release manifest refuses a missing plugin artifact (53.880197ms)
-✔ restore verifies the backupSetId and every part hash (112.454798ms)
-✔ matrix checker fails a Pass row without evidence (52.521548ms)
-✔ run logs redact PostgreSQL credentials (64.998659ms)
-✔ backup status prints its resolved target without writing (66.343322ms)
+✔ verify-lock.sh gives the same result for plain, spaced, quoted and relative paths (6953.456903ms)
+✔ accepts a dedicated profile linked to the patched build (19.336598ms)
+✔ rejects the bootstrap home and profile (4.049644ms)
+✔ rejects an unpatched build and a wrong Bridge port (8.311287ms)
+✔ rejects an env file with broad permissions (1.395337ms)
+✔ rejects a target port that is already in use (30.203647ms)
+✔ rejects instance env keys that could override the validated home/profile (3.586411ms)
+✔ rejects an instance env pointing at the production API or a conflicting process env (5.061572ms)
+✔ rejects a symlinked state parent and leaves the other instance untouched (8.164766ms)
+✔ rejects state/<profile> linked to another profile in the same home (6.90767ms)
+✔ rejects sessions linked to another directory in the same home (3.507331ms)
+✔ rejects a cleanup target whose parent link stays inside the same home (1.402888ms)
+✔ rejects a profile containing path separators (4.194497ms)
+✔ the E2E script exits before any run directory for a bootstrap home or production API (1524.92333ms)
+✔ refuses a runtime whose stateDir is not the expected isolated profile (0.561623ms)
+✔ every m6c CLI has a side-effect-free --help (617.041553ms)
+✔ release manifest refuses a missing plugin artifact (137.892241ms)
+✔ restore verifies the backupSetId and every part hash (216.016374ms)
+✔ matrix checker fails a Pass row without evidence (54.351812ms)
+✔ run logs redact PostgreSQL credentials (115.448211ms)
+✔ backup status prints its resolved target without writing (130.496742ms)
 ℹ tests 21
 ℹ suites 0
 ℹ pass 21
@@ -165,4 +173,4 @@ apps/supervisor test: Done
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 6018.188441
+ℹ duration_ms 7047.876016

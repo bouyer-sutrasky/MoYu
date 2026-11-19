@@ -33,9 +33,22 @@ export default tseslint.config(
       globals: {
         self: 'readonly',
         URL: 'readonly',
+        MessageChannel: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
         window: 'readonly',
         document: 'readonly',
         localStorage: 'readonly',
+      },
+    },
+  },
+  {
+    files: ['apps/web/src/**/*.test.mjs'],
+    languageOptions: {
+      globals: {
+        MessageChannel: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
       },
     },
   },
@@ -72,6 +85,9 @@ export default tseslint.config(
         location: 'readonly',
         Notification: 'readonly',
         MessageEvent: 'readonly',
+        MessageChannel: 'readonly',
+        Event: 'readonly',
+        self: 'readonly',
         localStorage: 'readonly',
       },
     },

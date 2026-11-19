@@ -16,8 +16,8 @@ apps/web build: rendering chunks...
 apps/web build: computing gzip size...
 apps/web build: dist/index.html                   0.66 kB │ gzip:   0.35 kB
 apps/web build: dist/assets/index-B-IQANkw.css  134.51 kB │ gzip:  18.79 kB
-apps/web build: dist/assets/index-DA5diHxG.js   673.71 kB │ gzip: 205.62 kB │ map: 2,574.01 kB
-apps/web build: ✓ built in 3.55s
+apps/web build: dist/assets/index-CTNJHx9R.js   673.80 kB │ gzip: 205.66 kB │ map: 2,574.53 kB
+apps/web build: ✓ built in 4.93s
 apps/web build: (!) Some chunks are larger than 500 kB after minification. Consider:
 apps/web build: - Using dynamic import() to code-split the application
 apps/web build: - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
@@ -26,10 +26,6 @@ apps/web build: Done
 apps/api build$ tsup
 apps/dispatcher build$ tsup
 apps/supervisor build$ tsup
-apps/api build: CLI Building entry: src/server.ts
-apps/api build: CLI Using tsconfig: tsconfig.json
-apps/api build: CLI tsup v8.5.1
-apps/api build: CLI Using tsup config: /root/src/mobile-notifications-8fa6de58a343/apps/api/tsup.config.ts
 apps/supervisor build: CLI Building entry: src/main.ts
 apps/supervisor build: CLI Using tsconfig: tsconfig.json
 apps/supervisor build: CLI tsup v8.5.1
@@ -37,6 +33,10 @@ apps/supervisor build: CLI Using tsup config: /root/src/mobile-notifications-8fa
 apps/supervisor build: CLI Target: node24
 apps/supervisor build: CLI Cleaning output folder
 apps/supervisor build: ESM Build start
+apps/api build: CLI Building entry: src/server.ts
+apps/api build: CLI Using tsconfig: tsconfig.json
+apps/api build: CLI tsup v8.5.1
+apps/api build: CLI Using tsup config: /root/src/mobile-notifications-8fa6de58a343/apps/api/tsup.config.ts
 apps/api build: CLI Target: node24
 apps/api build: CLI Cleaning output folder
 apps/api build: ESM Build start
@@ -47,15 +47,15 @@ apps/dispatcher build: CLI Using tsup config: /root/src/mobile-notifications-8fa
 apps/dispatcher build: CLI Target: node24
 apps/dispatcher build: CLI Cleaning output folder
 apps/dispatcher build: ESM Build start
-apps/dispatcher build: ESM dist/main.js     267.04 KB
-apps/dispatcher build: ESM dist/main.js.map 532.62 KB
-apps/dispatcher build: ESM ⚡️ Build success in 217ms
-apps/dispatcher build: Done
 apps/api build: ESM dist/server.js     359.29 KB
 apps/api build: ESM dist/server.js.map 728.29 KB
-apps/api build: ESM ⚡️ Build success in 307ms
+apps/api build: ESM ⚡️ Build success in 390ms
 apps/api build: Done
+apps/dispatcher build: ESM dist/main.js     267.04 KB
+apps/dispatcher build: ESM dist/main.js.map 532.62 KB
+apps/dispatcher build: ESM ⚡️ Build success in 303ms
+apps/dispatcher build: Done
 apps/supervisor build: ESM dist/main.js     383.50 KB
 apps/supervisor build: ESM dist/main.js.map 873.28 KB
-apps/supervisor build: ESM ⚡️ Build success in 394ms
+apps/supervisor build: ESM ⚡️ Build success in 610ms
 apps/supervisor build: Done

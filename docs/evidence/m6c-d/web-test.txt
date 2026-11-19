@@ -1,25 +1,28 @@
 $ node --import tsx --test src/shell/workspaceRoute.test.mjs src/lib/serviceWorker.test.mjs src/lib/notifications.test.mjs
-✔ an unsupported browser reports unsupported before any delivery attempt (2.694246ms)
-✔ non-alerting events, disabled settings, background-only and denied permission stop early (0.448795ms)
-✔ a page-level notification routes its click and claims the event once (0.951786ms)
-✔ a mobile constructor failure falls back to the Service Worker and retries a rejected display (1.322972ms)
-✔ install takes over immediately and activate claims existing clients (3.265837ms)
-✔ a click focuses a workbench window and routes in place (2.174077ms)
-✔ without a window it opens the addressable conversation URL (1.556158ms)
-✔ a payload without ids opens the workbench instead of a corrupt URL (0.972825ms)
-✔ a failed focus falls back to a fresh window (1.224425ms)
-✔ an empty search restores no target and no settings dialog (1.869984ms)
-✔ parses the workbench repository and conversation only when they are UUIDs (0.520038ms)
-✔ restores a settings section, its independent repository and its group (0.319146ms)
-✔ an unknown settings section leaves the dialog closed and ignores its sub-keys (0.581294ms)
-✔ serializes in a stable order and round-trips every addressable field (0.696476ms)
-✔ comparison uses the serialized address, not object identity (0.225187ms)
-✔ only a confirmed 403/404 target failure may canonicalize the address away (0.200495ms)
-ℹ tests 16
+✔ an unsupported browser reports unsupported before any delivery attempt (2.848081ms)
+✔ non-alerting events, disabled settings, background-only and denied permission stop early (0.573961ms)
+✔ a page-level notification routes its click and claims the event once (0.91164ms)
+✔ a mobile constructor failure falls back to the Service Worker and retries a rejected display (1.141539ms)
+✔ install takes over immediately and activate claims existing clients (2.816841ms)
+✔ a click focuses a workbench window and routes in place (37.244883ms)
+✔ without a window it opens the addressable conversation URL (1.690825ms)
+✔ a payload without ids opens the workbench instead of a corrupt URL (1.124162ms)
+✔ a window that cannot focus is navigated to the target URL (601.509954ms)
+✔ an unconfirmed window, such as the login page, is navigated to the target URL (602.960332ms)
+✔ a later confirmed workbench window consumes the click without navigation (603.095296ms)
+✔ a failed navigation falls back to opening a new window (601.612035ms)
+✔ an empty search restores no target and no settings dialog (1.959498ms)
+✔ parses the workbench repository and conversation only when they are UUIDs (1.999973ms)
+✔ restores a settings section, its independent repository and its group (0.346018ms)
+✔ an unknown settings section leaves the dialog closed and ignores its sub-keys (3.240767ms)
+✔ serializes in a stable order and round-trips every addressable field (0.706159ms)
+✔ comparison uses the serialized address, not object identity (0.219084ms)
+✔ only a confirmed 403/404 target failure may canonicalize the address away (0.687144ms)
+ℹ tests 19
 ℹ suites 0
-ℹ pass 16
+ℹ pass 19
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 362.944308
+ℹ duration_ms 2598.538027

@@ -16,8 +16,10 @@
    等移动浏览器上「活动中心有事件、但系统通知不出现」。
 2. **已实现页面仍运行时的兼容投递路径。** 页面注册 `apps/web/public/sw.js`；页面级
    构造器失败后改用 `registration.showNotification(...)`。通知点击由 Service Worker
-   聚焦已有窗口并 `postMessage` 回页面，页面按仓库 + 会话原地路由；没有窗口时直接用
-   可寻址 URL 打开新窗口。目标会话已失效时，沿用现有的 403/404 校验、回退和中文提示。
+   聚焦已有窗口并 `postMessage` 回页面，页面按仓库 + 会话原地路由；页面必须通过
+   `MessagePort` 确认已消费，未确认时 Worker 把窗口导航到带仓库/会话的 URL，没有窗口
+   时直接打开该 URL。这样即使点击时只剩登录页、工作台尚未挂载，登录后也能恢复原会话。
+   目标会话已失效时，沿用现有的 403/404 校验、回退和中文提示。
 3. **拒绝授权或不支持系统通知时，站内能力不受影响。** 未读徽标、活动中心和会话
    刷新仍由同一持久事件驱动；浏览器模拟中三种结果都验证了未读 +1 和活动中心可见。
 4. **页面关闭、系统回收或挂起后仍不会收到通知。** 当前没有服务端 Web Push：
@@ -76,9 +78,10 @@
 
 - `install` 立即 `skipWaiting()`，`activate` 用 `clients.claim()` 接管；不缓存应用外壳，
   不注册 `fetch`。
-- `notificationclick`：优先聚焦已有同源窗口并 `postMessage`
-  `{ type: 'moyu:notification-open', repositoryId, conversationId }`；没有窗口时用
-  `?repo=…&conversation=…` 打开新窗口。
+- `notificationclick`：向同源窗口逐个发送
+  `{ type: 'moyu:notification-open', repositoryId, conversationId }` 和一个
+  `MessageChannel` 端口；窗口必须回传 `moyu:notification-consumed` 才算消费成功。
+  未确认时把聚焦窗口导航到 `?repo=…&conversation=…`，没有窗口时打开该 URL。
 - 数据只来自页面写入的通知 `data`；不读取 Cookie、Token 或其他凭据。
 
 ### 3.2 页面投递（`apps/web/src/lib/notifications.ts`）
@@ -93,7 +96,7 @@
 ### 3.3 页面路由（`apps/web/src/shell/WorkspaceShell.tsx`）
 
 - 监听 `navigator.serviceWorker` 的 `message`，收到点击消息后关闭设置、活动与历史面板，
-  按仓库 + 会话原地路由。
+  按仓库 + 会话原地路由，并通过 `event.ports[0]` 回传消费确认。
 - 通知点击不再直接把会话 id 塞进选中态；统一交给地址恢复 effect 先做
   `GET /api/v1/conversations/:id` 校验。这样失效目标不会被误打开，而是走既有的
   403/404 回退和中文提示。该缺陷是 D 段复测中实际发现并修复的。
@@ -101,17 +104,17 @@
 ### 3.4 测试
 
 - `apps/web/src/lib/serviceWorker.test.mjs`：在 Node VM 中加载真实 `sw.js`，覆盖安装/
-  激活、聚焦窗口、回退打开 URL、缺失 id 和 focus 失败。
+  激活、确认消费、未确认时导航到目标 URL、多窗口、focus 失败、导航失败和缺失 id。
 - `apps/web/src/lib/notifications.test.mjs`：覆盖 unsupported、no-category、disabled、
   background-only、no-permission、页面级投递与点击、移动端构造器失败后的 Service
   Worker 投递、投递失败后的 claim 释放与重试。
-- `pnpm --filter @moyu/web test`：16 个测试通过。
+- `pnpm --filter @moyu/web test`：19 个测试通过。
 
 ## 4. 验证命令与结果
 
 | 命令 | 结果 |
 | --- | --- |
-| `pnpm --filter @moyu/web test` | 通过，16 tests（`web-test.txt`） |
+| `pnpm --filter @moyu/web test` | 通过，19 tests（`web-test.txt`） |
 | `pnpm check` | 通过（lint/format/typecheck/unit tests，`check.txt`） |
 | `pnpm build` | 通过，Web 产物包含 `/sw.js`（`build.txt`） |
 | `TEST_DATABASE_ADMIN_URL=postgres://moyu:x@127.0.0.1:55432/postgres pnpm test:integration` | 通过：db 17 files/54，api 18/133，dispatcher 19/100（1 skipped），supervisor 1/4（`integration.txt`） |
@@ -120,6 +123,8 @@
 | 拒绝授权 | `denied-denied-result.json`，`ok: true`，结果 `no-permission` |
 | 不支持通知 | `unsupported-unsupported-result.json`，`ok: true`，结果 `unsupported` |
 | 页面关闭 | `closed-page.json`：事件进入活动中心，`getNotifications()` 为空 |
+| 同源工作台点击 | `expired-session-result.json`：`MessagePort` 确认消费，URL 原地切换，页面实例不重载 |
+| 会话过期后点击 | `expired-session-result.json`：只剩登录页时 Worker 导航到目标 URL；Passkey 登录后进入目标会话 |
 
 复现命令（需要隔离 API、测试会话 cookie、runtime callback token 和 Xvfb；token 不写进仓库）：
 
@@ -134,6 +139,24 @@ DISPLAY=:99 M6C_RUNTIME_CALLBACK_TOKEN=... \
 
 Before 使用 `01896ba` 的独立 worktree 构建产物和 `--expect error`；拒绝授权/不支持分别用
 `--mode denied --expect no-permission` 与 `--mode unsupported --expect unsupported`。
+
+会话过期回归（隔离 `localhost` API、虚拟 Passkey、隔离测试库；token 不写进仓库）：
+
+```bash
+DISPLAY=:99 M6C_RUNTIME_CALLBACK_TOKEN=... \
+  M6C_TEST_DATABASE_URL=postgres://moyu:x@127.0.0.1:55432/moyu_m6c_c_real \
+  node scripts/m6c/notifications-expired-session.mjs \
+  --base-url http://localhost:3104 \
+  --storage-state /tmp/storage.json \
+  --credentials /tmp/credentials.json \
+  --repository <repository-uuid> --conversation <conversation-uuid> \
+  --out /tmp/evidence
+```
+
+该脚本先用真实事件验证工作台确认消费（页面实例不重载），再写一条通知、撤销当前会话、
+刷新到登录页、在 Worker 中派发 `notificationclick`，确认登录页 URL 带目标，最后用
+Playwright 虚拟认证器完成 Passkey 登录并确认进入目标会话。虚拟认证器只作自动化证据，
+不代表真机 Passkey。
 
 ## 5. 真机矩阵（未执行）
 
@@ -176,5 +199,7 @@ dispatcher 在写入持久事件时发送、410/404 失效订阅处理、重试�
   `ServiceWorkerRegistration.getNotifications()` 和页面调试记录验证，未截取系统通知
   弹窗（Xvfb 无通知守护进程）。
 - 未验证 PWA 安装态、iOS 主屏幕 PWA、系统省电/后台冻结、真实移动网络和 HTTPS 域名。
+- 会话过期回归使用隔离测试库、虚拟认证器和合成的 `notificationclick` 事件；不是真机
+  系统通知点击，也不是真机 Passkey。
 - 未做生产发布、生产数据库或生产服务验证；未触碰 3082/bootstrap 实例。
 - 真机结果出来前，D 段保持待验，不把桌面模拟结果表述为手机已验证。
