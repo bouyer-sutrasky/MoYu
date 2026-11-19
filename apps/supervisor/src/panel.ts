@@ -92,6 +92,39 @@ export interface ConfigureProfileInput {
 }
 
 /**
+ * A source change makes the runtime restart its setup fiber. The restart is
+ * deliberately deferred so the saving request can answer first, which means the
+ * next settings write would race it and can abort an in-flight CLI account
+ * probe ("was stopped before it finished"). Wait for the configured runtime
+ * before sending the next block.
+ */
+async function waitForConfiguredRuntime(
+  port: number,
+  repository: string,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const state = (await request(port, '/state')) as {
+        setup?: { accounts?: { repository?: string } };
+        health?: { runtime?: { state?: string } };
+      };
+      if (
+        state.setup?.accounts?.repository === repository &&
+        (state.health?.runtime?.state === 'ready' || state.health?.runtime?.state === 'paused')
+      ) {
+        return;
+      }
+    } catch {
+      // The setup restart briefly closes the panel; retry until the deadline.
+    }
+    await delay(250);
+  }
+  throw new Error('runtime listener did not become ready after configuration');
+}
+
+/**
  * Applies the fixed per-repository runtime configuration through the loopback
  * panel. Only the supervisor calls this: the browser never sends a repository,
  * path, model or command directly to the runtime.
@@ -101,12 +134,11 @@ async function putSettings(
   path: string,
   body: unknown,
   timeoutMs: number,
-): Promise<void> {
+): Promise<Record<string, unknown>> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     try {
-      await request(port, path, 'PUT', body);
-      return;
+      return await request(port, path, 'PUT', body);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // A freshly started runtime registers the optional workspace Source after
@@ -121,6 +153,18 @@ async function putSettings(
 
 function encodeBlock(block: string): string {
   return block.replace(':', '%3A');
+}
+
+/**
+ * The GitHub source carries the CLI account probe, so it must be saved before a
+ * source write that schedules a deferred setup restart. Exported for the unit
+ * test that pins this order.
+ */
+export function orderProfileBlocks<T extends { block: string }>(blocks: readonly T[]): T[] {
+  return [
+    ...blocks.filter((block) => block.block === 'source:github'),
+    ...blocks.filter((block) => block.block !== 'source:github'),
+  ];
 }
 
 export async function configureProfile(input: ConfigureProfileInput): Promise<void> {
@@ -154,28 +198,21 @@ export async function configureProfile(input: ConfigureProfileInput): Promise<vo
     },
     input.seedDefaults,
   );
-  for (const block of blocks) {
-    await putSettings(
+  // The GitHub source carries the account probe. Save it before the workspace
+  // source (which also triggers a deferred setup restart) so the probe is not
+  // aborted by that restart.
+  const ordered = orderProfileBlocks(blocks);
+  for (const block of ordered) {
+    const result = await putSettings(
       input.port,
       `/settings/${encodeBlock(block.block)}`,
       { value: block.value, revision: block.revision },
       input.timeoutMs,
     );
+    if (result.restarting === true) {
+      await waitForConfiguredRuntime(input.port, input.repository, input.timeoutMs);
+    }
   }
 
-  const deadline = Date.now() + input.timeoutMs;
-  while (Date.now() < deadline) {
-    const state = (await request(input.port, '/state')) as {
-      setup?: { accounts?: { repository?: string } };
-      health?: { runtime?: { state?: string } };
-    };
-    if (
-      state.setup?.accounts?.repository === input.repository &&
-      (state.health?.runtime?.state === 'ready' || state.health?.runtime?.state === 'paused')
-    ) {
-      return;
-    }
-    await delay(1000);
-  }
-  throw new Error('runtime listener did not become ready after configuration');
+  await waitForConfiguredRuntime(input.port, input.repository, input.timeoutMs);
 }
