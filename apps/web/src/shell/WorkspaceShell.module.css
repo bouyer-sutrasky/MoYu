@@ -425,6 +425,30 @@
   line-height: 1.6;
 }
 
+.routeNoticeActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.routeNoticeRetry {
+  padding: 2px 9px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-layer-3);
+  color: var(--dsw-alias-label-primary);
+  font: var(--dsw-font-xxxs-strong-11);
+  cursor: pointer;
+}
+
+.routeNoticeRetry:hover,
+.routeNoticeRetry:focus-visible {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 1px;
+}
+
 .routeNoticeClose {
   display: inline-flex;
   align-items: center;

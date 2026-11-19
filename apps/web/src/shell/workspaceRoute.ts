@@ -113,3 +113,13 @@ export function workspaceRouteUrl(pathname: string, route: WorkspaceRoute, hash 
 export function sameWorkspaceRoute(left: WorkspaceRoute, right: WorkspaceRoute): boolean {
   return workspaceRouteSearch(left) === workspaceRouteSearch(right);
 }
+
+/**
+ * A restore target is canonicalized away only when the platform confirmed it
+ * is missing or forbidden. A network failure, a timeout or a 5xx says nothing
+ * about the target: the address must stay so a refresh or retry can reach it
+ * after recovery.
+ */
+export function isPermanentTargetFailure(status: number | null): boolean {
+  return status === 403 || status === 404;
+}

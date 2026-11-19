@@ -30,6 +30,7 @@ import { RepositorySettingsDialog } from './RepositorySettingsDialog';
 import { Sidebar } from './Sidebar';
 import type { SettingsGroup } from '../superagent/contract';
 import {
+  isPermanentTargetFailure,
   parseWorkspaceRoute,
   sameWorkspaceRoute,
   workspaceRouteUrl,
@@ -178,7 +179,8 @@ export function WorkspaceShell({
   const [route, setRoute] = useState<WorkspaceRoute>(() =>
     parseWorkspaceRoute(window.location.search),
   );
-  const [routeNotice, setRouteNotice] = useState<string | null>(null);
+  const [routeNotice, setRouteNotice] = useState<{ text: string; retry?: boolean } | null>(null);
+  const [routeRetryKey, setRouteRetryKey] = useState(0);
   const [addRepositoryOpen, setAddRepositoryOpen] = useState(false);
   const [repositorySettingsOpen, setRepositorySettingsOpen] = useState(false);
   const [repositoryActionBusy, setRepositoryActionBusy] = useState(false);
@@ -306,6 +308,11 @@ export function WorkspaceShell({
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  const retryRouteRestore = useCallback(() => {
+    setRouteNotice(null);
+    setRouteRetryKey((current) => current + 1);
   }, []);
 
   const openSettings = useCallback(() => {
@@ -986,7 +993,7 @@ export function WorkspaceShell({
     })();
 
     if (desired.repositoryId && !repositories.some((item) => item.id === desired.repositoryId)) {
-      setRouteNotice('要恢复的仓库不存在或没有访问权限，已回到可访问的仓库。');
+      setRouteNotice({ text: '要恢复的仓库不存在或没有访问权限，已回到可访问的仓库。' });
       commitRoute(
         {
           ...desired,
@@ -1065,11 +1072,22 @@ export function WorkspaceShell({
           onSessionLost();
           return;
         }
-        setRouteNotice('要恢复的会话不存在或没有访问权限，已回到当前仓库。');
+        // Only a confirmed missing/forbidden target is a permanent fallback.
+        // A network failure or 5xx keeps the address so a refresh or retry can
+        // still reach the same conversation when the API recovers.
+        const status = caught instanceof ApiClientError ? caught.status : null;
+        if (!isPermanentTargetFailure(status)) {
+          setRouteNotice({
+            text: '暂时无法读取目标会话（网络或服务暂不可用），地址已保留，可重试。',
+            retry: true,
+          });
+          return;
+        }
+        setRouteNotice({ text: '要恢复的会话不存在或没有访问权限，已回到当前仓库。' });
         commitRoute({ ...routeRef.current, conversationId: null }, { replace: true });
       }
     })();
-  }, [route, repositories, repositoriesStatus, commitRoute, onSessionLost]);
+  }, [route, repositories, repositoriesStatus, routeRetryKey, commitRoute, onSessionLost]);
 
   // A settings route names the repository whose instance it shows. Resolve an
   // unknown or removed repository to the workbench's repository and keep the
@@ -1749,15 +1767,26 @@ export function WorkspaceShell({
 
           {routeNotice ? (
             <div className={styles.routeNotice} role="status">
-              <span>{routeNotice}</span>
-              <button
-                type="button"
-                className={styles.routeNoticeClose}
-                onClick={() => setRouteNotice(null)}
-                aria-label="关闭位置恢复提示"
-              >
-                <Icon name="x" size={14} />
-              </button>
+              <span>{routeNotice.text}</span>
+              <span className={styles.routeNoticeActions}>
+                {routeNotice.retry ? (
+                  <button
+                    type="button"
+                    className={styles.routeNoticeRetry}
+                    onClick={retryRouteRestore}
+                  >
+                    重试
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className={styles.routeNoticeClose}
+                  onClick={() => setRouteNotice(null)}
+                  aria-label="关闭位置恢复提示"
+                >
+                  <Icon name="x" size={14} />
+                </button>
+              </span>
             </div>
           ) : null}
 

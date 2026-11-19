@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  isPermanentTargetFailure,
   parseWorkspaceRoute,
   sameWorkspaceRoute,
   workspaceRouteSearch,
@@ -91,4 +92,13 @@ test('comparison uses the serialized address, not object identity', () => {
   const left = { repositoryId: A, conversationId: null, settings: null };
   assert.equal(sameWorkspaceRoute(left, { ...left }), true);
   assert.equal(sameWorkspaceRoute(left, { ...left, conversationId: B }), false);
+});
+
+test('only a confirmed 403/404 target failure may canonicalize the address away', () => {
+  assert.equal(isPermanentTargetFailure(403), true);
+  assert.equal(isPermanentTargetFailure(404), true);
+  // Transient API failures must keep the deep link for refresh/retry.
+  for (const status of [null, 0, 400, 401, 408, 422, 429, 500, 502, 503, 504]) {
+    assert.equal(isPermanentTargetFailure(status), false, `status ${status}`);
+  }
 });
