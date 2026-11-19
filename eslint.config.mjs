@@ -31,6 +31,8 @@ export default tseslint.config(
     files: ['apps/web/public/**/*.js'],
     languageOptions: {
       globals: {
+        self: 'readonly',
+        URL: 'readonly',
         window: 'readonly',
         document: 'readonly',
         localStorage: 'readonly',
@@ -66,6 +68,11 @@ export default tseslint.config(
         clearTimeout: 'readonly',
         document: 'readonly',
         window: 'readonly',
+        navigator: 'readonly',
+        location: 'readonly',
+        Notification: 'readonly',
+        MessageEvent: 'readonly',
+        localStorage: 'readonly',
       },
     },
   },

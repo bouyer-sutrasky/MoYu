@@ -1,0 +1,416 @@
+$ pnpm --filter @moyu/db test:integration && pnpm --filter @moyu/api test:integration && pnpm --filter @moyu/dispatcher test:integration && pnpm --filter @moyu/supervisor test:integration
+$ vitest run test/integration
+
+ RUN  v3.2.7 /root/src/mobile-notifications-8fa6de58a343/packages/db
+
+ ✓ test/integration/integrity.integration.test.ts (9 tests) 1365ms
+ ✓ test/integration/rollback.integration.test.ts (5 tests) 2806ms
+   ✓ 0004 rollback script on real PostgreSQL > rolls back with the correct hash, keeps business data and re-applies the constraints  735ms
+   ✓ 0004 rollback script on real PostgreSQL > rejects a wrong hash and keeps the schema, migration history and data  565ms
+   ✓ 0004 rollback script on real PostgreSQL > rejects a missing hash and keeps the schema and migration history  470ms
+   ✓ 0004 rollback script on real PostgreSQL > rejects a hash whose migration record is no longer the latest applied row  473ms
+   ✓ 0004 rollback script on real PostgreSQL > rolls back all DDL when a later statement in the same transaction fails  535ms
+ ✓ test/integration/rollback-0019.integration.test.ts (6 tests) 4153ms
+   ✓ 0019 rollback script on real PostgreSQL > pins the deployed 0019 forward hash and restores the old global index  833ms
+   ✓ 0019 rollback script on real PostgreSQL > refuses when the 0019 ledger row is absent and leaves schema and data untouched  636ms
+   ✓ 0019 rollback script on real PostgreSQL > refuses duplicate 0019 ledger rows and leaves schema and data untouched  653ms
+   ✓ 0019 rollback script on real PostgreSQL > refuses to roll back underneath a later migration and keeps the 0019 index  751ms
+   ✓ 0019 rollback script on real PostgreSQL > refuses a cross-repository duplicate that the old global index cannot represent  614ms
+   ✓ 0019 rollback script on real PostgreSQL > refuses a drifted index definition instead of guessing at the replacement  661ms
+ ✓ test/integration/rollback-0005.integration.test.ts (3 tests) 1819ms
+   ✓ 0005 rollback script on real PostgreSQL > rolls back M4 DDL with the correct hash, keeps business rows, and re-applies the migration  807ms
+   ✓ 0005 rollback script on real PostgreSQL > rejects a wrong hash without changing the schema or data  487ms
+   ✓ 0005 rollback script on real PostgreSQL > rejects a missing hash and keeps the M4 schema  522ms
+ ✓ test/integration/messages.integration.test.ts (4 tests) 677ms
+ ✓ test/integration/migrations.integration.test.ts (6 tests) 664ms
+ ✓ test/integration/rollback-0018.integration.test.ts (3 tests) 2014ms
+   ✓ 0018 rollback script on real PostgreSQL > drops the audit table and the column, refuses a second rollback, and re-applies cleanly  736ms
+   ✓ 0018 rollback script on real PostgreSQL > refuses to roll back underneath a later migration and keeps the new schema  614ms
+   ✓ 0018 rollback script on real PostgreSQL > upgrades an existing database without rewriting repository rows and enforces the shape check  660ms
+ ✓ test/integration/rollback-0008.integration.test.ts (3 tests) 2288ms
+   ✓ 0008 rollback script on real PostgreSQL > deletes exactly the 0008 ledger row and restores immediate FKs, then re-applies deferred FKs  728ms
+   ✓ 0008 rollback script on real PostgreSQL > moves a reply graph between conversations after re-apply, proving deferred checking  494ms
+   ✓ 0008 rollback script on real PostgreSQL > refuses wrong, missing and non-latest hashes without changing schema or ledger  1063ms
+ ✓ test/integration/rollback-0014.integration.test.ts (2 tests) 1311ms
+   ✓ 0014 rollback script on real PostgreSQL > refuses a second rollback instead of silently deleting nothing  701ms
+   ✓ 0014 rollback script on real PostgreSQL > removes the reservation schema and re-applies it with 0015  605ms
+ ✓ test/integration/rollback-0006.integration.test.ts (2 tests) 1343ms
+   ✓ 0006 rollback script on real PostgreSQL > drops the durable duplicate queue and re-applies it  716ms
+   ✓ 0006 rollback script on real PostgreSQL > rejects a missing or wrong hash and keeps the table  616ms
+ ✓ test/integration/rollback-0015.integration.test.ts (2 tests) 1378ms
+   ✓ 0015 rollback script on real PostgreSQL > refuses a second rollback instead of silently deleting nothing  682ms
+   ✓ 0015 rollback script on real PostgreSQL > re-applies the attachment link and rejects an unknown message id  691ms
+ ✓ test/integration/rollback-0009.integration.test.ts (2 tests) 2046ms
+   ✓ 0009 rollback script on real PostgreSQL > drops repository_preferences and the keyset index, then re-applies both  707ms
+   ✓ 0009 rollback script on real PostgreSQL > refuses wrong, missing and non-latest hashes without changing schema or ledger  1335ms
+ ✓ test/integration/rollback-0021.integration.test.ts (1 test) 674ms
+   ✓ 0021 rollback script on real PostgreSQL > drops only the decision and PR-order projections and can be re-applied  670ms
+ ✓ test/integration/rollback-0016.integration.test.ts (2 tests) 1300ms
+   ✓ 0016 rollback script on real PostgreSQL > drops revoked_at, refuses a second rollback, and re-applies cleanly  733ms
+   ✓ 0016 rollback script on real PostgreSQL > refuses to roll back underneath a later migration and leaves the column in place  562ms
+ ✓ test/integration/rollback-0013.integration.test.ts (1 test) 944ms
+   ✓ 0013 rollback script on real PostgreSQL > removes the lease/resource schema and re-applies it  941ms
+ ✓ test/integration/rollback-0017.integration.test.ts (2 tests) 1299ms
+   ✓ 0017 rollback script on real PostgreSQL > drops the cleanup audit tables, refuses a second rollback, and re-applies cleanly  723ms
+   ✓ 0017 rollback script on real PostgreSQL > refuses to roll back underneath a later migration and keeps the tables  570ms
+ ✓ test/integration/rollback-0012.integration.test.ts (1 test) 671ms
+   ✓ 0012 rollback script on real PostgreSQL > removes the allocation indexes and re-applies them  668ms
+
+ Test Files  17 passed (17)
+      Tests  54 passed (54)
+   Start at  19:57:50
+   Duration  14.97s (transform 421ms, setup 0ms, collect 13.06s, tests 26.75s, environment 4ms, prepare 1.31s)
+
+$ vitest run test/integration
+
+ RUN  v3.2.7 /root/src/mobile-notifications-8fa6de58a343/apps/api
+
+ ✓ test/integration/repositories.integration.test.ts (9 tests) 1177ms
+ ✓ test/integration/loop.integration.test.ts (13 tests) 1185ms
+ ✓ test/integration/attachments.integration.test.ts (25 tests) 1400ms
+ ✓ test/integration/m6b.integration.test.ts (8 tests) 1180ms
+ ✓ test/integration/preferences.integration.test.ts (11 tests) 1001ms
+ ✓ test/integration/pagination.integration.test.ts (10 tests) 1312ms
+ ✓ test/integration/login-revocation-race.integration.test.ts (3 tests) 1017ms
+ ✓ test/integration/conversation-merge.integration.test.ts (8 tests) 1082ms
+ ✓ test/integration/tasks.integration.test.ts (8 tests) 1049ms
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > moves the attachment into the target conversation in the same transaction
+merge response: 202 {"data":{"message":{"id":"912294b4-8d53-4584-a106-3c13401147d1","conversationId":"708f4f99-2532-4639-b0ee-13384f6fa041","direction":"inbound","kind":"user","clientMessageId":"p1bp-merge-235dcd51-ce09-4465-bd46-4eca6f723f22","body":"Same requirement: https://github.com/Bouyer12/p1bp-merge-test/issues/1","replyToMessageId":null,"source":"web","createdAt":"2026-11-19T11:58:17.436Z","delivery":{"state":"stored","attemptCount":0,"lastError":null,"deliveredAt":null,"handedToWorkerAt":null,"readAt":null},"attachments":[{"id":"ca31bf7e-1a0e-43a5-b786-254b518330b5","conversationId":"708f4f99-2532-4639-b0ee-13384f6fa041","taskId":null,"messageId":"912294b4-8d53-4584-a106-3c13401147d1","filename":"p1bp.txt","mimeType":"text/plain","sizeBytes":40,"sha256":"57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16","kind":"text","revokedAt":null,"createdAt":"2026-11-19T11:58:17.410Z","downloadUrl":"/api/v1/attachments/ca31bf7e-1a0e-43a5-b786-254b518330b5"}]},"duplicate":false},"requestId":"762889ae-0d91-4ade-8fb8-3143b149191b"}
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > moves the attachment into the target conversation in the same transaction
+download: 200 sha256= 57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16 expected= 57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > still refuses an attachment that belongs to another owner
+foreign response: 422 {"error":{"code":"invalid_request","message":"attachmentIds 必须是本会话尚未发送的附件","retryable":false},"requestId":"88211bfc-c7cd-47ba-a268-21481d607ec3"}
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > rolls the whole merge back when one attachment cannot be sent
+rollback before: {"messages":2,"attachments":[{"id":"521db1f3-eb80-4eab-b430-701990b910ae","conversationId":"e8c59063-eae9-4e7b-a018-b01c0bc4f01a","messageId":"a5845cb9-5b27-4011-83fa-44b86d5fc808","sha256":"57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16"},{"id":"88bc6abf-43d0-44b6-8191-3be001882fb7","conversationId":"e8c59063-eae9-4e7b-a018-b01c0bc4f01a","messageId":null,"sha256":"57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16"}]}
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > rolls the whole merge back when one attachment cannot be sent
+rollback response: 422 {"error":{"code":"invalid_request","message":"attachmentIds 必须是本会话尚未发送的附件","retryable":false},"requestId":"93f5222e-769c-4f17-b9c4-b6df2da04ccf"}
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > rolls the whole merge back when one attachment cannot be sent
+rollback after: {"messages":2,"attachments":[{"id":"521db1f3-eb80-4eab-b430-701990b910ae","conversationId":"e8c59063-eae9-4e7b-a018-b01c0bc4f01a","messageId":"a5845cb9-5b27-4011-83fa-44b86d5fc808","sha256":"57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16"},{"id":"88bc6abf-43d0-44b6-8191-3be001882fb7","conversationId":"e8c59063-eae9-4e7b-a018-b01c0bc4f01a","messageId":null,"sha256":"57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16"}]}
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > replays the same clientMessageId without moving the attachment twice
+merge response: 202 {"data":{"message":{"id":"d8455fe2-a30c-4d32-ae1b-2b69f543f733","conversationId":"708f4f99-2532-4639-b0ee-13384f6fa041","direction":"inbound","kind":"user","clientMessageId":"p1bp-retry-913f4cfd-49e1-4df4-b714-26d30a057333","body":"Same requirement: https://github.com/Bouyer12/p1bp-merge-test/issues/1","replyToMessageId":null,"source":"web","createdAt":"2026-11-19T11:58:17.598Z","delivery":{"state":"stored","attemptCount":0,"lastError":null,"deliveredAt":null,"handedToWorkerAt":null,"readAt":null},"attachments":[{"id":"68af41a4-766c-455e-bdb0-aa659230026e","conversationId":"708f4f99-2532-4639-b0ee-13384f6fa041","taskId":null,"messageId":"d8455fe2-a30c-4d32-ae1b-2b69f543f733","filename":"retry.txt","mimeType":"text/plain","sizeBytes":40,"sha256":"57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16","kind":"text","revokedAt":null,"createdAt":"2026-11-19T11:58:17.584Z","downloadUrl":"/api/v1/attachments/68af41a4-766c-455e-bdb0-aa659230026e"}]},"duplicate":false},"requestId":"da277633-16c3-4f1d-90cd-ce4f1a32555b"}
+
+stdout | test/integration/dual-entrance-attachment.integration.test.ts > P1-B prime: an attachment-bearing first Web message merges into the imported Issue > replays the same clientMessageId without moving the attachment twice
+retry response: 200 {"data":{"message":{"id":"d8455fe2-a30c-4d32-ae1b-2b69f543f733","conversationId":"708f4f99-2532-4639-b0ee-13384f6fa041","direction":"inbound","kind":"user","clientMessageId":"p1bp-retry-913f4cfd-49e1-4df4-b714-26d30a057333","body":"Same requirement: https://github.com/Bouyer12/p1bp-merge-test/issues/1","replyToMessageId":null,"source":"web","createdAt":"2026-11-19T11:58:17.598Z","delivery":{"state":"stored","attemptCount":0,"lastError":null,"deliveredAt":null,"handedToWorkerAt":null,"readAt":null},"attachments":[{"id":"68af41a4-766c-455e-bdb0-aa659230026e","conversationId":"708f4f99-2532-4639-b0ee-13384f6fa041","taskId":null,"messageId":"d8455fe2-a30c-4d32-ae1b-2b69f543f733","filename":"retry.txt","mimeType":"text/plain","sizeBytes":40,"sha256":"57eee9cd4a20f96210b7a7fe524698d34e52522515efa3f29ebe65ad4e907a16","kind":"text","revokedAt":null,"createdAt":"2026-11-19T11:58:17.584Z","downloadUrl":"/api/v1/attachments/68af41a4-766c-455e-bdb0-aa659230026e"}]},"duplicate":true},"requestId":"fb99494b-9299-4451-a06a-d19556029c3e"}
+
+ ✓ test/integration/review.integration.test.ts (6 tests) 952ms
+ ✓ test/integration/dual-entrance-attachment.integration.test.ts (4 tests) 961ms
+ ✓ test/integration/auth.integration.test.ts (7 tests) 842ms
+{"level":30,"time":"2026-11-19T11:58:19.842Z","service":"moyu-api","env":"test","reqId":"6dcb046c-62bb-4f42-8c77-534c5c5804e4","req":{"method":"GET","url":"/api/v1/tasks/a0502deb-cf6f-4d20-ab5c-ebfdfdb930bc/new-task-preview","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":"2026-11-19T11:58:19.864Z","service":"moyu-api","env":"test","reqId":"6dcb046c-62bb-4f42-8c77-534c5c5804e4","res":{"statusCode":200},"responseTime":20.428975000000264,"msg":"request completed"}
+{"level":30,"time":"2026-11-19T11:58:19.868Z","service":"moyu-api","env":"test","reqId":"6b8dcea2-7882-4b12-9b86-15870ad0a467","req":{"method":"POST","url":"/api/v1/tasks/a0502deb-cf6f-4d20-ab5c-ebfdfdb930bc/new-task","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":"2026-11-19T11:58:19.889Z","service":"moyu-api","env":"test","reqId":"6b8dcea2-7882-4b12-9b86-15870ad0a467","res":{"statusCode":201},"responseTime":20.64765699999998,"msg":"request completed"}
+{"level":30,"time":"2026-11-19T11:58:19.894Z","service":"moyu-api","env":"test","reqId":"49500bc7-093e-492e-985b-750eca49f182","req":{"method":"POST","url":"/api/v1/tasks/a0502deb-cf6f-4d20-ab5c-ebfdfdb930bc/new-task","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":"2026-11-19T11:58:19.904Z","service":"moyu-api","env":"test","reqId":"49500bc7-093e-492e-985b-750eca49f182","res":{"statusCode":201},"responseTime":9.639165999999932,"msg":"request completed"}
+{"level":30,"time":"2026-11-19T11:58:19.904Z","service":"moyu-api","env":"test","reqId":"2a2d4dc5-2b09-44fa-82bf-9d2a4b5776d9","req":{"method":"POST","url":"/api/v1/tasks/a0502deb-cf6f-4d20-ab5c-ebfdfdb930bc/new-task","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":"2026-11-19T11:58:19.912Z","service":"moyu-api","env":"test","reqId":"2a2d4dc5-2b09-44fa-82bf-9d2a4b5776d9","res":{"statusCode":200},"responseTime":7.512088999999833,"msg":"request completed"}
+{"level":30,"time":"2026-11-19T11:58:19.916Z","service":"moyu-api","env":"test","reqId":"a7a299a5-0e2a-49f5-9cbd-eebb722e8c7e","req":{"method":"POST","url":"/api/v1/tasks/a0502deb-cf6f-4d20-ab5c-ebfdfdb930bc/new-task","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":"2026-11-19T11:58:19.925Z","service":"moyu-api","env":"test","reqId":"a7a299a5-0e2a-49f5-9cbd-eebb722e8c7e","res":{"statusCode":201},"responseTime":9.293950000000223,"msg":"request completed"}
+{"level":30,"time":"2026-11-19T11:58:19.926Z","service":"moyu-api","env":"test","reqId":"14d8bf1f-876c-40e0-a8ef-7b7877dc8b53","req":{"method":"POST","url":"/api/v1/tasks/a0502deb-cf6f-4d20-ab5c-ebfdfdb930bc/new-task","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":40,"time":"2026-11-19T11:58:19.940Z","service":"moyu-api","env":"test","reqId":"14d8bf1f-876c-40e0-a8ef-7b7877dc8b53","err":{"type":"ApiProblem","message":"Repository not found","stack":"ApiProblem: Repository not found\n    at ApiProblem.notFound (/root/src/mobile-notifications-8fa6de58a343/apps/api/src/lib/errors.ts:34:12)\n    at Object.<anonymous> (/root/src/mobile-notifications-8fa6de58a343/apps/api/src/routes/conversations.ts:904:45)\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)","statusCode":404,"code":"not_found","retryable":false,"name":"ApiProblem"},"event":"request.rejected","code":"not_found","msg":"request rejected"}
+{"level":30,"time":"2026-11-19T11:58:19.947Z","service":"moyu-api","env":"test","reqId":"14d8bf1f-876c-40e0-a8ef-7b7877dc8b53","res":{"statusCode":404},"responseTime":20.741586000000098,"msg":"request completed"}
+{"level":30,"time":"2026-11-19T11:58:19.948Z","service":"moyu-api","env":"test","reqId":"0a6a4498-fd13-430a-8dc5-51ebd25c0e48","req":{"method":"GET","url":"/api/v1/tasks/b13784a9-df90-447a-9387-f0d0a6e385bc/new-task-preview","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":"2026-11-19T11:58:19.952Z","service":"moyu-api","env":"test","reqId":"0a6a4498-fd13-430a-8dc5-51ebd25c0e48","res":{"statusCode":200},"responseTime":3.6711350000000493,"msg":"request completed"}
+{"level":30,"time":"2026-11-19T11:58:19.952Z","service":"moyu-api","env":"test","reqId":"8b64c706-2ef5-4d61-b5f0-ed9b094d9ae6","req":{"method":"POST","url":"/api/v1/tasks/b13784a9-df90-447a-9387-f0d0a6e385bc/new-task","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":"2026-11-19T11:58:19.966Z","service":"moyu-api","env":"test","reqId":"8b64c706-2ef5-4d61-b5f0-ed9b094d9ae6","res":{"statusCode":201},"responseTime":12.967795999999908,"msg":"request completed"}
+{"level":30,"time":"2026-11-19T11:58:19.967Z","service":"moyu-api","env":"test","reqId":"629e7dda-804b-4337-bac3-4604a6a6365f","req":{"method":"GET","url":"/api/v1/tasks/71f9d509-562b-4f9e-943f-ea5513cceb52/new-task-preview","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":"2026-11-19T11:58:19.971Z","service":"moyu-api","env":"test","reqId":"629e7dda-804b-4337-bac3-4604a6a6365f","res":{"statusCode":200},"responseTime":3.5212240000000747,"msg":"request completed"}
+{"level":30,"time":"2026-11-19T11:58:19.971Z","service":"moyu-api","env":"test","reqId":"73b81762-1188-48ab-837a-626b9036556a","req":{"method":"POST","url":"/api/v1/tasks/71f9d509-562b-4f9e-943f-ea5513cceb52/new-task","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":"2026-11-19T11:58:19.980Z","service":"moyu-api","env":"test","reqId":"73b81762-1188-48ab-837a-626b9036556a","res":{"statusCode":201},"responseTime":8.863627000000179,"msg":"request completed"}
+{"level":30,"time":"2026-11-19T11:58:19.981Z","service":"moyu-api","env":"test","reqId":"1ffddf09-d05e-44b2-920b-439f8812d885","req":{"method":"GET","url":"/api/v1/tasks/61c1ed6d-f5fb-4ac4-a63d-806ac99df804/new-task-preview","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":40,"time":"2026-11-19T11:58:19.984Z","service":"moyu-api","env":"test","reqId":"1ffddf09-d05e-44b2-920b-439f8812d885","err":{"type":"ApiProblem","message":"只有已完成或已关闭的任务可以基于此任务新建","stack":"ApiProblem: 只有已完成或已关闭的任务可以基于此任务新建\n    at ApiProblem.conflict (/root/src/mobile-notifications-8fa6de58a343/apps/api/src/lib/errors.ts:38:12)\n    at taskInheritance (/root/src/mobile-notifications-8fa6de58a343/apps/api/src/routes/conversations.ts:811:24)\n    at Object.<anonymous> (/root/src/mobile-notifications-8fa6de58a343/apps/api/src/routes/conversations.ts:876:33)\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)","statusCode":409,"code":"conflict","retryable":false,"name":"ApiProblem"},"event":"request.rejected","code":"conflict","msg":"request rejected"}
+{"level":30,"time":"2026-11-19T11:58:19.985Z","service":"moyu-api","env":"test","reqId":"1ffddf09-d05e-44b2-920b-439f8812d885","res":{"statusCode":409},"responseTime":3.2441710000002786,"msg":"request completed"}
+{"level":30,"time":"2026-11-19T11:58:19.985Z","service":"moyu-api","env":"test","reqId":"d4b425c3-4a11-4a4b-86da-fe2d5edaf357","req":{"method":"POST","url":"/api/v1/tasks/61c1ed6d-f5fb-4ac4-a63d-806ac99df804/new-task","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":40,"time":"2026-11-19T11:58:19.988Z","service":"moyu-api","env":"test","reqId":"d4b425c3-4a11-4a4b-86da-fe2d5edaf357","err":{"type":"ApiProblem","message":"只有已完成或已关闭的任务可以基于此任务新建","stack":"ApiProblem: 只有已完成或已关闭的任务可以基于此任务新建\n    at ApiProblem.conflict (/root/src/mobile-notifications-8fa6de58a343/apps/api/src/lib/errors.ts:38:12)\n    at taskInheritance (/root/src/mobile-notifications-8fa6de58a343/apps/api/src/routes/conversations.ts:811:24)\n    at Object.<anonymous> (/root/src/mobile-notifications-8fa6de58a343/apps/api/src/routes/conversations.ts:902:31)\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)","statusCode":409,"code":"conflict","retryable":false,"name":"ApiProblem"},"event":"request.rejected","code":"conflict","msg":"request rejected"}
+{"level":30,"time":"2026-11-19T11:58:19.990Z","service":"moyu-api","env":"test","reqId":"d4b425c3-4a11-4a4b-86da-fe2d5edaf357","res":{"statusCode":409},"responseTime":4.789704000000256,"msg":"request completed"}
+ ✓ test/integration/runtime-attachments.integration.test.ts (7 tests) 935ms
+ ✓ test/integration/new-task-from-task.integration.test.ts (7 tests) 948ms
+ ✓ test/integration/sse-replay-boundary.integration.test.ts (1 test) 1994ms
+   ✓ SSE replay across the 500-event page boundary on real PostgreSQL > replays 501 persisted events, persists 502 at the page boundary, and resumes from the database cursor  1182ms
+ ✓ test/integration/credentials.integration.test.ts (2 tests) 810ms
+ ✓ test/integration/pending-conversations.integration.test.ts (3 tests) 990ms
+ ✓ test/integration/sse.integration.test.ts (1 test) 787ms
+
+ Test Files  18 passed (18)
+      Tests  133 passed (133)
+   Start at  19:58:06
+   Duration  16.61s (transform 1.10s, setup 0ms, collect 23.89s, tests 19.62s, environment 4ms, prepare 1.43s)
+
+$ vitest run test/integration
+
+ RUN  v3.2.7 /root/src/mobile-notifications-8fa6de58a343/apps/dispatcher
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > sends a pause, then shows stopped only after the runtime supplies stop evidence
+{"level":"info","time":"2026-11-19T11:58:26.799Z","service":"test","event":"operation.sent","operationId":"753a9e2c-0ed4-4b80-98a3-8d6ec486ce60","taskId":"2e636dcd-89a6-4f2d-aa8d-62d50d3bc2e0","kind":"pause","runtimeState":"queued","leaseId":null,"fencingToken":null,"msg":"runtime accepted the task operation"}
+
+stdout | test/integration/dispatcher.integration.test.ts > dispatcher delivery and Bridge event catch-up on real PostgreSQL > retries a transient delivery with the same trigger id
+{"level":"warn","time":"2026-11-19T11:58:26.816Z","service":"test","event":"delivery.retry","messageId":"0e1d7974-8df4-4732-8bbd-907ea1360b61","attempt":1,"delayMs":1000,"error":"retry","msg":"delivery failed; the same trigger will be retried"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > sends a pause, then shows stopped only after the runtime supplies stop evidence
+{"level":"info","time":"2026-11-19T11:58:26.824Z","service":"test","event":"operation.settled","operationId":"753a9e2c-0ed4-4b80-98a3-8d6ec486ce60","taskId":"2e636dcd-89a6-4f2d-aa8d-62d50d3bc2e0","kind":"pause","state":"succeeded","taskState":"stopped","msg":"task operation settled"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > does not report stopped when the runtime refuses or fails the pause
+{"level":"info","time":"2026-11-19T11:58:26.847Z","service":"test","event":"operation.sent","operationId":"7ca77d43-963d-47d7-a0a4-f672b4accb95","taskId":"5ee53b93-4352-43f1-9ec7-56e2eeb014ea","kind":"pause","runtimeState":"queued","leaseId":null,"fencingToken":null,"msg":"runtime accepted the task operation"}
+
+stdout | test/integration/dispatcher.integration.test.ts > dispatcher delivery and Bridge event catch-up on real PostgreSQL > retries a transient delivery with the same trigger id
+{"level":"info","time":"2026-11-19T11:58:26.848Z","service":"test","event":"delivery.delivered","messageId":"0e1d7974-8df4-4732-8bbd-907ea1360b61","conversationId":"fabfc30b-a018-4068-85bd-dad5b4203928","result":"duplicate","attempt":2,"msg":"runtime accepted the trigger"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > does not report stopped when the runtime refuses or fails the pause
+{"level":"info","time":"2026-11-19T11:58:26.867Z","service":"test","event":"operation.settled","operationId":"7ca77d43-963d-47d7-a0a4-f672b4accb95","taskId":"5ee53b93-4352-43f1-9ec7-56e2eeb014ea","kind":"pause","state":"failed","taskState":"blocked","msg":"task operation settled"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > keeps the execution slot when a pause has no proven stop and blocks a second executor
+{"level":"info","time":"2026-11-19T11:58:26.895Z","service":"test","event":"operation.sent","operationId":"31082dac-5973-4bc0-869c-b5003029a349","taskId":"a818df21-da8b-4c2c-a598-f3a2632cd008","kind":"pause","runtimeState":"queued","leaseId":null,"fencingToken":null,"msg":"runtime accepted the task operation"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > keeps the execution slot when a pause has no proven stop and blocks a second executor
+{"level":"info","time":"2026-11-19T11:58:26.911Z","service":"test","event":"operation.settled","operationId":"31082dac-5973-4bc0-869c-b5003029a349","taskId":"a818df21-da8b-4c2c-a598-f3a2632cd008","kind":"pause","state":"succeeded","taskState":"blocked","msg":"task operation settled"}
+
+stdout | test/integration/dispatcher.integration.test.ts > dispatcher delivery and Bridge event catch-up on real PostgreSQL > marks a filtered Trigger failed instead of delivered or read and creates no ticket
+{"level":"warn","time":"2026-11-19T11:58:26.963Z","service":"test","event":"delivery.filtered","messageId":"aeb64848-1b7b-40aa-9345-96c40785fa5d","conversationId":"51cd32f4-b259-4e9e-ac47-301fd4f66bfd","msg":"runtime filtered the trigger"}
+
+stderr | test/integration/dispatcher.integration.test.ts > dispatcher delivery and Bridge event catch-up on real PostgreSQL > refuses to deliver an execution trigger when the runtime lacks admission capability
+{"level":"error","time":"2026-11-19T11:58:26.984Z","service":"test","event":"delivery.failed","messageId":"08504ced-6308-4994-8222-608da4a51652","error":"runtime_admission_unsupported: refusing to execute on a runtime without admission support","msg":"delivery was rejected permanently"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > does not show stopped when a succeeded pause has no stop evidence
+{"level":"info","time":"2026-11-19T11:58:26.996Z","service":"test","event":"operation.sent","operationId":"67bd3c70-4819-4782-bc48-9c03aa9613d6","taskId":"b4ff1889-0e5a-4fe9-84aa-1b300e69f5f8","kind":"pause","runtimeState":"queued","leaseId":null,"fencingToken":null,"msg":"runtime accepted the task operation"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > does not show stopped when a succeeded pause has no stop evidence
+{"level":"info","time":"2026-11-19T11:58:27.002Z","service":"test","event":"operation.settled","operationId":"67bd3c70-4819-4782-bc48-9c03aa9613d6","taskId":"b4ff1889-0e5a-4fe9-84aa-1b300e69f5f8","kind":"pause","state":"succeeded","taskState":"blocked","msg":"task operation settled"}
+
+stdout | test/integration/dispatcher.integration.test.ts > dispatcher delivery and Bridge event catch-up on real PostgreSQL > reuses the persisted assignment identity when admission is replayed
+{"level":"info","time":"2026-11-19T11:58:27.007Z","service":"test","event":"admission.started","taskId":"43f1981b-2bd4-4e8e-9c36-78f1366158e8","leaseId":"65852bb2-9682-43af-a816-18bfb0a1fcad","fencingToken":"4","msg":"admitted a pending GitHub ticket under the repository execution lease"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > starts a discussion into execution without creating a new task
+{"level":"info","time":"2026-11-19T11:58:27.021Z","service":"test","event":"operation.sent","operationId":"f39ce284-053d-481f-b291-5b671ca70dae","taskId":"fb33b74b-a03a-4621-8f95-01e170172d58","kind":"start","runtimeState":"queued","leaseId":"4a443bd2-1e32-48a8-adc8-26d6806f5fcf","fencingToken":"2","msg":"runtime accepted the task operation"}
+
+stdout | test/integration/dispatcher.integration.test.ts > dispatcher delivery and Bridge event catch-up on real PostgreSQL > reuses the persisted assignment identity when admission is replayed
+{"level":"info","time":"2026-11-19T11:58:27.024Z","service":"test","event":"admission.started","taskId":"43f1981b-2bd4-4e8e-9c36-78f1366158e8","leaseId":"65852bb2-9682-43af-a816-18bfb0a1fcad","fencingToken":"4","msg":"admitted a pending GitHub ticket under the repository execution lease"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > starts a discussion into execution without creating a new task
+{"level":"info","time":"2026-11-19T11:58:27.028Z","service":"test","event":"operation.settled","operationId":"f39ce284-053d-481f-b291-5b671ca70dae","taskId":"fb33b74b-a03a-4621-8f95-01e170172d58","kind":"start","state":"succeeded","taskState":"queued","msg":"task operation settled"}
+
+stdout | test/integration/dispatcher.integration.test.ts > dispatcher delivery and Bridge event catch-up on real PostgreSQL > binds the complete execution identity before a cold GitHub admission starts
+[cold-admission-red] ownership= {}
+
+stderr | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > blocks a resume the runtime refuses because the worktree is missing
+{"level":"error","time":"2026-11-19T11:58:27.066Z","service":"test","event":"operation.failed","operationId":"fdd4faf3-afc9-4556-950e-1cb64b43a268","error":"The preserved worktree is missing","msg":"task operation was refused permanently"}
+
+stdout | test/integration/dispatcher.integration.test.ts > dispatcher delivery and Bridge event catch-up on real PostgreSQL > sends the lease admission with an admitted runtime and starts a pending GitHub ticket once
+{"level":"info","time":"2026-11-19T11:58:27.092Z","service":"test","event":"delivery.delivered","messageId":"0edc806e-9484-4d0d-987d-dbf82c98e080","conversationId":"32c325ea-e0ef-4442-8a92-97bf0e8beb5b","result":"stored","attempt":1,"msg":"runtime accepted the trigger"}
+
+stderr | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > does not accept a snapshot stopped state when its pause evidence is incomplete
+{"level":"error","time":"2026-11-19T11:58:27.092Z","service":"test","event":"operation.failed","operationId":"aee26830-ac2a-4884-96b2-e2ffc0f75dc6","error":"refused","msg":"task operation was refused permanently"}
+
+stdout | test/integration/dispatcher.integration.test.ts > dispatcher delivery and Bridge event catch-up on real PostgreSQL > sends the lease admission with an admitted runtime and starts a pending GitHub ticket once
+{"level":"info","time":"2026-11-19T11:58:27.107Z","service":"test","event":"admission.started","taskId":"ba433d54-7c4a-4265-bd99-6c97b6d90648","leaseId":"1e8907b8-99c7-4ba8-be07-c093f15467da","fencingToken":"5","msg":"admitted a pending GitHub ticket under the repository execution lease"}
+
+stderr | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > marks a task closed_unmerged when the runtime refuses to resume a closed PR
+{"level":"error","time":"2026-11-19T11:58:27.115Z","service":"test","event":"operation.failed","operationId":"f0e45438-6c82-412c-9f85-2f41ff7674ab","error":"The pull request was closed unmerged","msg":"task operation was refused permanently"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > re-acquires a runtime lease and verifies the preserved worktree before resume
+{"level":"info","time":"2026-11-19T11:58:27.135Z","service":"test","event":"operation.sent","operationId":"0035cc92-bdb2-429b-9387-047b7ccd2f8b","taskId":"ac6503c7-b8d0-4cf9-b184-e710479adf28","kind":"resume","runtimeState":"queued","leaseId":"af0fb316-c618-41be-be24-b6c36bd6e9a6","fencingToken":"6","msg":"runtime accepted the task operation"}
+
+stdout | test/integration/dispatcher.integration.test.ts > dispatcher delivery and Bridge event catch-up on real PostgreSQL > keeps a launch pending while another execution owns the repository lease
+{"level":"warn","time":"2026-11-19T11:58:27.139Z","service":"test","event":"delivery.lease_wait","messageId":"a23011aa-0fdd-4ddf-86e2-29121a0dcfd1","refused":"held","waitingFor":"execution_slot","msg":"delivery waits for the repository execution lease"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > re-acquires a runtime lease and verifies the preserved worktree before resume
+{"level":"info","time":"2026-11-19T11:58:27.141Z","service":"test","event":"operation.settled","operationId":"0035cc92-bdb2-429b-9387-047b7ccd2f8b","taskId":"ac6503c7-b8d0-4cf9-b184-e710479adf28","kind":"resume","state":"succeeded","taskState":"queued","msg":"task operation settled"}
+
+stdout | test/integration/dispatcher.integration.test.ts > dispatcher delivery and Bridge event catch-up on real PostgreSQL > delivers text-only and records the undelivered attachments when the runtime has no capability
+{"level":"info","time":"2026-11-19T11:58:27.164Z","service":"test","event":"delivery.delivered","messageId":"cc8c1fd0-205d-45f6-a742-c75cc5bbe8a7","conversationId":"42d051d9-d1c3-4e0a-a0e7-2bd7fa8eacc4","result":"stored","attempt":1,"msg":"runtime accepted the trigger"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > keeps a resume queued when a different task holds the repository lease
+{"level":"info","time":"2026-11-19T11:58:27.180Z","service":"test","event":"operation.sent","operationId":"8257e080-e8c1-483f-adaa-50db395d0dcd","taskId":"beb8edf4-2217-43fa-93f5-80e06a23bf47","kind":"pause","runtimeState":"queued","leaseId":null,"fencingToken":null,"msg":"runtime accepted the task operation"}
+
+stdout | test/integration/dispatcher.integration.test.ts > dispatcher delivery and Bridge event catch-up on real PostgreSQL > sends attachment metadata only, for image and text, when the runtime declares the capability
+{"level":"info","time":"2026-11-19T11:58:27.196Z","service":"test","event":"delivery.delivered","messageId":"ed6927a2-ec25-49cc-be17-d168016bb037","conversationId":"e91c9d46-e209-4cce-b1a8-9ed66c5980da","result":"stored","attempt":1,"msg":"runtime accepted the trigger"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > imports a GitHub ticket into one Work conversation and does not duplicate a replay
+{"level":"info","time":"2026-11-19T11:58:27.197Z","service":"test","event":"bridge.ticket_imported","bridgeEvent":"ticket-imported:github-ticket-42","ticketId":"github-ticket-42","externalId":"github:42","isPr":true,"number":42,"msg":"imported a GitHub-origin ticket into Work"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > closes only the pending admission tied to an ignored decision
+{"level":"info","time":"2026-11-19T11:58:27.250Z","service":"test","event":"bridge.decision_ignored","decisionId":"decision-ticket-3536327-19-1795089507227","taskId":"e697275b-25c3-481c-8e8d-663f29dbcfaf","conversationId":"f875de77-9cb7-483f-890c-49ee8f722a08","messageId":"e32ca56f-b278-4b38-845a-6e6ac0518bb5","routedTo":null,"releasedLeaseId":null,"msg":"closed the pending admission named by the ignored decision"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > resolves a merged conversation alias before closing the ignored admission
+{"level":"info","time":"2026-11-19T11:58:27.273Z","service":"test","event":"bridge.decision_ignored","decisionId":"decision-ticket-3536327-21-1795089507259","taskId":"5a0677b7-8ad7-4a98-9276-c161c3605173","conversationId":"e8bf543a-2835-4600-8295-c06a947d3ef9","messageId":"4aa6669b-9e2a-49b1-a34f-b88ef0fd7fa9","routedTo":null,"releasedLeaseId":null,"msg":"closed the pending admission named by the ignored decision"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > does not let an import notice block the ignored admission
+{"level":"warn","time":"2026-11-19T11:58:27.286Z","service":"test","event":"bridge.import_duplicate","bridgeEvent":"ticket-imported:ticket-3536327-22-1795089507275:duplicate","ticketId":"second-ticket-ticket-3536327-22-1795089507275","existingTicketId":"ticket-3536327-22-1795089507275","taskId":"a9027a16-7f7a-43c1-bcb5-a2df50fa72d4","msg":"ignored a duplicate GitHub ticket for an active Work task"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > does not let an import notice block the ignored admission
+{"level":"info","time":"2026-11-19T11:58:27.287Z","service":"test","event":"bridge.import_duplicate_queued","bridgeEvent":"ticket-imported:ticket-3536327-22-1795089507275:duplicate","ticketId":"second-ticket-ticket-3536327-22-1795089507275","msg":"queued a duplicate runtime ticket for a durable pause"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > does not let an import notice block the ignored admission
+{"level":"info","time":"2026-11-19T11:58:27.291Z","service":"test","event":"bridge.decision_ignored","decisionId":"decision-ticket-3536327-22-1795089507275","taskId":"a9027a16-7f7a-43c1-bcb5-a2df50fa72d4","conversationId":"c2f6c6f2-06f9-4913-aa37-0f9f86074813","messageId":"c587ade8-b4ec-41b4-b3ba-d1327f0c0352","routedTo":null,"releasedLeaseId":null,"msg":"closed the pending admission named by the ignored decision"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > closes a batched ignore decision covering every pending message
+{"level":"info","time":"2026-11-19T11:58:27.310Z","service":"test","event":"bridge.decision_ignored","decisionId":"decision-ticket-3536327-23-1795089507294","taskId":"4c9fe3b6-0425-4dff-8663-06099632390c","conversationId":"85fa3131-323c-4d48-8760-2bce17e07d85","messageId":"850edf6e-69cb-4f66-a0bc-1a099e093395","routedTo":null,"releasedLeaseId":null,"msg":"closed the pending admission named by the ignored decision"}
+
+ ✓ test/integration/dispatcher.integration.test.ts (13 tests) 1124ms
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > keeps a batch pending when an uncovered newer input exists
+{"level":"info","time":"2026-11-19T11:58:27.336Z","service":"test","event":"bridge.decision_ignored","decisionId":"decision-ticket-3536327-24-1795089507313","taskId":"cfeac9ed-1bd3-4424-8f02-5a62ccd91a40","conversationId":"dda4dbfd-f8fd-46e4-a006-13c8631ccb52","messageId":"c93c48da-9cd7-4cc4-b454-567362e71bc2","routedTo":null,"releasedLeaseId":null,"msg":"closed the pending admission named by the ignored decision"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > closes its own admission while that message delivery is still delivering
+{"level":"info","time":"2026-11-19T11:58:27.351Z","service":"test","event":"bridge.decision_ignored","decisionId":"decision-ticket-3536327-25-1795089507338","taskId":"63e32adc-f247-43fd-bea6-f4b19f56c41d","conversationId":"0af10841-b061-4bd4-b8b6-81ba3b150db8","messageId":"045987c7-8f34-48ca-9120-f8162b213680","routedTo":null,"releasedLeaseId":null,"msg":"closed the pending admission named by the ignored decision"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > rejects a later API acceptance after an ignored decision commits first
+{"level":"info","time":"2026-11-19T11:58:27.490Z","service":"test","event":"bridge.decision_ignored","decisionId":"decision-ticket-3536327-27-1795089507479","taskId":"325e5188-169b-40bc-9c71-64d5228b82d4","conversationId":"d27831ad-9e54-48fe-be8f-c5b37ddf6313","messageId":"e73bee15-69ed-4de2-abd9-28df97a240c4","routedTo":null,"releasedLeaseId":null,"msg":"closed the pending admission named by the ignored decision"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > keeps one task when the same requirement arrives with a different GitHub ticket
+{"level":"warn","time":"2026-11-19T11:58:27.627Z","service":"test","event":"bridge.import_duplicate","bridgeEvent":"ticket-imported:github-ticket-99","ticketId":"github-ticket-99","existingTicketId":"ticket-3536327-29-1795089507613","taskId":"b388931c-87ed-4cd3-8654-c1172cf35160","msg":"ignored a duplicate GitHub ticket for an active Work task"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > keeps one task when the same requirement arrives with a different GitHub ticket
+{"level":"info","time":"2026-11-19T11:58:27.627Z","service":"test","event":"bridge.import_duplicate_queued","bridgeEvent":"ticket-imported:github-ticket-99","ticketId":"github-ticket-99","msg":"queued a duplicate runtime ticket for a durable pause"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > does not claim a Web conversation for a different issue number
+{"level":"info","time":"2026-11-19T11:58:27.665Z","service":"test","event":"bridge.ticket_imported","bridgeEvent":"ticket-imported:github-ticket-issue-1","ticketId":"github-ticket-issue-1","externalId":"github:1","isPr":false,"number":1,"msg":"imported a GitHub-origin ticket into Work"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > claims a Web conversation that already contains the GitHub requirement URL
+{"level":"warn","time":"2026-11-19T11:58:27.681Z","service":"test","event":"bridge.import_duplicate","bridgeEvent":"ticket-imported:github-ticket-web-42","ticketId":"github-ticket-web-42","existingTicketId":"ticket-3536327-31-1795089507667","taskId":"d9438ea8-da30-4575-86b4-d71b4476a64d","msg":"ignored a duplicate GitHub ticket for an active Work task"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > claims a Web conversation that already contains the GitHub requirement URL
+{"level":"info","time":"2026-11-19T11:58:27.681Z","service":"test","event":"bridge.import_duplicate_queued","bridgeEvent":"ticket-imported:github-ticket-web-42","ticketId":"github-ticket-web-42","msg":"queued a duplicate runtime ticket for a durable pause"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > returns the duplicate ticket id and persists a pause even when the first pause fails
+{"level":"warn","time":"2026-11-19T11:58:27.690Z","service":"test","event":"bridge.import_duplicate","bridgeEvent":"ticket-imported:github-ticket-dup","ticketId":"github-ticket-dup","existingTicketId":"ticket-3536327-32-1795089507684","taskId":"5c64ac15-8ebd-4b34-bb58-69ccb7900658","msg":"ignored a duplicate GitHub ticket for an active Work task"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > returns the duplicate ticket id and persists a pause even when the first pause fails
+{"level":"warn","time":"2026-11-19T11:58:27.696Z","service":"test","event":"bridge.import_duplicate","bridgeEvent":"ticket-imported:github-ticket-dup","ticketId":"github-ticket-dup","existingTicketId":"ticket-3536327-32-1795089507684","taskId":"5c64ac15-8ebd-4b34-bb58-69ccb7900658","msg":"ignored a duplicate GitHub ticket for an active Work task"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > returns the duplicate ticket id and persists a pause even when the first pause fails
+{"level":"info","time":"2026-11-19T11:58:27.696Z","service":"test","event":"bridge.import_duplicate_queued","bridgeEvent":"ticket-imported:github-ticket-dup","ticketId":"github-ticket-dup","msg":"queued a duplicate runtime ticket for a durable pause"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > returns the duplicate ticket id and persists a pause even when the first pause fails
+{"level":"info","time":"2026-11-19T11:58:27.710Z","service":"test","event":"duplicate.paused","ticketId":"github-ticket-dup","msg":"duplicate runtime ticket paused"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > recovers a duplicate pause left in flight by a restart
+{"level":"info","time":"2026-11-19T11:58:27.722Z","service":"test","event":"duplicate.paused","ticketId":"github-ticket-restart","msg":"duplicate runtime ticket paused"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > reconciles a running task from a paused snapshot and blocks one the runtime cannot confirm
+{"level":"info","time":"2026-11-19T11:58:27.780Z","service":"test","event":"reconcile.task","taskId":"05bf2cb4-2925-463c-b036-557ce9fd473b","previous":"running","state":"stopped","contradictory":false,"msg":"reconciled a task with its runtime ticket"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > reconciles a running task from a paused snapshot and blocks one the runtime cannot confirm
+{"level":"info","time":"2026-11-19T11:58:27.791Z","service":"test","event":"reconcile.task","taskId":"1c17e973-fbaf-4efe-bc1c-4beecc84b655","previous":"running","state":"blocked","contradictory":false,"msg":"reconciled a task with its runtime ticket"}
+
+stdout | test/integration/operations.integration.test.ts > M4 task operations, reconciliation and GitHub import on real PostgreSQL > reconciles a running task from a paused snapshot and blocks one the runtime cannot confirm
+{"level":"warn","time":"2026-11-19T11:58:27.795Z","service":"test","event":"reconcile.unconfirmed","taskId":"a191f84b-0e16-4d49-a328-54ce1056cd02","error":"ticket not found","msg":"the runtime could not confirm this task; it is blocked instead of guessed"}
+
+ ✓ test/integration/operations.integration.test.ts (35 tests) 1707ms
+stdout | test/integration/leases.integration.test.ts > repository execution lease on real PostgreSQL > adopts an expired lease only when the runtime confirms the same generation running
+{"level":"info","time":"2026-11-19T11:58:28.987Z","service":"test","event":"lease.adopted","repositoryId":"0b4f4852-1de0-40f5-b955-d4d6c0ecd0a7","leaseId":"a16730d4-0742-4b9f-8c0e-d43a8ae5cde6","runtimeState":"running","msg":"adopted the still-running execution under its existing fencing generation"}
+
+stdout | test/integration/leases.integration.test.ts > repository execution lease on real PostgreSQL > refuses a replacement until the old execution is proven stopped, then fences a new generation
+{"level":"info","time":"2026-11-19T11:58:29.047Z","service":"test","event":"lease.adopted","repositoryId":"0b4f4852-1de0-40f5-b955-d4d6c0ecd0a7","leaseId":"a9b221b3-2222-4a62-a1a0-29fcd8c80832","runtimeState":"running","msg":"adopted the still-running execution under its existing fencing generation"}
+
+ ✓ test/integration/leases.integration.test.ts (8 tests) 915ms
+stdout | test/integration/multi-repo.integration.test.ts > multi-repository dispatcher isolation on real PostgreSQL > delivers each message only to its own repository Bridge with its own token
+{"level":"info","time":"2026-11-19T11:58:30.962Z","service":"moyu-dispatcher","event":"dispatcher.ready","nodeEnv":"test","msg":"dispatcher connected to PostgreSQL"}
+
+ ✓ test/integration/event-repository-dedupe.integration.test.ts (3 tests) 2017ms
+   ✓ repository-scoped Bridge event dedupe on real PostgreSQL > projects one shared provider event id once in each repository and not twice in one  736ms
+   ✓ repository-scoped Bridge event dedupe on real PostgreSQL > rolls back the projection and cursor together when the cursor write fails, then retries once  658ms
+   ✓ repository-scoped Bridge event dedupe on real PostgreSQL > treats an unrelated unique violation as an error instead of a duplicate  622ms
+stdout | test/integration/multi-repo.integration.test.ts > multi-repository dispatcher isolation on real PostgreSQL > delivers each message only to its own repository Bridge with its own token
+{"level":"info","time":"2026-11-19T11:58:30.996Z","service":"moyu-dispatcher","event":"dispatcher.repository","repository":"Bouyer12/m5a-alpha","admissionSupported":true,"attachmentsSupported":true,"msg":"dispatching for repository runtime"}
+
+stdout | test/integration/multi-repo.integration.test.ts > multi-repository dispatcher isolation on real PostgreSQL > delivers each message only to its own repository Bridge with its own token
+{"level":"info","time":"2026-11-19T11:58:31.009Z","service":"moyu-dispatcher","event":"dispatcher.repository","repository":"Bouyer12/m5a-beta","admissionSupported":true,"attachmentsSupported":true,"msg":"dispatching for repository runtime"}
+
+stdout | test/integration/multi-repo.integration.test.ts > multi-repository dispatcher isolation on real PostgreSQL > delivers each message only to its own repository Bridge with its own token
+{"level":"info","time":"2026-11-19T11:58:31.062Z","service":"moyu-dispatcher","event":"delivery.delivered","messageId":"c4400a81-4a2b-45c7-8232-3c4274860b8c","conversationId":"abc90205-7803-40aa-8312-6e3b3ad47baa","result":"stored","attempt":1,"msg":"runtime accepted the trigger"}
+
+stdout | test/integration/multi-repo.integration.test.ts > multi-repository dispatcher isolation on real PostgreSQL > delivers each message only to its own repository Bridge with its own token
+{"level":"info","time":"2026-11-19T11:58:31.065Z","service":"moyu-dispatcher","event":"delivery.delivered","messageId":"a8e93e71-62db-4a85-b8b8-3b6697454866","conversationId":"5c8a34b2-482b-48aa-9ed4-634bbd191c86","result":"stored","attempt":1,"msg":"runtime accepted the trigger"}
+
+stdout | test/integration/multi-repo.integration.test.ts > multi-repository dispatcher isolation on real PostgreSQL > delivers each message only to its own repository Bridge with its own token
+{"level":"info","time":"2026-11-19T11:58:31.065Z","service":"moyu-dispatcher","event":"dispatcher.stopped","msg":"dispatcher stopped"}
+
+stdout | test/integration/multi-repo.integration.test.ts > multi-repository dispatcher isolation on real PostgreSQL > stops a repository loop once the supervisor marks it sleeping
+{"level":"info","time":"2026-11-19T11:58:31.089Z","service":"moyu-dispatcher","event":"dispatcher.ready","nodeEnv":"test","msg":"dispatcher connected to PostgreSQL"}
+
+stdout | test/integration/multi-repo.integration.test.ts > multi-repository dispatcher isolation on real PostgreSQL > stops a repository loop once the supervisor marks it sleeping
+{"level":"info","time":"2026-11-19T11:58:31.096Z","service":"moyu-dispatcher","event":"dispatcher.repository","repository":"Bouyer12/m5a-beta","admissionSupported":true,"attachmentsSupported":true,"msg":"dispatching for repository runtime"}
+
+stdout | test/integration/multi-repo.integration.test.ts > multi-repository dispatcher isolation on real PostgreSQL > stops a repository loop once the supervisor marks it sleeping
+{"level":"info","time":"2026-11-19T11:58:32.285Z","service":"moyu-dispatcher","event":"dispatcher.stopped","msg":"dispatcher stopped"}
+
+ ✓ test/integration/multi-repo.integration.test.ts (2 tests) 2119ms
+   ✓ multi-repository dispatcher isolation on real PostgreSQL > stops a repository loop once the supervisor marks it sleeping  1213ms
+stdout | test/integration/recovery-race.integration.test.ts > execution reservation on real PostgreSQL > review recovery overwrites pause evidence after the snapshot wait
+REVIEW_PAUSE_EVIDENCE_AFTER_RECOVERY {"state":"stopped","stop_evidence":{"marker":"pause-evidence-written-during-snapshot","status":"proven"}}
+
+ ✓ test/integration/recovery-race.integration.test.ts (4 tests) 694ms
+stdout | test/integration/recovery-positive.integration.test.ts > execution reservation on real PostgreSQL > review recovery accepts a null-base GitHub snapshot on real PostgreSQL
+REVIEW_NULL_BASE_CLAIM claimed
+
+ ✓ test/integration/routing.integration.test.ts (13 tests) 8416ms
+   ✓ routed admission handoff on real PostgreSQL > persists a routed decision, releases the source slot and admits the target  819ms
+   ✓ routed admission handoff on real PostgreSQL > sends the routed source conversation one Chinese completion notice from the target report  587ms
+   ✓ routed admission handoff on real PostgreSQL > does not let a historical PR artifact replace the current PR pointer  584ms
+   ✓ routed admission handoff on real PostgreSQL > reserves a later legitimate admission generation independently after the first lease ends  663ms
+   ✓ routed admission handoff on real PostgreSQL > sends the completion notice when the worker delivered and reported before handoff was recorded  586ms
+   ✓ routed admission handoff on real PostgreSQL > routes each report to its own assignment when an earlier report tick was skipped  685ms
+   ✓ routed admission handoff on real PostgreSQL > keeps delivery-proven assignment A when a late handoff sees assignment B  846ms
+   ✓ routed admission handoff on real PostgreSQL > does not send a completion notice for an old report before this rework was handed off and delivered  610ms
+   ✓ routed admission handoff on real PostgreSQL > keeps the empty PR check in the UPDATE so a report cannot overwrite a newer event  513ms
+   ✓ routed admission handoff on real PostgreSQL > keeps the concrete reason for an ordinary refusal and never wakes a target  577ms
+   ✓ routed admission handoff on real PostgreSQL > keeps a manually paused target paused and hands off after it resumes  589ms
+   ✓ routed admission handoff on real PostgreSQL > admits a waiting_input target whose old assignment has no live worker  663ms
+   ✓ routed admission handoff on real PostgreSQL > keeps the source not_accepted and records a failed handoff when the runtime refuses  693ms
+ ✓ test/integration/recovery-positive.integration.test.ts (4 tests) 765ms
+ ↓ test/integration/bridge-pause-resume.real.integration.test.ts (1 test | 1 skipped)
+ ✓ test/integration/decision-lease.integration.test.ts (2 tests) 1392ms
+   ✓ ignored admission releases the execution lease on real PostgreSQL > closes the task, releases only its lease, and frees the repository slot  823ms
+   ✓ ignored admission releases the execution lease on real PostgreSQL > recovers an active lease left behind by an older ignored admission  568ms
+ ✓ test/integration/reservations.integration.test.ts (3 tests) 791ms
+ ✓ test/integration/expired-reservation-projection.integration.test.ts (3 tests) 656ms
+stdout | test/integration/recovery-review-multi-repository.integration.test.ts > execution reservation on real PostgreSQL > review recovery does not let another repository reset the scan
+REVIEW_SHARED_CURSOR {"calls":34,"otherSeen":true,"targetSeen":true,"state":"claimed"}
+
+ ✓ test/integration/recovery-review-multi-repository.integration.test.ts (1 test) 774ms
+ ✓ test/integration/recovery-projection-branches.integration.test.ts (3 tests) 796ms
+stdout | test/integration/recovery-review-ordered-fairness.integration.test.ts > execution reservation on real PostgreSQL > review recovery eventually reaches row 33 after earlier snapshot failures
+REVIEW_STARVATION {"calls":33,"targetState":"claimed"}
+
+stdout | test/integration/recovery-review-catch.integration.test.ts > execution reservation on real PostgreSQL > review recovery preserves pause evidence when claim fails after the snapshot wait
+REVIEW_PAUSE_EVIDENCE_AFTER_RECOVERY {"state":"stopped","stop_evidence":{"marker":"pause-evidence-written-during-snapshot","status":"proven"}}
+
+ ✓ test/integration/recovery-review-ordered-fairness.integration.test.ts (1 test) 817ms
+ ✓ test/integration/recovery-review-catch.integration.test.ts (1 test) 623ms
+stdout | test/integration/recovery-review-clear.integration.test.ts > execution reservation on real PostgreSQL > review recovery clears its stale error after a successful claim
+REVIEW_SUCCESS_EVIDENCE {"stop_evidence":{"marker":"keep-proof","status":"proven"}}
+
+stdout | test/integration/recovery-review-repeat-catch.integration.test.ts > execution reservation on real PostgreSQL > review recovery does not rewrite identical claim failure
+REVIEW_REPEAT_CLAIM_FAILURE {"before":{"version":1,"stop_evidence":{"admissionRecovery":"generation_mismatch","admissionRecoveryError":"execution claim requires the current active lease generation for this repository"}},"after":{"version":1,"stop_evidence":{"admissionRecovery":"generation_mismatch","admissionRecoveryError":"execution claim requires the current active lease generation for this repository"}}}
+
+ ✓ test/integration/recovery-review-clear.integration.test.ts (1 test) 767ms
+stdout | test/integration/recovery-review-idempotent.integration.test.ts > execution reservation on real PostgreSQL > review recovery repeated identical mismatch is idempotent
+REVIEW_REPEATED_MISMATCH {"before":{"version":1,"stop_evidence":{"admissionRecovery":"snapshot_mismatch"}},"after":{"version":1,"stop_evidence":{"admissionRecovery":"snapshot_mismatch"}}}
+
+ ✓ test/integration/recovery-review-repeat-catch.integration.test.ts (1 test) 665ms
+ ✓ test/integration/recovery-review-idempotent.integration.test.ts (1 test) 624ms
+stdout | test/integration/delivery-exactly-once.integration.test.ts > delivery exactly-once on real PostgreSQL > keeps one delivery row and one effective delivery across 5 concurrent rounds
+DELIVERY_ROUNDS [{"round":1,"messageId":"18abc00e-d0a6-476f-94a6-b1986e7f50ed","rows":1,"delivered":1,"attempts":0,"triggerIds":["workspace:18abc00e-d0a6-476f-94a6-b1986e7f50ed"]},{"round":2,"messageId":"6e2e76da-bcda-4e96-8f32-a9b4ec1ca643","rows":1,"delivered":1,"attempts":0,"triggerIds":["workspace:6e2e76da-bcda-4e96-8f32-a9b4ec1ca643"]},{"round":3,"messageId":"09d94629-da3b-4875-bbcc-003fb20586a1","rows":1,"delivered":1,"attempts":0,"triggerIds":["workspace:09d94629-da3b-4875-bbcc-003fb20586a1"]},{"round":4,"messageId":"ab00107a-6041-43a2-b493-38c1856a55a2","rows":1,"delivered":1,"attempts":0,"triggerIds":["workspace:ab00107a-6041-43a2-b493-38c1856a55a2"]},{"round":5,"messageId":"e186a6d2-14ad-4ba5-88e3-3610ead6a6cb","rows":1,"delivered":1,"attempts":0,"triggerIds":["workspace:e186a6d2-14ad-4ba5-88e3-3610ead6a6cb"]}]
+
+ ✓ test/integration/delivery-exactly-once.integration.test.ts (1 test) 507ms
+
+ Test Files  19 passed | 1 skipped (20)
+      Tests  100 passed | 1 skipped (101)
+   Start at  19:58:24
+   Duration  17.34s (transform 929ms, setup 0ms, collect 18.09s, tests 26.17s, environment 4ms, prepare 1.53s)
+
+$ vitest run test/integration
+
+ RUN  v3.2.7 /root/src/mobile-notifications-8fa6de58a343/apps/supervisor
+
+ ✓ test/integration/settings-boundary.integration.test.ts (4 tests) 117ms
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  19:58:42
+   Duration  931ms (transform 325ms, setup 0ms, collect 549ms, tests 117ms, environment 0ms, prepare 82ms)
+
