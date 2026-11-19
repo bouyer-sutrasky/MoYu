@@ -94,9 +94,10 @@ export function RepositoryManagementDialog({
             profile/state、运行目录、凭据与环境文件。
           </p>
           <p>
-            GitHub 原仓库、分支、PR 和远端数据不会被修改。历史任务与会话在 MoYu 数据库中只读保留{' '}
-            {REPOSITORY_HISTORY_RETENTION_DAYS} 天，期间不在工作台显示；
-            重新接入同一仓库可恢复历史。旧链接会提示仓库已移除。
+            GitHub 原仓库、分支、PR 和远端数据不会被修改。历史任务与会话在 MoYu 数据库中保留{' '}
+            {REPOSITORY_HISTORY_RETENTION_DAYS} 天：期间不在工作台显示，重新接入同一仓库可恢复；
+            超过 {REPOSITORY_HISTORY_RETENTION_DAYS}{' '}
+            天后自动清理，届时不可恢复。旧链接会提示仓库已移除。
           </p>
           {confirming.deletion?.state === 'failed' && confirming.deletion.detail ? (
             <p className={styles.error}>上次移除失败：{confirming.deletion.detail}</p>
