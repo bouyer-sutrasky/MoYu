@@ -137,6 +137,16 @@ export function buildSupervisorServer(options: {
     return { data: result };
   });
 
+  /**
+   * Removes one repository's runtime and local resources. The caller names only
+   * a repository id; every profile, path and credential comes from supervisor
+   * state. The endpoint is idempotent and refuses while work still holds it.
+   */
+  app.post('/control/v1/instances/:repositoryId/remove', async (request) => {
+    const repositoryId = repositoryIdOf(request);
+    return { data: await manager.removeRepository(repositoryId) };
+  });
+
   // Review inspection. The caller names only a ticket id; the supervisor resolves
   // the worktree under its own configured root and the check commands come from
   // its own configuration, never from the request.

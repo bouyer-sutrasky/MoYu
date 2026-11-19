@@ -30,6 +30,7 @@ import {
   type StoredOwnership,
 } from './process';
 import { githubCloneUrl, gitCachePath, RepositoryGitCache } from './git-cache';
+import { removeRepositoryPaths, repositoryRemovalPaths } from './removal';
 import {
   instanceLogPath,
   instanceProcessEnvironment,
@@ -597,6 +598,11 @@ export class InstanceManager {
    */
   async prepareGit(repositoryId: string): Promise<InstanceRow> {
     return this.withLock(async () => {
+      const repository = await this.store.getRepository(repositoryId);
+      if (!repository) throw Object.assign(new Error('Repository not found'), { statusCode: 404 });
+      if (repository.deletionState !== 'none') {
+        throw Object.assign(new Error('该仓库正在移除或已移除，不能准备副本'), { statusCode: 409 });
+      }
       await this.gitCache.begin(repositoryId);
       const instance = await this.store.getInstance(repositoryId);
       if (!instance) throw new Error('Instance row was not created');
@@ -606,6 +612,12 @@ export class InstanceManager {
 
   async wake(repositoryId: string, input: WakeInput): Promise<WakeResult> {
     return this.withLock(async () => {
+      const repository = await this.store.getRepository(repositoryId);
+      if (repository && repository.deletionState !== 'none') {
+        throw Object.assign(new Error('该仓库正在移除或已移除，不能启动实例'), {
+          statusCode: 409,
+        });
+      }
       let instance = await this.store.getInstance(repositoryId);
       if (!instance) {
         const prepared = await prepareInstance(this.config, this.store, repositoryId);
@@ -740,6 +752,89 @@ export class InstanceManager {
       };
     }
     return null;
+  }
+
+  /**
+   * Stops the instance and deletes only this repository's local resources, then
+   * forgets its runtime binding. Tasks, conversations, leases and the repository
+   * row stay for history and a later re-add; the GitHub remote is never touched.
+   * Refuses while a task, command, lease, preparation or retained background
+   * service still holds the instance.
+   */
+  async removeRepository(repositoryId: string): Promise<{
+    removed: boolean;
+    alreadyRemoved: boolean;
+    profile: string | null;
+    paths: string[];
+  }> {
+    return this.withLock(async () => {
+      const repository = await this.store.getRepository(repositoryId);
+      if (!repository) {
+        return { removed: true, alreadyRemoved: true, profile: null, paths: [] };
+      }
+      const instance = await this.store.getInstance(repositoryId);
+      if (!instance?.profile) {
+        await this.store.forgetRepositoryRuntime(repositoryId);
+        return { removed: true, alreadyRemoved: true, profile: null, paths: [] };
+      }
+      if (instance.gitState === 'preparing') {
+        throw Object.assign(new Error('仓库副本正在准备；完成后才能移除'), { statusCode: 409 });
+      }
+      const gate = await this.store.taskGate(repositoryId);
+      const lease = await this.store.activeExecutionLease(repositoryId);
+      if (gate.active > 0 || gate.pendingOperations > 0) {
+        throw Object.assign(new Error('仍有进行中的任务或所有者命令；请等待它们结束后再移除'), {
+          statusCode: 409,
+        });
+      }
+      if (lease) {
+        throw Object.assign(new Error('仍有执行租约占用这个仓库；请先释放租约'), {
+          statusCode: 409,
+        });
+      }
+      const background = instance.pid
+        ? retainedDescendants(instance.pid, storedOwnership(instance))
+        : [];
+      if (background.length > 0) {
+        throw Object.assign(
+          new Error(`实例仍保留 ${background.length} 个后台进程；停止后才能移除`),
+          { statusCode: 409 },
+        );
+      }
+      if (['online', 'starting', 'stopping'].includes(instance.state)) {
+        const stopped = await this.stopInstance(instance, 'repository_removed', 'idle');
+        if (!stopped) {
+          throw Object.assign(new Error('实例尚未完全停止；请重试移除'), { statusCode: 409 });
+        }
+      }
+
+      const pinnedHome = this.config.pinned.get(repository.fullName)?.runtimeHome;
+      const paths = repositoryRemovalPaths(this.config, repositoryId, instance.profile, pinnedHome);
+      const result = removeRepositoryPaths(paths);
+      if (result.errors.length > 0) {
+        const detail = result.errors
+          .map((item) => `${item.path}: ${item.error}`)
+          .join('; ')
+          .slice(0, 800);
+        throw new Error(`本地资源清理失败：${detail}`);
+      }
+      await this.store.forgetRepositoryRuntime(repositoryId);
+      this.logger.info(
+        {
+          event: 'supervisor.repository_removed',
+          repositoryId,
+          profile: instance.profile,
+          paths: result.removed.length,
+        },
+        'removed a repository runtime and its local resources',
+      );
+      return {
+        removed: true,
+        alreadyRemoved: false,
+        profile: instance.profile,
+        paths: result.removed,
+      };
+    });
   }
 
   async restart(repositoryId: string): Promise<{ restarted: boolean; reason?: string }> {

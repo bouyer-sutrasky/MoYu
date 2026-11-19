@@ -13,6 +13,8 @@ export interface RepositoryRow {
    */
   checkCommands: unknown;
   status: 'provisioning' | 'active' | 'sleeping' | 'error';
+  /** Repository removal state; a preparation must not start while not `none`. */
+  deletionState: string;
 }
 
 export interface InstanceRow {
@@ -114,9 +116,10 @@ export class SupervisorStore {
       bridge_credential_ref: string | null;
       check_commands: unknown;
       status: RepositoryRow['status'];
+      deletion_state: string;
     }>(
       `select id, owner_id, full_name, default_branch, bridge_url, bridge_credential_ref,
-              check_commands, status
+              check_commands, status, deletion_state
          from repositories where id = $1 limit 1`,
       [repositoryId],
     );
@@ -131,6 +134,7 @@ export class SupervisorStore {
           bridgeCredentialRef: row.bridge_credential_ref,
           checkCommands: row.check_commands,
           status: row.status,
+          deletionState: row.deletion_state,
         }
       : null;
   }
@@ -436,6 +440,35 @@ export class SupervisorStore {
         where id = $1`,
       [repositoryId, input.bridgeUrl, input.credentialRef, input.callbackTokenHash],
     );
+  }
+
+  /**
+   * Forgets a removed repository's runtime binding: its instance row, pull
+   * cursor and Bridge credentials. The repository row, tasks, conversations,
+   * leases and PR links stay for history and a later re-add.
+   */
+  async forgetRepositoryRuntime(repositoryId: string): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('begin');
+      await client.query('delete from runtime_cursors where repository_id = $1', [repositoryId]);
+      await client.query('delete from repository_instances where repository_id = $1', [
+        repositoryId,
+      ]);
+      await client.query(
+        `update repositories
+            set bridge_url = null, bridge_credential_ref = null,
+                bridge_callback_token_hash = null, updated_at = now()
+          where id = $1`,
+        [repositoryId],
+      );
+      await client.query('commit');
+    } catch (error) {
+      await client.query('rollback');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async setLastActivity(repositoryId: string, at: Date): Promise<void> {

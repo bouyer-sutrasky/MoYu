@@ -521,6 +521,47 @@ export async function projectRuntime(
   config: ApiConfig,
   repository: Repository,
 ): Promise<RepositoryRuntime> {
+  if (repository.deletionState === 'removed') {
+    // A removed repository has no runtime and must not be given a new dormant
+    // instance row just because its removal response or an audit view asks for
+    // a projection.
+    return {
+      state: 'sleeping',
+      desiredState: 'sleeping',
+      reasonCode: 'removed',
+      reason: '该仓库已从 MoYu 移除；历史任务与会话在 30 天保留期内只读保存。',
+      waitingFor: null,
+      listener: 'paused',
+      executionSlot: 'unknown',
+      lastProgressAt: null,
+      lastActivityAt: null,
+      lastStartedAt: null,
+      lastStoppedAt: null,
+      lastHealthAt: null,
+      resource: null,
+      lease: null,
+      preparation: {
+        state: 'none',
+        phase: null,
+        progress: null,
+        detail: null,
+        startedAt: null,
+        finishedAt: null,
+        attempts: 0,
+        headCommit: null,
+      },
+      activation: {
+        phase: 'idle',
+        requestedAt: null,
+        onlineAt: null,
+        elapsedMs: null,
+        readyMs: null,
+        detail: null,
+        retryAction: null,
+      },
+      actions: [],
+    };
+  }
   const instance = await loadInstance(database, config, repository);
   const [stateRow] = await database
     .select()

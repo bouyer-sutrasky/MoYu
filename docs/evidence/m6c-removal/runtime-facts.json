@@ -1,0 +1,66 @@
+{
+  "isolated_stack": {
+    "api_port": 3102,
+    "supervisor_port": 44991,
+    "database": "moyu_iso_pr90 (isolated PostgreSQL)",
+    "supervisor_user": "moyu-m6c",
+    "dsh_home": "/tmp/moyu-iso-pr90/dsh",
+    "note": "real API, real supervisor, real dsh processes; throwaway repositories; GitHub remote read only"
+  },
+  "removal": {
+    "repository_id": "33333333-3333-4333-8333-333333333301",
+    "repository": "Bouyer12/moyu-e2e-public-20261119",
+    "failure_http": 503,
+    "failure_state": "failed",
+    "failure_detail": "supervisor request failed",
+    "restart_recovery_detail": "服务重启中断了移除；本地资源可能已部分清理，请重试。",
+    "retry_http": 202,
+    "retry_state": "removed",
+    "retry_attempts": 2,
+    "operation_id_cleared": true,
+    "removed_at": "2026-11-19T16:37:57.608Z",
+    "history_expires_at": "2026-12-19T16:37:57.608Z",
+    "paths_absent": [
+      "/tmp/moyu-iso-pr90/dsh/profiles/iso-1",
+      "/tmp/moyu-iso-pr90/dsh/homes/iso-1",
+      "/tmp/moyu-iso-pr90/worktrees/iso-1",
+      "/tmp/moyu-iso-pr90/credentials/33333333-3333-4333-8333-333333333301.json",
+      "/tmp/moyu-iso-pr90/instances/33333333-3333-4333-8333-333333333301.env",
+      "/tmp/moyu-iso-pr90/logs/iso-1.log"
+    ]
+  },
+  "other_repository": {
+    "repository": "Bouyer12/moyu-e2e-private-20261119",
+    "profile": "iso-2",
+    "state": "online",
+    "process_unchanged": true
+  },
+  "github_remote": {
+    "before": {
+      "id": 1464223382,
+      "full_name": "Bouyer12/moyu-e2e-public-20261119",
+      "pushed_at": "2026-11-19T14:04:24Z"
+    },
+    "after": {
+      "id": 1464223382,
+      "full_name": "Bouyer12/moyu-e2e-public-20261119",
+      "pushed_at": "2026-11-19T14:04:24Z"
+    },
+    "unchanged": true
+  },
+  "readd": {
+    "http": 201,
+    "same_repository_id": true,
+    "repository_id": "33333333-3333-4333-8333-333333333301",
+    "profile": "iso-1",
+    "state": "online"
+  },
+  "api_log": [],
+  "supervisor_log": [
+    "{\"at\":\"2026-11-19T16:37:07.174Z\",\"level\":\"info\",\"service\":\"moyu-supervisor\",\"message\":\"repository runtime is online\",\"event\":\"supervisor.instance_online\",\"repositoryId\":\"33333333-3333-4333-8333-333333333301\",\"activationDurationMs\":9208}",
+    "{\"at\":\"2026-11-19T16:37:10.537Z\",\"level\":\"info\",\"service\":\"moyu-supervisor\",\"message\":\"repository runtime is online\",\"event\":\"supervisor.instance_online\",\"repositoryId\":\"33333333-3333-4333-8333-333333333302\",\"activationDurationMs\":12482}",
+    "{\"at\":\"2026-11-19T16:37:24.767Z\",\"level\":\"info\",\"service\":\"moyu-supervisor\",\"message\":\"repository runtime stopped\",\"event\":\"supervisor.instance_sleeping\",\"repositoryId\":\"33333333-3333-4333-8333-333333333301\",\"reason\":\"repository_removed\",\"pendingWake\":false}",
+    "{\"at\":\"2026-11-19T16:37:57.596Z\",\"level\":\"info\",\"service\":\"moyu-supervisor\",\"message\":\"removed a repository runtime and its local resources\",\"event\":\"supervisor.repository_removed\",\"repositoryId\":\"33333333-3333-4333-8333-333333333301\",\"profile\":\"iso-1\",\"paths\":1}",
+    "{\"at\":\"2026-11-19T16:38:26.874Z\",\"level\":\"info\",\"service\":\"moyu-supervisor\",\"message\":\"repository runtime is online\",\"event\":\"supervisor.instance_online\",\"repositoryId\":\"33333333-3333-4333-8333-333333333301\",\"activationDurationMs\":8246}"
+  ]
+}

@@ -173,6 +173,31 @@ export const repositoryCheckCommandsSchema = z
 
 export type RepositoryCheckCommands = z.infer<typeof repositoryCheckCommandsSchema>;
 
+/**
+ * How long a removed repository's tasks and conversations stay in MoYu for
+ * audit and for a same-name re-add. They are not shown in the workbench while
+ * the repository is removed; GitHub's repository, branches and PRs are never
+ * touched.
+ */
+export const REPOSITORY_HISTORY_RETENTION_DAYS = 30;
+
+export const repositoryDeletionStateSchema = z.enum(['none', 'deleting', 'failed', 'removed']);
+
+export const repositoryDeletionSchema = z
+  .object({
+    state: repositoryDeletionStateSchema,
+    detail: z.string().nullable(),
+    attempts: z.number().int().nonnegative(),
+    startedAt: isoTimestampSchema.nullable(),
+    finishedAt: isoTimestampSchema.nullable(),
+    removedAt: isoTimestampSchema.nullable(),
+    /** End of the read-only retention window; null unless removed. */
+    historyExpiresAt: isoTimestampSchema.nullable(),
+  })
+  .strict();
+
+export type RepositoryDeletion = z.infer<typeof repositoryDeletionSchema>;
+
 export const repositorySummarySchema = z.object({
   id: uuidSchema,
   fullName: z.string().min(1),
@@ -183,6 +208,8 @@ export const repositorySummarySchema = z.object({
   checkCommands: z.array(z.string()).nullable(),
   /** Present on M5 responses; older responses may omit it. */
   runtime: repositoryRuntimeSchema.nullable().optional(),
+  /** Removal lifecycle; `none` for a normal repository. */
+  deletion: repositoryDeletionSchema,
   createdAt: isoTimestampSchema,
   updatedAt: isoTimestampSchema,
 });

@@ -293,6 +293,13 @@ export const api = {
       { method: 'POST' },
     );
   },
+  removeRepository(repositoryId: string): Promise<RepositoryData> {
+    return request(
+      `/api/v1/repositories/${encodeURIComponent(repositoryId)}`,
+      repositoryDataSchema,
+      { method: 'DELETE' },
+    );
+  },
   conversations(
     repositoryId: string,
     options: { limit?: number; cursor?: string; pending?: boolean } = {},

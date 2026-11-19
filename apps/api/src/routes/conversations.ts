@@ -49,6 +49,7 @@ import type { ApiConfig } from '../config';
 import { toConversationSummary, toMessage } from '../domain/serialize';
 import { ensureConfiguredRepository, findOwnedRepository } from '../domain/repositories';
 import { assertExecutionPrepared, requestWake } from '../domain/instances';
+import { lockRepositoryForAdmission } from '../domain/repository-removal';
 import {
   advertisesBranches,
   assertBranchAvailable,
@@ -628,6 +629,7 @@ export function registerConversationRoutes(
 
     try {
       const created = await database.transaction(async (transaction) => {
+        await lockRepositoryForAdmission(transaction, repository.id);
         const [conversation] = await transaction
           .insert(conversations)
           .values({
@@ -936,6 +938,7 @@ export function registerConversationRoutes(
     let created: { conversation: typeof conversations.$inferSelect; task: TaskLink };
     try {
       created = await database.transaction(async (transaction) => {
+        await lockRepositoryForAdmission(transaction, targetRepository.id);
         const [inserted] = await transaction
           .insert(conversations)
           .values({

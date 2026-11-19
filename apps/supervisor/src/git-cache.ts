@@ -627,6 +627,16 @@ export class RepositoryGitCache {
         partial = null;
       }
       if (identity) chownTree(cache, identity.uid, identity.gid);
+      // A removal claim can start in the small window before the first progress
+      // write set git_state=preparing. Do not commit a copy for a repository
+      // that is being removed; drop it and let the failed preparation be
+      // visible instead of recreating local state after cleanup.
+      const current = await this.store.getRepository(repositoryId);
+      if (current && current.deletionState !== 'none') {
+        rmSync(cache, { recursive: true, force: true });
+        if (partial) rmSync(partial, { recursive: true, force: true });
+        throw new Error('仓库正在移除，已放弃这次副本准备。');
+      }
       await writeProgress({ phase: 'ready', percent: 100, detail: '仓库副本已就绪。' }, true);
       finished = true;
       await this.store.updateInstance(repositoryId, {

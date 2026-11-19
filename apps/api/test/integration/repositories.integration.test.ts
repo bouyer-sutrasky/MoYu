@@ -36,12 +36,15 @@ interface Harness {
   repositoryBId: string;
   supervisor: Server;
   supervisorUrl: string;
+  supervisorCalls: string[];
   tempDir: string;
 }
 
 const SUPERVISOR_TOKEN = 'm5-test-supervisor-token-0123456789';
 const CALLBACK_A = 'callback-token-a-0123456789abcdef';
 const CALLBACK_B = 'callback-token-b-0123456789abcdef';
+let failNextRemove = false;
+let removeDelayMs = 0;
 
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
@@ -109,7 +112,7 @@ async function startFakeSupervisor(): Promise<{ server: Server; url: string; cal
       return;
     }
     const match = url.pathname.match(
-      /instances\/([^/]+)\/(prepare|wake|sleep|touch|retry|git\/prepare)$/,
+      /instances\/([^/]+)\/(prepare|wake|sleep|touch|retry|git\/prepare|remove)$/,
     );
     if (!match) {
       response.writeHead(404, { 'content-type': 'application/json' });
@@ -119,6 +122,25 @@ async function startFakeSupervisor(): Promise<{ server: Server; url: string; cal
     const repositoryId = match[1]!;
     const action = match[2]!;
     response.setHeader('content-type', 'application/json');
+    if (action === 'remove') {
+      if (failNextRemove) {
+        failNextRemove = false;
+        response.writeHead(503, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ error: { message: 'local cleanup failed (test)' } }));
+        return;
+      }
+      const send = () => {
+        response.writeHead(200);
+        response.end(
+          JSON.stringify({
+            data: { removed: true, alreadyRemoved: false, profile: 'm5a', paths: [] },
+          }),
+        );
+      };
+      if (removeDelayMs > 0) setTimeout(send, removeDelayMs);
+      else send();
+      return;
+    }
     if (action === 'sleep') {
       response.writeHead(409);
       response.end(
@@ -174,6 +196,12 @@ case "$*" in
   *repos/Bouyer12/m5a-gamma*) echo '{"id":104,"full_name":"Bouyer12/m5a-gamma","default_branch":"main","private":true,"permissions":{"admin":false,"push":true}}' ;;
   *repos/Bouyer12/m5a-delta*) echo '{"id":105,"full_name":"Bouyer12/m5a-delta","default_branch":"main","private":true,"permissions":{"admin":false,"push":true}}' ;;
   *repos/Bouyer12/m5a-epsilon*) echo '{"id":106,"full_name":"Bouyer12/m5a-epsilon","default_branch":"main","private":true,"permissions":{"admin":false,"push":true}}' ;;
+  *repos/Bouyer12/m5a-zeta*) echo '{"id":107,"full_name":"Bouyer12/m5a-zeta","default_branch":"main","private":true,"permissions":{"admin":false,"push":true}}' ;;
+  *repos/Bouyer12/m5a-eta*) echo '{"id":108,"full_name":"Bouyer12/m5a-eta","default_branch":"main","private":true,"permissions":{"admin":false,"push":true}}' ;;
+  *repos/Bouyer12/m5a-theta*) echo '{"id":109,"full_name":"Bouyer12/m5a-theta","default_branch":"main","private":true,"permissions":{"admin":false,"push":true}}' ;;
+  *repos/Bouyer12/m5a-iota*) echo '{"id":110,"full_name":"Bouyer12/m5a-iota","default_branch":"main","private":true,"permissions":{"admin":false,"push":true}}' ;;
+  *repos/Bouyer12/m5a-kappa*) echo '{"id":111,"full_name":"Bouyer12/m5a-kappa","default_branch":"main","private":true,"permissions":{"admin":false,"push":true}}' ;;
+  *repos/Bouyer12/m5a-lambda*) echo '{"id":112,"full_name":"Bouyer12/m5a-lambda","default_branch":"main","private":true,"permissions":{"admin":false,"push":true}}' ;;
   *) echo 'gh: Not Found (HTTP 404)' >&2; exit 1 ;;
 esac
 `,
@@ -278,6 +306,7 @@ describe('multi-repository lifecycle API on real PostgreSQL', () => {
       repositoryBId: repositoryB.id,
       supervisor: supervisor.server,
       supervisorUrl: supervisor.url,
+      supervisorCalls: supervisor.calls,
       tempDir,
     };
   }, 60_000);
@@ -290,7 +319,7 @@ describe('multi-repository lifecycle API on real PostgreSQL', () => {
   });
 
   async function request(
-    method: 'GET' | 'POST' | 'PATCH',
+    method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
     path: string,
     body?: Record<string, unknown>,
     cookie = harness.cookie,
@@ -695,6 +724,423 @@ describe('multi-repository lifecycle API on real PostgreSQL', () => {
       gitState: 'ready',
       gitPhase: 'ready',
     });
+  });
+
+  it('removes a repository, keeps history, blocks work and supports re-add', async () => {
+    const [conversation] = await harness.database
+      .insert(conversations)
+      .values({
+        ownerId: harness.ownerId,
+        repositoryId: harness.repositoryBId,
+        mode: 'work',
+        executionMode: 'execute',
+        baseBranch: 'trunk',
+      })
+      .returning();
+    if (!conversation) throw new Error('conversation insert returned no row');
+    const [task] = await harness.database
+      .insert(taskLinks)
+      .values({
+        conversationId: conversation.id,
+        repositoryId: harness.repositoryBId,
+        state: 'running',
+        baseBranch: 'trunk',
+      })
+      .returning();
+    if (!task) throw new Error('task insert returned no row');
+
+    const blocked = await request('DELETE', `/api/v1/repositories/${harness.repositoryBId}`);
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json().error.message).toContain('任务');
+
+    await harness.database
+      .update(taskLinks)
+      .set({ state: 'completed' })
+      .where(eq(taskLinks.id, task.id));
+
+    const removed = await request('DELETE', `/api/v1/repositories/${harness.repositoryBId}`);
+    expect(removed.statusCode).toBe(202);
+    expect(removed.json().data.repository.deletion).toMatchObject({
+      state: 'removed',
+      attempts: 1,
+    });
+    expect(removed.json().data.repository.deletion.removedAt).not.toBeNull();
+
+    const list = await request('GET', '/api/v1/repositories');
+    expect(
+      list.json().data.repositories.map((repository: { id: string }) => repository.id),
+    ).not.toContain(harness.repositoryBId);
+
+    // History stays in PostgreSQL; the now-hidden repository's links answer a
+    // readable fallback instead of a generic not-found.
+    const history = await harness.database
+      .select()
+      .from(conversations)
+      .where(eq(conversations.id, conversation.id));
+    expect(history).toHaveLength(1);
+    const oldLink = await request('GET', `/api/v1/repositories/${harness.repositoryBId}/runtime`);
+    expect(oldLink.statusCode).toBe(404);
+    expect(oldLink.json().error.message).toContain('已从 MoYu 移除');
+
+    const duplicate = await request('DELETE', `/api/v1/repositories/${harness.repositoryBId}`);
+    expect(duplicate.statusCode).toBe(200);
+    expect(duplicate.json().data.repository.deletion.state).toBe('removed');
+
+    const readd = await request('POST', '/api/v1/repositories', {
+      fullName: 'Bouyer12/m5a-beta',
+    });
+    expect(readd.statusCode).toBe(201);
+    const [restored] = await harness.database
+      .select()
+      .from(repositories)
+      .where(eq(repositories.id, harness.repositoryBId));
+    expect(restored?.id).toBe(harness.repositoryBId);
+    expect(restored?.deletionState).toBe('none');
+    expect(restored?.removedAt).toBeNull();
+    const restoredHistory = await harness.database
+      .select()
+      .from(conversations)
+      .where(eq(conversations.id, conversation.id));
+    expect(restoredHistory).toHaveLength(1);
+  });
+
+  it('does not restore expired history when re-adding without an API restart', async () => {
+    const [expired] = await harness.database
+      .insert(repositories)
+      .values({
+        ownerId: harness.ownerId,
+        fullName: 'Bouyer12/m5a-kappa',
+        status: 'sleeping',
+        deletionState: 'removed',
+        removedAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000),
+        deletionFinishedAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000),
+      })
+      .returning();
+    if (!expired) throw new Error('expired repository was not inserted');
+    const [oldConversation] = await harness.database
+      .insert(conversations)
+      .values({
+        ownerId: harness.ownerId,
+        repositoryId: expired.id,
+        mode: 'work',
+        executionMode: 'execute',
+        baseBranch: 'main',
+      })
+      .returning();
+    if (!oldConversation) throw new Error('expired conversation was not inserted');
+
+    const readd = await request('POST', '/api/v1/repositories', {
+      fullName: 'Bouyer12/m5a-kappa',
+    });
+    expect(readd.statusCode).toBe(201);
+    expect(readd.json().data.repositoryId).toBe(expired.id);
+    const [restored] = await harness.database
+      .select()
+      .from(repositories)
+      .where(eq(repositories.id, expired.id));
+    expect(restored?.deletionState).toBe('none');
+    expect(restored?.removedAt).toBeNull();
+    const history = await harness.database
+      .select()
+      .from(conversations)
+      .where(eq(conversations.id, oldConversation.id));
+    expect(history).toHaveLength(0);
+  });
+
+  it('purges expired history under the re-add lock without deleting a new session', async () => {
+    const [expired] = await harness.database
+      .insert(repositories)
+      .values({
+        ownerId: harness.ownerId,
+        fullName: 'Bouyer12/m5a-lambda',
+        status: 'sleeping',
+        deletionState: 'removed',
+        removedAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000),
+        deletionFinishedAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000),
+      })
+      .returning();
+    if (!expired) throw new Error('expired repository was not inserted');
+    const [oldConversation] = await harness.database
+      .insert(conversations)
+      .values({
+        ownerId: harness.ownerId,
+        repositoryId: expired.id,
+        mode: 'work',
+        executionMode: 'execute',
+        baseBranch: 'main',
+      })
+      .returning();
+    if (!oldConversation) throw new Error('expired conversation was not inserted');
+
+    // Hold the same repository row lock so the purge and the re-add both stop
+    // before their state checks; releasing it makes them contend for real.
+    const blocker = await testDatabase.pool.connect();
+    try {
+      await blocker.query('BEGIN');
+      await blocker.query('select 1 from repositories where id = $1 for update', [expired.id]);
+      const { purgeExpiredRepositoryHistory } = await import('../../src/domain/repository-removal');
+      const purge = purgeExpiredRepositoryHistory(harness.database);
+      const readd = request('POST', '/api/v1/repositories', {
+        fullName: 'Bouyer12/m5a-lambda',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await blocker.query('COMMIT');
+      const [, readdResult] = await Promise.all([purge, readd]);
+      expect(readdResult.statusCode).toBe(201);
+
+      const oldHistory = await harness.database
+        .select()
+        .from(conversations)
+        .where(eq(conversations.id, oldConversation.id));
+      expect(oldHistory).toHaveLength(0);
+
+      const created = await request('POST', '/api/v1/conversations', {
+        repositoryId: expired.id,
+        mode: 'work',
+        executionMode: 'discuss',
+        baseBranch: 'main',
+        clientRequestId: `purge-race-${randomUUID()}`,
+      });
+      expect(created.statusCode).toBe(201);
+      const newConversationId = created.json().data.conversation.id as string;
+      await purgeExpiredRepositoryHistory(harness.database);
+      const newHistory = await harness.database
+        .select()
+        .from(conversations)
+        .where(eq(conversations.id, newConversationId));
+      expect(newHistory).toHaveLength(1);
+    } finally {
+      blocker.release();
+    }
+  });
+
+  it('keeps a failed removal retryable and recovers an interrupted deletion', async () => {
+    const created = await request('POST', '/api/v1/repositories', {
+      fullName: 'Bouyer12/m5a-zeta',
+    });
+    expect(created.statusCode).toBe(201);
+    const repositoryId = created.json().data.repositoryId as string;
+
+    failNextRemove = true;
+    const failed = await request('DELETE', `/api/v1/repositories/${repositoryId}`);
+    expect(failed.statusCode).toBe(503);
+    const [afterFailure] = await harness.database
+      .select()
+      .from(repositories)
+      .where(eq(repositories.id, repositoryId));
+    expect(afterFailure?.deletionState).toBe('failed');
+    expect(afterFailure?.deletionDetail).toContain('local cleanup failed');
+
+    const retried = await request('DELETE', `/api/v1/repositories/${repositoryId}`);
+    expect(retried.statusCode).toBe(202);
+    expect(retried.json().data.repository.deletion).toMatchObject({
+      state: 'removed',
+      attempts: 2,
+    });
+
+    await harness.database
+      .update(repositories)
+      .set({ deletionState: 'deleting', removedAt: null })
+      .where(eq(repositories.id, repositoryId));
+    const { recoverInterruptedDeletions } = await import('../../src/domain/repository-removal');
+    await recoverInterruptedDeletions(harness.database);
+    const [afterRestart] = await harness.database
+      .select()
+      .from(repositories)
+      .where(eq(repositories.id, repositoryId));
+    expect(afterRestart?.deletionState).toBe('failed');
+    expect(afterRestart?.deletionDetail).toContain('服务重启');
+  });
+
+  it('claims a concurrent removal once and keeps a late result from finishing it', async () => {
+    const created = await request('POST', '/api/v1/repositories', {
+      fullName: 'Bouyer12/m5a-eta',
+    });
+    expect(created.statusCode).toBe(201);
+    const repositoryId = created.json().data.repositoryId as string;
+    const before = harness.supervisorCalls.filter((call) =>
+      call.endsWith(`/instances/${repositoryId}/remove`),
+    ).length;
+
+    removeDelayMs = 100;
+    const [first, second] = await Promise.all([
+      request('DELETE', `/api/v1/repositories/${repositoryId}`),
+      request('DELETE', `/api/v1/repositories/${repositoryId}`),
+    ]);
+    removeDelayMs = 0;
+    expect([first.statusCode, second.statusCode].sort()).toEqual([202, 202]);
+    const removeCalls = harness.supervisorCalls.filter((call) =>
+      call.endsWith(`/instances/${repositoryId}/remove`),
+    ).length;
+    expect(removeCalls - before).toBe(1);
+    const [row] = await harness.database
+      .select()
+      .from(repositories)
+      .where(eq(repositories.id, repositoryId));
+    expect(row?.deletionState).toBe('removed');
+
+    // A result carrying an older operation id must not change the row.
+    await harness.database
+      .update(repositories)
+      .set({
+        deletionState: 'deleting',
+        deletionOperationId: '00000000-0000-4000-8000-0000000000aa',
+        removedAt: null,
+      })
+      .where(eq(repositories.id, repositoryId));
+    const { finalizeRemoval } = await import('../../src/domain/repository-removal');
+    expect(
+      await finalizeRemoval(
+        harness.database,
+        repositoryId,
+        '00000000-0000-4000-8000-0000000000bb',
+        { ok: true },
+      ),
+    ).toBeNull();
+    const [stillDeleting] = await harness.database
+      .select()
+      .from(repositories)
+      .where(eq(repositories.id, repositoryId));
+    expect(stillDeleting?.deletionState).toBe('deleting');
+    expect(stillDeleting?.removedAt).toBeNull();
+  });
+
+  it('does not reassign a removed repository to another owner', async () => {
+    const created = await request('POST', '/api/v1/repositories', {
+      fullName: 'Bouyer12/m5a-iota',
+    });
+    expect(created.statusCode).toBe(201);
+    const repositoryId = created.json().data.repositoryId as string;
+    const removed = await request('DELETE', `/api/v1/repositories/${repositoryId}`);
+    expect(removed.statusCode).toBe(202);
+
+    const [otherOwner] = await harness.database
+      .insert(owners)
+      .values({ displayName: 'Other Re-add Owner' })
+      .returning();
+    if (!otherOwner) throw new Error('other owner insert returned no row');
+    const token = randomToken(32);
+    await harness.database.insert(sessions).values({
+      ownerId: otherOwner.id,
+      tokenHash: hashSecret(token),
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    const readd = await request(
+      'POST',
+      '/api/v1/repositories',
+      { fullName: 'Bouyer12/m5a-iota' },
+      `${harness.cookieName}=${token}`,
+    );
+    expect(readd.statusCode).toBe(409);
+    expect(readd.json().error.message).toContain('another owner');
+    const [row] = await harness.database
+      .select()
+      .from(repositories)
+      .where(eq(repositories.id, repositoryId));
+    expect(row?.ownerId).toBe(harness.ownerId);
+    expect(row?.deletionState).toBe('removed');
+  });
+
+  it('serializes deletion against task admission and purges only expired history', async () => {
+    const created = await request('POST', '/api/v1/repositories', {
+      fullName: 'Bouyer12/m5a-theta',
+    });
+    expect(created.statusCode).toBe(201);
+    const repositoryId = created.json().data.repositoryId as string;
+
+    const [admission, removal] = await Promise.all([
+      request('POST', '/api/v1/conversations', {
+        repositoryId,
+        mode: 'work',
+        executionMode: 'execute',
+        baseBranch: 'main',
+        clientRequestId: `race-${randomUUID()}`,
+      }),
+      request('DELETE', `/api/v1/repositories/${repositoryId}`),
+    ]);
+    // The row lock makes one of the two win; the loser must explain the state.
+    expect([admission.statusCode, removal.statusCode].filter((code) => code < 300)).toHaveLength(1);
+    if (admission.statusCode === 201) expect(removal.statusCode).toBe(409);
+    else expect(admission.statusCode).toBe(409);
+
+    // Retention: an old removed repository loses its history; a recent one keeps it.
+    const [oldRepo] = await harness.database
+      .insert(repositories)
+      .values({
+        ownerId: harness.ownerId,
+        fullName: 'Bouyer12/retention-old',
+        status: 'sleeping',
+        deletionState: 'removed',
+        removedAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000),
+      })
+      .returning();
+    const [recentRepo] = await harness.database
+      .insert(repositories)
+      .values({
+        ownerId: harness.ownerId,
+        fullName: 'Bouyer12/retention-recent',
+        status: 'sleeping',
+        deletionState: 'removed',
+        removedAt: new Date(),
+      })
+      .returning();
+    if (!oldRepo || !recentRepo) throw new Error('retention repositories were not inserted');
+    const [oldConversation] = await harness.database
+      .insert(conversations)
+      .values({
+        ownerId: harness.ownerId,
+        repositoryId: oldRepo.id,
+        mode: 'work',
+        executionMode: 'execute',
+        baseBranch: 'main',
+      })
+      .returning();
+    const [recentConversation] = await harness.database
+      .insert(conversations)
+      .values({
+        ownerId: harness.ownerId,
+        repositoryId: recentRepo.id,
+        mode: 'work',
+        executionMode: 'execute',
+        baseBranch: 'main',
+      })
+      .returning();
+    if (!oldConversation || !recentConversation) {
+      throw new Error('retention conversations were not inserted');
+    }
+    const { purgeExpiredRepositoryHistory } = await import('../../src/domain/repository-removal');
+    await purgeExpiredRepositoryHistory(harness.database);
+    const oldRows = await harness.database
+      .select()
+      .from(conversations)
+      .where(eq(conversations.id, oldConversation.id));
+    const recentRows = await harness.database
+      .select()
+      .from(conversations)
+      .where(eq(conversations.id, recentConversation.id));
+    expect(oldRows).toHaveLength(0);
+    expect(recentRows).toHaveLength(1);
+  });
+
+  it('does not let another owner remove a repository', async () => {
+    const [otherOwner] = await harness.database
+      .insert(owners)
+      .values({ displayName: 'Other Removal Owner' })
+      .returning();
+    if (!otherOwner) throw new Error('other owner insert returned no row');
+    const token = randomToken(32);
+    await harness.database.insert(sessions).values({
+      ownerId: otherOwner.id,
+      tokenHash: hashSecret(token),
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    const response = await request(
+      'DELETE',
+      `/api/v1/repositories/${harness.repositoryAId}`,
+      undefined,
+      `${harness.cookieName}=${token}`,
+    );
+    expect(response.statusCode).toBe(404);
   });
 
   it('does not let another owner change a repository check-command override', async () => {

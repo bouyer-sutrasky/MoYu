@@ -22,6 +22,10 @@ import { registerActivityRoutes } from './routes/activity';
 import { registerAttachmentRoutes } from './routes/attachments';
 import { registerCleanupRoutes } from './routes/cleanup';
 import { ensureConfiguredRepository } from './domain/repositories';
+import {
+  purgeExpiredRepositoryHistory,
+  recoverInterruptedDeletions,
+} from './domain/repository-removal';
 import { registerAuthRoutes } from './routes/auth';
 import { registerConversationRoutes } from './routes/conversations';
 import { registerEventRoutes } from './routes/events';
@@ -69,9 +73,38 @@ export function buildApp({
     },
   });
 
+  let historyPurgeTimer: NodeJS.Timeout | undefined;
+  if (database) {
+    // A removal is a supervisor call plus two durable writes. A service restart
+    // between them must not leave the repository permanently "deleting": mark it
+    // retryable, and the same DELETE request resumes the idempotent cleanup.
+    app.addHook('onReady', async () => {
+      await recoverInterruptedDeletions(database);
+      await purgeExpiredRepositoryHistory(database);
+      // The confirmation promises automatic cleanup after 30 days, not only on
+      // the next restart. Re-running takes the same row locks as a re-add.
+      historyPurgeTimer = setInterval(
+        () => {
+          void purgeExpiredRepositoryHistory(database).catch((error: unknown) => {
+            app.log.warn(
+              {
+                event: 'repository.history_purge_failed',
+                error: error instanceof Error ? error.message.slice(0, 300) : String(error),
+              },
+              'expired repository history purge failed',
+            );
+          });
+        },
+        60 * 60 * 1000,
+      );
+      historyPurgeTimer.unref();
+    });
+  }
+
   const eventBus = injectedEventBus ?? createAppEventBus();
   const ownsEventBus = injectedEventBus === undefined;
   app.addHook('onClose', async () => {
+    if (historyPurgeTimer) clearInterval(historyPurgeTimer);
     if (ownsEventBus) {
       eventBus.close();
     }

@@ -50,10 +50,19 @@ export interface SupervisorInstance {
   updatedAt: string;
 }
 
+export interface SupervisorRepositoryRemoval {
+  removed: boolean;
+  alreadyRemoved: boolean;
+  profile: string | null;
+  paths: string[];
+}
+
 export interface SupervisorClient {
   prepare(repositoryId: string): Promise<SupervisorInstance>;
   /** Repository-level retry/refresh of the reusable Git copy. */
   prepareGit(repositoryId: string): Promise<SupervisorInstance>;
+  /** Stop the instance and delete its local profile, state, Git copy and credentials. */
+  remove(repositoryId: string): Promise<SupervisorRepositoryRemoval>;
   wake(
     repositoryId: string,
     reason: 'new_task' | 'reply' | 'manual' | 'retry',
@@ -332,6 +341,13 @@ export function createSupervisorClient(config: ApiConfig): SupervisorClient | nu
     prepare: (repositoryId) => request(`/control/v1/instances/${repositoryId}/prepare`, 'POST', {}),
     prepareGit: (repositoryId) =>
       request(`/control/v1/instances/${repositoryId}/git/prepare`, 'POST', {}),
+    remove: (repositoryId) =>
+      request<SupervisorRepositoryRemoval>(
+        `/control/v1/instances/${repositoryId}/remove`,
+        'POST',
+        undefined,
+        120_000,
+      ),
     wake: (repositoryId, reason) =>
       request(`/control/v1/instances/${repositoryId}/wake`, 'POST', {
         reason,
