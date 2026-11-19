@@ -200,6 +200,8 @@ case "$*" in
   *repos/Bouyer12/m5a-eta*) echo '{"id":108,"full_name":"Bouyer12/m5a-eta","default_branch":"main","private":true,"permissions":{"admin":false,"push":true}}' ;;
   *repos/Bouyer12/m5a-theta*) echo '{"id":109,"full_name":"Bouyer12/m5a-theta","default_branch":"main","private":true,"permissions":{"admin":false,"push":true}}' ;;
   *repos/Bouyer12/m5a-iota*) echo '{"id":110,"full_name":"Bouyer12/m5a-iota","default_branch":"main","private":true,"permissions":{"admin":false,"push":true}}' ;;
+  *repos/Bouyer12/m5a-kappa*) echo '{"id":111,"full_name":"Bouyer12/m5a-kappa","default_branch":"main","private":true,"permissions":{"admin":false,"push":true}}' ;;
+  *repos/Bouyer12/m5a-lambda*) echo '{"id":112,"full_name":"Bouyer12/m5a-lambda","default_branch":"main","private":true,"permissions":{"admin":false,"push":true}}' ;;
   *) echo 'gh: Not Found (HTTP 404)' >&2; exit 1 ;;
 esac
 `,
@@ -795,6 +797,121 @@ describe('multi-repository lifecycle API on real PostgreSQL', () => {
     expect(restored?.id).toBe(harness.repositoryBId);
     expect(restored?.deletionState).toBe('none');
     expect(restored?.removedAt).toBeNull();
+    const restoredHistory = await harness.database
+      .select()
+      .from(conversations)
+      .where(eq(conversations.id, conversation.id));
+    expect(restoredHistory).toHaveLength(1);
+  });
+
+  it('does not restore expired history when re-adding without an API restart', async () => {
+    const [expired] = await harness.database
+      .insert(repositories)
+      .values({
+        ownerId: harness.ownerId,
+        fullName: 'Bouyer12/m5a-kappa',
+        status: 'sleeping',
+        deletionState: 'removed',
+        removedAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000),
+        deletionFinishedAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000),
+      })
+      .returning();
+    if (!expired) throw new Error('expired repository was not inserted');
+    const [oldConversation] = await harness.database
+      .insert(conversations)
+      .values({
+        ownerId: harness.ownerId,
+        repositoryId: expired.id,
+        mode: 'work',
+        executionMode: 'execute',
+        baseBranch: 'main',
+      })
+      .returning();
+    if (!oldConversation) throw new Error('expired conversation was not inserted');
+
+    const readd = await request('POST', '/api/v1/repositories', {
+      fullName: 'Bouyer12/m5a-kappa',
+    });
+    expect(readd.statusCode).toBe(201);
+    expect(readd.json().data.repositoryId).toBe(expired.id);
+    const [restored] = await harness.database
+      .select()
+      .from(repositories)
+      .where(eq(repositories.id, expired.id));
+    expect(restored?.deletionState).toBe('none');
+    expect(restored?.removedAt).toBeNull();
+    const history = await harness.database
+      .select()
+      .from(conversations)
+      .where(eq(conversations.id, oldConversation.id));
+    expect(history).toHaveLength(0);
+  });
+
+  it('purges expired history under the re-add lock without deleting a new session', async () => {
+    const [expired] = await harness.database
+      .insert(repositories)
+      .values({
+        ownerId: harness.ownerId,
+        fullName: 'Bouyer12/m5a-lambda',
+        status: 'sleeping',
+        deletionState: 'removed',
+        removedAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000),
+        deletionFinishedAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000),
+      })
+      .returning();
+    if (!expired) throw new Error('expired repository was not inserted');
+    const [oldConversation] = await harness.database
+      .insert(conversations)
+      .values({
+        ownerId: harness.ownerId,
+        repositoryId: expired.id,
+        mode: 'work',
+        executionMode: 'execute',
+        baseBranch: 'main',
+      })
+      .returning();
+    if (!oldConversation) throw new Error('expired conversation was not inserted');
+
+    // Hold the same repository row lock so the purge and the re-add both stop
+    // before their state checks; releasing it makes them contend for real.
+    const blocker = await testDatabase.pool.connect();
+    try {
+      await blocker.query('BEGIN');
+      await blocker.query('select 1 from repositories where id = $1 for update', [expired.id]);
+      const { purgeExpiredRepositoryHistory } = await import('../../src/domain/repository-removal');
+      const purge = purgeExpiredRepositoryHistory(harness.database);
+      const readd = request('POST', '/api/v1/repositories', {
+        fullName: 'Bouyer12/m5a-lambda',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await blocker.query('COMMIT');
+      const [, readdResult] = await Promise.all([purge, readd]);
+      expect(readdResult.statusCode).toBe(201);
+
+      const oldHistory = await harness.database
+        .select()
+        .from(conversations)
+        .where(eq(conversations.id, oldConversation.id));
+      expect(oldHistory).toHaveLength(0);
+
+      const created = await request('POST', '/api/v1/conversations', {
+        repositoryId: expired.id,
+        mode: 'work',
+        executionMode: 'discuss',
+        baseBranch: 'main',
+        clientRequestId: `purge-race-${randomUUID()}`,
+      });
+      expect(created.statusCode).toBe(201);
+      const newConversationId = created.json().data.conversation.id as string;
+      await purgeExpiredRepositoryHistory(harness.database);
+      const newHistory = await harness.database
+        .select()
+        .from(conversations)
+        .where(eq(conversations.id, newConversationId));
+      expect(newHistory).toHaveLength(1);
+    } finally {
+      blocker.release();
+    }
   });
 
   it('keeps a failed removal retryable and recovers an interrupted deletion', async () => {

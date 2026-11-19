@@ -30,6 +30,27 @@ const ACTIVE_TASK_STATES = [
 
 const HISTORY_RETENTION_MS = REPOSITORY_HISTORY_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
+/** True once the 30-day read-only history window of a removed repository ended. */
+export function repositoryHistoryExpired(repository: Repository, now: Date = new Date()): boolean {
+  return (
+    repository.deletionState === 'removed' &&
+    repository.removedAt !== null &&
+    repository.removedAt.getTime() + HISTORY_RETENTION_MS <= now.getTime()
+  );
+}
+
+/** Deletes one repository's conversations; callers must hold its row lock. */
+export async function deleteRepositoryHistory(
+  transaction: Transaction,
+  repositoryId: string,
+): Promise<number> {
+  const rows = await transaction
+    .delete(conversations)
+    .where(eq(conversations.repositoryId, repositoryId))
+    .returning({ id: conversations.id });
+  return rows.length;
+}
+
 type QueryExecutor = Pick<Database, 'select'>;
 type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
 
@@ -330,15 +351,25 @@ export async function purgeExpiredRepositoryHistory(
   now: Date = new Date(),
 ): Promise<number> {
   const cutoff = new Date(now.getTime() - HISTORY_RETENTION_MS);
-  const expired = await database
+  const candidates = await database
     .select({ id: repositories.id })
     .from(repositories)
     .where(and(eq(repositories.deletionState, 'removed'), lte(repositories.removedAt, cutoff)));
-  const ids = expired.map((row) => row.id);
-  if (ids.length === 0) return 0;
-  const rows = await database
-    .delete(conversations)
-    .where(inArray(conversations.repositoryId, ids))
-    .returning({ id: conversations.id });
-  return rows.length;
+  let purged = 0;
+  for (const candidate of candidates) {
+    // The candidate list is only a hint. Re-take the same repository row lock a
+    // re-add uses and re-check "still removed and still expired" before deleting
+    // history, so a restore between the two statements cannot lose new sessions.
+    const count = await database.transaction(async (transaction) => {
+      const [repository] = await transaction
+        .select()
+        .from(repositories)
+        .where(eq(repositories.id, candidate.id))
+        .for('update');
+      if (!repository || !repositoryHistoryExpired(repository, now)) return 0;
+      return deleteRepositoryHistory(transaction, repository.id);
+    });
+    purged += count;
+  }
+  return purged;
 }

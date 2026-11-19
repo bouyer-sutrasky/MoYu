@@ -22,7 +22,12 @@ import {
   findOwnedRepository,
   setRepositoryCheckCommands,
 } from '../domain/repositories';
-import { deletionFor, removeRepository } from '../domain/repository-removal';
+import {
+  deleteRepositoryHistory,
+  deletionFor,
+  removeRepository,
+  repositoryHistoryExpired,
+} from '../domain/repository-removal';
 import {
   createSupervisorClient,
   projectRuntime,
@@ -140,6 +145,32 @@ export function registerRepositoryRoutes(
     try {
       repository = await database.transaction(async (transaction) => {
         if (existing) {
+          // The pre-check above is only a fast path. Re-read under the row lock
+          // a concurrent removal/purge uses, so ownership, state and expiry
+          // cannot change between the check and the restore.
+          const [current] = await transaction
+            .select()
+            .from(repositories)
+            .where(eq(repositories.id, existing.id))
+            .for('update');
+          if (!current) {
+            throw ApiProblem.conflict('This repository was removed while it was being re-added');
+          }
+          if (current.ownerId !== auth.owner.id) {
+            throw ApiProblem.conflict(
+              'This repository was removed by another owner; its history cannot be reassigned',
+            );
+          }
+          if (current.deletionState !== 'removed') {
+            throw ApiProblem.conflict(
+              current.deletionState === 'deleting'
+                ? 'The repository is still being removed; retry after it finishes'
+                : 'The repository is no longer in a removable state',
+            );
+          }
+          if (repositoryHistoryExpired(current)) {
+            await deleteRepositoryHistory(transaction, current.id);
+          }
           const [restored] = await transaction
             .update(repositories)
             .set({
@@ -155,7 +186,7 @@ export function registerRepositoryRoutes(
               removedAt: null,
               updatedAt: new Date(),
             })
-            .where(eq(repositories.id, existing.id))
+            .where(eq(repositories.id, current.id))
             .returning();
           if (!restored) throw new Error('repository restore returned no row');
           return restored;

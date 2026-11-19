@@ -69,8 +69,11 @@ INSTANCE_LOG_DIR/<profile>.log
 迁移 `0023` 在 `repositories` 增加 `deletion_state`、`deletion_detail`、
 `deletion_attempts`、`deletion_started_at`、`deletion_finished_at`、`removed_at`
 和状态检查约束；迁移 `0024` 增加 `deletion_operation_id`。仓库行不删除，因此
-历史任务/会话的外键保持完整。移除后第 30 天起，API 启动时清理该仓库的会话
-（消息和任务行随外键级联），与确认页写的「30 天后自动清理」一致。
+历史任务/会话的外键保持完整。移除后第 30 天起，API 启动时和每小时的后台任务
+都会清理该仓库的会话（消息和任务行随外键级联），与确认页写的「30 天后自动
+清理」一致。清理和重新接入使用同一个 `repositories` 行锁：重新接入会重新确认
+原 owner、`removed` 状态和到期时间，过期时在同一事务内先删旧历史再恢复；清理
+在删除前也会锁行并复核「仍已移除且已到期」，因此不会误删重新接入后的新会话。
 
 回滚：`0024` 只删除 `deletion_operation_id` 和 ledger 行；`0023` 删除其余列和
 ledger 行。已停止的实例和已删除的本地副本不会因此恢复，重新升级后仓库重新
