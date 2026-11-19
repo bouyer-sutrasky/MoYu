@@ -148,6 +148,13 @@ const environmentSchema = z
       .default('commandcode/deepseek/deepseek-v4.1-flash'),
     EXECUTOR_REASONING_EFFORT: z.string().min(1).optional(),
     GITHUB_CLI: z.string().min(1).default('/root/.local/bin/gh-agent'),
+    /**
+     * The supervisor's `gh-agent` config directory, copied into every runtime
+     * home. Defaults to `<dirname(DSH_HOME)>/.config/gh-agent`; an explicit
+     * value lets an isolated test deployment use a separate credential store
+     * instead of the shared supervisor home.
+     */
+    GITHUB_CONFIG_DIR: z.string().min(1).optional(),
     GITHUB_ALLOWED_USERS: z.string().min(1).default('sutrasky'),
     GITHUB_ACCOUNT: z.string().min(1).default('Bouyer12'),
     GITHUB_COMMIT_EMAIL: z.string().email().default('202233540+Bouyer12@users.noreply.github.com'),
@@ -214,6 +221,7 @@ export interface SupervisorConfig {
   executorModel: string;
   executorReasoningEffort?: string;
   githubCli: string;
+  githubConfigDir?: string;
   githubAllowedUsers: string[];
   githubAccount: string;
   githubCommitEmail: string;
@@ -334,6 +342,7 @@ export function loadSupervisorConfig(
       ? { executorReasoningEffort: data.EXECUTOR_REASONING_EFFORT }
       : {}),
     githubCli: data.GITHUB_CLI,
+    ...(data.GITHUB_CONFIG_DIR ? { githubConfigDir: resolve(data.GITHUB_CONFIG_DIR) } : {}),
     githubAllowedUsers: data.GITHUB_ALLOWED_USERS.split(',')
       .map((value) => value.trim())
       .filter(Boolean),

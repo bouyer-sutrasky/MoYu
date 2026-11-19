@@ -9,6 +9,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -76,38 +77,68 @@ export function chownTree(path: string, uid: number, gid: number): void {
  * sessions and caches, and can only traverse its own profile/state directories.
  * The shared dshHome remains the supervisor's control-plane root; parents are
  * made traverse-only and the per-profile entries are owned by the runtime uid.
+ *
+ * Every profile gets a home, including dynamically allocated profiles with no
+ * pinned runtime identity. Without one, HOME/DSH_HOME fall back to the shared
+ * supervisor home, where the runtime cannot read `.config/gh-agent`; the GitHub
+ * account check then fails and the instance stops before it comes online.
  */
 function prepareRuntimeIdentity(
   config: SupervisorConfig,
   profile: string,
   profileDir: string,
   pinned: { runtimeUid?: number; runtimeGid?: number; runtimeHome?: string } | undefined,
-): { runtimeUid?: number; runtimeGid?: number; runtimeHome?: string; stateDir?: string } {
-  if (!pinned || pinned.runtimeUid === undefined || pinned.runtimeGid === undefined) {
-    return {};
-  }
-  const uid = pinned.runtimeUid;
-  const gid = pinned.runtimeGid;
-  const home = pinned.runtimeHome ?? join(config.dshHome, 'homes', profile);
+): { runtimeUid?: number; runtimeGid?: number; runtimeHome: string; stateDir: string } {
+  const uid = pinned?.runtimeUid;
+  const gid = pinned?.runtimeGid;
+  // A pinned profile runs as its own low-privilege identity. A dynamically
+  // allocated profile keeps the supervisor identity but still gets an isolated
+  // home, which is the boundary the deployment configured for it.
+  const privileged = uid !== undefined && gid !== undefined;
+  const home = pinned?.runtimeHome ?? join(config.dshHome, 'homes', profile);
   mkdirSync(home, { recursive: true, mode: 0o700 });
   chmodSync(home, 0o700);
-  chownSync(home, uid, gid);
+  if (privileged) chownSync(home, uid, gid);
 
   for (const name of ['.env', '.credentials.yaml', '.anonymous-user-id']) {
     const source = join(config.dshHome, name);
     if (!pathExists(source)) continue;
     const target = join(home, name);
+    // The runtime copies are read-only. Replacing a previous copy therefore
+    // needs the write permission of an already-owned 0400 file removed first.
+    rmSync(target, { force: true });
     cpSync(source, target);
     chmodSync(target, 0o400);
-    chownSync(target, uid, gid);
+    if (privileged) chownSync(target, uid, gid);
   }
 
-  const ghSource = join(dirname(config.dshHome), '.config', 'gh-agent');
-  if (pathExists(ghSource)) {
-    const ghTarget = join(home, '.config', 'gh-agent');
-    cpSync(ghSource, ghTarget, { recursive: true });
-    chownTree(join(home, '.config'), uid, gid);
-    chmodSync(ghTarget, 0o700);
+  // `gh-agent` resolves its credentials from `$HOME/.config/gh-agent` (or an
+  // explicit GH_CONFIG_DIR). Every runtime home carries its own copy so the
+  // managed GitHub account check works there. Missing source configuration is
+  // reported at prepare time instead of surfacing later as a stopped instance.
+  const ghSource = config.githubConfigDir ?? join(dirname(config.dshHome), '.config', 'gh-agent');
+  if (!pathExists(ghSource)) {
+    throw new Error(
+      `The GitHub CLI configuration is missing at ${ghSource}; the runtime home cannot be prepared. Configure GITHUB_CONFIG_DIR or install the agent account credentials.`,
+    );
+  }
+  const configDir = join(home, '.config');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  chmodSync(configDir, 0o700);
+  if (privileged) chownSync(configDir, uid, gid);
+  const ghTarget = join(configDir, 'gh-agent');
+  rmSync(ghTarget, { recursive: true, force: true });
+  cpSync(ghSource, ghTarget, { recursive: true });
+  if (privileged) chownTree(configDir, uid, gid);
+  chmodSync(configDir, 0o700);
+  chmodSync(ghTarget, 0o700);
+
+  // `dsh --profile <name>` resolves the profile under `$DSH_HOME/profiles`.
+  // The isolated home is a sibling of the shared profile root, so point the
+  // profile lookup at the supervisor-owned tree instead of copying profiles.
+  const profilesLink = join(home, 'profiles');
+  if (!pathExists(profilesLink) && pathExists(join(config.dshHome, 'profiles'))) {
+    symlinkSync(join(config.dshHome, 'profiles'), profilesLink, 'dir');
   }
 
   // Git/SSH material is per runtime home too. The shared config uses an
@@ -116,6 +147,7 @@ function prepareRuntimeIdentity(
   const sshSource = join(dirname(config.dshHome), '.ssh');
   if (pathExists(sshSource)) {
     const sshTarget = join(home, '.ssh');
+    rmSync(sshTarget, { recursive: true, force: true });
     cpSync(sshSource, sshTarget, { recursive: true });
     const sshConfig = join(sshTarget, 'config');
     if (pathExists(sshConfig)) {
@@ -125,7 +157,7 @@ function prepareRuntimeIdentity(
       );
       writeFileSync(sshConfig, rewritten, { mode: 0o600 });
     }
-    chownTree(sshTarget, uid, gid);
+    if (privileged) chownTree(sshTarget, uid, gid);
     chmodSync(sshTarget, 0o700);
     for (const entry of readdirSync(sshTarget, { withFileTypes: true })) {
       if (!entry.isFile()) continue;
@@ -145,7 +177,7 @@ function prepareRuntimeIdentity(
   }
   mkdirSync(privateState, { recursive: true, mode: 0o700 });
   chmodSync(privateState, 0o700);
-  chownSync(privateState, uid, gid);
+  if (privileged) chownSync(privateState, uid, gid);
   const stateDir = join(privateState, profile);
   const sharedState = join(config.dshHome, 'state', profile);
   if (!pathExists(stateDir)) {
@@ -155,7 +187,7 @@ function prepareRuntimeIdentity(
       mkdirSync(stateDir, { recursive: true, mode: 0o700 });
     }
   }
-  chownTree(stateDir, uid, gid);
+  if (privileged) chownTree(stateDir, uid, gid);
   chmodSync(stateDir, 0o700);
   rmSync(stateDir + '.lock', { recursive: true, force: true });
 
@@ -173,15 +205,21 @@ function prepareRuntimeIdentity(
     const path = join(home, privateDir);
     mkdirSync(path, { recursive: true, mode: 0o700 });
     chmodSync(path, 0o700);
-    chownSync(path, uid, gid);
+    if (privileged) chownSync(path, uid, gid);
   }
 
   // The runtime must be able to enter its own 0700 profile/state directories,
   // but not list or enter another repository's directories.
-  chownTree(profileDir, uid, gid);
-  chmodSync(profileDir, 0o700);
+  if (privileged) {
+    chownTree(profileDir, uid, gid);
+    chmodSync(profileDir, 0o700);
+  }
 
-  return { runtimeUid: uid, runtimeGid: gid, runtimeHome: home, stateDir };
+  return {
+    ...(privileged ? { runtimeUid: uid, runtimeGid: gid } : {}),
+    runtimeHome: home,
+    stateDir,
+  };
 }
 
 /** The managed instance environment written under `INSTANCE_ENV_DIR`. */
@@ -214,6 +252,31 @@ export function parseEnvFile(path: string): Record<string, string> {
     values[trimmed.slice(0, index).trim()] = trimmed.slice(index + 1).trim();
   }
   return values;
+}
+
+/**
+ * The exact environment a runtime starts with. Exported so tests cover the
+ * launched environment (HOME/DSH_HOME and the per-home caches) instead of only
+ * the returned provision metadata.
+ */
+export function instanceProcessEnvironment(
+  prepared: PreparedInstance,
+  config: SupervisorConfig,
+  base: Record<string, string>,
+): Record<string, string> {
+  const runtimeHome = prepared.runtimeHome ?? config.dshHome;
+  return {
+    ...base,
+    HOME: runtimeHome,
+    DSH_HOME: runtimeHome,
+    ...parseEnvFile(prepared.envFile),
+    ...(prepared.runtimeHome
+      ? {
+          TMPDIR: join(runtimeHome, 'tmp'),
+          XDG_CACHE_HOME: join(runtimeHome, 'cache'),
+        }
+      : {}),
+  };
 }
 
 /** Creates the group-shared worktree root used by both the runtime and the checks. */
