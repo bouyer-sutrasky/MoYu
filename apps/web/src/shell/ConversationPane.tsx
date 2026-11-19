@@ -67,6 +67,8 @@ interface ConversationPaneProps {
   pendingLoading: boolean;
   onOpenConversation: (conversationId: string) => void;
   onViewAllPending: () => void;
+  onRepositoryAction: (action: 'wake' | 'sleep' | 'retry' | 'retry_stop' | 'prepare') => void;
+  repositoryActionBusy: boolean;
 }
 
 function DeliveryBadge({ message }: { message: Message }) {
@@ -173,6 +175,8 @@ export function ConversationPane({
   pendingLoading,
   onOpenConversation,
   onViewAllPending,
+  onRepositoryAction,
+  repositoryActionBusy,
 }: ConversationPaneProps) {
   if (mode === 'chat') {
     return (
@@ -262,6 +266,8 @@ export function ConversationPane({
           onNewTask={onNewTask}
           onOpenConversation={onOpenConversation}
           onViewAllPending={onViewAllPending}
+          onRepositoryAction={onRepositoryAction}
+          repositoryActionBusy={repositoryActionBusy}
         />
       </div>
     );

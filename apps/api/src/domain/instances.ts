@@ -2,6 +2,7 @@ import { and, desc, eq, max } from 'drizzle-orm';
 
 import type {
   RepositoryGitPreparation,
+  RepositoryActivation,
   RepositoryRuntime,
   RepositoryRuntimeAction,
   RuntimeInstanceState,
@@ -195,6 +196,84 @@ export function preparationFor(instance: SupervisorInstance): RepositoryGitPrepa
   };
 }
 
+const QUEUED_REASONS = new Set(['capacity_wait', 'resource_wait', 'resource_over_budget']);
+
+/**
+ * The measured activation path: request -> queue -> repository copy ->
+ * process start -> online. Values come from persisted timestamps and the actual
+ * preparation row, so a long switch is explained by its real phase rather than
+ * one indefinite "starting" label.
+ */
+export function activationFor(
+  instance: SupervisorInstance,
+  preparation: RepositoryGitPreparation,
+  now: Date = new Date(),
+): RepositoryActivation {
+  const requestedAt = instance.activationRequestedAt
+    ? new Date(instance.activationRequestedAt)
+    : null;
+  const onlineAt = instance.lastOnlineAt ? new Date(instance.lastOnlineAt) : null;
+  let phase: RepositoryActivation['phase'];
+  if (instance.state === 'fault' || preparation.state === 'failed') {
+    phase = 'failed';
+  } else if (preparation.state === 'preparing') {
+    // The runtime process can be starting while its Git copy is still being
+    // prepared. The target repository is not usable before that copy is ready,
+    // so report the concrete blocker instead of a generic "starting".
+    phase = 'preparing';
+  } else if (instance.state === 'starting') {
+    phase = 'starting';
+  } else if (instance.state === 'online' && preparation.state === 'ready') {
+    phase = 'ready';
+  } else if (
+    instance.desiredState === 'online' &&
+    (instance.state === 'sleeping' || instance.state === 'stopping')
+  ) {
+    phase = 'queued';
+  } else {
+    phase = 'idle';
+  }
+  const readyMs =
+    requestedAt && onlineAt ? Math.max(0, onlineAt.getTime() - requestedAt.getTime()) : null;
+  // A failed activation has no end timestamp; do not keep counting time as if
+  // it were still progressing. The failure detail explains where it stopped.
+  const live =
+    phase === 'queued' || phase === 'preparing' || phase === 'starting' || phase === 'ready';
+  const elapsedMs =
+    requestedAt && live
+      ? Math.max(
+          0,
+          (phase === 'ready' && onlineAt ? onlineAt : now).getTime() - requestedAt.getTime(),
+        )
+      : null;
+  const detail =
+    phase === 'failed'
+      ? (safeDetail(instance.reasonDetail) ?? preparation.detail)
+      : phase === 'preparing'
+        ? preparation.detail
+        : phase === 'queued'
+          ? (safeDetail(instance.reasonDetail) ??
+            (QUEUED_REASONS.has(instance.reasonCode) ? '等待在线名额或内存余量' : null))
+          : null;
+  const retryAction: RepositoryActivation['retryAction'] =
+    phase === 'failed'
+      ? preparation.state === 'failed'
+        ? 'prepare'
+        : 'retry'
+      : phase === 'idle' && instance.state === 'sleeping'
+        ? 'wake'
+        : null;
+  return {
+    phase,
+    requestedAt: iso(requestedAt),
+    onlineAt: iso(onlineAt),
+    elapsedMs,
+    readyMs,
+    detail,
+    retryAction,
+  };
+}
+
 function reasonFor(
   instance: Pick<SupervisorInstance, 'state' | 'reasonCode' | 'reasonDetail' | 'lastHealthAt'>,
 ): { reasonCode: string; reason: string; listener: 'active' | 'paused' | 'unknown' } {
@@ -358,9 +437,11 @@ async function loadInstance(
       waitingFor: row.waitingFor,
       queuePriority: row.queuePriority,
       wakeRequestedAt: iso(row.wakeRequestedAt),
+      activationRequestedAt: iso(row.activationRequestedAt),
       lastActivityAt: iso(row.lastActivityAt),
       lastProgressAt: iso(row.lastProgressAt),
       lastStartedAt: iso(row.lastStartedAt),
+      lastOnlineAt: iso(row.lastOnlineAt),
       lastStoppedAt: iso(row.lastStoppedAt),
       lastHealthAt: iso(row.lastHealthAt),
       pid: row.pid,
@@ -449,6 +530,7 @@ export async function projectRuntime(
   const lease = await leaseFor(database, repository.id);
   const taskFacts = await facts(database, repository.id);
   const preparation = preparationFor(instance);
+  const activation = activationFor(instance, preparation);
   const preparationBlock = preparationReason(preparation);
   const baseReason = reasonFor(instance);
   const reason = preparationBlock ? { ...baseReason, reason: preparationBlock } : baseReason;
@@ -487,6 +569,7 @@ export async function projectRuntime(
     resource: resourceForRow(stateRow),
     lease,
     preparation,
+    activation,
   };
 }
 

@@ -79,6 +79,42 @@ export const repositoryGitPreparationSchema = z.object({
 export type RepositoryGitPreparation = z.infer<typeof repositoryGitPreparationSchema>;
 
 /**
+ * The owner-visible activation of one repository runtime. It distinguishes
+ * waiting for a slot, preparing the repository copy and starting the process,
+ * and carries the measured time from the request to an instance that accepts
+ * new work. It is derived from real timestamps, never estimated.
+ */
+export const repositoryActivationPhaseSchema = z.enum([
+  'idle',
+  'queued',
+  'preparing',
+  'starting',
+  'ready',
+  'failed',
+]);
+
+export type RepositoryActivationPhase = z.infer<typeof repositoryActivationPhaseSchema>;
+
+export const repositoryActivationSchema = z
+  .object({
+    phase: repositoryActivationPhaseSchema,
+    /** When this activation was requested; null for a repository never woken. */
+    requestedAt: isoTimestampSchema.nullable(),
+    /** When the process last finished startup verification and became online. */
+    onlineAt: isoTimestampSchema.nullable(),
+    /** requestedAt -> onlineAt when both exist; otherwise requestedAt -> now. */
+    elapsedMs: z.number().int().nonnegative().nullable(),
+    /** Full request-to-online duration; null until the instance is online. */
+    readyMs: z.number().int().nonnegative().nullable(),
+    detail: z.string().nullable(),
+    /** The owner action that can advance or retry this activation. */
+    retryAction: z.enum(['wake', 'retry', 'prepare']).nullable(),
+  })
+  .strict();
+
+export type RepositoryActivation = z.infer<typeof repositoryActivationSchema>;
+
+/**
  * The repository runtime projection. `reason` is already sanitised for display;
  * `reasonCode`/`waitingFor` stay machine-readable so the UI does not infer a
  * cause or invent an ETA. Unknown or stale facts are represented as unknown,
@@ -105,6 +141,8 @@ export const repositoryRuntimeSchema = z.object({
   lease: runtimeLeaseSchema.nullable(),
   /** Reusable Git copy used to build task workspaces without a remote clone. */
   preparation: repositoryGitPreparationSchema,
+  /** Measured phase and duration of the current/last online activation. */
+  activation: repositoryActivationSchema,
   actions: z.array(repositoryRuntimeActionSchema),
 });
 

@@ -1342,12 +1342,19 @@ export function WorkspaceShell({
   }, [repositories, route.repositoryId, route.settings?.repositoryId, selectedRepositoryId]);
 
   // A repository copy is prepared by the supervisor while the instance can be
-  // asleep or online. Poll only while it is preparing so the phase and the
-  // percentage come from Git's real progress, and stop when it settles.
+  // asleep or online. Poll only while it is preparing, or while the selected
+  // repository is still being switched in (queued/preparing/starting), so the
+  // phase, percentage and measured elapsed time come from real supervisor
+  // facts, and stop when it settles.
   const preparationState = selectedRepository?.runtime?.preparation.state;
+  const activationPhase = selectedRepository?.runtime?.activation.phase;
+  const activationActive =
+    activationPhase === 'queued' ||
+    activationPhase === 'preparing' ||
+    activationPhase === 'starting';
   useEffect(() => {
     const repositoryId = selectedRepositoryId;
-    if (!repositoryId || preparationState !== 'preparing') return;
+    if (!repositoryId || (preparationState !== 'preparing' && !activationActive)) return;
     let cancelled = false;
     const timer = window.setInterval(() => {
       void api
@@ -1370,7 +1377,7 @@ export function WorkspaceShell({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [preparationState, selectedRepositoryId]);
+  }, [preparationState, activationActive, selectedRepositoryId]);
 
   const sendMessage = useCallback(
     async (
@@ -1862,6 +1869,8 @@ export function WorkspaceShell({
               pendingLoading={pendingStatus === 'loading'}
               onOpenConversation={openConversation}
               onViewAllPending={() => setActivityOpen(true)}
+              onRepositoryAction={(action) => void handleRepositoryAction(action)}
+              repositoryActionBusy={repositoryActionBusy}
             />
           </main>
 

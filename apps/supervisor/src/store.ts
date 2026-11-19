@@ -26,9 +26,11 @@ export interface InstanceRow {
   waitingFor: string | null;
   queuePriority: number;
   wakeRequestedAt: Date | null;
+  activationRequestedAt: Date | null;
   lastActivityAt: Date | null;
   lastProgressAt: Date | null;
   lastStartedAt: Date | null;
+  lastOnlineAt: Date | null;
   lastStoppedAt: Date | null;
   lastHealthAt: Date | null;
   pid: number | null;
@@ -80,8 +82,10 @@ const INSTANCE_COLUMNS = `
   i.repository_id as "repositoryId", r.full_name as "fullName", r.default_branch as "defaultBranch",
   i.state, i.desired_state as "desiredState", i.reason_code as "reasonCode",
   i.reason_detail as "reasonDetail", i.waiting_for as "waitingFor", i.queue_priority as "queuePriority",
-  i.wake_requested_at as "wakeRequestedAt", i.last_activity_at as "lastActivityAt",
+  i.wake_requested_at as "wakeRequestedAt", i.activation_requested_at as "activationRequestedAt",
+  i.last_activity_at as "lastActivityAt",
   i.last_progress_at as "lastProgressAt", i.last_started_at as "lastStartedAt",
+  i.last_online_at as "lastOnlineAt",
   i.last_stopped_at as "lastStoppedAt", i.last_health_at as "lastHealthAt",
   i.pid, i.port, i.bridge_port as "bridgePort", i.profile, i.ownership, i.attempt_count as "attemptCount", i.error_code as "errorCode",
   i.error_detail as "errorDetail",
@@ -200,9 +204,11 @@ export class SupervisorStore {
       waitingFor: string | null;
       queuePriority: number;
       wakeRequestedAt: Date | null;
+      activationRequestedAt: Date | null;
       lastActivityAt: Date | null;
       lastProgressAt: Date | null;
       lastStartedAt: Date | null;
+      lastOnlineAt: Date | null;
       lastStoppedAt: Date | null;
       lastHealthAt: Date | null;
       pid: number | null;
@@ -238,9 +244,11 @@ export class SupervisorStore {
       waitingFor: 'waiting_for',
       queuePriority: 'queue_priority',
       wakeRequestedAt: 'wake_requested_at',
+      activationRequestedAt: 'activation_requested_at',
       lastActivityAt: 'last_activity_at',
       lastProgressAt: 'last_progress_at',
       lastStartedAt: 'last_started_at',
+      lastOnlineAt: 'last_online_at',
       lastStoppedAt: 'last_stopped_at',
       lastHealthAt: 'last_health_at',
       pid: 'pid',

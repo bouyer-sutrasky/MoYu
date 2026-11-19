@@ -2,7 +2,9 @@ import type { ConversationSummary, RepositorySummary } from '@moyu/contracts';
 
 import { Icon } from '../components/Icon';
 import {
+  formatElapsed,
   formatUpdatedAt,
+  repositoryActivationLabel,
   repositoryRuntimeLabel,
   runtimeResourceLabel,
   taskStateLabel,
@@ -60,6 +62,8 @@ export function WorkbenchHome({
   onNewTask,
   onOpenConversation,
   onViewAllPending,
+  onRepositoryAction,
+  repositoryActionBusy,
 }: {
   repository: RepositorySummary;
   conversations: ConversationSummary[];
@@ -72,6 +76,8 @@ export function WorkbenchHome({
   onNewTask: () => void;
   onOpenConversation: (conversationId: string) => void;
   onViewAllPending: () => void;
+  onRepositoryAction: (action: 'wake' | 'sleep' | 'retry' | 'retry_stop' | 'prepare') => void;
+  repositoryActionBusy: boolean;
 }) {
   const runtime = repository.runtime ?? null;
   const instance = repositoryRuntimeLabel(runtime);
@@ -90,6 +96,10 @@ export function WorkbenchHome({
         : '未知';
   const listener =
     runtime?.listener === 'active' ? '接收中' : runtime?.listener === 'paused' ? '已暂停' : '未知';
+  const activation = runtime?.activation ?? null;
+  const activationLabel = activation ? repositoryActivationLabel(activation) : null;
+  const activationElapsed = activation ? formatElapsed(activation.elapsedMs) : null;
+  const retryAction = activation?.retryAction ?? null;
 
   return (
     <div className={styles.home}>
@@ -133,6 +143,31 @@ export function WorkbenchHome({
           </div>
         </dl>
       </header>
+
+      {activationLabel ? (
+        <div className={styles.activationBanner} data-state={activation?.phase} role="status">
+          <div className={styles.activationRow}>
+            <strong>{activationLabel}</strong>
+            {activationElapsed ? <span>已用时 {activationElapsed}</span> : null}
+            {retryAction && !repositoryActionBusy ? (
+              <button
+                type="button"
+                className={styles.secondaryButton}
+                onClick={() => onRepositoryAction(retryAction)}
+              >
+                {retryAction === 'prepare'
+                  ? '重试准备'
+                  : retryAction === 'wake'
+                    ? '唤醒'
+                    : '重试启动'}
+              </button>
+            ) : null}
+          </div>
+          {activation?.detail ? (
+            <p className={styles.activationDetail}>{activation.detail}</p>
+          ) : null}
+        </div>
+      ) : null}
 
       <section className={styles.homeSection} aria-labelledby="home-attention-heading">
         <div className={styles.homeSectionHeading}>
