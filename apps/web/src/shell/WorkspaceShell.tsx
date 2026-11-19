@@ -26,6 +26,7 @@ import { ConversationPane } from './ConversationPane';
 import { DetailsPanel } from './DetailsPanel';
 import { SettingsDialog } from './SettingsDialog';
 import { AddRepositoryDialog } from './AddRepositoryDialog';
+import { RepositoryManagementDialog } from './RepositoryManagementDialog';
 import { RepositorySettingsDialog } from './RepositorySettingsDialog';
 import { Sidebar } from './Sidebar';
 import type { SettingsGroup } from '../superagent/contract';
@@ -182,6 +183,7 @@ export function WorkspaceShell({
   const [routeNotice, setRouteNotice] = useState<{ text: string; retry?: boolean } | null>(null);
   const [routeRetryKey, setRouteRetryKey] = useState(0);
   const [addRepositoryOpen, setAddRepositoryOpen] = useState(false);
+  const [repositoryManagementOpen, setRepositoryManagementOpen] = useState(false);
   const [repositorySettingsOpen, setRepositorySettingsOpen] = useState(false);
   const [repositoryActionBusy, setRepositoryActionBusy] = useState(false);
   const [repositoryActionError, setRepositoryActionError] = useState<string | null>(null);
@@ -1700,6 +1702,10 @@ export function WorkspaceShell({
             setAddRepositoryOpen(true);
             setSidebarOpen(false);
           }}
+          onOpenRepositoryManagement={() => {
+            setRepositoryManagementOpen(true);
+            setSidebarOpen(false);
+          }}
           onOpenRepositorySettings={() => {
             setRepositorySettingsOpen(true);
             setSidebarOpen(false);
@@ -1933,6 +1939,21 @@ export function WorkspaceShell({
           onClose={() => setHistoryOpen(false)}
           onOpenConversation={openConversationTarget}
           onSessionLost={onSessionLost}
+        />
+      ) : null}
+
+      {repositoryManagementOpen ? (
+        <RepositoryManagementDialog
+          repositories={repositories}
+          onClose={() => setRepositoryManagementOpen(false)}
+          onReload={loadRepositories}
+          onRemoved={(removedId) => {
+            const next = repositories.find((repository) => repository.id !== removedId);
+            if (selectedRepositoryIdRef.current === removedId) {
+              setSelectedRepositoryId(next?.id ?? null);
+              setSelectedConversationId(null);
+            }
+          }}
         />
       ) : null}
 

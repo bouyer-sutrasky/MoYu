@@ -41,6 +41,7 @@ interface SidebarProps {
   onReloadConversations: () => void;
   onNewTask: () => void;
   onOpenAddRepository: () => void;
+  onOpenRepositoryManagement: () => void;
   onOpenRepositorySettings: () => void;
   onRepositoryAction: (action: 'wake' | 'sleep' | 'retry' | 'retry_stop' | 'prepare') => void;
   repositoryActionBusy: boolean;
@@ -78,6 +79,7 @@ export function Sidebar({
   onReloadConversations,
   onNewTask,
   onOpenAddRepository,
+  onOpenRepositoryManagement,
   onOpenRepositorySettings,
   onRepositoryAction,
   repositoryActionBusy,
@@ -184,10 +186,23 @@ export function Sidebar({
           />
         )}
 
-        <button type="button" className={styles.addRepositoryButton} onClick={onOpenAddRepository}>
-          <Icon name="plus" size={15} />
-          添加仓库
-        </button>
+        <div className={styles.repositoryActions}>
+          <button
+            type="button"
+            className={styles.addRepositoryButton}
+            onClick={onOpenAddRepository}
+          >
+            <Icon name="plus" size={15} />
+            添加仓库
+          </button>
+          <button
+            type="button"
+            className={styles.addRepositoryButton}
+            onClick={onOpenRepositoryManagement}
+          >
+            管理仓库
+          </button>
+        </div>
 
         {selectedRepository && runtime ? (
           <div className={styles.repositoryRuntime} aria-live="polite">

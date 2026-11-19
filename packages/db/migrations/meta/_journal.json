@@ -162,6 +162,13 @@
       "when": 1795099412396,
       "tag": "0022_youthful_loki",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1795100752046,
+      "tag": "0023_fuzzy_pet_avengers",
+      "breakpoints": true
     }
   ]
 }

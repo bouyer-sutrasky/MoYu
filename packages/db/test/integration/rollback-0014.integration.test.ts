@@ -19,6 +19,7 @@ let downSql0019 = '';
 let downSql0020 = '';
 let downSql0021 = '';
 let downSql0022 = '';
+let downSql0023 = '';
 const databases: TestDatabase[] = [];
 
 const read = async (database: TestDatabase) => {
@@ -48,6 +49,7 @@ const messageColumn = async (database: TestDatabase): Promise<boolean> => {
  * scope, not this ticket's.
  */
 async function rollBackThrough0014(database: TestDatabase): Promise<void> {
+  await database.pool.query(downSql0023);
   await database.pool.query(downSql0022);
   await database.pool.query(downSql0021);
   await database.pool.query(downSql0020);
@@ -104,6 +106,10 @@ describe('0014 rollback script on real PostgreSQL', () => {
     );
     downSql0022 = await readFile(
       path.join(ROOT, 'packages/db/migrations/rollback/0022_youthful_loki.down.sql'),
+      'utf8',
+    );
+    downSql0023 = await readFile(
+      path.join(ROOT, 'packages/db/migrations/rollback/0023_fuzzy_pet_avengers.down.sql'),
       'utf8',
     );
   });

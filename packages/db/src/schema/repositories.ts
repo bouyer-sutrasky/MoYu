@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import {
   bigint,
   check,
+  integer,
   jsonb,
   pgTable,
   text,
@@ -42,6 +43,17 @@ export const repositories = pgTable(
      */
     checkCommands: jsonb('check_commands').$type<string[]>(),
     status: repositoryStatus('status').notNull().default('provisioning'),
+    /**
+     * Repository removal lifecycle. The row is retained so historical tasks and
+     * conversations keep their foreign keys; `removedAt` hides it from the
+     * workbench and `deletionState` makes progress/retry observable.
+     */
+    deletionState: text('deletion_state').notNull().default('none'),
+    deletionDetail: text('deletion_detail'),
+    deletionAttempts: integer('deletion_attempts').notNull().default(0),
+    deletionStartedAt: timestamp('deletion_started_at', { withTimezone: true }),
+    deletionFinishedAt: timestamp('deletion_finished_at', { withTimezone: true }),
+    removedAt: timestamp('removed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -53,6 +65,10 @@ export const repositories = pgTable(
     check(
       'repositories_check_commands_shape',
       sql`${table.checkCommands} is null or (jsonb_typeof(${table.checkCommands}) = 'array' and jsonb_array_length(${table.checkCommands}) between 1 and 8)`,
+    ),
+    check(
+      'repositories_deletion_state_check',
+      sql`${table.deletionState} in ('none', 'deleting', 'failed', 'removed')`,
     ),
   ],
 );

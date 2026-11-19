@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, eq, ne } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 
 import {
@@ -10,6 +10,7 @@ import {
   repositoryListDataSchema,
   repositoryRuntimeDataSchema,
   updateRepositoryInputSchema,
+  uuidSchema,
   type RepositorySummary,
 } from '@moyu/contracts';
 import { repositories, repositoryAuditEvents, type Database, type Repository } from '@moyu/db';
@@ -21,6 +22,7 @@ import {
   findOwnedRepository,
   setRepositoryCheckCommands,
 } from '../domain/repositories';
+import { deletionFor, removeRepository } from '../domain/repository-removal';
 import {
   createSupervisorClient,
   projectRuntime,
@@ -50,6 +52,7 @@ async function summarize(
     defaultBranch: repository.defaultBranch,
     status: repository.status,
     checkCommands: repository.checkCommands ?? null,
+    deletion: deletionFor(repository),
     runtime: await projectRuntime(database, config, repository),
     createdAt: repository.createdAt.toISOString(),
     updatedAt: repository.updatedAt.toISOString(),
@@ -78,7 +81,9 @@ export function registerRepositoryRoutes(
     const rows = await database
       .select()
       .from(repositories)
-      .where(eq(repositories.ownerId, auth.owner.id))
+      .where(
+        and(eq(repositories.ownerId, auth.owner.id), ne(repositories.deletionState, 'removed')),
+      )
       .orderBy(repositories.fullName);
 
     return sendData(
@@ -113,8 +118,12 @@ export function registerRepositoryRoutes(
       .from(repositories)
       .where(eq(repositories.fullName, input.fullName))
       .limit(1);
-    if (existing) {
-      throw ApiProblem.conflict('This repository has already been added');
+    if (existing && existing.deletionState !== 'removed') {
+      throw ApiProblem.conflict(
+        existing.deletionState === 'none'
+          ? 'This repository has already been added'
+          : 'The repository is being removed or its removal failed; retry or wait before adding it',
+      );
     }
 
     // GitHub is the authority for the repository identity, default branch and
@@ -125,6 +134,28 @@ export function registerRepositoryRoutes(
     let repository: Repository;
     try {
       repository = await database.transaction(async (transaction) => {
+        if (existing) {
+          const [restored] = await transaction
+            .update(repositories)
+            .set({
+              ownerId: auth.owner.id,
+              githubRepositoryId: github.githubRepositoryId,
+              defaultBranch: github.defaultBranch,
+              checkCommands: input.checkCommands ?? null,
+              status: 'provisioning',
+              deletionState: 'none',
+              deletionDetail: null,
+              deletionAttempts: 0,
+              deletionStartedAt: null,
+              deletionFinishedAt: null,
+              removedAt: null,
+              updatedAt: new Date(),
+            })
+            .where(eq(repositories.id, existing.id))
+            .returning();
+          if (!restored) throw new Error('repository restore returned no row');
+          return restored;
+        }
         const [created] = await transaction
           .insert(repositories)
           .values({
@@ -277,6 +308,42 @@ export function registerRepositoryRoutes(
       );
     },
   );
+
+  /**
+   * Starts a repository removal. The row is retained and hidden from the
+   * workbench; the host supervisor stops the instance and deletes only this
+   * repository's local resources. Repeating the request while a removal is in
+   * progress or failed retries it.
+   */
+  app.delete('/api/v1/repositories/:id', { preHandler: authenticate }, async (request, reply) => {
+    const auth = request.auth;
+    if (!auth) throw ApiProblem.unauthorized();
+    const params = request.params as { id?: string };
+    const id = uuidSchema.safeParse(params.id);
+    if (!id.success) throw ApiProblem.notFound('Repository not found');
+    const [repository] = await database
+      .select()
+      .from(repositories)
+      .where(eq(repositories.id, id.data))
+      .limit(1);
+    if (!repository || repository.ownerId !== auth.owner.id) {
+      throw ApiProblem.notFound('Repository not found');
+    }
+    const result = await removeRepository(database, config, repository, { log: request.log });
+    const [refreshed] = await database
+      .select()
+      .from(repositories)
+      .where(eq(repositories.id, repository.id))
+      .limit(1);
+    return sendData(
+      reply,
+      request,
+      repositoryDataSchema.parse({
+        repository: await summarize(database, config, refreshed ?? result.repository),
+      }),
+      result.alreadyRemoved ? 200 : 202,
+    );
+  });
 
   app.post(
     '/api/v1/repositories/:id/wake',

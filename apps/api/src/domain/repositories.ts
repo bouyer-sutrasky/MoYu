@@ -4,6 +4,7 @@ import type { Repository } from '@moyu/db';
 import { owners, repositories, repositoryAuditEvents, type Database } from '@moyu/db';
 
 import type { ApiConfig } from '../config';
+import { ApiProblem } from '../lib/errors';
 import { ensureLegacyInstance } from './instances';
 
 /**
@@ -62,6 +63,18 @@ export async function findOwnedRepository(
     .limit(1);
   if (!repository || repository.ownerId !== ownerId) {
     return undefined;
+  }
+  if (repository.deletionState === 'removed') {
+    throw ApiProblem.notFound(
+      '该仓库已从 MoYu 移除；历史任务与会话在保留期内只读保存，重新接入同一仓库可恢复。',
+    );
+  }
+  if (repository.deletionState === 'deleting' || repository.deletionState === 'failed') {
+    throw ApiProblem.conflict(
+      repository.deletionState === 'deleting'
+        ? '该仓库正在从 MoYu 移除；完成前不能开始新任务、准备仓库或修改设置。'
+        : `该仓库上次移除失败：${repository.deletionDetail ?? '原因未知'}。请重试移除或等待处理。`,
+    );
   }
   return repository;
 }

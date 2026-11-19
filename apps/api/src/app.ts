@@ -22,6 +22,7 @@ import { registerActivityRoutes } from './routes/activity';
 import { registerAttachmentRoutes } from './routes/attachments';
 import { registerCleanupRoutes } from './routes/cleanup';
 import { ensureConfiguredRepository } from './domain/repositories';
+import { recoverInterruptedDeletions } from './domain/repository-removal';
 import { registerAuthRoutes } from './routes/auth';
 import { registerConversationRoutes } from './routes/conversations';
 import { registerEventRoutes } from './routes/events';
@@ -68,6 +69,15 @@ export function buildApp({
       return randomUUID();
     },
   });
+
+  if (database) {
+    // A removal is a supervisor call plus two durable writes. A service restart
+    // between them must not leave the repository permanently "deleting": mark it
+    // retryable, and the same DELETE request resumes the idempotent cleanup.
+    app.addHook('onReady', async () => {
+      await recoverInterruptedDeletions(database);
+    });
+  }
 
   const eventBus = injectedEventBus ?? createAppEventBus();
   const ownsEventBus = injectedEventBus === undefined;
