@@ -1,0 +1,79 @@
+{
+  "label": "before",
+  "origin": "http://localhost:5174",
+  "scenarios": {
+    "restore": {
+      "url": "http://localhost:5174/?repo=22222222-2222-4222-8222-222222222222&conversation=b1111111-1111-4111-8111-111111111111",
+      "breadcrumb": "MoYu / / / Work / / / Bouyer12/alpha-fixture",
+      "betaVisible": false
+    },
+    "settings": {
+      "url": "http://localhost:5174/?repo=11111111-1111-4111-8111-111111111111&settings=superagent&settingsRepo=22222222-2222-4222-8222-222222222222&group=eval",
+      "dialog": 0,
+      "repository": null,
+      "evalCurrent": null
+    },
+    "newTaskDark": {
+      "styles": [
+        {
+          "field": "base-branch",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(249, 250, 251)",
+          "border": "rgba(255, 255, 255, 0.12)"
+        },
+        {
+          "field": "model",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(249, 250, 251)",
+          "border": "rgba(255, 255, 255, 0.12)"
+        },
+        {
+          "field": "reasoning",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(249, 250, 251)",
+          "border": "rgba(255, 255, 255, 0.12)"
+        }
+      ],
+      "focusBefore": "rgba(255, 255, 255, 0.12)",
+      "focusAfter": "rgb(122, 170, 255)",
+      "count": 3
+    },
+    "newTaskMobileDark": {
+      "triggerCount": 1,
+      "dialogStyles": {
+        "background": "rgba(0, 0, 0, 0)",
+        "color": "rgb(249, 250, 251)",
+        "border": "rgb(249, 250, 251)"
+      }
+    },
+    "newTaskLight": {
+      "styles": [
+        {
+          "field": "base-branch",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(15, 17, 21)",
+          "border": "rgba(0, 0, 0, 0.1)"
+        },
+        {
+          "field": "model",
+          "background": "rgb(255, 255, 255)",
+          "color": "rgb(15, 17, 21)",
+          "border": "rgba(0, 0, 0, 0.1)"
+        }
+      ]
+    },
+    "cancel": {
+      "created": 0,
+      "returnedToHome": true
+    }
+  },
+  "requests": [],
+  "screenshots": [
+    "/tmp/m6c-c-evidence/before/restore-beta-conversation.png",
+    "/tmp/m6c-c-evidence/before/restore-beta-settings-eval.png",
+    "/tmp/m6c-c-evidence/before/new-task-dark-desktop.png",
+    "/tmp/m6c-c-evidence/before/new-task-dark-mobile-selector.png",
+    "/tmp/m6c-c-evidence/before/new-task-dark-mobile.png",
+    "/tmp/m6c-c-evidence/before/new-task-light-desktop.png"
+  ]
+}

@@ -1,0 +1,63 @@
+[WARN] Unsupported engine: wanted: {"node":"24.22.2"} (current: {"node":"v22.23.3","pnpm":"11.7.0"})
+$ pnpm -r --if-present build
+.                                        | [WARN] Unsupported engine: wanted: {"node":"24.22.2"} (current: {"node":"v22.23.3","pnpm":"11.7.0"})
+Scope: 8 of 9 workspace projects
+apps/web build$ vite build
+apps/web build: vite v7.3.7 building client environment for production...
+apps/web build: transforming...
+apps/web build: ../../node_modules/.pnpm/zod@4.6.7/node_modules/zod/v4/core/regexes.js (74:0): A comment
+apps/web build: "/** Anchors a pattern source. The interpolation lives here rather than at the call site because
+apps/web build:  * esbuild will not drop a `@__PURE__` call whose own argument interpolates a variable, but it
+apps/web build:  * will drop `anchor(dateSource)`. Keeping it inline pinned `date` into every bundle. */"
+apps/web build: in "../../node_modules/.pnpm/zod@4.6.7/node_modules/zod/v4/core/regexes.js" contains an annotation that Rollup cannot interpret due to the position of the comment. The comment will be removed to avoid issues.
+apps/web build: ../../node_modules/.pnpm/zod@4.6.7/node_modules/zod/v4/core/util.js (400:0): A comment
+apps/web build: "// Wrapped in a `@__PURE__` IIFE: esbuild never tree-shakes a top-level initializer that contains a member access on `Number`, so the bare object literal survived into every bundle."
+apps/web build: in "../../node_modules/.pnpm/zod@4.6.7/node_modules/zod/v4/core/util.js" contains an annotation that Rollup cannot interpret due to the position of the comment. The comment will be removed to avoid issues.
+apps/web build: ✓ 237 modules transformed.
+apps/web build: rendering chunks...
+apps/web build: computing gzip size...
+apps/web build: dist/index.html                   0.66 kB │ gzip:   0.35 kB
+apps/web build: dist/assets/index-D6JsrCgE.css  133.98 kB │ gzip:  18.70 kB
+apps/web build: dist/assets/index-B7gKOueU.js   671.48 kB │ gzip: 204.92 kB │ map: 2,563.37 kB
+apps/web build: ✓ built in 3.10s
+apps/web build: (!) Some chunks are larger than 500 kB after minification. Consider:
+apps/web build: - Using dynamic import() to code-split the application
+apps/web build: - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+apps/web build: - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+apps/web build: Done
+apps/dispatcher build$ tsup
+apps/api build$ tsup
+apps/supervisor build$ tsup
+apps/api build: CLI Building entry: src/server.ts
+apps/api build: CLI Using tsconfig: tsconfig.json
+apps/api build: CLI tsup v8.5.1
+apps/api build: CLI Using tsup config: /root/src/restore-theme-copy-9668d9fb46f7/apps/api/tsup.config.ts
+apps/api build: CLI Target: node24
+apps/api build: CLI Cleaning output folder
+apps/api build: ESM Build start
+apps/dispatcher build: CLI Building entry: src/main.ts
+apps/dispatcher build: CLI Using tsconfig: tsconfig.json
+apps/dispatcher build: CLI tsup v8.5.1
+apps/dispatcher build: CLI Using tsup config: /root/src/restore-theme-copy-9668d9fb46f7/apps/dispatcher/tsup.config.ts
+apps/dispatcher build: CLI Target: node24
+apps/dispatcher build: CLI Cleaning output folder
+apps/supervisor build: CLI Building entry: src/main.ts
+apps/supervisor build: CLI Using tsconfig: tsconfig.json
+apps/supervisor build: CLI tsup v8.5.1
+apps/supervisor build: CLI Using tsup config: /root/src/restore-theme-copy-9668d9fb46f7/apps/supervisor/tsup.config.ts
+apps/supervisor build: CLI Target: node24
+apps/dispatcher build: ESM Build start
+apps/supervisor build: CLI Cleaning output folder
+apps/supervisor build: ESM Build start
+apps/api build: ESM dist/server.js     359.29 KB
+apps/api build: ESM dist/server.js.map 728.29 KB
+apps/api build: ESM ⚡️ Build success in 171ms
+apps/dispatcher build: ESM dist/main.js     267.04 KB
+apps/dispatcher build: ESM dist/main.js.map 532.62 KB
+apps/dispatcher build: ESM ⚡️ Build success in 154ms
+apps/api build: Done
+apps/dispatcher build: Done
+apps/supervisor build: ESM dist/main.js     383.50 KB
+apps/supervisor build: ESM dist/main.js.map 873.28 KB
+apps/supervisor build: ESM ⚡️ Build success in 221ms
+apps/supervisor build: Done

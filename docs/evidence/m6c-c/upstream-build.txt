@@ -1,0 +1,90 @@
+==> pinned source verified: dsh-superagent@0.1.0 (6337fc823ce20251c8de8085948165c81aaa701e)
+==> source: /root/src/upstream/superagent-tar/dsh-superagent-prototype-6337fc823ce2
+==> build:  /tmp/moyu-m3-upstream.5qMaw5
+==> output: /tmp/m6c-c-artifact
+==> applying 30 patches in order
+    git apply --check 0001-workspace-source.patch
+    git apply --check 0002-machine-bridge.patch
+    git apply --check 0003-ticket-freeze.patch
+    git apply --check 0004-bridge-duplicate-first-result.patch
+    git apply --check 0005-discussion-mode.patch
+    git apply --check 0006-recoverable-pause.patch
+    git apply --check 0007-bridge-execution-control.patch
+    git apply --check 0008-github-import.patch
+    git apply --check 0009-discussion-ready-stays-open.patch
+    git apply --check 0010-projection-current-assignment.patch
+    git apply --check 0011-resume-does-not-reopen-closed-pr.patch
+    git apply --check 0012-poll-closed-follows.patch
+    git apply --check 0013-pause-process-tree.patch
+    git apply --check 0014-resume-worktree-closed-pr.patch
+    git apply --check 0015-discuss-read-boundary.patch
+    git apply --check 0016-discuss-local-tool-guard.patch
+    git apply --check 0017-docs-process-tree-test.patch
+    git apply --check 0018-github-base-head.patch
+    git apply --check 0019-pause-child-processes.patch
+    git apply --check 0020-discuss-sandbox.patch
+    git apply --check 0021-bridge-branches.patch
+    git apply --check 0022-link-and-ignore-events.patch
+    git apply --check 0023-execution-admission.patch
+    git apply --check 0024-pause-before-start.patch
+    git apply --check 0025-workspace-attachments.patch
+    git apply --check 0026-origin-message-receipts.patch
+    git apply --check 0027-prepare-phases.patch
+    git apply --check 0028-workspace-trigger-null.patch
+    git apply --check 0029-input-assignment.patch
+    git apply --check 0030-language-section.patch
+==> reusing node_modules of the same source tree
+==> pnpm typecheck
+$ tsc --noEmit
+==> pnpm build
+$ tsdown
+[34mℹ[39m [34mtsdown v0.22.14[39m powered by [91mrolldown v1.2.7[39m
+[34mℹ[39m config file: [4m/tmp/moyu-m3-upstream.5qMaw5/tsdown.config.ts[24m 
+[34mℹ[39m entry: [34msrc/index.ts, src/sources/github.ts, src/sources/feishu.ts, src/sources/workspace.ts[39m
+[34mℹ[39m target: [34mes2024[39m
+[34mℹ[39m tsconfig: [34mtsconfig.json[39m
+[34mℹ[39m entry: [34msrc/client/index.tsx[39m
+[34mℹ[39m target: [34mnode22.19.0[39m
+[34mℹ[39m tsconfig: [34mtsconfig.json[39m
+[34mℹ[39m Build start
+
+[43m WARN [49m We recommend using the ESM format instead of CommonJS.
+The ESM format is compatible with modern platforms and runtimes, and most new libraries are now distributed only in ESM format.
+Learn more at https://nodejs.org/en/learn/modules/publishing-a-package#how-did-we-get-here
+
+[34mℹ[39m [33m[CJS][39m [2mlib/[22m[1mclient.js[22m  [2m360.96 kB[22m [2m│ gzip: 87.40 kB[22m
+[34mℹ[39m [33m[CJS][39m 1 files, total: 360.96 kB
+[32m✔[39m Build complete in [32m3668ms[39m
+[34mℹ[39m [34m[ESM][39m [2mlib/[22m[1mindex.js[22m                 [2m564.01 kB[22m [2m│ gzip: 156.46 kB[22m
+[34mℹ[39m [34m[ESM][39m [2mlib/[22m[1mgithub-watch.js[22m          [2m 33.94 kB[22m [2m│ gzip:  11.00 kB[22m
+[34mℹ[39m [34m[ESM][39m [2mlib/[22m[1mworkspace-watch.js[22m       [2m 13.20 kB[22m [2m│ gzip:   5.04 kB[22m
+[34mℹ[39m [34m[ESM][39m [2mlib/[22m[1mfeishu-watch.js[22m          [2m  0.60 kB[22m [2m│ gzip:   0.29 kB[22m
+[34mℹ[39m [34m[ESM][39m [2mlib/[22mfeishu-CU6_pbdN.js       [2m 48.36 kB[22m [2m│ gzip:  14.59 kB[22m
+[34mℹ[39m [34m[ESM][39m [2mlib/[22mpoll-CtaLugLw.js         [2m 38.52 kB[22m [2m│ gzip:  13.55 kB[22m
+[34mℹ[39m [34m[ESM][39m [2mlib/[22mgithub-pull-BR9nZakB.js  [2m 25.46 kB[22m [2m│ gzip:   8.25 kB[22m
+[34mℹ[39m [34m[ESM][39m [2mlib/[22mhost-B64LgdSs.js         [2m  1.92 kB[22m [2m│ gzip:   1.05 kB[22m
+[34mℹ[39m [34m[ESM][39m [2mlib/[22m[32m[1mindex.d.ts[22m[39m               [2m 29.24 kB[22m [2m│ gzip:   8.78 kB[22m
+[34mℹ[39m [34m[ESM][39m [2mlib/[22m[32m[1mfeishu-watch.d.ts[22m[39m        [2m  5.98 kB[22m [2m│ gzip:   2.00 kB[22m
+[34mℹ[39m [34m[ESM][39m [2mlib/[22m[32m[1mworkspace-watch.d.ts[22m[39m     [2m  4.58 kB[22m [2m│ gzip:   1.92 kB[22m
+[34mℹ[39m [34m[ESM][39m [2mlib/[22m[32m[1mgithub-watch.d.ts[22m[39m        [2m  0.39 kB[22m [2m│ gzip:   0.22 kB[22m
+[34mℹ[39m [34m[ESM][39m [2mlib/[22m[32mkind-DwFliPt0.d.ts[39m       [2m 36.16 kB[22m [2m│ gzip:   9.09 kB[22m
+[34mℹ[39m [34m[ESM][39m [2mlib/[22m[32mintake-BfHiPeW6.d.ts[39m     [2m 34.37 kB[22m [2m│ gzip:  10.72 kB[22m
+[34mℹ[39m [34m[ESM][39m 14 files, total: 836.73 kB
+[33m[PLUGIN_TIMINGS] [0mPlugin hooks ran for 3.8s of this 4.0s build (94%).
+The slowest hooks, timed inside each callback (the wait before a callback starts is excluded, the time it awaits is included):
+  - rolldown-plugin-dts:generate load (83%, 3.3s, 43 calls)
+Additional hook time came from the hooks below and from hooks under 1s.
+3 hooks are listed without a time. Their calls overlapped, so the time inside one call includes work from other calls. To find their cost, profile the build with `node --cpu-prof`:
+  - rolldown-plugin-dts:resolver resolveId (306 calls)
+  - tsdown:deps resolveId (98 calls)
+  - rolldown-plugin-dts:fake-js transform (43 calls)
+See https://rolldown.rs/reference/InputOptions.checks#plugintimings for more details.
+
+[32m✔[39m Build complete in [32m4306ms[39m
+==> publishing the built package to new directory /tmp/m6c-c-artifact
+==> done
+lib files: 15
+d428e669805ea1dfb6a4900bddbffe3cafb8f06a0b1eb139266c2b2f6b94b021  /tmp/m6c-c-artifact/package.json
+c91fab94d3a27c7068b5f5391907fb4d69342112ad50f987fdfed9985c2c7905  /tmp/m6c-c-artifact/cordis.patch.yml
+1fc0dbea8926deec4a724de700482f010d64fef032687e514782d523d6b54b66  /tmp/m6c-c-artifact/lib/index.js
+dd754970119e44df9db093ae42012592aefbe34395d377920edea533e61cdc4f  /tmp/m6c-c-artifact/lib/workspace-watch.js

@@ -1,0 +1,11 @@
+ok   Harness package version                              0.2.1-rc.2
+ok   superagent package version                           0.1.0
+ok   Harness package files manifest                       1e001a9d058149eb84a8646dc547789aa370d541f98b0ab2d368bf6b13f0fd34
+ok   Harness entry sha256                                 80112efe368efb1a39720c7ada0af00442e5131fb2744edaaff8a3e8bb499e6f
+ok   Harness package file count                           20
+ok   superagent source manifest                           d50cacb9be5acd49553a44af48df6b4774e5428bf036e204811ed40e2f3c6711
+ok   superagent source file count                         216
+ok   superagent lib manifest                              c2ca910f54b990455ed3ded026d858a7b480ad1ffdb562e50ad4f0b9bf0d1047
+ok   superagent lib file count                            12
+
+baseline ok: installed artifacts match /root/src/restore-theme-copy-9668d9fb46f7/integrations/superagent/upstream.lock.json
