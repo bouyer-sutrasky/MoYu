@@ -1,0 +1,58 @@
+{
+  "baseUrl": "http://127.0.0.1:3102/",
+  "label": "unsupported",
+  "mode": "unsupported",
+  "expect": "unsupported",
+  "startedAt": "2026-11-19T11:53:49.402Z",
+  "steps": [
+    {
+      "name": "authenticated",
+      "at": "2026-11-19T11:53:50.246Z",
+      "owner": "Real Task Owner",
+      "conversationTitle": "请用中文完成一个很小的任务：在仓库根目录新建 m6c-language-check.txt，内容写“中文回执验证”。开始前先发一条中文接单说明；完成后用中文总…"
+    },
+    {
+      "name": "page-ready",
+      "at": "2026-11-19T11:53:52.169Z",
+      "url": "http://127.0.0.1:3102/?repo=cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "permission": "undefined",
+      "registrations": [
+        "http://127.0.0.1:3102/"
+      ],
+      "unread": 0
+    },
+    {
+      "name": "runtime-event-posted",
+      "at": "2026-11-19T11:53:52.326Z",
+      "sourceEventId": "m6c-d-unsupported-1795089232279",
+      "messageId": "099b5bc8-cdd9-46a0-8a2e-e7faa6c36cbe"
+    },
+    {
+      "name": "notification-attempt",
+      "at": "2026-11-19T11:53:52.356Z",
+      "attempt": {
+        "id": "9be2552b-e4d3-4820-8e7f-41a523348527",
+        "category": "needs_reply",
+        "result": "unsupported"
+      },
+      "delivered": [],
+      "shown": 0,
+      "notifications": 0,
+      "unread": 1
+    },
+    {
+      "name": "activity-fallback",
+      "at": "2026-11-19T11:53:52.631Z",
+      "activityText": 1
+    }
+  ],
+  "failures": [],
+  "screenshots": [
+    "/tmp/m6c-d-evidence/unsupported-home-mobile.png",
+    "/tmp/m6c-d-evidence/unsupported-activity-unsupported.png",
+    "/tmp/m6c-d-evidence/unsupported-settings-unsupported.png"
+  ],
+  "authenticated": true,
+  "ok": true,
+  "finishedAt": "2026-11-19T11:53:53.892Z"
+}

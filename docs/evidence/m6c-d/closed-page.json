@@ -1,0 +1,17 @@
+{
+  "origin": "http://127.0.0.1:3102",
+  "at": "2026-11-19T11:54:21.832Z",
+  "active": {
+    "scope": "http://127.0.0.1:3102/",
+    "notifications": 0
+  },
+  "state": {
+    "registrations": [
+      "http://127.0.0.1:3102/"
+    ],
+    "notifications": [],
+    "eventInActivity": true,
+    "activityCount": 3
+  },
+  "ok": true
+}

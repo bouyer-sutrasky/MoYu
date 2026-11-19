@@ -1,0 +1,47 @@
+{
+  "baseUrl": "http://localhost:3104/",
+  "repository": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+  "conversation": "178ee9e7-2edb-494f-ae5c-beb1a8a7dadc",
+  "startedAt": "2026-11-19T13:21:40.640Z",
+  "steps": [
+    {
+      "name": "workbench-ready",
+      "at": "2026-11-19T13:21:43.148Z",
+      "url": "http://localhost:3104/?repo=cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    },
+    {
+      "name": "click-in-place",
+      "at": "2026-11-19T13:21:44.711Z",
+      "url": "http://localhost:3104/?repo=cccccccc-cccc-4ccc-8ccc-cccccccccccc&conversation=178ee9e7-2edb-494f-ae5c-beb1a8a7dadc",
+      "markerBeforeClick": "7ba66623-1622-405b-8794-7c5851172b29",
+      "markerAfterClick": "7ba66623-1622-405b-8794-7c5851172b29",
+      "markerSurvived": true
+    },
+    {
+      "name": "expired-login-ready",
+      "at": "2026-11-19T13:21:45.930Z",
+      "url": "http://localhost:3104/?repo=cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    },
+    {
+      "name": "expired-login-after-navigate",
+      "at": "2026-11-19T13:21:46.729Z",
+      "url": "http://localhost:3104/?repo=cccccccc-cccc-4ccc-8ccc-cccccccccccc&conversation=178ee9e7-2edb-494f-ae5c-beb1a8a7dadc"
+    },
+    {
+      "name": "expired-after-login",
+      "at": "2026-11-19T13:21:47.012Z",
+      "url": "http://localhost:3104/?repo=cccccccc-cccc-4ccc-8ccc-cccccccccccc&conversation=178ee9e7-2edb-494f-ae5c-beb1a8a7dadc",
+      "breadcrumb": "/\nWork\n/\nBouyer12/m6c-c-real-task-1795085845\n/\n请用中文完成一个很小的任务：在仓库根目录新建 m6c-language-check.txt，内容写“中文回执验证”。开始前先发一条中文接单说明；完成后用中文总…"
+    }
+  ],
+  "failures": [],
+  "screenshots": [
+    "/tmp/m6c-d-e2e/click-in-place-before.png",
+    "/tmp/m6c-d-e2e/click-in-place-after.png",
+    "/tmp/m6c-d-e2e/expired-login-before-click.png",
+    "/tmp/m6c-d-e2e/expired-login-after-navigate.png",
+    "/tmp/m6c-d-e2e/expired-after-login-target.png"
+  ],
+  "ok": true,
+  "finishedAt": "2026-11-19T13:21:47.012Z"
+}

@@ -1,0 +1,112 @@
+{
+  "baseUrl": "http://127.0.0.1:3102/",
+  "label": "after",
+  "mode": "mobile",
+  "expect": "delivered",
+  "startedAt": "2026-11-19T11:53:18.243Z",
+  "steps": [
+    {
+      "name": "authenticated",
+      "at": "2026-11-19T11:53:19.064Z",
+      "owner": "Real Task Owner",
+      "conversationTitle": "请用中文完成一个很小的任务：在仓库根目录新建 m6c-language-check.txt，内容写“中文回执验证”。开始前先发一条中文接单说明；完成后用中文总…"
+    },
+    {
+      "name": "page-ready",
+      "at": "2026-11-19T11:53:21.000Z",
+      "url": "http://127.0.0.1:3102/?repo=cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "permission": "granted",
+      "registrations": [
+        "http://127.0.0.1:3102/"
+      ],
+      "unread": 0
+    },
+    {
+      "name": "runtime-event-posted",
+      "at": "2026-11-19T11:53:21.161Z",
+      "sourceEventId": "m6c-d-after-1795089201114",
+      "messageId": "605fbd2b-b9c4-46a9-b9c6-dcefccfc312c"
+    },
+    {
+      "name": "notification-attempt",
+      "at": "2026-11-19T11:53:21.191Z",
+      "attempt": {
+        "id": "4e6e4d46-ec9f-4491-8de2-04e739f0c2ec",
+        "category": "needs_reply",
+        "result": "delivered",
+        "via": "service-worker"
+      },
+      "delivered": [
+        {
+          "id": "4e6e4d46-ec9f-4491-8de2-04e739f0c2ec",
+          "title": "Bouyer12/m6c-c-real-task-1795085845 · 需要回复",
+          "body": "真机通知复测：请确认是否继续。",
+          "tag": "moyu:4e6e4d46-ec9f-4491-8de2-04e739f0c2ec",
+          "via": "service-worker"
+        }
+      ],
+      "shown": 1,
+      "notifications": 1,
+      "unread": 1
+    },
+    {
+      "name": "activity-fallback",
+      "at": "2026-11-19T11:53:21.479Z",
+      "activityText": 1
+    },
+    {
+      "name": "service-worker-notification",
+      "at": "2026-11-19T11:53:21.488Z",
+      "title": "Bouyer12/m6c-c-real-task-1795085845 · 需要回复",
+      "body": "真机通知复测：请确认是否继续。",
+      "tag": "moyu:4e6e4d46-ec9f-4491-8de2-04e739f0c2ec",
+      "data": {
+        "conversationId": "178ee9e7-2edb-494f-ae5c-beb1a8a7dadc",
+        "repositoryId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        "eventId": "4e6e4d46-ec9f-4491-8de2-04e739f0c2ec"
+      }
+    },
+    {
+      "name": "notification-click-route",
+      "at": "2026-11-19T11:53:22.632Z",
+      "url": "http://127.0.0.1:3102/?repo=cccccccc-cccc-4ccc-8ccc-cccccccccccc&conversation=178ee9e7-2edb-494f-ae5c-beb1a8a7dadc",
+      "breadcrumb": "/\nWork\n/\nBouyer12/m6c-c-real-task-1795085845\n/\n请用中文完成一个很小的任务：在仓库根目录新建 m6c-language-check.txt，内容写“中文回执验证”。开始前先发一条中文接单说明；完成后用中文总…"
+    },
+    {
+      "name": "notification-click-invalid-target",
+      "at": "2026-11-19T11:53:22.764Z",
+      "search": "?repo=cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    },
+    {
+      "name": "duplicate-after-reload",
+      "at": "2026-11-19T11:53:23.060Z",
+      "attempt": {
+        "id": "4e6e4d46-ec9f-4491-8de2-04e739f0c2ec",
+        "category": "needs_reply",
+        "result": "duplicate"
+      },
+      "shown": 0,
+      "notifications": 0
+    },
+    {
+      "name": "reconnect",
+      "at": "2026-11-19T11:53:26.859Z",
+      "before": 1,
+      "after": 1,
+      "shown": 0
+    }
+  ],
+  "failures": [],
+  "screenshots": [
+    "/tmp/m6c-d-evidence/after-home-mobile.png",
+    "/tmp/m6c-d-evidence/after-activity-mobile.png",
+    "/tmp/m6c-d-evidence/after-click-route-mobile.png",
+    "/tmp/m6c-d-evidence/after-click-invalid-target-mobile.png",
+    "/tmp/m6c-d-evidence/after-duplicate-after-reload-mobile.png",
+    "/tmp/m6c-d-evidence/after-reconnect-mobile.png",
+    "/tmp/m6c-d-evidence/after-settings-mobile.png"
+  ],
+  "authenticated": true,
+  "ok": true,
+  "finishedAt": "2026-11-19T11:53:28.116Z"
+}

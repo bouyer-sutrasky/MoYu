@@ -1128,15 +1128,43 @@ export function WorkspaceShell({
         // dialog over the conversation it opened.
         settings: null,
       });
-      if (selectedRepositoryIdRef.current !== target.repositoryId) {
-        pendingOpenRef.current = target;
-        setSelectedRepositoryId(target.repositoryId);
-      } else {
-        setSelectedConversationId(target.conversationId);
-      }
+      // The address effect validates the target (`GET conversations/:id`)
+      // before it opens it, so a deleted or forbidden conversation falls back
+      // with the same visible notice as a refresh. Setting the selection here
+      // would let an invalid notification target bypass that check.
     },
     [commitRoute],
   );
+
+  // A notification click handled by the Service Worker focuses this window and
+  // posts the target instead of reloading. Route in place so drafts, the
+  // activity panel and the current task state survive the click.
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+    const onMessage = (event: MessageEvent) => {
+      const payload: unknown = event.data;
+      if (typeof payload !== 'object' || payload === null) return;
+      const message = payload as Record<string, unknown>;
+      if (message.type !== 'moyu:notification-open') return;
+      if (typeof message.repositoryId !== 'string' || typeof message.conversationId !== 'string') {
+        return;
+      }
+      window.focus();
+      openConversationTarget({
+        repositoryId: message.repositoryId,
+        conversationId: message.conversationId,
+      });
+      // The worker waits for this acknowledgement before it decides the
+      // in-page route succeeded. Without it, a login page (or a window whose
+      // listener has not mounted) would silently swallow the click and the
+      // address would keep no target for the next sign-in.
+      const port = event.ports[0];
+      port?.postMessage({ type: 'moyu:notification-consumed' });
+      port?.close();
+    };
+    navigator.serviceWorker.addEventListener('message', onMessage);
+    return () => navigator.serviceWorker.removeEventListener('message', onMessage);
+  }, [openConversationTarget]);
 
   const handleWorkspaceEvent = useCallback(
     (event: WorkspaceEvent) => {
