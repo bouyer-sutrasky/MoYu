@@ -39,11 +39,11 @@ $ pnpm -r --if-present test && node --test scripts/m3/guard.test.mjs integration
 Scope: 8 of 9 workspace projects
 packages/contracts test$ vitest run
 packages/contracts test:  RUN  v3.2.7 /root/src/restore-theme-copy-9668d9fb46f7/packages/contracts
-packages/contracts test:  ✓ test/contracts.test.ts (26 tests) 46ms
+packages/contracts test:  ✓ test/contracts.test.ts (26 tests) 45ms
 packages/contracts test:  Test Files  1 passed (1)
 packages/contracts test:       Tests  26 passed (26)
-packages/contracts test:    Start at  17:58:46
-packages/contracts test:    Duration  585ms (transform 163ms, setup 0ms, collect 290ms, tests 46ms, environment 0ms, prepare 79ms)
+packages/contracts test:    Start at  18:01:19
+packages/contracts test:    Duration  584ms (transform 161ms, setup 0ms, collect 283ms, tests 45ms, environment 0ms, prepare 80ms)
 packages/contracts test: Done
 apps/web test$ node --test src/shell/workspaceRoute.test.mjs
 packages/runtime-client test$ vitest run
@@ -51,37 +51,37 @@ apps/web test: TAP version 13
 apps/web test: # Subtest: an empty search restores no target and no settings dialog
 apps/web test: ok 1 - an empty search restores no target and no settings dialog
 apps/web test:   ---
-apps/web test:   duration_ms: 1.809285
+apps/web test:   duration_ms: 1.77163
 apps/web test:   type: 'test'
 apps/web test:   ...
 apps/web test: # Subtest: parses the workbench repository and conversation only when they are UUIDs
 apps/web test: ok 2 - parses the workbench repository and conversation only when they are UUIDs
 apps/web test:   ---
-apps/web test:   duration_ms: 0.538961
+apps/web test:   duration_ms: 0.497806
 apps/web test:   type: 'test'
 apps/web test:   ...
 apps/web test: # Subtest: restores a settings section, its independent repository and its group
 apps/web test: ok 3 - restores a settings section, its independent repository and its group
 apps/web test:   ---
-apps/web test:   duration_ms: 0.371175
+apps/web test:   duration_ms: 0.362945
 apps/web test:   type: 'test'
 apps/web test:   ...
 apps/web test: # Subtest: an unknown settings section leaves the dialog closed and ignores its sub-keys
 apps/web test: ok 4 - an unknown settings section leaves the dialog closed and ignores its sub-keys
 apps/web test:   ---
-apps/web test:   duration_ms: 0.297877
+apps/web test:   duration_ms: 0.281995
 apps/web test:   type: 'test'
 apps/web test:   ...
 apps/web test: # Subtest: serializes in a stable order and round-trips every addressable field
 apps/web test: ok 5 - serializes in a stable order and round-trips every addressable field
 apps/web test:   ---
-apps/web test:   duration_ms: 0.519933
+apps/web test:   duration_ms: 0.527486
 apps/web test:   type: 'test'
 apps/web test:   ...
 apps/web test: # Subtest: comparison uses the serialized address, not object identity
 apps/web test: ok 6 - comparison uses the serialized address, not object identity
 apps/web test:   ---
-apps/web test:   duration_ms: 0.248553
+apps/web test:   duration_ms: 0.199754
 apps/web test:   type: 'test'
 apps/web test:   ...
 apps/web test: 1..6
@@ -92,205 +92,205 @@ apps/web test: # fail 0
 apps/web test: # cancelled 0
 apps/web test: # skipped 0
 apps/web test: # todo 0
-apps/web test: # duration_ms 132.999466
+apps/web test: # duration_ms 142.034975
 apps/web test: Done
 packages/runtime-client test:  RUN  v3.2.7 /root/src/restore-theme-copy-9668d9fb46f7/packages/runtime-client
-packages/runtime-client test:  ✓ test/credentials.test.ts (5 tests) 7ms
+packages/runtime-client test:  ✓ test/credentials.test.ts (5 tests) 9ms
 packages/runtime-client test:  ✓ test/client.test.ts (8 tests) 29ms
 packages/runtime-client test:  Test Files  2 passed (2)
 packages/runtime-client test:       Tests  13 passed (13)
-packages/runtime-client test:    Start at  17:58:47
-packages/runtime-client test:    Duration  630ms (transform 228ms, setup 0ms, collect 417ms, tests 36ms, environment 0ms, prepare 162ms)
+packages/runtime-client test:    Start at  18:01:20
+packages/runtime-client test:    Duration  631ms (transform 209ms, setup 0ms, collect 398ms, tests 37ms, environment 0ms, prepare 164ms)
 packages/runtime-client test: Done
 apps/api test$ vitest run --exclude "test/integration/**"
 apps/dispatcher test$ vitest run --exclude "test/integration/**"
 apps/supervisor test$ vitest run --exclude "test/integration/**"
-apps/dispatcher test:  RUN  v3.2.7 /root/src/restore-theme-copy-9668d9fb46f7/apps/dispatcher
 apps/api test:  RUN  v3.2.7 /root/src/restore-theme-copy-9668d9fb46f7/apps/api
+apps/dispatcher test:  RUN  v3.2.7 /root/src/restore-theme-copy-9668d9fb46f7/apps/dispatcher
 apps/supervisor test:  RUN  v3.2.7 /root/src/restore-theme-copy-9668d9fb46f7/apps/supervisor
-apps/api test:  ✓ test/cursor.test.ts (6 tests) 22ms
-apps/dispatcher test:  ✓ test/config.test.ts (3 tests) 34ms
-apps/api test:  ✓ test/auth.test.ts (9 tests) 53ms
-apps/dispatcher test:  ✓ test/tasks.test.ts (2 tests) 5ms
+apps/api test:  ✓ test/cursor.test.ts (6 tests) 18ms
+apps/api test:  ✓ test/auth.test.ts (9 tests) 29ms
+apps/dispatcher test:  ✓ test/config.test.ts (3 tests) 27ms
+apps/dispatcher test:  ✓ test/tasks.test.ts (2 tests) 8ms
 apps/dispatcher test:  ✓ test/dispatcher-logging.test.ts (2 tests) 15ms
 apps/dispatcher test:  Test Files  3 passed (3)
 apps/dispatcher test:       Tests  7 passed (7)
-apps/dispatcher test:    Start at  17:58:48
-apps/dispatcher test:    Duration  2.86s (transform 988ms, setup 0ms, collect 3.23s, tests 55ms, environment 1ms, prepare 1.04s)
+apps/dispatcher test:    Start at  18:01:21
+apps/dispatcher test:    Duration  3.05s (transform 1.08s, setup 0ms, collect 3.42s, tests 50ms, environment 1ms, prepare 1.01s)
 apps/dispatcher test: Done
-apps/api test:  ✓ test/health.test.ts (5 tests) 120ms
+apps/api test:  ✓ test/health.test.ts (5 tests) 121ms
 apps/api test:  Test Files  3 passed (3)
 apps/api test:       Tests  20 passed (20)
-apps/api test:    Start at  17:58:48
-apps/api test:    Duration  3.50s (transform 1.34s, setup 0ms, collect 3.41s, tests 195ms, environment 1ms, prepare 736ms)
+apps/api test:    Start at  18:01:21
+apps/api test:    Duration  3.43s (transform 1.28s, setup 0ms, collect 3.33s, tests 167ms, environment 1ms, prepare 741ms)
 apps/api test: Done
-apps/supervisor test:  ✓ test/stop-proof.test.ts (4 tests) 2469ms
+apps/supervisor test:  ✓ test/stop-proof.test.ts (4 tests) 2504ms
 apps/supervisor test:    ✓ supervisor cgroup stop proof > serializes independent processes with the kernel lock  2167ms
-apps/supervisor test:  ✓ test/review.test.ts (30 tests) 2828ms
-apps/supervisor test:    ✓ supervisor check runs > terminates a hung command and records the timeout  386ms
-apps/supervisor test:    ✓ supervisor check runs > kills a timed-out check command's whole process group  781ms
-apps/supervisor test:    ✓ supervisor check runs > bounds the whole run by the total budget, not just each command  339ms
-apps/supervisor test:    ✓ review service > rejects a second check for the same repository instead of running two  310ms
-apps/supervisor test:  ✓ test/cleanup.test.ts (10 tests) 1009ms
-apps/supervisor test:  ✓ test/server-wake.test.ts (1 test) 100ms
-apps/supervisor test: Cloning into bare repository '/tmp/moyu-prepare-command-u91rSY/cache.git'...
+apps/supervisor test:  ✓ test/review.test.ts (30 tests) 2864ms
+apps/supervisor test:    ✓ supervisor check runs > terminates a hung command and records the timeout  335ms
+apps/supervisor test:    ✓ supervisor check runs > kills a timed-out check command's whole process group  779ms
+apps/supervisor test:    ✓ supervisor check runs > bounds the whole run by the total budget, not just each command  381ms
+apps/supervisor test:    ✓ review service > rejects a second check for the same repository instead of running two  311ms
+apps/supervisor test: Cloning into bare repository '/tmp/moyu-prepare-command-3tOsQ3/cache.git'...
 apps/supervisor test: done.
-apps/supervisor test: Cloning into '/tmp/moyu-prepare-command-u91rSY/task.preparing-3443311'...
+apps/supervisor test: Cloning into '/tmp/moyu-prepare-command-3tOsQ3/task.preparing-3448464'...
 apps/supervisor test: done.
-apps/supervisor test: HEAD is now at 8d0dd4e first
+apps/supervisor test: HEAD is now at c379c55 first
 apps/supervisor test: Switched to a new branch 'agent/fix-t1'
-apps/supervisor test: Cloning into bare repository '/tmp/moyu-prepare-fetch-kSqplw/cache.git'...
+apps/supervisor test: Cloning into bare repository '/tmp/moyu-prepare-fetch-o2vHC7/cache.git'...
 apps/supervisor test: done.
-apps/supervisor test: Cloning into '/tmp/moyu-prepare-fetch-kSqplw/task.preparing-3443379'...
+apps/supervisor test: Cloning into '/tmp/moyu-prepare-fetch-o2vHC7/task.preparing-3448533'...
 apps/supervisor test: done.
-apps/supervisor test: From /tmp/moyu-prepare-fetch-kSqplw/origin
-apps/supervisor test:    8d0dd4e..44bfe2c  main       -> origin/main
-apps/supervisor test: HEAD is now at 44bfe2c next
+apps/supervisor test: From /tmp/moyu-prepare-fetch-o2vHC7/origin
+apps/supervisor test:    c379c55..e29dacd  main       -> origin/main
+apps/supervisor test: HEAD is now at e29dacd next
 apps/supervisor test: Switched to a new branch 'agent/fix-t2'
-apps/supervisor test:  ✓ test/git-cache.test.ts (13 tests) 1013ms
+apps/supervisor test:  ✓ test/git-cache.test.ts (13 tests) 1017ms
+apps/supervisor test:  ✓ test/server-wake.test.ts (1 test) 102ms
 apps/supervisor test:  ✓ test/config.test.ts (6 tests) 28ms
+apps/supervisor test:  ✓ test/cleanup.test.ts (10 tests) 997ms
 apps/supervisor test:  ✓ test/deployment-config.test.ts (12 tests) 12ms
+apps/supervisor test:  ✓ test/provision-env.test.ts (1 test) 5ms
 apps/supervisor test:  ✓ test/profile-config.test.ts (11 tests) 11ms
 apps/supervisor test:  ✓ test/resources.test.ts (8 tests) 8ms
-apps/supervisor test:  ✓ test/panel-proxy.test.ts (4 tests) 5ms
-apps/supervisor test:  ✓ test/provision-env.test.ts (1 test) 11ms
-apps/supervisor test:  ✓ test/process.test.ts (21 tests) 6958ms
-apps/supervisor test:    ✓ supervisor process evidence > never signals a reused root PID whose start time does not match  404ms
-apps/supervisor test:    ✓ supervisor process evidence > does not signal a reused process group after the owned members exited  363ms
-apps/supervisor test:    ✓ supervisor process evidence > does not report stopped when the timeout expires before the child exits  1826ms
-apps/supervisor test:    ✓ supervisor process evidence > kills a child that ignores SIGTERM before reporting stopped  1712ms
-apps/supervisor test:    ✓ supervisor process evidence > retains a newly started service regardless of its age  372ms
-apps/supervisor test:    ✓ cgroup launcher only accepts a positive release > exits without executing when the parent dies before release  545ms
+apps/supervisor test:  ✓ test/panel-proxy.test.ts (4 tests) 6ms
+apps/supervisor test:  ✓ test/process.test.ts (21 tests) 6978ms
+apps/supervisor test:    ✓ supervisor process evidence > never signals a reused root PID whose start time does not match  392ms
+apps/supervisor test:    ✓ supervisor process evidence > does not signal a reused process group after the owned members exited  383ms
+apps/supervisor test:    ✓ supervisor process evidence > does not report stopped when the timeout expires before the child exits  1827ms
+apps/supervisor test:    ✓ supervisor process evidence > kills a child that ignores SIGTERM before reporting stopped  1719ms
+apps/supervisor test:    ✓ supervisor process evidence > retains a newly started service regardless of its age  368ms
+apps/supervisor test:    ✓ cgroup launcher only accepts a positive release > exits without executing when the parent dies before release  547ms
 apps/supervisor test:  Test Files  12 passed (12)
 apps/supervisor test:       Tests  121 passed (121)
-apps/supervisor test:    Start at  17:58:48
-apps/supervisor test:    Duration  8.59s (transform 1.57s, setup 0ms, collect 3.22s, tests 14.45s, environment 3ms, prepare 1.75s)
+apps/supervisor test:    Start at  18:01:21
+apps/supervisor test:    Duration  8.63s (transform 1.27s, setup 0ms, collect 3.05s, tests 14.53s, environment 3ms, prepare 1.76s)
 apps/supervisor test: Done
 TAP version 13
 # Subtest: verify-lock.sh gives the same result for plain, spaced, quoted and relative paths
 ok 1 - verify-lock.sh gives the same result for plain, spaced, quoted and relative paths
   ---
-  duration_ms: 5646.275126
+  duration_ms: 5701.063933
   type: 'test'
   ...
 # Subtest: accepts a dedicated profile linked to the patched build
 ok 2 - accepts a dedicated profile linked to the patched build
   ---
-  duration_ms: 13.911087
+  duration_ms: 13.859379
   type: 'test'
   ...
 # Subtest: rejects the bootstrap home and profile
 ok 3 - rejects the bootstrap home and profile
   ---
-  duration_ms: 2.436976
+  duration_ms: 2.352622
   type: 'test'
   ...
 # Subtest: rejects an unpatched build and a wrong Bridge port
 ok 4 - rejects an unpatched build and a wrong Bridge port
   ---
-  duration_ms: 4.159848
+  duration_ms: 3.173247
   type: 'test'
   ...
 # Subtest: rejects an env file with broad permissions
 ok 5 - rejects an env file with broad permissions
   ---
-  duration_ms: 1.664557
+  duration_ms: 1.638256
   type: 'test'
   ...
 # Subtest: rejects a target port that is already in use
 ok 6 - rejects a target port that is already in use
   ---
-  duration_ms: 15.228616
+  duration_ms: 13.072708
   type: 'test'
   ...
 # Subtest: rejects instance env keys that could override the validated home/profile
 ok 7 - rejects instance env keys that could override the validated home/profile
   ---
-  duration_ms: 1.690085
+  duration_ms: 1.753245
   type: 'test'
   ...
 # Subtest: rejects an instance env pointing at the production API or a conflicting process env
 ok 8 - rejects an instance env pointing at the production API or a conflicting process env
   ---
-  duration_ms: 2.787945
+  duration_ms: 2.708318
   type: 'test'
   ...
 # Subtest: rejects a symlinked state parent and leaves the other instance untouched
 ok 9 - rejects a symlinked state parent and leaves the other instance untouched
   ---
-  duration_ms: 1.59311
+  duration_ms: 1.59818
   type: 'test'
   ...
 # Subtest: rejects state/<profile> linked to another profile in the same home
 ok 10 - rejects state/<profile> linked to another profile in the same home
   ---
-  duration_ms: 1.728641
+  duration_ms: 1.736654
   type: 'test'
   ...
 # Subtest: rejects sessions linked to another directory in the same home
 ok 11 - rejects sessions linked to another directory in the same home
   ---
-  duration_ms: 1.736887
+  duration_ms: 1.736334
   type: 'test'
   ...
 # Subtest: rejects a cleanup target whose parent link stays inside the same home
 ok 12 - rejects a cleanup target whose parent link stays inside the same home
   ---
-  duration_ms: 1.615968
+  duration_ms: 1.581247
   type: 'test'
   ...
 # Subtest: rejects a profile containing path separators
 ok 13 - rejects a profile containing path separators
   ---
-  duration_ms: 1.160401
+  duration_ms: 1.163692
   type: 'test'
   ...
 # Subtest: the E2E script exits before any run directory for a bootstrap home or production API
 ok 14 - the E2E script exits before any run directory for a bootstrap home or production API
   ---
-  duration_ms: 839.716056
+  duration_ms: 821.407552
   type: 'test'
   ...
 # Subtest: refuses a runtime whose stateDir is not the expected isolated profile
 ok 15 - refuses a runtime whose stateDir is not the expected isolated profile
   ---
-  duration_ms: 0.533866
+  duration_ms: 0.549867
   type: 'test'
   ...
 # Subtest: every m6c CLI has a side-effect-free --help
 ok 16 - every m6c CLI has a side-effect-free --help
   ---
-  duration_ms: 330.090128
+  duration_ms: 291.912582
   type: 'test'
   ...
 # Subtest: release manifest refuses a missing plugin artifact
 ok 17 - release manifest refuses a missing plugin artifact
   ---
-  duration_ms: 49.963001
+  duration_ms: 53.147534
   type: 'test'
   ...
 # Subtest: restore verifies the backupSetId and every part hash
 ok 18 - restore verifies the backupSetId and every part hash
   ---
-  duration_ms: 105.933747
+  duration_ms: 102.143249
   type: 'test'
   ...
 # Subtest: matrix checker fails a Pass row without evidence
 ok 19 - matrix checker fails a Pass row without evidence
   ---
-  duration_ms: 49.018719
+  duration_ms: 48.182352
   type: 'test'
   ...
 # Subtest: run logs redact PostgreSQL credentials
 ok 20 - run logs redact PostgreSQL credentials
   ---
-  duration_ms: 66.528066
+  duration_ms: 51.651322
   type: 'test'
   ...
 # Subtest: backup status prints its resolved target without writing
 ok 21 - backup status prints its resolved target without writing
   ---
-  duration_ms: 55.865846
+  duration_ms: 46.941332
   type: 'test'
   ...
 1..21
@@ -301,4 +301,4 @@ ok 21 - backup status prints its resolved target without writing
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 5729.872909
+# duration_ms 5778.928275

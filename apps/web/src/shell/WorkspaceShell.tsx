@@ -1106,6 +1106,9 @@ export function WorkspaceShell({
         ...routeRef.current,
         repositoryId: target.repositoryId,
         conversationId: target.conversationId,
+        // A notification click navigates; it should not leave the settings
+        // dialog over the conversation it opened.
+        settings: null,
       });
       if (selectedRepositoryIdRef.current !== target.repositoryId) {
         pendingOpenRef.current = target;
