@@ -1,9 +1,11 @@
+import { taskDecisionSchema } from '@moyu/contracts';
 import type {
   AttachmentSummary,
   ConversationSummary,
   DeliverySummary,
   Message,
   ModelSelection,
+  TaskDecision,
   TaskOperationSummary,
   TaskSummary,
 } from '@moyu/contracts';
@@ -76,6 +78,15 @@ export function toTaskOperationSummary(row: TaskOperation): TaskOperationSummary
   };
 }
 
+/** The stored decision, or null when the task has none or an unreadable legacy value. */
+export function toTaskDecision(task: Pick<TaskLink, 'decision'>): TaskDecision | null {
+  if (!task.decision || Object.keys(task.decision).length === 0) {
+    return null;
+  }
+  const parsed = taskDecisionSchema.safeParse(task.decision);
+  return parsed.success ? parsed.data : null;
+}
+
 export function toTaskSummary(
   task: TaskLink,
   lastOperation: TaskOperation | null = null,
@@ -106,6 +117,7 @@ export function toTaskSummary(
     stopRequestedAt: task.stopRequestedAt?.toISOString() ?? null,
     stoppedAt: task.stoppedAt?.toISOString() ?? null,
     stopEvidence: task.stopEvidence,
+    decision: toTaskDecision(task),
     lastOperation: lastOperation ? toTaskOperationSummary(lastOperation) : null,
     version: task.version,
     createdAt: task.createdAt.toISOString(),

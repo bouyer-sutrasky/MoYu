@@ -1,0 +1,28 @@
+channelGone 触发条件（复现与修复）
+================================
+复现（main 7e04a8a 的 workspace Channel + 平台 schema）：
+1) 目标工单完成第一次返修后，worker 的普通 reply 没有 reply_to Trigger，
+   因此 src/sources/workspace.ts 的请求体省略了 triggerId：
+   {"sourceEventId":"...","type":"channel.message","conversationId":"bf0ea463-...",
+    "ticketId":"3dba7ebf...","messageKind":"reply","text":"已完成..."}
+2) 平台 channelMessageEventSchema 当时要求 triggerId 为 string|null（非 optional），
+   API 返回 422：
+   "triggerId: Invalid input: expected string, received undefined"
+3) Outbox 把任何永久 4xx 视为 gone：
+   {"kind":"reply","status":"dropped","dropped":{"reason":"channelGone", ...}}
+   该回执不再重试，原会话失去这条完成回复。
+（同一次会话的 acknowledgement 因 id 为 ack:workspace:<triggerId>，请求体带
+ triggerId，所以一直是 sent；只有普通 reply/result 命中该缺陷。）
+
+修复：
+- 平台 packages/contracts/src/runtime.ts 接受省略 triggerId（nullable + optional）；
+  回归：loop.integration.test.ts“accepts a Channel reply that omits triggerId ...”
+- 上游补丁 0028-workspace-trigger-null.patch 让 workspace Channel 始终发送
+  triggerId: triggerId ?? null；回归：tests/workspace.spec.ts 断言普通 reply 的
+  triggerId 为 null。
+- 验证：使用 0028 制品重跑一次真实返修，Outbox 普通 reply：
+  {"kind":"reply","status":"sent","text":"已在同一个 PR 上完成第二次返修..."}
+  平台日志对 /api/internal/v1/runtime-events 返回 2xx；目标会话收到 reply。
+
+其它 4xx 仍会按设计成为 gone（如 conversation 不存在或 401），这里只修复了
+“合法完成回复被省略字段误判”的触发条件；未把 5xx/408/429 改成 gone。

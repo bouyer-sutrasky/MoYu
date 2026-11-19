@@ -14,7 +14,10 @@ export const channelMessageEventSchema = z
     type: z.literal('channel.message'),
     conversationId: uuidSchema,
     ticketId: z.string().min(1).nullable(),
-    triggerId: z.string().min(1).nullable(),
+    // The workspace Channel omits the field when a reply answers no Trigger;
+    // accepting that omission keeps a valid completion from becoming a
+    // permanent 422 (which the runtime records as `channelGone`).
+    triggerId: z.string().min(1).nullable().optional(),
     messageKind: z.enum(['acknowledgement', 'question', 'reply', 'result', 'notice']),
     text: z.string().min(1).max(20_000),
     at: isoTimestampSchema,

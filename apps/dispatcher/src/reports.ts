@@ -7,6 +7,7 @@ import type { DispatcherLogger } from './logger';
 import type { RepositoryBinding } from './runtime';
 import { bridgeErrorMessage } from './runtime';
 import { stateFromSnapshot, TASK_COLUMNS, taskSummary, type TaskRow } from './tasks';
+import { routedTargetLabel, sendRoutedNotice } from './routed-notices';
 
 interface ReportTaskRow extends TaskRow {
   ownerId: string;
@@ -85,12 +86,36 @@ export async function captureReportsOnce(
           taskId: task.id,
           payload: { messageId, direction: 'outbound' },
         });
+        // The worker reports on the target Ticket's own conversation. A routed
+        // source asked in another conversation and needs its own Chinese
+        // completion receipt; the report timestamp makes this one per result.
+        const state = stateFromSnapshot(snapshot.state);
+        if (state && ['awaiting_review', 'completed', 'closed_unmerged'].includes(state)) {
+          const label = routedTargetLabel(task);
+          const body =
+            state === 'awaiting_review'
+              ? `已转交的返修已完成，${label} 已更新，等待审阅。`
+              : state === 'completed'
+                ? `已转交的返修已完成，${label} 已结束。`
+                : `已转交的返修的 PR 已关闭但未合并；如需继续，请在目标工单里说明。`;
+          await sendRoutedNotice(client, repository, task, {
+            body,
+            eventKey: `report:${report.at}`,
+            notBefore: report.at,
+          });
+        }
         worked = true;
       }
       const state = stateFromSnapshot(snapshot.state);
-      if (snapshot.pr && (snapshot.pr.url !== task.prUrl || snapshot.pr.number !== task.prNumber)) {
+      // The snapshot names its first followed PR, which can be historical. Only
+      // fill an empty pointer here; a later artifact event is the ordering
+      // authority for replacing an already current PR, so a replay cannot swap
+      // the owner's current link for an older one.
+      if (snapshot.pr && task.prNumber === null) {
         await client.query(
-          `update task_links set pr_url = $2, pr_number = $3, updated_at = now() where id = $1`,
+          `update task_links
+              set pr_url = $2, pr_number = $3, pr_updated_at = now(), updated_at = now()
+            where id = $1`,
           [task.id, snapshot.pr.url, snapshot.pr.number],
         );
         worked = true;

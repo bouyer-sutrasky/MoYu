@@ -1,0 +1,26 @@
+红基线：新任务入口向“待审阅”旧工单转交返修（main 7e04a8a）
+=================================================================
+1) 旧工单完成第一次任务后：task state=awaiting_review，PR #1 只改 src/value.ts，value=2。
+2) 从新入口创建会话 547c8c02-7404-4e1d-b235-28d6151022c0 并发送：
+   “请按 PR #1 返修：只把 src/value.ts 的 value 改成 3，继续更新同一个 PR #1，
+    不要新建 PR，也不要修改其他文件。”
+3) Bridge 发出 decision.ignored：
+   {"reason":[{"code":"routed","values":{"ticket":"3dba7ebf7c3d4917e4b43e25bbffd8bf"}}], ...}
+   目标工单输入已持久化，输入最终 delivered/read。
+4) 平台投影（main 代码）只把源任务写成 not_accepted，decision 为空：
+   state=not_accepted, decision={}, runtime_lease_id=null
+5) 源会话 UI 只显示“未接单”，没有具体原因、没有目标工单链接；
+   目标工单最终更新了同一 PR（value=3），但源会话没有中文完成回执。
+6) 源消息投递行（main 代码）handed_to_worker_at 为空：
+   state=delivered, delivered_at=有, handed_to_worker_at=NULL, read_at=有
+7) 运行器 Outbox 里目标工单的完成回复被永久结为 channelGone：
+   {"kind":"reply","ticketId":"3dba7ebf...","status":"dropped",
+    "dropped":{"reason":"channelGone", ...}}
+   API 日志原因：POST /api/internal/v1/runtime-events 返回 422
+   "triggerId: Invalid input: expected string, received undefined"
+   ——workspace Channel 在没有 reply_to Trigger 时省略了 triggerId；
+     平台 schema 要求该字段（nullable），422 被 Outbox 当成永久 gone。
+8) 目标 Ticket snapshot：assignments[0].state=running、report=ready、execution=null；
+   本次隔离运行的 input deliveredTo/readAt 均有，与 Issue 文字里“无 deliveredTo/readAt”
+   的观察不同（见 README 未验项）。
+9) UI 截图：ui-before-routed-source.png（1440x900，浅色，同一会话）。

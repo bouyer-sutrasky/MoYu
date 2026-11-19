@@ -1204,6 +1204,54 @@
   font: var(--dsw-font-xxxs-11);
 }
 
+.taskDecisionNotice {
+  display: grid;
+  gap: 4px;
+  margin-top: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 9px;
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xxs-12);
+}
+
+.taskDecisionNotice[data-tone='rejected'] {
+  border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 35%, transparent);
+}
+
+.taskDecisionNotice[data-tone='failed'] {
+  border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent);
+}
+
+.taskDecisionNotice[data-tone='deferred'] {
+  border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 45%, transparent);
+}
+
+.taskDecisionNotice p {
+  margin: 0;
+  color: var(--dsw-alias-label-tertiary);
+  line-height: 1.5;
+}
+
+.taskDecisionHeadline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  color: var(--dsw-alias-label-primary);
+}
+
+.taskDecisionLink {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--dsw-alias-state-business-primary);
+  font: var(--dsw-font-xxs-12);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
 .metaItem {
   display: inline-flex;
   align-items: center;

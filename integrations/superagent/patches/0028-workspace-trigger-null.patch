@@ -1,0 +1,28 @@
+--- a/src/sources/workspace.ts
++++ b/src/sources/workspace.ts
+@@ -112,7 +112,10 @@
+     type: 'channel.message',
+     conversationId,
+     ticketId: message.ticketId ?? null,
+-    ...triggerId ? { triggerId } : {},
++    // The platform's strict body schema requires the field (nullable), and its
++    // omission turned a valid completion into a permanent 422, which the Outbox
++    // records as channelGone and never retries. Send the explicit null.
++    triggerId: triggerId ?? null,
+     messageKind: messageKindOf(message),
+     text: message.text,
+     at: new Date().toISOString(),
+--- a/tests/workspace.spec.ts
++++ b/tests/workspace.spec.ts
+@@ -125,6 +125,11 @@
+     expect(requests[0]!.body).toMatchObject({ sourceEventId: 'ack:workspace:m1', type: 'channel.message', conversationId: 'c1',
+       ticketId: 't1', triggerId: 'workspace:m1', messageKind: 'acknowledgement', text: 'On it' })
+     expect(Date.parse(String(requests[0]!.body.at))).not.toBeNaN()
++    // A reply that answers no Trigger still carries the field as null: the
++    // platform rejects a body that omits it, and the Outbox would settle that
++    // 422 as channelGone instead of retrying.
++    await expect(workspaceKind.channel!.send({ commands: {} as never }, message('reply-1'))).resolves.toBe('sent')
++    expect(requests[1]!.body).toMatchObject({ sourceEventId: 'reply-1', triggerId: null, messageKind: 'reply' })
+   })
+ 
+   it('settles a permanent rejection as gone and retries a passing one', async () => {

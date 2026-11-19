@@ -515,6 +515,106 @@ describe('work loop API on real PostgreSQL', () => {
     expect(rows).toHaveLength(1);
   });
 
+  it('accepts a completion receipt on a routed source conversation without stealing the target ticket', async () => {
+    const conversation = await createConversation(harness);
+    await harness.database
+      .update(taskLinks)
+      .set({
+        state: 'not_accepted',
+        decision: {
+          kind: 'ignore',
+          decisionId: 'decision-routed-1',
+          at: new Date().toISOString(),
+          reason: [{ code: 'routed', values: { ticket: 'ticket-target' } }],
+          code: 'routed',
+          outcome: 'routed',
+          targetTicketId: 'ticket-target',
+          targetTaskId: conversation.task?.id ?? null,
+          targetConversationId: conversation.id,
+          targetRepositoryId: conversation.repositoryId,
+          routingState: 'handed_off',
+          handedOffAt: new Date().toISOString(),
+        },
+      })
+      .where(eq(taskLinks.conversationId, conversation.id));
+
+    const payload = {
+      sourceEventId: `result:${randomUUID()}`,
+      type: 'channel.message',
+      conversationId: conversation.id,
+      ticketId: 'ticket-target',
+      triggerId: null,
+      messageKind: 'result',
+      text: '返修已完成，PR #12 已更新。',
+      at: new Date().toISOString(),
+    };
+    const response = await harness.app.inject({
+      method: 'POST',
+      url: '/api/internal/v1/runtime-events',
+      headers: { authorization: `Bearer ${harness.config.bridgeCallbackToken}` },
+      payload,
+    });
+    expect(response.statusCode).toBe(200);
+    const created = runtimeEventDataSchema.parse(envelope(response.json()));
+    expect(created.duplicate).toBe(false);
+    // The source is not accepted and must not claim the target's unique Ticket.
+    expect(created.task?.state).toBe('not_accepted');
+    expect(created.task?.upstreamTicketId).toBeNull();
+    expect(created.task?.decision?.outcome).toBe('routed');
+
+    const outbound = await harness.database
+      .select()
+      .from(messages)
+      .where(
+        and(
+          eq(messages.conversationId, conversation.id),
+          eq(messages.sourceEventId, payload.sourceEventId),
+        ),
+      );
+    expect(outbound).toHaveLength(1);
+    expect(outbound[0]?.body).toBe('返修已完成，PR #12 已更新。');
+
+    // A callback naming any other Ticket would be a real cross-ticket reply and
+    // is still refused instead of silently attaching it to the source.
+    const wrong = await harness.app.inject({
+      method: 'POST',
+      url: '/api/internal/v1/runtime-events',
+      headers: { authorization: `Bearer ${harness.config.bridgeCallbackToken}` },
+      payload: { ...payload, sourceEventId: `result:${randomUUID()}`, ticketId: 'ticket-other' },
+    });
+    expect(wrong.statusCode).toBe(409);
+  });
+
+  it('accepts a Channel reply that omits triggerId instead of turning it into channelGone', async () => {
+    const conversation = await createConversation(harness);
+    await harness.database
+      .update(taskLinks)
+      .set({ upstreamTicketId: 'ticket-reply', state: 'awaiting_review' })
+      .where(eq(taskLinks.conversationId, conversation.id));
+    const response = await harness.app.inject({
+      method: 'POST',
+      url: '/api/internal/v1/runtime-events',
+      headers: { authorization: `Bearer ${harness.config.bridgeCallbackToken}` },
+      payload: {
+        sourceEventId: `reply:${randomUUID()}`,
+        type: 'channel.message',
+        conversationId: conversation.id,
+        ticketId: 'ticket-reply',
+        messageKind: 'reply',
+        text: '返修已完成，PR #1 已更新。',
+        at: new Date().toISOString(),
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    const created = runtimeEventDataSchema.parse(envelope(response.json()));
+    expect(created.duplicate).toBe(false);
+    const rows = await harness.database
+      .select()
+      .from(messages)
+      .where(and(eq(messages.conversationId, conversation.id), eq(messages.kind, 'reply')));
+    expect(rows).toHaveLength(1);
+  });
+
   it('refuses a Channel callback for a different Ticket on the same conversation', async () => {
     const conversation = await createConversation(harness);
     await harness.database

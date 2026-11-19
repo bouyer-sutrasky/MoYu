@@ -69,6 +69,12 @@ node --test integrations/superagent/tests/verify-lock.test.mjs
 | `0026-origin-message-receipts.patch` | 为 workspace Ticket 的 origin Trigger 投影 `message.delivered`/`message.read`：origin 不在 `ticket.inputs` 中，不能只依赖后续 Input 的回执；从 Assignment 的 `startedAt`/`idleAt` 或已完成 report 时间生成确定性事件，使平台 `handed_to_worker_at`/`read_at` 有真实回执 |
 | `0027-prepare-phases.patch` | 任务 checkout 阶段从 Bridge 传到会话：Executor 在准备开始、成功、失败/超时和 worker 启动时追加 `task.progress`（中文，含阶段与「worker 未启动」），失败仍按原路径标记 Ticket 失败；测试锁定成功、检出失败与核对失败三种文案 |
 
+## M6-C B 补丁
+
+| 补丁 | 作用 |
+| --- | --- |
+| `0028-workspace-trigger-null.patch` | 回复没有 reply_to Trigger 时，workspace Channel 仍发送 `triggerId: null`。此前字段被省略，平台严格 schema 返回 422，Outbox 把 4xx 永久结为 `channelGone`，目标工单的完成回复到不了原会话。补丁同时锁定普通 reply 的请求体。 |
+
 ## 约束
 
 - 不把 `/root/dsh-superagent` 当作可编辑发布物；补丁在固定 commit 的 checkout 上生成，并作为有序 patch 提交。
