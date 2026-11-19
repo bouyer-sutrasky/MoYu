@@ -693,6 +693,105 @@ describe('routed admission handoff on real PostgreSQL', () => {
     expect(byConversation.get(second.conversationId)).toBe(1);
   }, 30_000);
 
+  it('routes each report to its own assignment when an earlier report tick was skipped', async () => {
+    const fixture = await seed();
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+    expect(
+      await handoffRoutedOnce(testDatabase.pool, config, fixture.repository, client, true, logger),
+    ).toBe(true);
+    const firstAssignment = (await readDecision(fixture.source.taskId)).decision[
+      'targetAssignmentId'
+    ] as string;
+    expect(typeof firstAssignment).toBe('string');
+
+    // Release the first generation, then hand the second rework to a new
+    // assignment. The first report is never polled.
+    const target = await readTaskRow(fixture.target.taskId);
+    if (!target.runtime_lease_id) throw new Error('target lease missing');
+    await testDatabase.pool.query(
+      `update runtime_leases set state = 'released', released_at = now() where id = $1`,
+      [target.runtime_lease_id],
+    );
+    await testDatabase.pool.query(
+      `update task_links set runtime_lease_id = null, state = 'awaiting_review' where id = $1`,
+      [fixture.target.taskId],
+    );
+    const snapshot = bridge.snapshots.get(fixture.target.ticketId)!;
+    snapshot.admissionRequired = true;
+    snapshot.state = 'awaiting_review';
+    snapshot.assignmentId = 'old-assignment-before-second-rework';
+
+    const second = await seedSecondSource(fixture);
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+    expect(
+      await handoffRoutedOnce(testDatabase.pool, config, fixture.repository, client, true, logger),
+    ).toBe(true);
+    const secondAssignment = (await readDecision(second.taskId)).decision[
+      'targetAssignmentId'
+    ] as string;
+    expect(typeof secondAssignment).toBe('string');
+    expect(secondAssignment).not.toBe(firstAssignment);
+
+    const t1 = new Date(Date.now() + 30_000).toISOString();
+    const t2 = new Date(Date.now() + 60_000).toISOString();
+    await testDatabase.pool.query(
+      `update task_links
+          set decision = decision || jsonb_build_object(
+                'deliveryState', 'read', 'deliveryAt', $2::text)
+        where id = $1`,
+      [fixture.source.taskId, t1],
+    );
+    await testDatabase.pool.query(
+      `update task_links
+          set decision = decision || jsonb_build_object(
+                'deliveryState', 'read', 'deliveryAt', $2::text)
+        where id = $1`,
+      [second.taskId, t2],
+    );
+    snapshot.assignmentId = secondAssignment;
+    snapshot.state = 'awaiting_review';
+    snapshot.report = {
+      state: 'ready',
+      summary: 'Second rework result, first report tick was skipped',
+      at: new Date(Date.now() + 120_000).toISOString(),
+    };
+    await testDatabase.pool.query(`update task_links set state = 'awaiting_review' where id = $1`, [
+      fixture.target.taskId,
+    ]);
+    await captureReportsOnce(testDatabase.pool, fixture.repository, client, logger);
+    await captureReportsOnce(testDatabase.pool, fixture.repository, client, logger);
+    let firstNotices = await testDatabase.pool.query(
+      `select 1 from messages where conversation_id = $1 and kind = 'notice'`,
+      [fixture.source.conversationId],
+    );
+    let secondNotices = await testDatabase.pool.query(
+      `select 1 from messages where conversation_id = $1 and kind = 'notice'`,
+      [second.conversationId],
+    );
+    expect(firstNotices.rows).toHaveLength(0);
+    expect(secondNotices.rows).toHaveLength(1);
+
+    // The first report is still recoverable later: it must notify only the
+    // first source, even though both deliveries precede it.
+    snapshot.assignmentId = firstAssignment;
+    snapshot.report = {
+      state: 'ready',
+      summary: 'First rework result recovered later',
+      at: new Date(Date.now() + 180_000).toISOString(),
+    };
+    await captureReportsOnce(testDatabase.pool, fixture.repository, client, logger);
+    firstNotices = await testDatabase.pool.query(
+      `select 1 from messages where conversation_id = $1 and kind = 'notice'`,
+      [fixture.source.conversationId],
+    );
+    secondNotices = await testDatabase.pool.query(
+      `select 1 from messages where conversation_id = $1 and kind = 'notice'`,
+      [second.conversationId],
+    );
+    expect(firstNotices.rows).toHaveLength(1);
+    expect(secondNotices.rows).toHaveLength(1);
+  }, 30_000);
+
   it('does not send a completion notice for an old report before this rework was handed off and delivered', async () => {
     const fixture = await seed();
     expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);

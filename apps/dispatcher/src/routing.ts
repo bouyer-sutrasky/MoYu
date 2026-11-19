@@ -41,6 +41,7 @@ interface RoutingPatch {
   targetConversationId?: string;
   targetRepositoryId?: string;
   targetTitle?: string | null;
+  targetAssignmentId?: string;
 }
 
 interface TargetIdentity {
@@ -495,6 +496,7 @@ export async function handoffRoutedOnce(
             routingState: 'handed_off',
             routingDetail: '输入已交接给目标工单的执行器，等待其读取。',
             handedOffAt: new Date().toISOString(),
+            targetAssignmentId: assignmentId,
             routingAttempts: attemptsOf(source) + 1,
             routingAttemptedAt: new Date().toISOString(),
           },
@@ -578,6 +580,7 @@ export async function handoffRoutedOnce(
         routingState: 'handed_off',
         routingDetail: '输入已交接给目标工单当前执行中的 worker。',
         handedOffAt: new Date().toISOString(),
+        ...(snapshot.assignmentId ? { targetAssignmentId: snapshot.assignmentId } : {}),
         routingAttempts: attemptsOf(source) + 1,
         routingAttemptedAt: new Date().toISOString(),
       },

@@ -32,6 +32,8 @@ export async function sendRoutedNotice(
     notBefore?: string | null;
     /** Completion receipts must follow this rework's actual worker delivery. */
     requireDelivery?: boolean;
+    /** The runtime assignment that produced this report, when known. */
+    targetAssignmentId?: string | null;
   },
 ): Promise<number> {
   const sources = await client.query<{
@@ -41,12 +43,14 @@ export async function sendRoutedNotice(
     deliveryAt: string | null;
     deliveryState: string | null;
     lastReportAt: string | null;
+    targetAssignmentId: string | null;
   }>(
     `select id, conversation_id as "conversationId",
             decision->>'handedOffAt' as "handedOffAt",
             decision->>'deliveryAt' as "deliveryAt",
             decision->>'deliveryState' as "deliveryState",
-            decision->>'lastReportAt' as "lastReportAt"
+            decision->>'lastReportAt' as "lastReportAt",
+            decision->>'targetAssignmentId' as "targetAssignmentId"
        from task_links
       where repository_id = $1
         and decision->>'outcome' = 'routed'
@@ -64,6 +68,17 @@ export async function sendRoutedNotice(
       const deliveredAt = source.deliveryAt ? Date.parse(source.deliveryAt) : Number.NaN;
       const lastReportAt = source.lastReportAt ? Date.parse(source.lastReportAt) : Number.NaN;
       const delivered = source.deliveryState === 'delivered' || source.deliveryState === 'read';
+      // A report belongs to one runtime assignment. If both sides recorded the
+      // assignment, a source from an older rework must not receive the newer
+      // report even when it never observed its own report (e.g. the dispatcher
+      // was down for that report tick).
+      if (
+        source.targetAssignmentId &&
+        input.targetAssignmentId &&
+        source.targetAssignmentId !== input.targetAssignmentId
+      ) {
+        continue;
+      }
       if (
         !delivered ||
         !Number.isFinite(reportAt) ||

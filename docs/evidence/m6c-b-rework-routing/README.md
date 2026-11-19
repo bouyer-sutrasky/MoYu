@@ -121,6 +121,17 @@ ticket snapshot、Outbox 回执和 UI 文本；红/绿各一次，最后用 0028
    第一次源已收到过第一次报告，第二次报告不会再次通知它。
    回归：同一目标两个独立源会话、连续两次报告、重复轮询，两个会话各只有一条回执。
 
+### 第三轮复审（基于 688a7d0）
+
+- routed handoff 成功时在源 decision 持久化 `targetAssignmentId`（admit 使用新
+  assignment；无需 admit 时使用目标当前 assignment）。
+- 完成通知把 `snapshot.assignmentId`（产生该 report 的运行时执行回合）与源 decision
+  的 `targetAssignmentId` 对照；两边都有值且不同则不通知。旧数据/worker 先完成等
+  没有 assignment 标识时，仍回退到 deliveryAt + lastReportAt 的时间关联。
+- 回归：第一次返修完成后完全跳过报告轮询，第二次返修结束后快照只剩第二份报告——
+  断言第二份只通知第二个源会话；随后可恢复的第一份报告只通知第一个源会话；重复轮询
+  不新增回执。worker 先完成/后记录 handoff 的回归保留并通过。
+
 ## 未验项
 
 - 未做 C/D 段（页面位置恢复、主题白框、中文提示词、手机通知）。
