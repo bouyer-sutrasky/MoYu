@@ -21,6 +21,7 @@ let downSql0020 = '';
 let downSql0021 = '';
 let downSql0022 = '';
 let downSql0023 = '';
+let downSql0024 = '';
 const databases: TestDatabase[] = [];
 
 interface State {
@@ -105,6 +106,10 @@ describe('0019 rollback script on real PostgreSQL', () => {
       path.join(ROOT, 'packages/db/migrations/rollback/0023_fuzzy_pet_avengers.down.sql'),
       'utf8',
     );
+    downSql0024 = await readFile(
+      path.join(ROOT, 'packages/db/migrations/rollback/0024_deletion_operation_id.down.sql'),
+      'utf8',
+    );
   });
 
   it('pins the deployed 0019 forward hash and restores the old global index', async () => {
@@ -125,6 +130,7 @@ describe('0019 rollback script on real PostgreSQL', () => {
       '(repository_id, source, source_event_id)',
     );
 
+    await database.pool.query(downSql0024);
     await database.pool.query(downSql0023);
     await database.pool.query(downSql0022);
     await database.pool.query(downSql0021);
@@ -207,6 +213,7 @@ describe('0019 rollback script on real PostgreSQL', () => {
     await insertEvent(database, first, 'same-event-id');
     await insertEvent(database, second, 'same-event-id');
 
+    await database.pool.query(downSql0024);
     await database.pool.query(downSql0023);
     await database.pool.query(downSql0022);
     await database.pool.query(downSql0021);
@@ -234,6 +241,7 @@ describe('0019 rollback script on real PostgreSQL', () => {
         where source_event_id is not null`,
     );
 
+    await database.pool.query(downSql0024);
     await database.pool.query(downSql0023);
     await database.pool.query(downSql0022);
     await database.pool.query(downSql0021);

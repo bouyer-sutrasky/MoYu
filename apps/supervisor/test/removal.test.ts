@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -72,6 +72,22 @@ describe('repository removal paths', () => {
     expect(existsSync(config.dshHome)).toBe(true);
     // A second pass is idempotent.
     expect(removeRepositoryPaths(paths)).toEqual({ removed: [], errors: [] });
+  });
+
+  it('refuses a target reached through an intermediate symlink outside the root', () => {
+    const outside = join(root, 'outside-link-target');
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, 'secret.txt'), 'keep me');
+    const link = join(config.worktreeRoot, 'escape-link');
+    rmSync(link, { force: true });
+    symlinkSync(outside, link, 'dir');
+    const result = removeRepositoryPaths([
+      { path: join(link, 'secret.txt'), root: config.worktreeRoot },
+    ]);
+    expect(result.removed).toEqual([]);
+    expect(result.errors[0]?.error).toContain('outside the configured root');
+    expect(existsSync(join(outside, 'secret.txt'))).toBe(true);
+    expect(existsSync(link)).toBe(true);
   });
 
   it('refuses an invalid profile and an outside-root removal', () => {

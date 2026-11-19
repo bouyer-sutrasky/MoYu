@@ -598,6 +598,11 @@ export class InstanceManager {
    */
   async prepareGit(repositoryId: string): Promise<InstanceRow> {
     return this.withLock(async () => {
+      const repository = await this.store.getRepository(repositoryId);
+      if (!repository) throw Object.assign(new Error('Repository not found'), { statusCode: 404 });
+      if (repository.deletionState !== 'none') {
+        throw Object.assign(new Error('该仓库正在移除或已移除，不能准备副本'), { statusCode: 409 });
+      }
       await this.gitCache.begin(repositoryId);
       const instance = await this.store.getInstance(repositoryId);
       if (!instance) throw new Error('Instance row was not created');
@@ -607,6 +612,12 @@ export class InstanceManager {
 
   async wake(repositoryId: string, input: WakeInput): Promise<WakeResult> {
     return this.withLock(async () => {
+      const repository = await this.store.getRepository(repositoryId);
+      if (repository && repository.deletionState !== 'none') {
+        throw Object.assign(new Error('该仓库正在移除或已移除，不能启动实例'), {
+          statusCode: 409,
+        });
+      }
       let instance = await this.store.getInstance(repositoryId);
       if (!instance) {
         const prepared = await prepareInstance(this.config, this.store, repositoryId);

@@ -13,6 +13,8 @@ export interface RepositoryRow {
    */
   checkCommands: unknown;
   status: 'provisioning' | 'active' | 'sleeping' | 'error';
+  /** Repository removal state; a preparation must not start while not `none`. */
+  deletionState: string;
 }
 
 export interface InstanceRow {
@@ -114,9 +116,10 @@ export class SupervisorStore {
       bridge_credential_ref: string | null;
       check_commands: unknown;
       status: RepositoryRow['status'];
+      deletion_state: string;
     }>(
       `select id, owner_id, full_name, default_branch, bridge_url, bridge_credential_ref,
-              check_commands, status
+              check_commands, status, deletion_state
          from repositories where id = $1 limit 1`,
       [repositoryId],
     );
@@ -131,6 +134,7 @@ export class SupervisorStore {
           bridgeCredentialRef: row.bridge_credential_ref,
           checkCommands: row.check_commands,
           status: row.status,
+          deletionState: row.deletion_state,
         }
       : null;
   }

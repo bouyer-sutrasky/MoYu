@@ -169,6 +169,13 @@
       "when": 1795100752046,
       "tag": "0023_fuzzy_pet_avengers",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1795104810692,
+      "tag": "0024_deletion_operation_id",
+      "breakpoints": true
     }
   ]
 }

@@ -1,5 +1,5 @@
-import { lstatSync, rmSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { lstatSync, realpathSync, rmSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 import type { SupervisorConfig } from './config';
 
@@ -14,9 +14,43 @@ export interface RemovalResult {
   errors: Array<{ path: string; error: string }>;
 }
 
-function inside(root: string, candidate: string): boolean {
-  const rel = relative(resolve(root), resolve(candidate));
-  return rel === '' ? false : !rel.startsWith('..') && !isAbsolute(rel);
+/**
+ * Resolves the nearest existing ancestor and appends the non-existing tail. This
+ * catches an intermediate symlink that leaves the configured root: a lexical
+ * `resolve()` alone would accept `root/link/secret` even when `link` points
+ * outside. The target itself may be a symlink; removing that link is safe
+ * because `rmSync` does not follow it.
+ */
+function realTargetThroughParents(path: string): string {
+  const target = resolve(path);
+  let existing = dirname(target);
+  const tail = [basename(target)];
+  while (!lexists(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) break;
+    tail.unshift(basename(existing));
+    existing = parent;
+  }
+  try {
+    return join(realpathSync(existing), ...tail);
+  } catch {
+    return target;
+  }
+}
+
+function realRoot(root: string): string {
+  try {
+    return realpathSync(root);
+  } catch {
+    return resolve(root);
+  }
+}
+
+function insideReal(root: string, candidate: string): boolean {
+  const real = realRoot(root);
+  const target = realTargetThroughParents(candidate);
+  const rel = relative(real, target);
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
 }
 
 function entry(root: string, ...parts: string[]): RemovalPath {
@@ -65,7 +99,7 @@ export function repositoryRemovalPaths(
     seen.add(target);
     // Never delete a configured root itself, and never leave the allowed tree
     // through `..` or a symlinked parent.
-    return target !== resolve(item.root) && inside(item.root, target);
+    return target !== resolve(item.root) && insideReal(item.root, target);
   });
 }
 
@@ -75,7 +109,7 @@ export function removeRepositoryPaths(entries: readonly RemovalPath[]): RemovalR
   const errors: Array<{ path: string; error: string }> = [];
   for (const item of entries) {
     const target = resolve(item.path);
-    if (!inside(item.root, target)) {
+    if (!insideReal(item.root, target)) {
       errors.push({ path: target, error: 'refused: outside the configured root' });
       continue;
     }
@@ -104,6 +138,5 @@ function lexists(path: string): boolean {
 
 /** True for an absolute path that is not a filesystem or configured root. */
 export function safeRemovalTarget(root: string, candidate: string): boolean {
-  const target = resolve(candidate);
-  return target !== resolve(root) && inside(root, target);
+  return resolve(candidate) !== resolve(root) && insideReal(root, candidate);
 }

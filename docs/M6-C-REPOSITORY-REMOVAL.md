@@ -24,21 +24,27 @@
 `DELETE /api/v1/repositories/:id`：
 
 1. 只允许该仓库的 owner；其他 owner 得到 404，不泄露存在性。
-2. 若仓库正在准备副本、仍有排队/运行/停止中的任务、或仍有活动执行租约，
-   返回 409 和具体原因；不会把状态改成「移除中」。
-3. 否则写入 `deletion_state='deleting'`、尝试次数和开始时间，然后调用 supervisor
-   的 `POST /control/v1/instances/:id/remove`。supervisor 再次校验任务/租约/后台
-   进程，停止实例，删除本次仓库专属资源，并删除 `repository_instances` 行、
-   `runtime_cursors` 行和仓库的 Bridge 绑定。
-4. 成功写入 `deletion_state='removed'`、`removed_at` 和结束时间；仓库从
-   `GET /api/v1/repositories` 中隐藏，任务和会话行保留。
-5. supervisor 失败时写入 `deletion_state='failed'` 和脱敏原因，页面显示重试；
-   重试就是再次发送同一 `DELETE`。
-6. 服务重启时，仍为 `deleting` 的行改为 `failed` 并提示重试；supervisor 的删除
-   是幂等的，已清理的路径不会再次报错。
+2. 在 `repositories` 行锁内原子认领：检查准备中副本、未结束任务（含等待人工）
+   和活动租约；有阻塞时返回 409，不写入 `deleting`。并发 DELETE 只有一个能
+   认领，其他请求返回当前 `deleting` 状态。
+3. 认领写入 `deletion_state='deleting'`、`deletion_operation_id`、尝试次数和
+   开始时间，然后调用 supervisor 的 `POST /control/v1/instances/:id/remove`。
+   supervisor 再次校验任务/租约/后台进程，停止实例，删除本次仓库专属资源，并
+   删除 `repository_instances` 行、`runtime_cursors` 行和仓库的 Bridge 绑定。
+4. 成功/失败回执只在 `deletion_state='deleting'` 且 `deletion_operation_id`
+   仍匹配时更新；晚到的旧操作回执不会覆盖新操作。成功写入 `removed`、
+   `removed_at` 和结束时间；仓库从 `GET /api/v1/repositories` 中隐藏，任务和
+   会话行保留。
+5. supervisor 失败时写入 `failed` 和脱敏原因，页面显示重试；重试就是再次发送
+   同一 `DELETE`。
+6. 任务准入与移除使用同一 `repositories` 行锁：并发新建任务/执行不会绕过
+   `deleting`；副本准备在 supervisor 侧也拒绝非 `none` 的删除状态。
+7. 服务重启时，仍为 `deleting` 的行改为 `failed` 并清除操作 id、提示重试；
+   supervisor 的删除是幂等的，已清理的路径不会再次报错。
 
-`POST /api/v1/repositories` 遇到同一全名的已移除行时复用原行（同一仓库 id），
-恢复为 `provisioning` 并重新准备实例；未移除或移除中的同名仓库仍返回冲突。
+`POST /api/v1/repositories` 遇到同一全名的已移除行时，先校验原 owner：只有原
+owner 能复用原行（同一仓库 id）恢复为 `provisioning` 并重新准备实例；其他
+owner 得到 409，归属不会被改写。未移除或移除中的同名仓库仍返回冲突。
 
 ## 3. 本地清理范围
 
@@ -62,19 +68,24 @@ INSTANCE_LOG_DIR/<profile>.log
 
 迁移 `0023` 在 `repositories` 增加 `deletion_state`、`deletion_detail`、
 `deletion_attempts`、`deletion_started_at`、`deletion_finished_at`、`removed_at`
-和状态检查约束。仓库行不删除，因此历史任务/会话的外键保持完整。
+和状态检查约束；迁移 `0024` 增加 `deletion_operation_id`。仓库行不删除，因此
+历史任务/会话的外键保持完整。移除后第 30 天起，API 启动时清理该仓库的会话
+（消息和任务行随外键级联），与确认页写的「30 天后自动清理」一致。
 
-回滚：`packages/db/migrations/rollback/0023_fuzzy_pet_avengers.down.sql` 删除
-上述列和 ledger 行；已停止的实例和已删除的本地副本不会因此恢复，重新升级后
-仓库重新可见但需要重新唤醒/准备。
+回滚：`0024` 只删除 `deletion_operation_id` 和 ledger 行；`0023` 删除其余列和
+ledger 行。已停止的实例和已删除的本地副本不会因此恢复，重新升级后仓库重新
+可见但需要重新唤醒/准备。
 
 ## 5. 验证
 
 - API 集成测试：有活动任务时 409；移除此后从列表隐藏、历史行保留、旧链接
   提示已移除、重复请求幂等、supervisor 失败后状态为 failed 且重试成功、
   服务重启恢复为 failed、其他 owner 404、同名重新接入恢复原 id。
-- supervisor 单元测试：路径派生只包含该仓库资源；非法 profile 和越界路径
-  被拒绝；删除幂等且不删除配置根。
+- supervisor 单元测试：路径派生只包含该仓库资源；非法 profile、越界路径和
+  经中间符号链接逃逸的路径被拒绝；删除幂等且不删除配置根。
+- 并发 DELETE 只调用一次 supervisor；并发任务准入与删除只有一个成功；晚到
+  旧 operation id 回执不改变状态；服务重启把 `deleting` 恢复为可重试失败；
+  过期历史被清理而近期历史保留。
 - Web 单元测试：现有格式与管理入口不依赖 mock 数据。
 
 未验：未在运行中的生产 release 上执行真实移除；需要按发布流程升级后，用一个

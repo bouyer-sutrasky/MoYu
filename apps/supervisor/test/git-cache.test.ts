@@ -112,6 +112,7 @@ function harness(remote: string, options: { timeoutMs?: number } = {}) {
     bridgeCredentialRef: null,
     checkCommands: null,
     status: 'provisioning',
+    deletionState: 'none',
   };
   const updates: Partial<InstanceRow>[] = [];
   const store = {

@@ -125,6 +125,11 @@ export function registerRepositoryRoutes(
           : 'The repository is being removed or its removal failed; retry or wait before adding it',
       );
     }
+    if (existing && existing.ownerId !== auth.owner.id) {
+      throw ApiProblem.conflict(
+        'This repository was removed by another owner; its history cannot be reassigned',
+      );
+    }
 
     // GitHub is the authority for the repository identity, default branch and
     // the dedicated account's write permission. An inaccessible repository is
@@ -138,7 +143,6 @@ export function registerRepositoryRoutes(
           const [restored] = await transaction
             .update(repositories)
             .set({
-              ownerId: auth.owner.id,
               githubRepositoryId: github.githubRepositoryId,
               defaultBranch: github.defaultBranch,
               checkCommands: input.checkCommands ?? null,
@@ -329,19 +333,23 @@ export function registerRepositoryRoutes(
     if (!repository || repository.ownerId !== auth.owner.id) {
       throw ApiProblem.notFound('Repository not found');
     }
-    const result = await removeRepository(database, config, repository, { log: request.log });
+    const result = await removeRepository(database, config, repository.id, auth.owner.id, {
+      log: request.log,
+    });
     const [refreshed] = await database
       .select()
       .from(repositories)
       .where(eq(repositories.id, repository.id))
       .limit(1);
+    const status =
+      result.outcome === 'failed' ? 503 : result.outcome === 'already-removed' ? 200 : 202;
     return sendData(
       reply,
       request,
       repositoryDataSchema.parse({
         repository: await summarize(database, config, refreshed ?? result.repository),
       }),
-      result.alreadyRemoved ? 200 : 202,
+      status,
     );
   });
 

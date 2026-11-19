@@ -18,6 +18,7 @@ let downSql0020 = '';
 let downSql0021 = '';
 let downSql0022 = '';
 let downSql0023 = '';
+let downSql0024 = '';
 const databases: TestDatabase[] = [];
 
 const read = async (database: TestDatabase) => {
@@ -73,6 +74,10 @@ describe('0016 rollback script on real PostgreSQL', () => {
       path.join(ROOT, 'packages/db/migrations/rollback/0023_fuzzy_pet_avengers.down.sql'),
       'utf8',
     );
+    downSql0024 = await readFile(
+      path.join(ROOT, 'packages/db/migrations/rollback/0024_deletion_operation_id.down.sql'),
+      'utf8',
+    );
   });
 
   it('drops revoked_at, refuses a second rollback, and re-applies cleanly', async () => {
@@ -80,6 +85,7 @@ describe('0016 rollback script on real PostgreSQL', () => {
     databases.push(database);
     expect(await read(database)).toEqual({ column_present: true, ledger_present: true });
 
+    await database.pool.query(downSql0024);
     await database.pool.query(downSql0023);
     await database.pool.query(downSql0022);
     await database.pool.query(downSql0021);

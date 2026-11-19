@@ -49,6 +49,8 @@ export const repositories = pgTable(
      * workbench and `deletionState` makes progress/retry observable.
      */
     deletionState: text('deletion_state').notNull().default('none'),
+    /** Current removal operation; late results for an older operation are ignored. */
+    deletionOperationId: uuid('deletion_operation_id'),
     deletionDetail: text('deletion_detail'),
     deletionAttempts: integer('deletion_attempts').notNull().default(0),
     deletionStartedAt: timestamp('deletion_started_at', { withTimezone: true }),

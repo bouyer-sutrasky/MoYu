@@ -22,7 +22,10 @@ import { registerActivityRoutes } from './routes/activity';
 import { registerAttachmentRoutes } from './routes/attachments';
 import { registerCleanupRoutes } from './routes/cleanup';
 import { ensureConfiguredRepository } from './domain/repositories';
-import { recoverInterruptedDeletions } from './domain/repository-removal';
+import {
+  purgeExpiredRepositoryHistory,
+  recoverInterruptedDeletions,
+} from './domain/repository-removal';
 import { registerAuthRoutes } from './routes/auth';
 import { registerConversationRoutes } from './routes/conversations';
 import { registerEventRoutes } from './routes/events';
@@ -76,6 +79,7 @@ export function buildApp({
     // retryable, and the same DELETE request resumes the idempotent cleanup.
     app.addHook('onReady', async () => {
       await recoverInterruptedDeletions(database);
+      await purgeExpiredRepositoryHistory(database);
     });
   }
 

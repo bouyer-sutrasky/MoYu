@@ -19,6 +19,7 @@ let hash = '';
 let downSql = '';
 let downSql0022 = '';
 let downSql0023 = '';
+let downSql0024 = '';
 const databases: TestDatabase[] = [];
 
 interface State {
@@ -67,6 +68,10 @@ describe('0021 rollback script on real PostgreSQL', () => {
       path.join(ROOT, 'packages/db/migrations/rollback/0023_fuzzy_pet_avengers.down.sql'),
       'utf8',
     );
+    downSql0024 = await readFile(
+      path.join(ROOT, 'packages/db/migrations/rollback/0024_deletion_operation_id.down.sql'),
+      'utf8',
+    );
   });
 
   it('drops only the decision and PR-order projections and can be re-applied', async () => {
@@ -101,7 +106,8 @@ describe('0021 rollback script on real PostgreSQL', () => {
       tasks: 1,
     });
 
-    // 0023 and 0022 are newer than 0021, so they are rolled back first.
+    // 0024, 0023 and 0022 are newer than 0021, so they are rolled back first.
+    await database.pool.query(downSql0024);
     await database.pool.query(downSql0023);
     await database.pool.query(downSql0022);
     await database.pool.query(downSql);

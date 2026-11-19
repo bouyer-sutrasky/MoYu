@@ -24,6 +24,7 @@ import type { Authenticate } from '../auth/guards';
 import type { ApiConfig } from '../config';
 import { toTaskOperationSummary, toTaskSummary } from '../domain/serialize';
 import { assertExecutionPrepared, wakeRepository } from '../domain/instances';
+import { lockRepositoryForAdmission } from '../domain/repository-removal';
 import { appendEvent } from '../events/append';
 import { eventToWorkspaceEvent } from '../events/format';
 import type { AppEventBus } from '../events/bus';
@@ -245,6 +246,7 @@ export async function runTaskCommand(
   };
   try {
     result = await database.transaction(async (transaction) => {
+      await lockRepositoryForAdmission(transaction, loaded.conversation.repositoryId);
       const [current] = await transaction
         .select()
         .from(taskLinks)
