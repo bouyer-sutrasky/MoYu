@@ -1,6 +1,8 @@
 # M6-C C 段证据
 
 基线：`2e785306f59767f07b91198f275591c050f9f34f`（#82 合并后的 `main`）。
+
+After 浏览器截图与 `after-result.json` 采集于 `c9669e2`；最终 head `09cda53` 只增加了设置目标仓库的回退和「通知点击时关闭设置」两个非可视修正，不改变本文件记录的场景与截图。
 实现与验收说明见 [`docs/M6-C-C-VERIFICATION.md`](../../M6-C-C-VERIFICATION.md)；
 D 段调查见 [`docs/M6-C-D-NOTIFICATIONS.md`](../../M6-C-D-NOTIFICATIONS.md)。
 
