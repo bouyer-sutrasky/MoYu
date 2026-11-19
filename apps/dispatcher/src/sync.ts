@@ -390,16 +390,20 @@ async function recordRoutedDelivery(
   conversationId: string,
   state: 'delivered' | 'read',
 ): Promise<void> {
+  const data = asRecord(event.data);
+  const assignmentId = asString(data.assignmentId);
   const updated = await client.query<TaskRow>(
     `update task_links
         set decision = decision
               || jsonb_build_object('deliveryState', $2::text)
               || case when decision ? 'deliveryAt' then '{}'::jsonb
-                      else jsonb_build_object('deliveryAt', $3::text) end,
+                      else jsonb_build_object('deliveryAt', $3::text) end
+              || case when $4::text is null then '{}'::jsonb
+                      else jsonb_build_object('targetAssignmentId', $4::text) end,
             version = version + 1, updated_at = now()
       where conversation_id = $1 and decision->>'outcome' = 'routed'
       returning ${TASK_COLUMNS.replaceAll('t.', 'task_links.')}`,
-    [conversationId, state, new Date(event.at).toISOString()],
+    [conversationId, state, new Date(event.at).toISOString(), assignmentId ?? null],
   );
   const task = updated.rows[0];
   if (task) {

@@ -574,11 +574,12 @@ describe('routed admission handoff on real PostgreSQL', () => {
 
     // The first rework finished and the platform released its generation.
     const target = await readTaskRow(fixture.target.taskId);
-    if (!target.runtime_lease_id) throw new Error('target lease missing');
-    await testDatabase.pool.query(
-      `update runtime_leases set state = 'released', released_at = now() where id = $1`,
-      [target.runtime_lease_id],
-    );
+    if (target.runtime_lease_id) {
+      await testDatabase.pool.query(
+        `update runtime_leases set state = 'released', released_at = now() where id = $1`,
+        [target.runtime_lease_id],
+      );
+    }
     await testDatabase.pool.query(
       `update task_links set runtime_lease_id = null, state = 'awaiting_review' where id = $1`,
       [fixture.target.taskId],
@@ -629,9 +630,35 @@ describe('routed admission handoff on real PostgreSQL', () => {
     await testDatabase.pool.query(`update task_links set state = 'awaiting_review' where id = $1`, [
       fixture.target.taskId,
     ]);
-    // No handoffRoutedOnce call: the source decision has delivery evidence but
-    // no handedOffAt yet. The receipt must still follow the real delivery.
+    // The worker received and reported on the input before the routing loop
+    // wrote handedOffAt. The delivery event itself carries the assignment.
+    await testDatabase.pool.query(
+      `update deliveries set handed_to_worker_at = null, read_at = null where message_id = $1`,
+      [fixture.source.messageId],
+    );
+    const deliveredAt = new Date(Date.now() - 1_000).toISOString();
+    bridge.events.push({
+      seq: bridge.events.length + 1,
+      id: `delivered-worker-first-${fixture.source.messageId}`,
+      type: 'message.delivered',
+      at: deliveredAt,
+      data: {
+        triggerId: `workspace:${fixture.source.messageId}`,
+        messageId: fixture.source.messageId,
+        conversationId: fixture.source.conversationId,
+        stage: 'worker_inbox',
+        at: deliveredAt,
+        assignmentId: 'worker-first-assignment',
+      },
+    });
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+    snapshot.assignmentId = 'worker-first-assignment';
+    // No handoffRoutedOnce call: the source decision has delivery evidence and
+    // the assignment, but no handedOffAt yet. The receipt must still follow it.
     expect((await readDecision(fixture.source.taskId)).decision['handedOffAt']).toBeUndefined();
+    expect((await readDecision(fixture.source.taskId)).decision['targetAssignmentId']).toBe(
+      'worker-first-assignment',
+    );
     expect(await captureReportsOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(
       true,
     );
@@ -648,54 +675,38 @@ describe('routed admission handoff on real PostgreSQL', () => {
     expect(after.rows).toHaveLength(1);
   }, 30_000);
 
-  it('notifies only the source of the current rework when the same target reports again', async () => {
-    const fixture = await seed();
-    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
-    const snapshot = bridge.snapshots.get(fixture.target.ticketId)!;
-    snapshot.state = 'awaiting_review';
-    await testDatabase.pool.query(`update task_links set state = 'awaiting_review' where id = $1`, [
-      fixture.target.taskId,
-    ]);
-    const firstReportAt = new Date(Date.now() + 60_000).toISOString();
-    snapshot.report = { state: 'ready', summary: 'First rework result', at: firstReportAt };
-    await captureReportsOnce(testDatabase.pool, fixture.repository, client, logger);
-
-    const second = await seedSecondSource(fixture);
-    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
-    // Model the second rework being delivered after the first report.
-    const secondDeliveryAt = new Date(Date.parse(firstReportAt) + 30_000).toISOString();
-    await testDatabase.pool.query(
-      `update task_links
-          set decision = decision || jsonb_build_object(
-                'deliveryState', 'read',
-                'deliveryAt', $2::text)
-        where id = $1`,
-      [second.taskId, secondDeliveryAt],
-    );
-    // A stale event re-read must not resurrect the first source.
-    const secondReportAt = new Date(Date.parse(firstReportAt) + 60_000).toISOString();
-    snapshot.report = { state: 'ready', summary: 'Second rework result', at: secondReportAt };
-    await testDatabase.pool.query(`update task_links set state = 'awaiting_review' where id = $1`, [
-      fixture.target.taskId,
-    ]);
-    await captureReportsOnce(testDatabase.pool, fixture.repository, client, logger);
-    await captureReportsOnce(testDatabase.pool, fixture.repository, client, logger);
-
-    const counts = await testDatabase.pool.query<{ conversation_id: string; count: number }>(
-      `select conversation_id, count(*)::int as count
-         from messages
-        where conversation_id = any($1::uuid[]) and kind = 'notice'
-        group by conversation_id`,
-      [[fixture.source.conversationId, second.conversationId]],
-    );
-    const byConversation = new Map(counts.rows.map((row) => [row.conversation_id, row.count]));
-    expect(byConversation.get(fixture.source.conversationId)).toBe(1);
-    expect(byConversation.get(second.conversationId)).toBe(1);
-  }, 30_000);
-
   it('routes each report to its own assignment when an earlier report tick was skipped', async () => {
     const fixture = await seed();
     expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+    // The first worker receives and finishes the input while the target still
+    // holds its live generation, before the routing loop records handedOffAt.
+    const snapshot = bridge.snapshots.get(fixture.target.ticketId)!;
+    snapshot.admissionRequired = false;
+    snapshot.assignmentId = 'first-worker-assignment';
+    await testDatabase.pool.query(
+      `update deliveries set handed_to_worker_at = null, read_at = null where message_id = $1`,
+      [fixture.source.messageId],
+    );
+    const firstDeliveredAt = new Date(Date.now() - 1_000).toISOString();
+    bridge.events.push({
+      seq: bridge.events.length + 1,
+      id: `delivered-first-before-handoff-${fixture.source.messageId}`,
+      type: 'message.delivered',
+      at: firstDeliveredAt,
+      data: {
+        triggerId: `workspace:${fixture.source.messageId}`,
+        messageId: fixture.source.messageId,
+        conversationId: fixture.source.conversationId,
+        stage: 'worker_inbox',
+        at: firstDeliveredAt,
+        assignmentId: 'first-worker-assignment',
+      },
+    });
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+    expect((await readDecision(fixture.source.taskId)).decision['handedOffAt']).toBeUndefined();
+    expect((await readDecision(fixture.source.taskId)).decision['targetAssignmentId']).toBe(
+      'first-worker-assignment',
+    );
     expect(
       await handoffRoutedOnce(testDatabase.pool, config, fixture.repository, client, true, logger),
     ).toBe(true);
@@ -707,16 +718,16 @@ describe('routed admission handoff on real PostgreSQL', () => {
     // Release the first generation, then hand the second rework to a new
     // assignment. The first report is never polled.
     const target = await readTaskRow(fixture.target.taskId);
-    if (!target.runtime_lease_id) throw new Error('target lease missing');
-    await testDatabase.pool.query(
-      `update runtime_leases set state = 'released', released_at = now() where id = $1`,
-      [target.runtime_lease_id],
-    );
+    if (target.runtime_lease_id) {
+      await testDatabase.pool.query(
+        `update runtime_leases set state = 'released', released_at = now() where id = $1`,
+        [target.runtime_lease_id],
+      );
+    }
     await testDatabase.pool.query(
       `update task_links set runtime_lease_id = null, state = 'awaiting_review' where id = $1`,
       [fixture.target.taskId],
     );
-    const snapshot = bridge.snapshots.get(fixture.target.ticketId)!;
     snapshot.admissionRequired = true;
     snapshot.state = 'awaiting_review';
     snapshot.assignmentId = 'old-assignment-before-second-rework';

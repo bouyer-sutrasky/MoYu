@@ -68,13 +68,14 @@ export async function sendRoutedNotice(
       const deliveredAt = source.deliveryAt ? Date.parse(source.deliveryAt) : Number.NaN;
       const lastReportAt = source.lastReportAt ? Date.parse(source.lastReportAt) : Number.NaN;
       const delivered = source.deliveryState === 'delivered' || source.deliveryState === 'read';
-      // A report belongs to one runtime assignment. If both sides recorded the
-      // assignment, a source from an older rework must not receive the newer
-      // report even when it never observed its own report (e.g. the dispatcher
-      // was down for that report tick).
+      // A report belongs to exactly one runtime assignment. The source input's
+      // assignment is persisted from the delivery/read event, so it is known even
+      // when the worker finished before the routing loop wrote handedOffAt. If
+      // either side lacks an assignment, attribution is unconfirmed: do not send
+      // a completion receipt on timestamps alone.
       if (
-        source.targetAssignmentId &&
-        input.targetAssignmentId &&
+        !source.targetAssignmentId ||
+        !input.targetAssignmentId ||
         source.targetAssignmentId !== input.targetAssignmentId
       ) {
         continue;

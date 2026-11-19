@@ -74,6 +74,7 @@ node --test integrations/superagent/tests/verify-lock.test.mjs
 | 补丁 | 作用 |
 | --- | --- |
 | `0028-workspace-trigger-null.patch` | 回复没有 reply_to Trigger 时，workspace Channel 仍发送 `triggerId: null`。此前字段被省略，平台严格 schema 返回 422，Outbox 把 4xx 永久结为 `channelGone`，目标工单的完成回复到不了原会话。补丁同时锁定普通 reply 的请求体。 |
+| `0029-input-assignment.patch` | `message.delivered` / `message.read` 事件携带该输入实际交付到的 `assignmentId`（上游 `input.deliveredTo`）。平台据此把 routed 返修结果归属到对应执行回合，避免 worker 先完成、平台后记录交接时把后续报告发给上一轮源会话。 |
 
 ## 约束
 
