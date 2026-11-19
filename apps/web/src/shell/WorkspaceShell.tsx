@@ -28,6 +28,14 @@ import { SettingsDialog } from './SettingsDialog';
 import { AddRepositoryDialog } from './AddRepositoryDialog';
 import { RepositorySettingsDialog } from './RepositorySettingsDialog';
 import { Sidebar } from './Sidebar';
+import type { SettingsGroup } from '../superagent/contract';
+import {
+  parseWorkspaceRoute,
+  sameWorkspaceRoute,
+  workspaceRouteUrl,
+  type WorkspaceRoute,
+  type WorkspaceSettingsSection,
+} from './workspaceRoute';
 import styles from './WorkspaceShell.module.css';
 
 type Mode = 'work' | 'chat';
@@ -167,7 +175,10 @@ export function WorkspaceShell({
   const [activityOpen, setActivityOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [route, setRoute] = useState<WorkspaceRoute>(() =>
+    parseWorkspaceRoute(window.location.search),
+  );
+  const [routeNotice, setRouteNotice] = useState<string | null>(null);
   const [addRepositoryOpen, setAddRepositoryOpen] = useState(false);
   const [repositorySettingsOpen, setRepositorySettingsOpen] = useState(false);
   const [repositoryActionBusy, setRepositoryActionBusy] = useState(false);
@@ -205,8 +216,11 @@ export function WorkspaceShell({
   const selectedRepositoryIdRef = useRef<string | null>(selectedRepositoryId);
   const repositoriesRef = useRef<RepositorySummary[]>(repositories);
   const pendingOpenRef = useRef<{ conversationId: string; repositoryId: string } | null>(null);
+  const routeRef = useRef(route);
+  const routeApplySeqRef = useRef(0);
   const seenEventIdsRef = useRef<Set<string>>(new Set());
   const pageOpenedAtRef = useRef(Date.now());
+  routeRef.current = route;
   selectedConversationIdRef.current = selectedConversationId;
   selectedRepositoryIdRef.current = selectedRepositoryId;
   repositoriesRef.current = repositories;
@@ -258,6 +272,98 @@ export function WorkspaceShell({
     },
     [loadRepositories, onSessionLost],
   );
+
+  /**
+   * Writes the addressable state and keeps the browser history in step. Calling
+   * it with the current address is a no-op, so effects may commit a resolved
+   * fallback without growing history. `replace` is for repair (an invalid id or
+   * a resolved alias), `push` for a deliberate navigation.
+   */
+  const commitRoute = useCallback((next: WorkspaceRoute, options: { replace?: boolean } = {}) => {
+    const nextUrl = workspaceRouteUrl(window.location.pathname, next, window.location.hash);
+    const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (sameWorkspaceRoute(routeRef.current, next) && nextUrl === currentUrl) {
+      return;
+    }
+    routeRef.current = next;
+    setRoute(next);
+    if (nextUrl === currentUrl) {
+      return;
+    }
+    if (options.replace) {
+      window.history.replaceState(window.history.state, '', nextUrl);
+    } else {
+      window.history.pushState(window.history.state, '', nextUrl);
+    }
+  }, []);
+
+  // Browser Back/Forward belongs to the address, not to a private React state.
+  useEffect(() => {
+    const onPopState = () => {
+      const next = parseWorkspaceRoute(window.location.search);
+      routeRef.current = next;
+      setRoute(next);
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  const openSettings = useCallback(() => {
+    const current = routeRef.current;
+    if (current.settings) {
+      setSidebarOpen(false);
+      return;
+    }
+    const repositoryId = selectedRepositoryIdRef.current;
+    commitRoute({
+      ...current,
+      settings: {
+        section: 'appearance',
+        repositoryId,
+        group: 'source',
+      },
+    });
+    setSidebarOpen(false);
+  }, [commitRoute]);
+
+  const changeSettingsSection = useCallback(
+    (section: WorkspaceSettingsSection) => {
+      const settings = routeRef.current.settings;
+      if (!settings) return;
+      commitRoute({ ...routeRef.current, settings: { ...settings, section } });
+    },
+    [commitRoute],
+  );
+
+  const changeSuperagentRepository = useCallback(
+    (repositoryId: string | null) => {
+      const settings = routeRef.current.settings;
+      if (!settings) return;
+      // The settings repository is independent from the workbench repository.
+      // Switching it stays inside the settings dialog and starts that instance's
+      // navigation at its first group, matching the upstream settings shell.
+      commitRoute({
+        ...routeRef.current,
+        settings: { ...settings, repositoryId, group: 'source' },
+      });
+    },
+    [commitRoute],
+  );
+
+  const changeSuperagentGroup = useCallback(
+    (group: SettingsGroup) => {
+      const settings = routeRef.current.settings;
+      if (!settings) return;
+      commitRoute({ ...routeRef.current, settings: { ...settings, group } });
+    },
+    [commitRoute],
+  );
+
+  const closeSettings = useCallback(() => {
+    const current = routeRef.current;
+    if (!current.settings) return;
+    commitRoute({ ...current, settings: null });
+  }, [commitRoute]);
 
   const loadPending = useCallback(
     async (repositoryId: string, silent = false) => {
@@ -423,6 +529,14 @@ export function WorkspaceShell({
             result.conversation.id,
           );
           setSelectedConversationId(result.conversation.id);
+          commitRoute(
+            {
+              ...routeRef.current,
+              repositoryId: result.conversation.repositoryId,
+              conversationId: result.conversation.id,
+            },
+            { replace: true },
+          );
         }
         setConversation(result.conversation);
         setConversationStatus('ready');
@@ -442,7 +556,7 @@ export function WorkspaceShell({
         setConversationError(describeApiError(caught));
       }
     },
-    [onSessionLost],
+    [commitRoute, onSessionLost],
   );
 
   /**
@@ -763,6 +877,13 @@ export function WorkspaceShell({
       setSelectedRepositoryId(null);
       return;
     }
+    const requested = routeRef.current.repositoryId;
+    if (requested && repositories.some((repository) => repository.id === requested)) {
+      if (selectedRepositoryId !== requested) {
+        setSelectedRepositoryId(requested);
+      }
+      return;
+    }
     if (
       !selectedRepositoryId ||
       !repositories.some((repository) => repository.id === selectedRepositoryId)
@@ -836,13 +957,151 @@ export function WorkspaceShell({
     void loadMessages(selectedConversationId);
   }, [selectedConversationId, loadConversation, loadMessages]);
 
+  /**
+   * Applies the addressable target after the owner's repositories are known.
+   * A target is only adopted after the platform read proves it exists and
+   * belongs to this owner; an unknown repository, a conversation moved to
+   * another repository, or a 403/404 falls back with a visible notice and a
+   * canonical URL. The sequence guard makes a late response for an abandoned
+   * target unable to overwrite the one the owner is now looking at.
+   */
+  useEffect(() => {
+    if (repositoriesStatus !== 'ready') {
+      return;
+    }
+    const seq = ++routeApplySeqRef.current;
+    const desired = route;
+    if (repositories.length === 0) {
+      setSelectedRepositoryId(null);
+      setSelectedConversationId(null);
+      return;
+    }
+
+    const fallbackRepositoryId = (() => {
+      const current = selectedRepositoryIdRef.current;
+      if (current && repositories.some((repository) => repository.id === current)) {
+        return current;
+      }
+      return repositories[0]!.id;
+    })();
+
+    if (desired.repositoryId && !repositories.some((item) => item.id === desired.repositoryId)) {
+      setRouteNotice('要恢复的仓库不存在或没有访问权限，已回到可访问的仓库。');
+      commitRoute(
+        {
+          ...desired,
+          repositoryId: fallbackRepositoryId,
+          conversationId: null,
+          settings: desired.settings
+            ? { ...desired.settings, repositoryId: fallbackRepositoryId }
+            : null,
+        },
+        { replace: true },
+      );
+      return;
+    }
+
+    const repositoryId = desired.repositoryId ?? fallbackRepositoryId;
+    if (!desired.repositoryId) {
+      commitRoute(
+        {
+          ...desired,
+          repositoryId,
+          settings:
+            desired.settings && !desired.settings.repositoryId
+              ? { ...desired.settings, repositoryId }
+              : desired.settings,
+        },
+        { replace: true },
+      );
+      return;
+    }
+
+    if (selectedRepositoryIdRef.current !== repositoryId) {
+      setSelectedRepositoryId(repositoryId);
+    }
+    if (!desired.conversationId) {
+      if (selectedConversationIdRef.current) {
+        setSelectedConversationId(null);
+      }
+      return;
+    }
+    if (selectedConversationIdRef.current === desired.conversationId) {
+      return;
+    }
+
+    const conversationId = desired.conversationId;
+    void (async () => {
+      try {
+        const result = await api.conversation(conversationId);
+        if (seq !== routeApplySeqRef.current) {
+          return;
+        }
+        const target = result.conversation;
+        if (!repositories.some((repository) => repository.id === target.repositoryId)) {
+          throw new ApiClientError(404, 'not_found', 'Conversation repository is not accessible');
+        }
+        if (selectedRepositoryIdRef.current !== target.repositoryId) {
+          pendingOpenRef.current = {
+            conversationId: target.id,
+            repositoryId: target.repositoryId,
+          };
+          setSelectedRepositoryId(target.repositoryId);
+        } else {
+          setSelectedConversationId(target.id);
+        }
+        setRouteNotice(null);
+        if (desired.repositoryId !== target.repositoryId) {
+          commitRoute(
+            { ...routeRef.current, repositoryId: target.repositoryId, conversationId: target.id },
+            { replace: true },
+          );
+        }
+      } catch (caught) {
+        if (seq !== routeApplySeqRef.current) {
+          return;
+        }
+        if (caught instanceof ApiClientError && caught.status === 401) {
+          onSessionLost();
+          return;
+        }
+        setRouteNotice('要恢复的会话不存在或没有访问权限，已回到当前仓库。');
+        commitRoute({ ...routeRef.current, conversationId: null }, { replace: true });
+      }
+    })();
+  }, [route, repositories, repositoriesStatus, commitRoute, onSessionLost]);
+
+  // A settings route names the repository whose instance it shows. Resolve an
+  // unknown or removed repository to the workbench's repository and keep the
+  // dialog open: the owner asked for settings, not for a different repository.
+  useEffect(() => {
+    const settings = route.settings;
+    if (!settings || repositoriesStatus !== 'ready' || repositories.length === 0) {
+      return;
+    }
+    if (settings.repositoryId && repositories.some((item) => item.id === settings.repositoryId)) {
+      return;
+    }
+    const current = selectedRepositoryIdRef.current;
+    const fallback =
+      current && repositories.some((item) => item.id === current) ? current : repositories[0]!.id;
+    commitRoute({ ...route, settings: { ...settings, repositoryId: fallback } }, { replace: true });
+  }, [route, repositories, repositoriesStatus, commitRoute]);
+
   const openConversationTarget = useCallback(
     (target: { conversationId: string; repositoryId: string }) => {
+      routeApplySeqRef.current += 1;
       setMode('work');
       setCreatingTask(false);
       setActivityOpen(false);
       setHistoryOpen(false);
       setSidebarOpen(false);
+      setRouteNotice(null);
+      commitRoute({
+        ...routeRef.current,
+        repositoryId: target.repositoryId,
+        conversationId: target.conversationId,
+      });
       if (selectedRepositoryIdRef.current !== target.repositoryId) {
         pendingOpenRef.current = target;
         setSelectedRepositoryId(target.repositoryId);
@@ -850,7 +1109,7 @@ export function WorkspaceShell({
         setSelectedConversationId(target.conversationId);
       }
     },
-    [],
+    [commitRoute],
   );
 
   const handleWorkspaceEvent = useCallback(
@@ -1002,6 +1261,25 @@ export function WorkspaceShell({
     () => repositories.find((repository) => repository.id === selectedRepositoryId) ?? null,
     [repositories, selectedRepositoryId],
   );
+
+  /**
+   * The settings dialog keeps its own repository. Until the route resolves an
+   * explicit target, it opens on the workbench repository (the previous
+   * behavior) instead of an empty instance selector.
+   */
+  const settingsSuperagentRepositoryId = useMemo(() => {
+    const requested = route.settings?.repositoryId ?? null;
+    if (requested && repositories.some((repository) => repository.id === requested)) {
+      return requested;
+    }
+    if (
+      selectedRepositoryId &&
+      repositories.some((repository) => repository.id === selectedRepositoryId)
+    ) {
+      return selectedRepositoryId;
+    }
+    return repositories[0]?.id ?? null;
+  }, [repositories, route.settings?.repositoryId, selectedRepositoryId]);
 
   // A repository copy is prepared by the supervisor while the instance can be
   // asleep or online. Poll only while it is preparing so the phase and the
@@ -1269,24 +1547,48 @@ export function WorkspaceShell({
     setDetailsOpen(false);
   }
 
+  function selectRepository(id: string) {
+    routeApplySeqRef.current += 1;
+    setRouteNotice(null);
+    setSelectedRepositoryId(id);
+    setSelectedConversationId(null);
+    commitRoute({ ...routeRef.current, repositoryId: id, conversationId: null });
+    setSidebarOpen(false);
+  }
+
   function startNewTask() {
+    routeApplySeqRef.current += 1;
     setMode('work');
     setSelectedConversationId(null);
     setCreatingTask(true);
     setSidebarOpen(false);
+    commitRoute({ ...routeRef.current, conversationId: null });
   }
 
   function openConversation(id: string) {
+    routeApplySeqRef.current += 1;
     setMode('work');
     setCreatingTask(false);
+    setRouteNotice(null);
     setSelectedConversationId(id);
     setSidebarOpen(false);
+    commitRoute({
+      ...routeRef.current,
+      repositoryId: selectedRepositoryIdRef.current ?? routeRef.current.repositoryId,
+      conversationId: id,
+    });
   }
 
   function handleCreatedTask(created: ConversationSummary) {
+    routeApplySeqRef.current += 1;
     setCreatingTask(false);
     setSelectedConversationId(created.id);
     setSidebarOpen(false);
+    commitRoute({
+      ...routeRef.current,
+      repositoryId: created.repositoryId ?? routeRef.current.repositoryId,
+      conversationId: created.id,
+    });
     const repositoryId = selectedRepositoryIdRef.current;
     if (repositoryId) {
       void loadConversations(repositoryId, { silent: true });
@@ -1310,7 +1612,7 @@ export function WorkspaceShell({
           repositoriesStatus={repositoriesStatus}
           repositoriesError={repositoriesError}
           selectedRepositoryId={selectedRepositoryId}
-          onSelectRepository={setSelectedRepositoryId}
+          onSelectRepository={selectRepository}
           onReloadRepositories={() => void loadRepositories()}
           conversations={conversations}
           conversationsStatus={conversationsStatus}
@@ -1347,10 +1649,7 @@ export function WorkspaceShell({
             setHistoryOpen(true);
             setSidebarOpen(false);
           }}
-          onOpenSettings={() => {
-            setSettingsOpen(true);
-            setSidebarOpen(false);
-          }}
+          onOpenSettings={openSettings}
           ownerName={me.owner.displayName}
           themeMode={themeMode}
           onCycleTheme={cycleTheme}
@@ -1434,6 +1733,20 @@ export function WorkspaceShell({
             </div>
           </header>
 
+          {routeNotice ? (
+            <div className={styles.routeNotice} role="status">
+              <span>{routeNotice}</span>
+              <button
+                type="button"
+                className={styles.routeNoticeClose}
+                onClick={() => setRouteNotice(null)}
+                aria-label="关闭位置恢复提示"
+              >
+                <Icon name="x" size={14} />
+              </button>
+            </div>
+          ) : null}
+
           <main ref={mainRef} id="main-content" className={styles.main} tabIndex={-1}>
             <ConversationPane
               mode={mode}
@@ -1476,7 +1789,7 @@ export function WorkspaceShell({
               pendingCount={pendingCount}
               pendingHasMore={pendingHasMore}
               pendingLoading={pendingStatus === 'loading'}
-              onOpenConversation={(conversationId) => setSelectedConversationId(conversationId)}
+              onOpenConversation={openConversation}
               onViewAllPending={() => setActivityOpen(true)}
             />
           </main>
@@ -1505,13 +1818,18 @@ export function WorkspaceShell({
         />
       </div>
 
-      {settingsOpen ? (
+      {route.settings ? (
         <SettingsDialog
           me={me}
           authState={authState}
           repositories={repositories}
-          selectedRepositoryId={selectedRepositoryId}
-          onClose={() => setSettingsOpen(false)}
+          section={route.settings.section}
+          superagentRepositoryId={settingsSuperagentRepositoryId}
+          superagentGroup={route.settings.group ?? 'source'}
+          onSectionChange={changeSettingsSection}
+          onSuperagentRepositoryChange={changeSuperagentRepository}
+          onSuperagentGroupChange={changeSuperagentGroup}
+          onClose={closeSettings}
           onRefreshMe={onRefreshMe}
           onLoggedOut={onLoggedOut}
           onSessionLost={onSessionLost}

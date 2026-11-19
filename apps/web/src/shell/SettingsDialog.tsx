@@ -15,9 +15,11 @@ import { describeAuthError, isWebAuthnSupported } from '../lib/errors';
 import { Icon, type IconName } from '../components/Icon';
 import { ResponsiveSelect } from '../components/ResponsiveSelect';
 import { useTheme, type ThemeMode } from '../theme/ThemeProvider';
+import type { SettingsGroup } from '../superagent/contract';
 import { CleanupPanel } from './CleanupPanel';
 import { NotificationSettingsSection } from './NotificationSettingsSection';
 import { SuperagentSettings } from '../superagent/SuperagentSettings';
+import type { WorkspaceSettingsSection } from './workspaceRoute';
 import styles from './SettingsDialog.module.css';
 
 interface SettingsDialogProps {
@@ -25,8 +27,15 @@ interface SettingsDialogProps {
   authState: AuthStateData;
   /** Every added repository, so Superagent settings can be scoped to one. */
   repositories: RepositorySummary[];
-  /** The repository the workbench is showing; the settings open on it. */
-  selectedRepositoryId: string | null;
+  /** The active settings section, restored from the addressable route. */
+  section: WorkspaceSettingsSection;
+  /** The repository whose Superagent settings are shown, independent of the workbench. */
+  superagentRepositoryId: string | null;
+  /** The Superagent settings group, restored from the addressable route. */
+  superagentGroup: SettingsGroup;
+  onSectionChange: (section: WorkspaceSettingsSection) => void;
+  onSuperagentRepositoryChange: (repositoryId: string | null) => void;
+  onSuperagentGroupChange: (group: SettingsGroup) => void;
   onClose: () => void;
   onRefreshMe: () => Promise<void>;
   onLoggedOut: () => void;
@@ -36,16 +45,10 @@ interface SettingsDialogProps {
 /**
  * The settings sections, in nav order. This mirrors the DSH settings shell
  * (`packages/client/ui-settings-general`): a left rail of section rows and one
- * active section rendered in the content column.
+ * active section rendered in the content column. The ids are also the values
+ * the route accepts, so a refresh reopens the same section.
  */
-type SettingsSectionId =
-  | 'appearance'
-  | 'notifications'
-  | 'cleanup'
-  | 'superagent'
-  | 'passkeys'
-  | 'sessions'
-  | 'security';
+type SettingsSectionId = WorkspaceSettingsSection;
 
 const SETTINGS_SECTIONS: Array<{ id: SettingsSectionId; label: string; icon: IconName }> = [
   { id: 'appearance', label: '外观', icon: 'sun' },
@@ -96,7 +99,12 @@ export function SettingsDialog({
   me,
   authState,
   repositories,
-  selectedRepositoryId,
+  section,
+  superagentRepositoryId,
+  superagentGroup,
+  onSectionChange,
+  onSuperagentRepositoryChange,
+  onSuperagentGroupChange,
   onClose,
   onRefreshMe,
   onLoggedOut,
@@ -112,10 +120,6 @@ export function SettingsDialog({
   const [label, setLabel] = useState('');
   const [confirmKey, setConfirmKey] = useState<string | null>(null);
   const supported = isWebAuthnSupported();
-  const [superagentRepositoryId, setSuperagentRepositoryId] = useState<string | null>(
-    selectedRepositoryId ?? repositories[0]?.id ?? null,
-  );
-  const [section, setSection] = useState<SettingsSectionId>('appearance');
   const panelRef = useRef<HTMLDivElement>(null);
 
   // Focus the settings panel when it opens and support closing it with Escape.
@@ -262,7 +266,7 @@ export function SettingsDialog({
                   row.id === activeSection.id && styles.navCellActive,
                 )}
                 aria-current={row.id === activeSection.id ? 'true' : undefined}
-                onClick={() => setSection(row.id)}
+                onClick={() => onSectionChange(row.id)}
               >
                 <Icon name={row.icon} size={16} />
                 <span className={styles.navLabel}>{row.label}</span>
@@ -331,7 +335,7 @@ export function SettingsDialog({
                         : [{ value: '', label: '尚未添加仓库' }]
                     }
                     disabled={repositories.length === 0}
-                    onChange={(value) => setSuperagentRepositoryId(value || null)}
+                    onChange={(value) => onSuperagentRepositoryChange(value || null)}
                   />
                 </div>
                 <SuperagentSettings
@@ -340,6 +344,8 @@ export function SettingsDialog({
                     repositories.find((repository) => repository.id === superagentRepositoryId)
                       ?.fullName ?? null
                   }
+                  group={superagentGroup}
+                  onGroupChange={onSuperagentGroupChange}
                 />
               </section>
             ) : null}
