@@ -216,10 +216,13 @@ export function activationFor(
   let phase: RepositoryActivation['phase'];
   if (instance.state === 'fault' || preparation.state === 'failed') {
     phase = 'failed';
+  } else if (preparation.state === 'preparing') {
+    // The runtime process can be starting while its Git copy is still being
+    // prepared. The target repository is not usable before that copy is ready,
+    // so report the concrete blocker instead of a generic "starting".
+    phase = 'preparing';
   } else if (instance.state === 'starting') {
     phase = 'starting';
-  } else if (preparation.state === 'preparing') {
-    phase = 'preparing';
   } else if (instance.state === 'online' && preparation.state === 'ready') {
     phase = 'ready';
   } else if (
