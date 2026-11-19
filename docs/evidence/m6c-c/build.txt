@@ -18,16 +18,30 @@ apps/web build: rendering chunks...
 apps/web build: computing gzip size...
 apps/web build: dist/index.html                   0.66 kB │ gzip:   0.35 kB
 apps/web build: dist/assets/index-D6JsrCgE.css  133.98 kB │ gzip:  18.70 kB
-apps/web build: dist/assets/index-B7gKOueU.js   671.48 kB │ gzip: 204.92 kB │ map: 2,563.37 kB
-apps/web build: ✓ built in 3.10s
+apps/web build: dist/assets/index-DYn865_G.js   671.64 kB │ gzip: 204.94 kB │ map: 2,563.90 kB
+apps/web build: ✓ built in 3.09s
 apps/web build: (!) Some chunks are larger than 500 kB after minification. Consider:
 apps/web build: - Using dynamic import() to code-split the application
 apps/web build: - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
 apps/web build: - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
 apps/web build: Done
-apps/dispatcher build$ tsup
 apps/api build$ tsup
+apps/dispatcher build$ tsup
 apps/supervisor build$ tsup
+apps/dispatcher build: CLI Building entry: src/main.ts
+apps/dispatcher build: CLI Using tsconfig: tsconfig.json
+apps/dispatcher build: CLI tsup v8.5.1
+apps/dispatcher build: CLI Using tsup config: /root/src/restore-theme-copy-9668d9fb46f7/apps/dispatcher/tsup.config.ts
+apps/dispatcher build: CLI Target: node24
+apps/dispatcher build: CLI Cleaning output folder
+apps/dispatcher build: ESM Build start
+apps/supervisor build: CLI Building entry: src/main.ts
+apps/supervisor build: CLI Using tsconfig: tsconfig.json
+apps/supervisor build: CLI tsup v8.5.1
+apps/supervisor build: CLI Using tsup config: /root/src/restore-theme-copy-9668d9fb46f7/apps/supervisor/tsup.config.ts
+apps/supervisor build: CLI Target: node24
+apps/supervisor build: CLI Cleaning output folder
+apps/supervisor build: ESM Build start
 apps/api build: CLI Building entry: src/server.ts
 apps/api build: CLI Using tsconfig: tsconfig.json
 apps/api build: CLI tsup v8.5.1
@@ -35,29 +49,15 @@ apps/api build: CLI Using tsup config: /root/src/restore-theme-copy-9668d9fb46f7
 apps/api build: CLI Target: node24
 apps/api build: CLI Cleaning output folder
 apps/api build: ESM Build start
-apps/dispatcher build: CLI Building entry: src/main.ts
-apps/dispatcher build: CLI Using tsconfig: tsconfig.json
-apps/dispatcher build: CLI tsup v8.5.1
-apps/dispatcher build: CLI Using tsup config: /root/src/restore-theme-copy-9668d9fb46f7/apps/dispatcher/tsup.config.ts
-apps/dispatcher build: CLI Target: node24
-apps/dispatcher build: CLI Cleaning output folder
-apps/supervisor build: CLI Building entry: src/main.ts
-apps/supervisor build: CLI Using tsconfig: tsconfig.json
-apps/supervisor build: CLI tsup v8.5.1
-apps/supervisor build: CLI Using tsup config: /root/src/restore-theme-copy-9668d9fb46f7/apps/supervisor/tsup.config.ts
-apps/supervisor build: CLI Target: node24
-apps/dispatcher build: ESM Build start
-apps/supervisor build: CLI Cleaning output folder
-apps/supervisor build: ESM Build start
+apps/dispatcher build: ESM dist/main.js     267.04 KB
+apps/dispatcher build: ESM dist/main.js.map 532.62 KB
+apps/dispatcher build: ESM ⚡️ Build success in 136ms
+apps/dispatcher build: Done
 apps/api build: ESM dist/server.js     359.29 KB
 apps/api build: ESM dist/server.js.map 728.29 KB
 apps/api build: ESM ⚡️ Build success in 171ms
-apps/dispatcher build: ESM dist/main.js     267.04 KB
-apps/dispatcher build: ESM dist/main.js.map 532.62 KB
-apps/dispatcher build: ESM ⚡️ Build success in 154ms
 apps/api build: Done
-apps/dispatcher build: Done
 apps/supervisor build: ESM dist/main.js     383.50 KB
 apps/supervisor build: ESM dist/main.js.map 873.28 KB
-apps/supervisor build: ESM ⚡️ Build success in 221ms
+apps/supervisor build: ESM ⚡️ Build success in 217ms
 apps/supervisor build: Done

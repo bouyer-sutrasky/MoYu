@@ -1083,8 +1083,13 @@ export function WorkspaceShell({
       return;
     }
     const current = selectedRepositoryIdRef.current;
+    const workbench =
+      route.repositoryId && repositories.some((item) => item.id === route.repositoryId)
+        ? route.repositoryId
+        : null;
     const fallback =
-      current && repositories.some((item) => item.id === current) ? current : repositories[0]!.id;
+      workbench ??
+      (current && repositories.some((item) => item.id === current) ? current : repositories[0]!.id);
     commitRoute({ ...route, settings: { ...settings, repositoryId: fallback } }, { replace: true });
   }, [route, repositories, repositoriesStatus, commitRoute]);
 
@@ -1278,8 +1283,14 @@ export function WorkspaceShell({
     ) {
       return selectedRepositoryId;
     }
+    if (
+      route.repositoryId &&
+      repositories.some((repository) => repository.id === route.repositoryId)
+    ) {
+      return route.repositoryId;
+    }
     return repositories[0]?.id ?? null;
-  }, [repositories, route.settings?.repositoryId, selectedRepositoryId]);
+  }, [repositories, route.repositoryId, route.settings?.repositoryId, selectedRepositoryId]);
 
   // A repository copy is prepared by the supervisor while the instance can be
   // asleep or online. Poll only while it is preparing so the phase and the
