@@ -616,6 +616,83 @@ describe('routed admission handoff on real PostgreSQL', () => {
     expect(bridge.admissions).toHaveLength(2);
   }, 30_000);
 
+  it('sends the completion notice when the worker delivered and reported before handoff was recorded', async () => {
+    const fixture = await seed();
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+    const snapshot = bridge.snapshots.get(fixture.target.ticketId)!;
+    snapshot.state = 'awaiting_review';
+    snapshot.report = {
+      state: 'ready',
+      summary: 'Worker finished before the routing loop caught up',
+      at: new Date(Date.now() + 60_000).toISOString(),
+    };
+    await testDatabase.pool.query(`update task_links set state = 'awaiting_review' where id = $1`, [
+      fixture.target.taskId,
+    ]);
+    // No handoffRoutedOnce call: the source decision has delivery evidence but
+    // no handedOffAt yet. The receipt must still follow the real delivery.
+    expect((await readDecision(fixture.source.taskId)).decision['handedOffAt']).toBeUndefined();
+    expect(await captureReportsOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(
+      true,
+    );
+    const notices = await testDatabase.pool.query(
+      `select 1 from messages where conversation_id = $1 and kind = 'notice'`,
+      [fixture.source.conversationId],
+    );
+    expect(notices.rows).toHaveLength(1);
+    await captureReportsOnce(testDatabase.pool, fixture.repository, client, logger);
+    const after = await testDatabase.pool.query(
+      `select 1 from messages where conversation_id = $1 and kind = 'notice'`,
+      [fixture.source.conversationId],
+    );
+    expect(after.rows).toHaveLength(1);
+  }, 30_000);
+
+  it('notifies only the source of the current rework when the same target reports again', async () => {
+    const fixture = await seed();
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+    const snapshot = bridge.snapshots.get(fixture.target.ticketId)!;
+    snapshot.state = 'awaiting_review';
+    await testDatabase.pool.query(`update task_links set state = 'awaiting_review' where id = $1`, [
+      fixture.target.taskId,
+    ]);
+    const firstReportAt = new Date(Date.now() + 60_000).toISOString();
+    snapshot.report = { state: 'ready', summary: 'First rework result', at: firstReportAt };
+    await captureReportsOnce(testDatabase.pool, fixture.repository, client, logger);
+
+    const second = await seedSecondSource(fixture);
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+    // Model the second rework being delivered after the first report.
+    const secondDeliveryAt = new Date(Date.parse(firstReportAt) + 30_000).toISOString();
+    await testDatabase.pool.query(
+      `update task_links
+          set decision = decision || jsonb_build_object(
+                'deliveryState', 'read',
+                'deliveryAt', $2::text)
+        where id = $1`,
+      [second.taskId, secondDeliveryAt],
+    );
+    // A stale event re-read must not resurrect the first source.
+    const secondReportAt = new Date(Date.parse(firstReportAt) + 60_000).toISOString();
+    snapshot.report = { state: 'ready', summary: 'Second rework result', at: secondReportAt };
+    await testDatabase.pool.query(`update task_links set state = 'awaiting_review' where id = $1`, [
+      fixture.target.taskId,
+    ]);
+    await captureReportsOnce(testDatabase.pool, fixture.repository, client, logger);
+    await captureReportsOnce(testDatabase.pool, fixture.repository, client, logger);
+
+    const counts = await testDatabase.pool.query<{ conversation_id: string; count: number }>(
+      `select conversation_id, count(*)::int as count
+         from messages
+        where conversation_id = any($1::uuid[]) and kind = 'notice'
+        group by conversation_id`,
+      [[fixture.source.conversationId, second.conversationId]],
+    );
+    const byConversation = new Map(counts.rows.map((row) => [row.conversation_id, row.count]));
+    expect(byConversation.get(fixture.source.conversationId)).toBe(1);
+    expect(byConversation.get(second.conversationId)).toBe(1);
+  }, 30_000);
+
   it('does not send a completion notice for an old report before this rework was handed off and delivered', async () => {
     const fixture = await seed();
     expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);

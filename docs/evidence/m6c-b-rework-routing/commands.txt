@@ -14,10 +14,11 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres
    exit 0
    - db：17 files / 54 tests passed（含 rollback-0021 与 0014–0019 的 0021 先行回滚）
    - api：18 files / 133 tests passed（含 routed callback、省略 triggerId 回归）
-   - dispatcher：19 passed / 1 skipped（20 files），97 passed / 1 skipped（98 tests）
-     （含 routing.integration 的 10 项：routed handoff、中文完成通知、历史 PR 不覆盖当前、
-       后续新代次独立预约、旧报告不提前回执、PR 空值原子检查、普通拒绝、目标暂停、
-       waiting_input/旧 assignment、运行时拒绝）
+   - dispatcher：19 passed / 1 skipped（20 files），99 passed / 1 skipped（100 tests）
+     （含 routing.integration 的 12 项：routed handoff、中文完成通知、历史 PR 不覆盖当前、
+       后续新代次独立预约、worker 先完成/后记录交接仍回执、同 PR 后续返修只通知本次源、
+       旧报告不提前回执、PR 空值原子检查、普通拒绝、目标暂停、waiting_input/旧 assignment、
+       运行时拒绝）
    - supervisor：1 file / 4 tests passed
 
 3) 上游补丁 0028

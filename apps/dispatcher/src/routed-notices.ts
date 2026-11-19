@@ -40,11 +40,13 @@ export async function sendRoutedNotice(
     handedOffAt: string | null;
     deliveryAt: string | null;
     deliveryState: string | null;
+    lastReportAt: string | null;
   }>(
     `select id, conversation_id as "conversationId",
             decision->>'handedOffAt' as "handedOffAt",
             decision->>'deliveryAt' as "deliveryAt",
-            decision->>'deliveryState' as "deliveryState"
+            decision->>'deliveryState' as "deliveryState",
+            decision->>'lastReportAt' as "lastReportAt"
        from task_links
       where repository_id = $1
         and decision->>'outcome' = 'routed'
@@ -54,20 +56,20 @@ export async function sendRoutedNotice(
   let sent = 0;
   for (const source of sources.rows) {
     if (input.requireDelivery) {
-      // A report that predates this rework's handoff or its real delivery to the
-      // target worker belongs to an earlier turn. Without both timestamps we
-      // cannot attribute the result, so wait for the next report tick.
+      // Attribute a report by the worker's real delivery/read of this routed
+      // input, not by when the dispatcher recorded handedOffAt: a worker can
+      // finish and report before the routing loop catches up. A report that
+      // predates delivery belongs to an earlier turn.
       const reportAt = input.notBefore ? Date.parse(input.notBefore) : Number.NaN;
-      const handoffAt = source.handedOffAt ? Date.parse(source.handedOffAt) : Number.NaN;
       const deliveredAt = source.deliveryAt ? Date.parse(source.deliveryAt) : Number.NaN;
+      const lastReportAt = source.lastReportAt ? Date.parse(source.lastReportAt) : Number.NaN;
       const delivered = source.deliveryState === 'delivered' || source.deliveryState === 'read';
       if (
         !delivered ||
         !Number.isFinite(reportAt) ||
-        !Number.isFinite(handoffAt) ||
         !Number.isFinite(deliveredAt) ||
-        reportAt <= handoffAt ||
-        reportAt <= deliveredAt
+        reportAt <= deliveredAt ||
+        (Number.isFinite(lastReportAt) && lastReportAt >= deliveredAt)
       ) {
         continue;
       }
@@ -88,6 +90,17 @@ export async function sendRoutedNotice(
     );
     const messageId = inserted.rows[0]?.id;
     if (!messageId) continue;
+    if (input.requireDelivery && input.notBefore) {
+      // Mark which result this source has been told about. A later rework input
+      // is newer than this marker and can earn its own notice; a repeated poll
+      // of the same report cannot notify this source again.
+      await client.query(
+        `update task_links
+            set decision = decision || jsonb_build_object('lastReportAt', $2::text)
+          where id = $1`,
+        [source.id, input.notBefore],
+      );
+    }
     await appendEventSql(client, {
       type: 'message.created',
       source: 'dispatcher',

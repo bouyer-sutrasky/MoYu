@@ -109,6 +109,18 @@ ticket snapshot、Outbox 回执和 UI 文本；红/绿各一次，最后用 0028
 复审后重新运行：`pnpm check`、`pnpm test:integration`（见 `commands.txt`）；真实隔离
 补跑一次需要重新准入的返修（`readmit-evidence.txt`）。
 
+### 第二轮复审（基于 50d70b3）
+
+1. **worker 先完成、平台后记录交接。** 完成回执不再要求 `report.at > handedOffAt`；
+   关联依据改为本次输入的 `deliveryAt`（目标 worker 实际 delivered/read）与
+   `report.at`，仍要求 report 晚于 delivery，因此旧报告继续被挡住。
+   回归：源 decision 没有 `handedOffAt`、但有 delivery 证据且 report 晚于 delivery，
+   轮询后收到且只收到一条中文回执。
+2. **同一 PR 的后续返修只通知本次源会话。** 每个 routed source 在发出回执时记录
+   `lastReportAt`；后续报告只通知 `deliveryAt` 晚于其 `lastReportAt` 的源。
+   第一次源已收到过第一次报告，第二次报告不会再次通知它。
+   回归：同一目标两个独立源会话、连续两次报告、重复轮询，两个会话各只有一条回执。
+
 ## 未验项
 
 - 未做 C/D 段（页面位置恢复、主题白框、中文提示词、手机通知）。
