@@ -1,0 +1,2 @@
+ALTER TABLE "repository_instances" ADD COLUMN "activation_requested_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "repository_instances" ADD COLUMN "last_online_at" timestamp with time zone;

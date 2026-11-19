@@ -5,7 +5,9 @@ import type { ConversationSummary, RepositorySummary } from '@moyu/contracts';
 import { Icon } from '../components/Icon';
 import { ResponsiveSelect } from '../components/ResponsiveSelect';
 import {
+  formatElapsed,
   formatUpdatedAt,
+  repositoryActivationLabel,
   repositoryPreparationLabel,
   repositoryRuntimeLabel,
   taskStateLabel,
@@ -203,6 +205,39 @@ export function Sidebar({
                     : '监听状态未知'}
               </span>
             </div>
+            {(() => {
+              const activation = runtime.activation;
+              const label = repositoryActivationLabel(activation);
+              if (!label) return null;
+              const elapsed = formatElapsed(activation.elapsedMs);
+              const retryAction = activation.retryAction;
+              return (
+                <div className={styles.preparation} data-state={activation.phase}>
+                  <div className={styles.preparationLine}>
+                    <span>{label}</span>
+                    {elapsed ? <span>已用时 {elapsed}</span> : null}
+                    {retryAction && !repositoryActionBusy ? (
+                      <button
+                        type="button"
+                        className={styles.textButton}
+                        onClick={() => onRepositoryAction(retryAction)}
+                      >
+                        {retryAction === 'prepare'
+                          ? '重试准备'
+                          : retryAction === 'wake'
+                            ? '唤醒'
+                            : '重试启动'}
+                      </button>
+                    ) : null}
+                  </div>
+                  {activation.detail ? (
+                    <span className={styles.preparationDetail} title={activation.detail}>
+                      {activation.detail}
+                    </span>
+                  ) : null}
+                </div>
+              );
+            })()}
             {(() => {
               const preparation = runtime.preparation;
               const label = repositoryPreparationLabel(preparation);

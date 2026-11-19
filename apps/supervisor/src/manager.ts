@@ -502,6 +502,7 @@ export class InstanceManager {
         await this.store.updateInstance(row.repositoryId, {
           state: 'online',
           lastHealthAt: new Date(),
+          lastOnlineAt: new Date(),
           ownership: ownershipPayload(row.pid, snapshot.pgid, live, stored.cgroup),
           reasonCode: 'listening',
           reasonDetail: null,
@@ -667,6 +668,9 @@ export class InstanceManager {
         await this.store.updateInstance(repositoryId, {
           desiredState: 'online',
           lastActivityAt: now,
+          ...(instance.activationRequestedAt
+            ? {}
+            : { activationRequestedAt: instance.wakeRequestedAt ?? now }),
           ...(instance.state === 'online'
             ? { reasonCode: 'listening', reasonDetail: null, waitingFor: null }
             : { reasonCode: 'starting', reasonDetail: null, waitingFor: null }),
@@ -680,6 +684,7 @@ export class InstanceManager {
       await this.store.updateInstance(repositoryId, {
         desiredState: 'online',
         wakeRequestedAt: merged.wakeRequestedAt,
+        activationRequestedAt: merged.wakeRequestedAt ?? now,
         queuePriority: merged.queuePriority,
         reasonCode: instance.state === 'stopping' ? 'stopping' : 'wake_queued',
         reasonDetail: null,
@@ -1708,19 +1713,27 @@ export class InstanceManager {
         if (row) await this.stopInstance(row, 'idle', 'idle');
         return;
       }
+      const onlineAt = new Date();
       await this.store.updateInstance(repositoryId, {
         state: 'online',
         desiredState: 'online',
         reasonCode: 'listening',
         reasonDetail: null,
         waitingFor: null,
-        lastHealthAt: new Date(),
+        lastHealthAt: onlineAt,
+        lastOnlineAt: onlineAt,
         errorCode: null,
         errorDetail: null,
       });
       await this.store.syncRepositoryStatus(repositoryId, 'online');
       this.logger.info(
-        { event: 'supervisor.instance_online', repositoryId },
+        {
+          event: 'supervisor.instance_online',
+          repositoryId,
+          ...(row.activationRequestedAt
+            ? { activationDurationMs: onlineAt.getTime() - row.activationRequestedAt.getTime() }
+            : {}),
+        },
         'repository runtime is online',
       );
     } catch (error) {

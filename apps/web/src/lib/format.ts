@@ -214,6 +214,44 @@ export function repositoryRuntimeLabel(runtime: RepositoryRuntime | null | undef
   }
 }
 
+/** A compact, real duration. Never used with an estimated or invented time. */
+export function formatElapsed(ms: number | null | undefined): string | null {
+  if (ms === null || ms === undefined || !Number.isFinite(ms) || ms < 0) return null;
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 1) return '不到 1 秒';
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  if (minutes < 60) return rest === 0 ? `${minutes} 分` : `${minutes} 分 ${rest} 秒`;
+  const hours = Math.floor(minutes / 60);
+  const remaining = minutes % 60;
+  return remaining === 0 ? `${hours} 小时` : `${hours} 小时 ${remaining} 分`;
+}
+
+/**
+ * The real phase of the current/last switch, as distinct from the process
+ * lifecycle label. "切换中" covers waiting for a slot, preparing the repository
+ * copy and starting the process; each has its own reason so the UI cannot sit
+ * on one indefinite "启动中".
+ */
+export function repositoryActivationLabel(
+  activation: RepositoryRuntime['activation'] | null | undefined,
+): string | null {
+  if (!activation) return null;
+  switch (activation.phase) {
+    case 'queued':
+      return '切换中 · 等待在线名额';
+    case 'preparing':
+      return '切换中 · 仓库准备中';
+    case 'starting':
+      return '切换中 · 启动中';
+    case 'failed':
+      return '切换失败';
+    default:
+      return null;
+  }
+}
+
 const GIT_PHASE_LABELS: Record<string, string> = {
   connecting: '连接远端',
   receiving: '接收对象',

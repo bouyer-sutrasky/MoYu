@@ -17,6 +17,7 @@ const ROLLBACK = path.join(
 
 let hash = '';
 let downSql = '';
+let downSql0022 = '';
 const databases: TestDatabase[] = [];
 
 interface State {
@@ -57,6 +58,10 @@ describe('0021 rollback script on real PostgreSQL', () => {
       .update(await readFile(FORWARD))
       .digest('hex');
     downSql = await readFile(ROLLBACK, 'utf8');
+    downSql0022 = await readFile(
+      path.join(ROOT, 'packages/db/migrations/rollback/0022_youthful_loki.down.sql'),
+      'utf8',
+    );
   });
 
   it('drops only the decision and PR-order projections and can be re-applied', async () => {
@@ -91,6 +96,8 @@ describe('0021 rollback script on real PostgreSQL', () => {
       tasks: 1,
     });
 
+    // 0022 is newer than 0021, so it is rolled back first.
+    await database.pool.query(downSql0022);
     await database.pool.query(downSql);
     expect(await readState(database)).toMatchObject({
       decisionColumn: false,

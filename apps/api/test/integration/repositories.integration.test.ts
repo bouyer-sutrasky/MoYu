@@ -64,9 +64,11 @@ function instance(
     waitingFor: null,
     queuePriority: 20,
     wakeRequestedAt: null,
+    activationRequestedAt: state === 'online' ? new Date('2026-11-04T09:58:00.000Z') : null,
     lastActivityAt: null,
     lastProgressAt: null,
-    lastStartedAt: null,
+    lastStartedAt: state === 'online' ? new Date('2026-11-04T09:58:30.000Z') : null,
+    lastOnlineAt: state === 'online' ? new Date('2026-11-04T10:00:00.000Z') : null,
     lastStoppedAt: null,
     lastHealthAt: new Date().toISOString(),
     pid: state === 'online' ? 1234 : null,
@@ -228,7 +230,15 @@ describe('multi-repository lifecycle API on real PostgreSQL', () => {
         pid: 1234,
         port: 3402,
         bridgePort: 3401,
+        activationRequestedAt: new Date('2026-11-04T09:58:00.000Z'),
+        lastStartedAt: new Date('2026-11-04T09:58:30.000Z'),
+        lastOnlineAt: new Date('2026-11-04T10:00:00.000Z'),
         lastHealthAt: new Date(),
+        gitState: 'ready',
+        gitPhase: 'ready',
+        gitProgress: 100,
+        gitFinishedAt: new Date('2026-11-04T09:59:00.000Z'),
+        gitHead: 'a'.repeat(40),
       },
       {
         repositoryId: repositoryB.id,
@@ -347,6 +357,20 @@ describe('multi-repository lifecycle API on real PostgreSQL', () => {
     const online = await request('GET', `/api/v1/repositories/${harness.repositoryAId}/runtime`);
     expect(online.json().data.runtime.listener).toBe('active');
     expect(online.json().data.runtime.executionSlot).toBe('free');
+    expect(online.json().data.runtime.activation).toMatchObject({
+      phase: 'ready',
+      requestedAt: '2026-11-04T09:58:00.000Z',
+      onlineAt: '2026-11-04T10:00:00.000Z',
+      elapsedMs: 120_000,
+      readyMs: 120_000,
+      retryAction: null,
+    });
+    expect(sleeping.json().data.runtime.activation).toMatchObject({
+      phase: 'idle',
+      requestedAt: null,
+      elapsedMs: null,
+      retryAction: 'wake',
+    });
   });
 
   it('explains and gates execution on the repository Git copy, and retries it at repository level', async () => {
@@ -606,6 +630,71 @@ describe('multi-repository lifecycle API on real PostgreSQL', () => {
       .from(repositories)
       .where(eq(repositories.id, repositoryId));
     expect(stored?.checkCommands).toEqual(chained?.to);
+  });
+
+  it('explains every switch phase and exposes the allowed retry', async () => {
+    const update = (fields: Record<string, unknown>) =>
+      harness.database
+        .update(repositoryInstances)
+        .set({ updatedAt: new Date(), ...fields })
+        .where(eq(repositoryInstances.repositoryId, harness.repositoryAId));
+
+    await update({
+      state: 'sleeping',
+      desiredState: 'online',
+      reasonCode: 'capacity_wait',
+      gitState: 'ready',
+      gitPhase: 'ready',
+    });
+    let runtime = (
+      await request('GET', `/api/v1/repositories/${harness.repositoryAId}/runtime`)
+    ).json().data.runtime;
+    expect(runtime.activation).toMatchObject({
+      phase: 'queued',
+      requestedAt: '2026-11-04T09:58:00.000Z',
+      retryAction: null,
+    });
+    expect(runtime.activation.detail).toContain('等待');
+
+    await update({ state: 'fault', desiredState: 'online', reasonCode: 'start_failed' });
+    runtime = (await request('GET', `/api/v1/repositories/${harness.repositoryAId}/runtime`)).json()
+      .data.runtime;
+    expect(runtime.activation.phase).toBe('failed');
+    expect(runtime.activation.retryAction).toBe('retry');
+
+    await update({
+      state: 'sleeping',
+      desiredState: 'online',
+      reasonCode: 'wake_queued',
+      gitState: 'failed',
+      gitPhase: null,
+    });
+    runtime = (await request('GET', `/api/v1/repositories/${harness.repositoryAId}/runtime`)).json()
+      .data.runtime;
+    expect(runtime.activation).toMatchObject({
+      phase: 'failed',
+      retryAction: 'prepare',
+    });
+
+    await update({
+      state: 'starting',
+      desiredState: 'online',
+      reasonCode: 'starting',
+      gitState: 'preparing',
+      gitPhase: 'receiving',
+    });
+    runtime = (await request('GET', `/api/v1/repositories/${harness.repositoryAId}/runtime`)).json()
+      .data.runtime;
+    expect(runtime.activation.phase).toBe('starting');
+    expect(runtime.activation.retryAction).toBe(null);
+
+    await update({
+      state: 'online',
+      desiredState: 'online',
+      reasonCode: 'listening',
+      gitState: 'ready',
+      gitPhase: 'ready',
+    });
   });
 
   it('does not let another owner change a repository check-command override', async () => {

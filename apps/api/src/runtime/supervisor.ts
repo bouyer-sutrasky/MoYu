@@ -26,9 +26,11 @@ export interface SupervisorInstance {
   waitingFor: string | null;
   queuePriority: number;
   wakeRequestedAt: string | null;
+  activationRequestedAt: string | null;
   lastActivityAt: string | null;
   lastProgressAt: string | null;
   lastStartedAt: string | null;
+  lastOnlineAt: string | null;
   lastStoppedAt: string | null;
   lastHealthAt: string | null;
   pid: number | null;

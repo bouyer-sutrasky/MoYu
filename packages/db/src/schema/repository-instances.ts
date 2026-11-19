@@ -42,9 +42,22 @@ export const repositoryInstances = pgTable(
     /** Lower numbers start first; a reply to waiting work is 10, a new task is 20. */
     queuePriority: integer('queue_priority').notNull().default(100),
     wakeRequestedAt: timestamp('wake_requested_at', { withTimezone: true }),
+    /**
+     * When the current online transition was requested. Unlike
+     * `wakeRequestedAt` (a pending queued wake that is cleared on start), this
+     * persists through starting/online/sleeping so the owner can see how long
+     * the last switch or wake took.
+     */
+    activationRequestedAt: timestamp('activation_requested_at', { withTimezone: true }),
     lastActivityAt: timestamp('last_activity_at', { withTimezone: true }),
     lastProgressAt: timestamp('last_progress_at', { withTimezone: true }),
     lastStartedAt: timestamp('last_started_at', { withTimezone: true }),
+    /**
+     * When the runtime last finished startup verification and became online.
+     * Together with `wakeRequestedAt` it measures the owner-visible switch time
+     * from request to an instance that accepts new work.
+     */
+    lastOnlineAt: timestamp('last_online_at', { withTimezone: true }),
     lastStoppedAt: timestamp('last_stopped_at', { withTimezone: true }),
     lastHealthAt: timestamp('last_health_at', { withTimezone: true }),
     pid: integer('pid'),
