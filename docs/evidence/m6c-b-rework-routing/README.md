@@ -84,6 +84,31 @@ ticket snapshot、Outbox 回执和 UI 文本；红/绿各一次，最后用 0028
 普通 reply，Outbox 从 dropped(channelGone) 变 sent。
 ```
 
+## 复审返修（2026-11-19）
+
+复审基于 `444d699` 提出三项 P1/P2，已在原分支修复并补回归：
+
+1. **后续返修使用新的合法租约代次。** routed handoff 的预约键从固定的
+   `admit:<target>` 改为 `admit:<target>:<fencingToken>`；同一代次重放仍复用，
+   旧租约释放后的新代次独立预约。`sync` 的事件 claim、恢复扫描同时兼容旧键和新键。
+   回归：`routing.integration.test.ts` 释放第一代租约后发起第二次返修，断言新
+   assignment、两条按代次区分的 reservation、只启动两次（每次返修一次），重复
+   handoff 不产生第三次。真实隔离补跑见 `readmit-evidence.txt`：新任务把 fence
+   推进到 5，旧工单以 token 7 重新准入，PR #1 更新到 value 5。
+2. **完成回执以本次返修的实际交付为准。** decision 现在记录 `deliveryAt`（目标
+   worker 实际 delivered/read 的最早时间）；完成通知要求
+   `handedOffAt` 与 `deliveryState∈{delivered,read}` 都存在，且 `report.at` 晚于
+   两者。报告轮询不再只在“插入新 report”时评估，这样 delivery 事件晚到时下一轮
+   仍能发出且只发一次。回归覆盖：旧报告先被轮询（不发送）、只交接未交付（不发送）、
+   真实 read + 之后 report（发送一次）、重复轮询（仍一次）。
+3. **PR 指针空值检查放进 UPDATE。** `captureReportsOnce` 使用
+   `where id=$1 and pr_number is null`，事件同步先写入当前 PR 时旧快照不能覆盖。
+   回归用可暂停的 ticket GET 复现“轮询读到空 → 事件写入 #13 → 旧快照 #12 写回”，
+   断言仍为 #13。
+
+复审后重新运行：`pnpm check`、`pnpm test:integration`（见 `commands.txt`）；真实隔离
+补跑一次需要重新准入的返修（`readmit-evidence.txt`）。
+
 ## 未验项
 
 - 未做 C/D 段（页面位置恢复、主题白框、中文提示词、手机通知）。

@@ -200,6 +200,10 @@ async function applyTaskEvent(
         activeLease !== undefined &&
         activeLease.id === leaseId &&
         String(activeLease.fencing_token) === fencingToken;
+      // Admission reservations are keyed either by task (older generations) or
+      // by task + fencing token (a later rework after the first lease ended).
+      // Prefer the generation key so a stale legacy row cannot mask the current
+      // admission.
       const reservation = await client.query<{
         assignment_id: string;
         lease_id: string;
@@ -208,8 +212,10 @@ async function applyTaskEvent(
       }>(
         `select assignment_id, lease_id, fencing_token, state
            from execution_reservations
-          where repository_id = $1 and request_key = $2`,
-        [repository.id, `admit:${existing.id}`],
+          where repository_id = $1 and request_key in ($2, $3)
+          order by case when request_key = $3 then 0 else 1 end
+          limit 1`,
+        [repository.id, `admit:${existing.id}`, `admit:${existing.id}:${fencingToken}`],
       );
       const reserved = reservation.rows[0];
       // Only queued/running advance a task. A generation that is not the current
@@ -279,15 +285,27 @@ async function applyTaskEvent(
     if (next) {
       await notifyRoutedSources(client, repository, next, existing.state);
       if (next.state === 'queued' || next.state === 'running') {
-        await reconcileExecutionClaimOn(
-          client,
-          repository.id,
+        // Claim the identity this generation reserved. The generation-scoped key
+        // is tried first; the task-only key keeps older reservations working.
+        const claimKey = asString(data.fencingToken);
+        for (const requestKey of [
+          ...(claimKey ? [`admit:${next.id}:${claimKey}`] : []),
           `admit:${next.id}`,
-          ticketId,
-          asString(data.assignmentId),
-          asString(data.leaseId),
-          asString(data.fencingToken),
-        );
+        ]) {
+          if (
+            await reconcileExecutionClaimOn(
+              client,
+              repository.id,
+              requestKey,
+              ticketId,
+              asString(data.assignmentId),
+              asString(data.leaseId),
+              asString(data.fencingToken),
+            )
+          ) {
+            break;
+          }
+        }
       }
       await emit(client, repository, event, 'task.state_changed', next.conversationId, next.id, {
         task: taskSummary(next),
@@ -374,11 +392,14 @@ async function recordRoutedDelivery(
 ): Promise<void> {
   const updated = await client.query<TaskRow>(
     `update task_links
-        set decision = decision || jsonb_build_object('deliveryState', $2::text),
+        set decision = decision
+              || jsonb_build_object('deliveryState', $2::text)
+              || case when decision ? 'deliveryAt' then '{}'::jsonb
+                      else jsonb_build_object('deliveryAt', $3::text) end,
             version = version + 1, updated_at = now()
       where conversation_id = $1 and decision->>'outcome' = 'routed'
       returning ${TASK_COLUMNS.replaceAll('t.', 'task_links.')}`,
-    [conversationId, state],
+    [conversationId, state, new Date(event.at).toISOString()],
   );
   const task = updated.rows[0];
   if (task) {
@@ -842,6 +863,10 @@ async function applyIgnoredDecision(
         handedToWorkerAt: row.handed_to_worker_at,
         readAt: row.read_at,
       });
+      // Completion notices key off real delivery to the target worker, not the
+      // platform merely accepting the Trigger.
+      const deliveredAt = row.read_at ?? row.handed_to_worker_at;
+      if (deliveredAt) decision.deliveryAt = deliveredAt.toISOString();
     }
   }
   if (targetTicketId) {
@@ -1423,11 +1448,15 @@ export async function recoverReservedTasks(
       assignment_id: string;
       lease_id: string;
       fencing_token: string;
+      requestKey: string;
     }>(
-      `select t.id, t.upstream_ticket_id, r.assignment_id, r.lease_id, r.fencing_token
+      `select t.id, t.upstream_ticket_id, r.assignment_id, r.lease_id, r.fencing_token,
+              r.request_key as "requestKey"
        from task_links t
        join execution_reservations r
-         on r.repository_id = t.repository_id and r.request_key = 'admit:' || t.id
+         on r.repository_id = t.repository_id
+        and (r.request_key = 'admit:' || t.id
+             or r.request_key = 'admit:' || t.id || ':' || r.fencing_token)
       where t.repository_id = $1 and t.state in ('queued', 'running') and r.state = 'reserved'
         and ($2::uuid is null or t.id > $2::uuid)
       order by t.id
@@ -1484,7 +1513,7 @@ export async function recoverReservedTasks(
     try {
       const claimed = await claimExecution(pool, {
         repositoryId: repository.id,
-        requestKey: `admit:${row.id}`,
+        requestKey: row.requestKey,
         taskId: row.id,
         ticketId: row.upstream_ticket_id,
         assignmentId: row.assignment_id,

@@ -431,7 +431,12 @@ export async function handoffRoutedOnce(
         worked = true;
         continue;
       }
-      const requestKey = `admit:${target.id}`;
+      // Scope the idempotency key to the lease generation. The first rework's
+      // reservation stays claimed under its old generation; a later rework that
+      // needs a new admission must be able to reserve independently instead of
+      // being rejected as a generation conflict. Replays of the same generation
+      // still reuse one reservation.
+      const requestKey = `admit:${target.id}:${account.lease.fencingToken}`;
       const existing = await readReservation(pool, repository.id, requestKey);
       if (
         existing &&

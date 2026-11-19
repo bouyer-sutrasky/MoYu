@@ -26,14 +26,25 @@ export async function sendRoutedNotice(
   client: pg.PoolClient,
   repository: RepositoryBinding,
   target: RoutedNoticeTarget,
-  input: { body: string; eventKey: string; notBefore?: string | null },
+  input: {
+    body: string;
+    eventKey: string;
+    notBefore?: string | null;
+    /** Completion receipts must follow this rework's actual worker delivery. */
+    requireDelivery?: boolean;
+  },
 ): Promise<number> {
   const sources = await client.query<{
     id: string;
     conversationId: string;
     handedOffAt: string | null;
+    deliveryAt: string | null;
+    deliveryState: string | null;
   }>(
-    `select id, conversation_id as "conversationId", decision->>'handedOffAt' as "handedOffAt"
+    `select id, conversation_id as "conversationId",
+            decision->>'handedOffAt' as "handedOffAt",
+            decision->>'deliveryAt' as "deliveryAt",
+            decision->>'deliveryState' as "deliveryState"
        from task_links
       where repository_id = $1
         and decision->>'outcome' = 'routed'
@@ -42,7 +53,25 @@ export async function sendRoutedNotice(
   );
   let sent = 0;
   for (const source of sources.rows) {
-    if (
+    if (input.requireDelivery) {
+      // A report that predates this rework's handoff or its real delivery to the
+      // target worker belongs to an earlier turn. Without both timestamps we
+      // cannot attribute the result, so wait for the next report tick.
+      const reportAt = input.notBefore ? Date.parse(input.notBefore) : Number.NaN;
+      const handoffAt = source.handedOffAt ? Date.parse(source.handedOffAt) : Number.NaN;
+      const deliveredAt = source.deliveryAt ? Date.parse(source.deliveryAt) : Number.NaN;
+      const delivered = source.deliveryState === 'delivered' || source.deliveryState === 'read';
+      if (
+        !delivered ||
+        !Number.isFinite(reportAt) ||
+        !Number.isFinite(handoffAt) ||
+        !Number.isFinite(deliveredAt) ||
+        reportAt <= handoffAt ||
+        reportAt <= deliveredAt
+      ) {
+        continue;
+      }
+    } else if (
       input.notBefore &&
       source.handedOffAt &&
       Date.parse(source.handedOffAt) > Date.parse(input.notBefore)

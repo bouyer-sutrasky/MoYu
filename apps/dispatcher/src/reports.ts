@@ -86,39 +86,45 @@ export async function captureReportsOnce(
           taskId: task.id,
           payload: { messageId, direction: 'outbound' },
         });
-        // The worker reports on the target Ticket's own conversation. A routed
-        // source asked in another conversation and needs its own Chinese
-        // completion receipt; the report timestamp makes this one per result.
-        const state = stateFromSnapshot(snapshot.state);
-        if (state && ['awaiting_review', 'completed', 'closed_unmerged'].includes(state)) {
-          const label = routedTargetLabel(task);
-          const body =
-            state === 'awaiting_review'
-              ? `已转交的返修已完成，${label} 已更新，等待审阅。`
-              : state === 'completed'
-                ? `已转交的返修已完成，${label} 已结束。`
-                : `已转交的返修的 PR 已关闭但未合并；如需继续，请在目标工单里说明。`;
-          await sendRoutedNotice(client, repository, task, {
-            body,
-            eventKey: `report:${report.at}`,
-            notBefore: report.at,
-          });
-        }
         worked = true;
       }
+      // The worker reports on the target Ticket's own conversation. A routed
+      // source asked in another conversation and needs its own Chinese
+      // completion receipt. Evaluate this on every report tick, not only when a
+      // new result message was inserted: the delivery/read receipt may land just
+      // after this tick, and the notice must then be attributable to this
+      // rework rather than to the previous report.
       const state = stateFromSnapshot(snapshot.state);
+      if (state && ['awaiting_review', 'completed', 'closed_unmerged'].includes(state)) {
+        const label = routedTargetLabel(task);
+        const body =
+          state === 'awaiting_review'
+            ? `已转交的返修已完成，${label} 已更新，等待审阅。`
+            : state === 'completed'
+              ? `已转交的返修已完成，${label} 已结束。`
+              : `已转交的返修的 PR 已关闭但未合并；如需继续，请在目标工单里说明。`;
+        await sendRoutedNotice(client, repository, task, {
+          body,
+          eventKey: `report:${report.at}`,
+          notBefore: report.at,
+          requireDelivery: true,
+        });
+      }
       // The snapshot names its first followed PR, which can be historical. Only
       // fill an empty pointer here; a later artifact event is the ordering
       // authority for replacing an already current PR, so a replay cannot swap
       // the owner's current link for an older one.
       if (snapshot.pr && task.prNumber === null) {
-        await client.query(
+        // The in-memory task came from a snapshot read before the Bridge event
+        // may have written the current PR. Keep the empty check in the UPDATE so
+        // this poller cannot overwrite that newer pointer with the old snapshot.
+        const updated = await client.query(
           `update task_links
               set pr_url = $2, pr_number = $3, pr_updated_at = now(), updated_at = now()
-            where id = $1`,
+            where id = $1 and pr_number is null`,
           [task.id, snapshot.pr.url, snapshot.pr.number],
         );
-        worked = true;
+        if ((updated.rowCount ?? 0) > 0) worked = true;
       }
       await client.query('commit');
       if (state && state !== task.state) {

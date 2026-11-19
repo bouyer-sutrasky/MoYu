@@ -1,0 +1,41 @@
+复审后补跑：需要重新准入的真实返修（同一 PR #1）
+=================================================
+环境：隔离 profile m6c-b1、Bridge 4492、API 4410、DB moyu_m6c_b_reroute_green、
+上游 0028 制品、本分支 dispatcher。未触碰生产。
+
+1) 先制造一次真实的新代次（不手工改运行时状态）
+   在同一测试仓库新建任务“README 末尾追加 fence probe”，真实执行并创建 PR #2。
+   该任务接受 admission 后，仓库 admission fence 前进到 token 5
+   （ticket 40e4e0b0f2b4435ca177e35951367ba4）；旧工单 3dba7ebf… 的 admission
+   不再是当前代次。新任务进入 awaiting_review，执行槽释放。
+
+2) 从新入口发起对旧 PR #1 的返修
+   text = "请按 PR #1 再返修一次：只把 src/value.ts 的 value 改成 5，继续更新
+           现有 PR #1，不新建 PR，不改其他文件。"
+   上游 addInput 判定旧 admission 已过期，标记 admissionRequired；
+   dispatcher 日志：
+     routing.target_queued  taskId=2dd88ccd-4374-4ccb-a934-2f24ce813dc9
+     routing.admitted       admissionId=21e7a6b3-d672-4436-8b08-93f67c81710b
+                            assignmentId=e72cfa48323b46fa81090506ed009491
+   平台预约（真实 PostgreSQL）：
+     request_key = admit:2dd88ccd-4374-4ccb-a934-2f24ce813dc9:7
+     fencing_token = 7, assignment_id = e72cfa48323b46fa81090506ed009491, state = claimed
+   即：使用新的租约代次独立预约，没有复用第一次的 admit:<taskId> / 旧代次。
+
+3) 执行结果
+   - 目标任务：running → awaiting_review；只启动一次新执行（reservation 1 条，
+     admissions 日志 1 条；没有创建第三个 assignment）。
+   - PR #1 head = a00a45a4d56e537a7b07f98b005a0d835845ffae，唯一文件 src/value.ts，
+     `export const value = 5;`；没有新建 PR。
+   - 源消息 deliveries：delivered_at=14:51:49.090907+08、
+     handed_to_worker_at=14:51:56.229+08、read_at=14:51:56.229+08。
+   - 源 decision：routingState=handed_off、deliveryState=read、
+     deliveryAt=2026-11-19T06:51:56.229Z、handedOffAt=2026-11-19T06:51:53.212Z。
+   - 源会话消息（按时间）：
+       user           请按 PR #1 再返修一次：只把 src/value.ts 的 value 改成 5…
+       acknowledgement 收到，只把 src/value.ts 的 value 改成 5，提交后继续更新…
+       notice         已转交的返修已完成，PR #1 已更新，等待审阅。
+     回执发生在 report 之后（14:53:00），不是在待交接/旧报告时提前发送。
+
+结论：同一工单的后续返修在旧租约释放、fence 前进后，能用新代次独立预约并只启动一次
+执行；同一 PR 更新；源输入真实交付/读取；中文完成回执一次。

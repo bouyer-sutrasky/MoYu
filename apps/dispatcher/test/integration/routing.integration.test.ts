@@ -22,12 +22,19 @@ interface AdmitCall {
   assignmentId?: string;
 }
 
+interface TicketGate {
+  promise: Promise<void>;
+  onStart: () => void;
+}
+
 interface FakeBridge {
   url: string;
   events: BridgeEvent[];
   snapshots: Map<string, BridgeTicketSnapshot>;
   admissions: AdmitCall[];
   refuseAdmission: { status: number; code: string; message: string } | null;
+  /** Holds the next ticket snapshot read so a test can interleave a write. */
+  holdNextTicket: () => { started: Promise<void>; release: () => void };
   close: () => Promise<void>;
 }
 
@@ -47,14 +54,16 @@ function readBody(request: IncomingMessage): Promise<unknown> {
 }
 
 async function startFakeBridge(): Promise<FakeBridge> {
-  const state: Omit<FakeBridge, 'url' | 'close' | 'snapshots'> & {
+  const state: Omit<FakeBridge, 'url' | 'close' | 'snapshots' | 'holdNextTicket'> & {
     snapshots: Map<string, BridgeTicketSnapshot>;
+    ticketGate: TicketGate | null;
     server?: Server;
   } = {
     events: [],
     snapshots: new Map(),
     admissions: [],
     refuseAdmission: null,
+    ticketGate: null,
   };
   const server = createServer(async (request: IncomingMessage, response: ServerResponse) => {
     const send = (status: number, value: unknown) => {
@@ -86,6 +95,11 @@ async function startFakeBridge(): Promise<FakeBridge> {
       parts.length === 4
     ) {
       const ticketId = decodeURIComponent(parts[3]!);
+      const gate = state.ticketGate;
+      if (gate) {
+        gate.onStart();
+        await gate.promise;
+      }
       const snapshot = state.snapshots.get(ticketId);
       if (!snapshot) {
         send(404, { error: { code: 'not_found', message: 'ticket not found' } });
@@ -141,6 +155,29 @@ async function startFakeBridge(): Promise<FakeBridge> {
     },
     set refuseAdmission(value) {
       state.refuseAdmission = value;
+    },
+    holdNextTicket() {
+      let release!: () => void;
+      let started!: () => void;
+      let marked = false;
+      const promise = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const startedPromise = new Promise<void>((resolve) => {
+        started = () => {
+          if (marked) return;
+          marked = true;
+          resolve();
+        };
+      });
+      state.ticketGate = { promise, onStart: started };
+      return {
+        started: startedPromise,
+        release: () => {
+          state.ticketGate = null;
+          release();
+        },
+      };
     },
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
@@ -312,6 +349,65 @@ describe('routed admission handoff on real PostgreSQL', () => {
     };
   }
 
+  /** A second new-entry conversation whose Trigger the runtime routes to `target`. */
+  async function seedSecondSource(fixture: Seed): Promise<{
+    conversationId: string;
+    taskId: string;
+    messageId: string;
+  }> {
+    counter += 1;
+    const suffix = `${process.pid}-${counter}-${Date.now()}`;
+    const conversation = await testDatabase.pool.query<{ id: string }>(
+      `insert into conversations (owner_id, repository_id, mode, execution_mode, base_branch, source)
+       values ($1, $2, 'work', 'execute', 'main', 'web') returning id`,
+      [fixture.ownerId, fixture.repository.id],
+    );
+    const conversationId = conversation.rows[0]!.id;
+    const message = await testDatabase.pool.query<{ id: string }>(
+      `insert into messages (conversation_id, direction, kind, body, source)
+       values ($1, 'inbound', 'user', '第二次返修：再把 value 改成 4', 'web') returning id`,
+      [conversationId],
+    );
+    const messageId = message.rows[0]!.id;
+    await testDatabase.pool.query(
+      `insert into deliveries (message_id, state, delivered_at, handed_to_worker_at)
+       values ($1, 'delivered', now(), now())`,
+      [messageId],
+    );
+    const task = await testDatabase.pool.query<{ id: string }>(
+      `insert into task_links (conversation_id, repository_id, state, base_branch)
+       values ($1, $2, 'pending_admission', 'main') returning id`,
+      [conversationId, fixture.repository.id],
+    );
+    const taskId = task.rows[0]!.id;
+    const lease = await testDatabase.pool.query<{ id: string }>(
+      `insert into runtime_leases (repository_id, holder_id, expires_at)
+       values ($1, $2, now() + interval '1 hour') returning id`,
+      [fixture.repository.id, `task:${taskId}`],
+    );
+    await testDatabase.pool.query(`update task_links set runtime_lease_id = $2 where id = $1`, [
+      taskId,
+      lease.rows[0]!.id,
+    ]);
+    bridge.events.push({
+      seq: bridge.events.length + 1,
+      id: `decision-routed-second-${suffix}`,
+      type: 'decision.ignored',
+      at: new Date().toISOString(),
+      data: {
+        decisionId: `decision-second-${suffix}`,
+        triggerIds: [`workspace:${messageId}`],
+        conversationId,
+        messageId,
+        messageIds: [messageId],
+        threadKey: `workspace:${conversationId}`,
+        at: new Date().toISOString(),
+        reason: [{ code: 'routed', values: { ticket: fixture.target.ticketId } }],
+      },
+    });
+    return { conversationId, taskId, messageId };
+  }
+
   async function readDecision(taskId: string) {
     const result = await testDatabase.pool.query<{
       state: string;
@@ -466,11 +562,168 @@ describe('routed admission handoff on real PostgreSQL', () => {
       [fixture.target.taskId],
     );
     expect(task.rows[0]).toMatchObject({ pr_number: 13, pr_url: `${bridge.url}/pull/13` });
-    const historical = await testDatabase.pool.query(
-      `select 1 from artifacts where task_id = $1 and metadata->>'number' = '12'`,
+  }, 30_000);
+
+  it('reserves a later legitimate admission generation independently after the first lease ends', async () => {
+    const fixture = await seed();
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+    expect(
+      await handoffRoutedOnce(testDatabase.pool, config, fixture.repository, client, true, logger),
+    ).toBe(true);
+    expect(bridge.admissions).toHaveLength(1);
+
+    // The first rework finished and the platform released its generation.
+    const target = await readTaskRow(fixture.target.taskId);
+    if (!target.runtime_lease_id) throw new Error('target lease missing');
+    await testDatabase.pool.query(
+      `update runtime_leases set state = 'released', released_at = now() where id = $1`,
+      [target.runtime_lease_id],
+    );
+    await testDatabase.pool.query(
+      `update task_links set runtime_lease_id = null, state = 'awaiting_review' where id = $1`,
       [fixture.target.taskId],
     );
-    expect(historical.rows).toHaveLength(1);
+    const snapshot = bridge.snapshots.get(fixture.target.ticketId)!;
+    snapshot.admissionRequired = true;
+    snapshot.state = 'awaiting_review';
+    snapshot.assignmentId = 'old-assignment-after-first-rework';
+
+    await seedSecondSource(fixture);
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+    expect(
+      await handoffRoutedOnce(testDatabase.pool, config, fixture.repository, client, true, logger),
+    ).toBe(true);
+
+    expect(bridge.admissions).toHaveLength(2);
+    expect(bridge.admissions[1]!.assignmentId).not.toBe(bridge.admissions[0]!.assignmentId);
+    const reservations = await testDatabase.pool.query<{
+      request_key: string;
+      fencing_token: string;
+    }>(
+      `select request_key, fencing_token from execution_reservations
+        where repository_id = $1 and ticket_id = $2 order by fencing_token`,
+      [fixture.repository.id, fixture.target.ticketId],
+    );
+    expect(reservations.rows).toHaveLength(2);
+    for (const row of reservations.rows) {
+      expect(row.request_key).toBe(`admit:${fixture.target.taskId}:${row.fencing_token}`);
+    }
+    expect(await readTaskRow(fixture.target.taskId)).toMatchObject({ state: 'queued' });
+    // A repeated pass must not create a third execution.
+    expect(
+      await handoffRoutedOnce(testDatabase.pool, config, fixture.repository, client, true, logger),
+    ).toBe(false);
+    expect(bridge.admissions).toHaveLength(2);
+  }, 30_000);
+
+  it('does not send a completion notice for an old report before this rework was handed off and delivered', async () => {
+    const fixture = await seed();
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+    // Remove any delivery evidence from the decision to model a pending handoff.
+    await testDatabase.pool.query(
+      `update task_links
+          set decision = decision - 'deliveryAt' - 'deliveryState'
+        where id = $1`,
+      [fixture.source.taskId],
+    );
+    const snapshot = bridge.snapshots.get(fixture.target.ticketId)!;
+    snapshot.state = 'awaiting_review';
+    snapshot.report = {
+      state: 'ready',
+      summary: 'Old result from before this rework',
+      at: new Date(Date.now() - 3_600_000).toISOString(),
+    };
+    expect(await captureReportsOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(
+      true,
+    );
+    let notices = await testDatabase.pool.query(
+      `select 1 from messages where conversation_id = $1 and kind = 'notice'`,
+      [fixture.source.conversationId],
+    );
+    expect(notices.rows).toHaveLength(0);
+
+    // Handoff alone is not enough: the worker has not delivered/read the input.
+    expect(
+      await handoffRoutedOnce(testDatabase.pool, config, fixture.repository, client, true, logger),
+    ).toBe(true);
+    await testDatabase.pool.query(`update task_links set state = 'awaiting_review' where id = $1`, [
+      fixture.target.taskId,
+    ]);
+    snapshot.state = 'awaiting_review';
+    await captureReportsOnce(testDatabase.pool, fixture.repository, client, logger);
+    notices = await testDatabase.pool.query(
+      `select 1 from messages where conversation_id = $1 and kind = 'notice'`,
+      [fixture.source.conversationId],
+    );
+    expect(notices.rows).toHaveLength(0);
+
+    // Real delivery evidence for this rework, then a report after it: one notice.
+    const deliveredAt = new Date(Date.now() + 60_000).toISOString();
+    await testDatabase.pool.query(
+      `update task_links
+          set decision = decision || jsonb_build_object('deliveryState', 'read', 'deliveryAt', $2::text)
+        where id = $1`,
+      [fixture.source.taskId, deliveredAt],
+    );
+    snapshot.report = {
+      state: 'ready',
+      summary: 'Revision completed after this rework',
+      at: new Date(Date.now() + 120_000).toISOString(),
+    };
+    await captureReportsOnce(testDatabase.pool, fixture.repository, client, logger);
+    notices = await testDatabase.pool.query(
+      `select 1 from messages where conversation_id = $1 and kind = 'notice'`,
+      [fixture.source.conversationId],
+    );
+    expect(notices.rows).toHaveLength(1);
+
+    // Re-polling the same report stays at one notice.
+    await captureReportsOnce(testDatabase.pool, fixture.repository, client, logger);
+    notices = await testDatabase.pool.query(
+      `select 1 from messages where conversation_id = $1 and kind = 'notice'`,
+      [fixture.source.conversationId],
+    );
+    expect(notices.rows).toHaveLength(1);
+  }, 30_000);
+
+  it('keeps the empty PR check in the UPDATE so a report cannot overwrite a newer event', async () => {
+    const fixture = await seed();
+    await testDatabase.pool.query(
+      `update task_links set pr_url = null, pr_number = null, pr_updated_at = null where id = $1`,
+      [fixture.target.taskId],
+    );
+    const snapshot = bridge.snapshots.get(fixture.target.ticketId)!;
+    snapshot.state = 'awaiting_review';
+    snapshot.pr = { number: 12, url: `${bridge.url}/pull/12` };
+    const hold = bridge.holdNextTicket();
+    const capturing = captureReportsOnce(testDatabase.pool, fixture.repository, client, logger);
+    await hold.started;
+
+    // The event sync writes the current PR while the report poll is waiting for
+    // the old snapshot.
+    bridge.events.push({
+      seq: bridge.events.length + 1,
+      id: 'current-pr-artifact',
+      type: 'artifact.created',
+      at: new Date().toISOString(),
+      data: {
+        ticketId: fixture.target.ticketId,
+        conversationId: fixture.target.conversationId,
+        type: 'pull_request',
+        url: `${bridge.url}/pull/13`,
+        number: 13,
+        at: new Date().toISOString(),
+      },
+    });
+    expect(await syncOnce(testDatabase.pool, fixture.repository, client, logger)).toBe(true);
+    hold.release();
+    await capturing;
+
+    const task = await testDatabase.pool.query<{ pr_number: number; pr_url: string }>(
+      'select pr_number, pr_url from task_links where id = $1',
+      [fixture.target.taskId],
+    );
+    expect(task.rows[0]).toMatchObject({ pr_number: 13, pr_url: `${bridge.url}/pull/13` });
   }, 30_000);
 
   it('keeps the concrete reason for an ordinary refusal and never wakes a target', async () => {
