@@ -158,7 +158,7 @@ export function NewTaskFromTaskDialog({
         ) : null}
         {status === 'ready' ? (
           <form
-            className={styles.newTaskForm}
+            className={styles.newTaskFromTaskForm}
             onSubmit={(event) => {
               event.preventDefault();
               void create();

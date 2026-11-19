@@ -407,6 +407,48 @@
   background: var(--dsw-alias-bg-base);
 }
 
+/* A restore target was validated away (missing, removed or no access). It stays
+   visible until dismissed so the owner is not silently moved to another place. */
+.routeNotice {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex: none;
+  margin: 10px 18px 0;
+  padding: 9px 10px 9px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xs-13);
+  line-height: 1.6;
+}
+
+.routeNoticeClose {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  margin: -2px -2px 0 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+
+.routeNoticeClose:hover,
+.routeNoticeClose:focus-visible {
+  background: var(--dsw-alias-bg-layer-3);
+  color: var(--dsw-alias-label-primary);
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 1px;
+}
+
 .topbar {
   display: flex;
   align-items: center;
@@ -2661,25 +2703,41 @@
   border-radius: 999px;
   font-size: 12px;
 }
-.newTaskForm {
+/* The "new task from a finished task" dialog is a separate form from the new
+   task panel. It used to share `.newTaskForm`, so its `select`/`input` rule
+   (with an opaque `#fff` fallback) overrode the themed controls of the panel
+   and produced white boxes in dark mode. Keep it scoped and on the same tokens
+   as every other form control. */
+.newTaskFromTaskForm {
   display: grid;
   gap: 10px;
   margin-top: 10px;
 }
-.newTaskForm label {
+.newTaskFromTaskForm label {
   display: grid;
   gap: 4px;
   font-size: 13px;
 }
-.newTaskForm input,
-.newTaskForm select {
+.newTaskFromTaskForm input,
+.newTaskFromTaskForm select {
   padding: 6px 8px;
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 7px;
-  background: var(--dsw-alias-bg-primary, #fff);
-  color: inherit;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
   font: inherit;
 }
+.newTaskFromTaskForm input:focus,
+.newTaskFromTaskForm select:focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: 2px solid color-mix(in srgb, var(--dsw-alias-state-business-primary) 35%, transparent);
+  outline-offset: 1px;
+}
+.newTaskFromTaskForm input:disabled,
+.newTaskFromTaskForm select:disabled {
+  color: var(--dsw-alias-label-caption);
+}
+
 .dialogActions {
   display: flex;
   justify-content: flex-end;
