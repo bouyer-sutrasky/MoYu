@@ -76,6 +76,12 @@ node --test integrations/superagent/tests/verify-lock.test.mjs
 | `0028-workspace-trigger-null.patch` | 回复没有 reply_to Trigger 时，workspace Channel 仍发送 `triggerId: null`。此前字段被省略，平台严格 schema 返回 422，Outbox 把 4xx 永久结为 `channelGone`，目标工单的完成回复到不了原会话。补丁同时锁定普通 reply 的请求体。 |
 | `0029-input-assignment.patch` | `message.delivered` / `message.read` 事件携带该输入实际交付到的 `assignmentId`（上游 `input.deliveredTo`）。平台据此把 routed 返修结果归属到对应执行回合，避免 worker 先完成、平台后记录交接时把后续报告发给上一轮源会话。 |
 
+## M6-C C 补丁
+
+| 补丁 | 作用 |
+| --- | --- |
+| `0030-language-section.patch` | 在两种角色的系统提示词里加入固定的 `## language` 段：接单、提问、进度、失败和完成正文使用源会话语言（源为中文时用中文），代码标识、路径、命令和必要术语可保留英文。该段位于团队可覆盖的沟通段之前，不覆盖已有用户提示词或版本历史；同时更新提示词预览/编辑器测试。 |
+
 ## 约束
 
 - 不把 `/root/dsh-superagent` 当作可编辑发布物；补丁在固定 commit 的 checkout 上生成，并作为有序 patch 提交。
