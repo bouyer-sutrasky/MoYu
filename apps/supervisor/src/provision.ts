@@ -330,6 +330,9 @@ export function instanceEnvironment(input: {
               ? (process.env.MOYU_TEST_PAUSE_LAUNCH_MS as string)
               : '10000'
           }`,
+          ...(/^[0-9]+$/.test(process.env.MOYU_TEST_LAUNCH_DELAY_MS ?? '')
+            ? [`MOYU_TEST_LAUNCH_DELAY_MS=${process.env.MOYU_TEST_LAUNCH_DELAY_MS as string}`]
+            : []),
         ]
       : []),
     '',

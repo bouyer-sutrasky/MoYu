@@ -2041,4 +2041,41 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
     });
     expect(task.stopEvidence).toMatchObject({ pauseOperationId: original });
   }, 30_000);
+
+  it('keeps a blocked stop placeholder when a later non-terminal pause intent arrives', async () => {
+    const fixture = await seed({
+      state: 'blocked',
+      stopEvidence: {
+        nextStep: 'recheck-stop',
+        pauseOperationId: 'pause-blocked',
+        launch: 'timed-out',
+      },
+    });
+    const dbClient = await testDatabase.pool.connect();
+    try {
+      await dbClient.query('begin');
+      await applyEvent(
+        dbClient,
+        fixture.repository,
+        {
+          seq: 99,
+          id: `ticket-paused:blocked-intent:${fixture.taskId}`,
+          type: 'ticket.paused',
+          at: '2026-11-04T06:00:00.000Z',
+          data: {
+            ticketId: fixture.ticketId,
+            operationId: 'pause-intent-later',
+            evidence: { launch: 'none', agentStatus: 'idle' },
+          },
+        },
+        createConsoleLogger('test'),
+      );
+      await dbClient.query('commit');
+    } finally {
+      dbClient.release();
+    }
+    const task = await readTask(fixture.taskId);
+    expect(task.state).toBe('blocked');
+    expect(task.stopEvidence).toMatchObject({ nextStep: 'recheck-stop', launch: 'timed-out' });
+  }, 30_000);
 });

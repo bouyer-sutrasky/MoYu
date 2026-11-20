@@ -300,16 +300,24 @@ phase_forced_timeout() {
   next=$(task_field "$task" nextStep)
   eq "forced: blocked placeholder keeps the next step" recheck-stop "$next"
   eq "forced: blocked task is not stopped" '' "$(sql "select coalesce(stopped_at::text,'') from task_links where id='$task'")"
-  contains "forced: evidence records the launch timeout" 'timed-out' "$evidence"
+  eq "forced: evidence records the launch timeout" 1 "$([[ $evidence == *timed-out* || $evidence == *'did not end within'* ]] && echo 1 || echo 0)"
   local lease; lease=$(task_lease "$task")
   eq "forced: the retained lease stays active" active "$(lease_state "$lease")"
   say "  recheck_operation=$(task_field "$task" pauseOperationId) lease=$lease"
-  # 重新核对原暂停操作：成功即原子结清并释放该代次租约。
-  pause_command "$task" || { fail "forced: stop check was refused"; return; }
-  wait_state "$task" stopped 120 || { fail "forced: stop check did not settle (state=$(task_state "$task"), next=$(task_field "$task" nextStep))"; return; }
-  evidence=$(task_evidence "$task")
-  eq "forced: evidence names this ticket" "$ticket" "$(printf '%s' "$evidence" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("ticketId",""))')"
-  eq "forced: evidence binds the lease generation" "$lease" "$(printf '%s' "$evidence" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("leaseId",""))')"
+  # 重新核对原暂停操作：成功即原子结清并释放该代次租约。启动仍在飞时第一次核对可能再次
+  # 超时（占位保留、nextStep 不变），等启动结束后再核对一次是产品允许的路径。
+  local settled=0
+  for attempt in 1 2 3 4 5; do
+    pause_command "$task" || { fail "forced: stop check was refused"; return; }
+    if wait_state "$task" stopped 15; then settled=1; break; fi
+    say "  stop check attempt $attempt still timed out; retrying after the launch settles"
+    sleep 4
+  done
+  (( settled == 1 )) || { fail "forced: stop check did not settle (state=$(task_state "$task"), next=$(task_field "$task" nextStep))"; return; }
+  evidence=$(sql "select evidence::text from task_operations where task_id='$task' and kind='pause' and state='succeeded' order by created_at desc limit 1")
+  eq "forced: evidence names this ticket" "$ticket" "$(printf '%s' "$evidence" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("ticketId",""))' 2>/dev/null || true)"
+  eq "forced: evidence binds the lease generation" "$lease" "$(printf '%s' "$evidence" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("leaseId",""))' 2>/dev/null || true)"
+  eq "forced: evidence names the stop check" 1 "$(printf '%s' "$evidence" | python3 -c 'import json,sys; print(1 if json.load(sys.stdin).get("recheckOperationId") else 0)' 2>/dev/null || echo 0)"
   eq "forced: task released the generation" '' "$(task_lease "$task")"
   eq "forced: lease released" released "$(lease_state "$lease")"
   local before after

@@ -711,6 +711,12 @@ async function applyPausedEvent(
       ? 'blocked'
       : 'stopping';
   const terminal = Boolean(pauseError) || data.stoppedAt !== undefined;
+  // A non-terminal intent event may arrive after the failed pause operation already
+  // parked the task as blocked. It must not downgrade the placeholder to stopping or
+  // replace the evidence that names the next step.
+  if (!terminal && (task.state === 'blocked' || task.state === 'stopped')) {
+    return;
+  }
   const operationId = asString(data.operationId);
   const storedEvidence = proven
     ? evidence
@@ -732,11 +738,15 @@ async function applyPausedEvent(
           ? { fencingToken: task.stopEvidence.fencingToken }
           : {}),
       };
+  // A non-terminal intent event may race the failed pause operation's blocked
+  // update: the row was still `stopping` when this event read it, then the
+  // operation parked it as `blocked`. The conditional update never downgrades a
+  // settled placeholder, whatever order the two transactions commit in.
   const updated = await client.query(
     `update task_links
-        set state = $2,
-            stopped_at = $3::timestamptz,
-            stop_evidence = $4::jsonb,
+        set state = case when $2 = 'stopping' and state in ('blocked', 'stopped') then state else $2 end,
+            stopped_at = case when $2 = 'stopping' and state in ('blocked', 'stopped') then stopped_at else $3::timestamptz end,
+            stop_evidence = case when $2 = 'stopping' and state in ('blocked', 'stopped') then stop_evidence else $4::jsonb end,
             last_event_seq = greatest(coalesce(last_event_seq, 0), $5),
             version = version + 1,
             updated_at = now()

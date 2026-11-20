@@ -142,7 +142,59 @@ for p in integrations/superagent/patches/*.patch; do git apply "$p"; done   # 00
 }
 ```
 
-## 7. 现场依赖与待验项
+## 7. 隔离栈现场（Web）
+
+共享的默认隔离栈当时被另一个工单的现场回归占用（固定 3403/3404 端口，只能串行）。本轮用同一套 harness
+在备用端口起第二个隔离实例，未触碰默认栈、生产 3082/m6c 或共享 55432：
+
+- run root `/tmp/m5bmatrix-97`、slice `m5bmatrix97.slice`；
+- API 4610、supervisor 4691、provider 4851、Postgres 55436、Bridge 3503、面板 3504；
+- 同一份矩阵凭据门禁（`precheck --gate --online`）与专用 SSH/gh 配置。
+
+```bash
+env M5B_MATRIX_ROOT=$PWD M5B_MATRIX_RUN=/tmp/m5bmatrix-97 \
+    M5B_MATRIX_SLICE=m5bmatrix97.slice M5B_MATRIX_PG_PORT=55436 \
+    M5B_MATRIX_API_PORT=4610 M5B_MATRIX_SUP_PORT=4691 \
+    M5B_MATRIX_PROVIDER_PORT=4851 M5B_MATRIX_DB=m5b_matrix_97 \
+    M5B_MATRIX_PROFILE=m5b97 \
+    M5B_MATRIX_UPSTREAM_BUILD=/root/src/upstream/pause-recovery-final \
+  bash scripts/m5b/matrix/item4-pause-recheck.sh web
+```
+
+```
+# item4 — pause stop recheck (web)
+recorded=2026-11-20T21:59:25+08:00
+runtime_artifact=dfe5288b403f939d936d012290c69ec50e167d3c5ba7f5b0ecb437a683980aa4
+dispatcher_artifact=c7f434e88fd9fcf65092aeb252a736bc66567ae37f95f60ee91d2a6fee27704f
+api_artifact=0328c27c99f3540aacda29771d6038d0c81a5083d774b15a65c13ba5dd34e685
+patch_artifact=b87e1c25ca24f647f970ae500948ca5c4bdfd21fb900679f72b134c0b04731fd
+script_artifact=f2797a0b61127cc11ce2d1fb0a4d1fa94a8d3886c17c664ddd83d5da11148522
+## web: pause after the worker is running
+  PASS after: worker Session exists
+  PASS after: worker idle or absent = 1
+  PASS after: no background job remains = 0
+## web: pause before the worker starts
+  PASS before: platform state = stopped
+  PASS before: platform stopped_at present = 1
+  PASS before: evidence launch recorded contains "launch"
+  PASS before: evidence names the pause operation = 1
+  paused_assignment=41b98719e7018080d6b0def814377189 worker_sessions=1 lease=
+  resumed_assignment=0a5b420fc3abf6f1e4917fb92b683d8b
+  PASS before: resume creates a new Assignment = 1
+  PASS a second resume is refused
+  PASS before: resumed worker stopped again, execution slot released
+
+# summary: checks=10 failed=0 skipped=0 tasks=2
+# RESULT: PASS
+```
+
+worker Session、租约和证据都是从真实 runtime 状态目录或 Bridge 快照读出的。这个 Web 实例里最早的暂停是
+在票据刚出现时发出的（平台层先拒绝无 ticket 的 `/stop`，这是设计行为）；记录到的 `launch` 已是 `none`，
+worker 已 idle，所以它是「启动完成后立刻暂停」，而不是「启动被中止」。真正处于启动中的停止由 §8 的
+`MOYU_TEST_LAUNCH_DELAY_MS` 现场覆盖。Web 段使用的 runtime/patch 是加测试钩子前的构建；钩子只影响隔离栈，
+不改变下面这些 Web 路径。
+
+## 8. 现场依赖与待验项
 
 依赖状态（2026-11-20 21:00 复核）：
 

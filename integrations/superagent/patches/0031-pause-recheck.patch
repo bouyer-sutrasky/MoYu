@@ -271,10 +271,10 @@ index 80e8281..b7b2b9c 100644
      this.repo.tickets.save(ticket)
      this.emit('ticket.paused', { ticketId, operationId: paused.operationId, at: paused.at, error })
 diff --git a/src/executor/dsh.ts b/src/executor/dsh.ts
-index cde519d..96e7217 100644
+index cde519d..df42501 100644
 --- a/src/executor/dsh.ts
 +++ b/src/executor/dsh.ts
-@@ -38,7 +38,18 @@ const BACKGROUND_LIMIT_MS = 30 * 60_000
+@@ -38,7 +38,30 @@ const BACKGROUND_LIMIT_MS = 30 * 60_000
  /** How long a host stop waits for the workers' background work to stop. */
  const SHUTDOWN_STOP_MS = 10_000
  /** How long a human pause waits for the worker's background work to stop, and then for its turn to go idle. */
@@ -291,10 +291,22 @@ index cde519d..96e7217 100644
 +  const value = Number(process.env.MOYU_TEST_PAUSE_LAUNCH_MS)
 +  return Number.isFinite(value) && value >= 1 ? value : 10_000
 +}
++/**
++ * Test-only: holds a launch before it prepares, so an isolated stack can issue a
++ * human pause while the launch is genuinely in flight. It deliberately ignores
++ * the pause signal, modelling a launch that does not acknowledge an abort; the
++ * production path never sets it and remains abortable.
++ */
++const TEST_LAUNCH_DELAY_MS = testLaunchDelayMs()
++function testLaunchDelayMs(): number {
++  if (process.env.MOYU_TEST_HOOKS !== '1') return 0
++  const value = Number(process.env.MOYU_TEST_LAUNCH_DELAY_MS)
++  return Number.isFinite(value) && value > 0 ? value : 0
++}
  /** Root of per-assignment discussion snapshots and homes. */
  const DISCUSS_ROOT = process.env.DSH_DISCUSS_ROOT ?? '/srv/m4-discuss/runs'
  /** How long a worker that goes on after a passing failure waits for a worker slot, or for processing to resume, between looks. */
-@@ -55,6 +66,8 @@ class PrepareFailed extends Error {}
+@@ -55,6 +78,8 @@ class PrepareFailed extends Error {}
   * paused, not failed: the launch reports nothing, and a resume prepares the workspace again.
   */
  class PrepareAborted extends Error {}
@@ -303,7 +315,7 @@ index cde519d..96e7217 100644
  const PASSING = new RegExp(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND', 'EPIPE', 'UND_ERR', 'socket hang up', 'fetch failed',
    'network error', 'overloaded', 'rate limit', '\\b(?:408|429|50[0-4])\\b'].join('|'), 'i')
  /**
-@@ -547,14 +560,30 @@ export class DshExecutor implements Executor {
+@@ -547,14 +572,30 @@ export class DshExecutor implements Executor {
     * refusal to answer. It never calls the terminal `stop`.
     */
    pause(ticket: Ticket, assignment: Assignment | undefined, operationId: string): void {
@@ -337,7 +349,7 @@ index cde519d..96e7217 100644
        return
      }
      const startedAt = now()
-@@ -594,9 +623,10 @@ export class DshExecutor implements Executor {
+@@ -594,9 +635,10 @@ export class DshExecutor implements Executor {
      // ticket's boundary (M5-B reached the same conclusion for stop proofs and keyed them by the ticket's own job ids). What
      // this ticket owns is its Session, its jobs, its subagents and its launch, and those are exactly what the check above and
      // this one cover, so a leftover process of another ticket cannot fail a stop that is in fact clean.
@@ -351,7 +363,7 @@ index cde519d..96e7217 100644
      // Success needs every part: the start in flight ended, the stop finished, the worker answered idle in time (an unloaded
      // Session has no turn), and no shell job or subagent is left.
      const idleWorker = !agent || agentStatus === 'idle'
-@@ -605,12 +635,14 @@ export class DshExecutor implements Executor {
+@@ -605,12 +647,14 @@ export class DshExecutor implements Executor {
        this.host.engine.pauseSettled(ticketId, assignmentId, evidence)
        return
      }
@@ -368,7 +380,20 @@ index cde519d..96e7217 100644
    }
    /** Stop what a ticket's worker runs in the background (see `stopBackground`). */
    private stopWork(ticketId: string, reason: string, keepInbox = false, assignmentId?: string): void {
-@@ -837,7 +869,8 @@ export class DshExecutor implements Executor {
+@@ -704,6 +748,12 @@ export class DshExecutor implements Executor {
+     const source = sourceTrigger(this.host, ticket)
+     const workspace = ticket.execution?.directory ?? ''
+     if (!current()) return
++    if (TEST_LAUNCH_DELAY_MS > 0) {
++      await new Promise((resolve) => setTimeout(resolve, TEST_LAUNCH_DELAY_MS))
++      // The pause may have ended this launch while it was held; never let the
++      // held launch start a worker afterwards.
++      if (!current()) return
++    }
+     // A frozen model that the provider no longer serves refuses this launch; the ticket is reported failed and never runs on
+     // the instance default instead. The model itself is chosen by `Sessions.ensure` below.
+     if (ticket.model) await verifyTicketModel(this.host.context, ticket.model)
+@@ -837,7 +887,8 @@ export class DshExecutor implements Executor {
      try { this.host.engine.report(ticketId, report) } catch { /* the assignment ended before this report */ }
    }
    /** Stops one external discussion run and records the same stop evidence as an in-process pause. */
@@ -378,7 +403,7 @@ index cde519d..96e7217 100644
      const startedAt = now()
      const sessionId = run.sessionId
      let pgid: number | undefined
-@@ -865,15 +898,16 @@ export class DshExecutor implements Executor {
+@@ -865,15 +916,16 @@ export class DshExecutor implements Executor {
      }
      const processesAfter = pgid !== undefined && Number.isFinite(pgid) ? processGroupTree(pgid) : []
      const stoppedAt = now()

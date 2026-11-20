@@ -417,6 +417,7 @@ start_supervisor() {
     --setenv=EXECUTOR_MODEL=local-test/local-test \
     $([[ ${M5B_MATRIX_TEST_HOOKS:-0} == 1 ]] && printf '%s' '--setenv=MOYU_TEST_HOOKS=1') \
     $([[ ${M5B_MATRIX_TEST_HOOKS:-0} == 1 ]] && printf '%s' "--setenv=MOYU_TEST_PAUSE_LAUNCH_MS=${M5B_MATRIX_TEST_PAUSE_LAUNCH_MS:-1}") \
+    $([[ -n ${M5B_MATRIX_TEST_LAUNCH_DELAY_MS:-} ]] && printf '%s' "--setenv=MOYU_TEST_LAUNCH_DELAY_MS=$M5B_MATRIX_TEST_LAUNCH_DELAY_MS") \
     --working-directory="$M5B_MATRIX_ROOT" \
     /usr/bin/node apps/supervisor/dist/main.js >/dev/null \
     || fail "could not start the supervisor"
