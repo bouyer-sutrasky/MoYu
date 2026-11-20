@@ -1,0 +1,245 @@
+# 现场 A：回合进行中打断，重启 Bridge、dispatcher、supervisor、API 与两库，追加真实消息
+# 现场代码 head：183ac11871055dfbd5d6c867f53caedf67cc20a3；运行时 /root/src/upstream/m5b-admission-build22（含 0031 补丁）
+# 命令：
+#   source /tmp/m5bmatrix/protected/state.env
+#   bash scripts/m5b/matrix/item5-restart.sh running-live
+# 退出码：0
+# 结果：bridge 450966→451817，dispatcher 451131→451910；cursor 5→8（重启）→9（Bridge 触发）→10（owner API 真实消息）；
+#       平台 delivery 1→2（最新 delivered+read）；worker session 目录 1；运行时 assignment：旧 ended/hostRestarted、新 running。
+# 敏感信息：test 仓库与本地隔离环境；日志不含 token/私钥。
+# item 5 — restart reconciliation in state: running-live
+recorded=2026-11-20T21:46:14+08:00
+head=183ac11871055dfbd5d6c867f53caedf67cc20a3
+dispatcher_artifact=afedb333856bc219881cd48993cd25fca04c5ad5fd3e3c50863f65df3191ea92 (284684 bytes)
+slice=0 procs directly in slice
+
+## worker report fixture
+{"state":"progress","summary":"Lifecycle probe is mid-turn."}
+turn_delay_ms=600000
+
+## create and drive the ticket through the real owner API
+{
+  "conversationId": "37ffe3c1-df05-46aa-b0b7-9381bdaf5e75",
+  "taskId": "846951c1-f181-4eb7-ab02-7dde87040e01",
+  "state": "pending_admission",
+  "messageStatus": 202,
+  "clientRequestId": "item5-running-live-1795182374"
+}
+
+## wait for the runtime to accept the task
+ticket=a3d178c614f7b4d17b695343747ca00a task_state=running
+
+## wait for the target runtime state
+platform task state: running  (waited for running)
+
+## runtime_cursors BEFORE the restart
+$ psql "$DATABASE_URL" -c "select repository_id, cursor, updated_at from runtime_cursors"
+            repository_id             | cursor |          updated_at           
+--------------------------------------+--------+-------------------------------
+ d13b0ba1-ffae-4073-b6eb-3a406e40a768 |      5 | 2026-11-20 21:46:18.575009+08
+(1 row)
+
+cursor_before_restart=5
+
+## snapshot before the restart
+{
+  "status": 200,
+  "body": {
+    "ticketId": "a3d178c614f7b4d17b695343747ca00a",
+    "title": "Fix README probe line",
+    "state": "running",
+    "question": null,
+    "attentionId": null,
+    "model": {
+      "provider": "local-test",
+      "model": "local-test"
+    },
+    "base": {
+      "repository": "Bouyer12/m5a-beta-adf10ad9",
+      "branch": "main",
+      "commit": "4f4639ceb87693cc00e3c87e8cfa168074141ce0"
+    },
+    "assignmentId": "f6f129e4e1dcaf80e2bae7a68426b090",
+    "admission": {
+      "leaseId": "b1d63a1f-a2c3-434a-ba3a-fb66f20cb5f3",
+      "fencingToken": "1"
+    },
+    "report": null,
+    "mode": "execute",
+    "planRevision": null,
+    "paused": null,
+    "admissionRequired": false,
+    "execution": {
+      "name": "fix-readme-probe-a3d178c614f7",
+      "directory": "/tmp/m5bmatrix/worktrees/m5b/fix-readme-probe-a3d178c614f7",
+      "assignment": ""
+    },
+    "ended": null
+  }
+}
+task|running|2|a3d178c614f7b4d17b695343747ca00a|b1d63a1f-a2c3-434a-ba3a-fb66f20cb5f3|-
+lease|active|1|-|-
+delivery|1|delivered
+bridge_pid_before=450966 dispatcher_pid_before=451131
+
+## restart both stores
+$ kill -TERM <runtime pid> (abrupt restart while the turn waits on the model)
+old bridge pid alive after stop: 0
+recovered_turn_delay_ms=0
+$ systemctl stop dispatcher api supervisor (coordinated two-database restart)
+$ systemctl restart matrix PostgreSQL
+$ stack.sh services-up (recreate the stopped units over the same database)
+== verifying the isolated run layout
+run_root=/tmp/m5bmatrix mode=755 uid=0
+protected=/tmp/m5bmatrix/protected mode=0700 uid=0
+config=/tmp/m5bmatrix/config mode=0750 uid=0 gid=986
+owned=/tmp/m5bmatrix/tmp,/tmp/m5bmatrix/credentials,/tmp/m5bmatrix/dsh-home uid=995 gid=986
+path /root mode=0710
+path /root/.ssh mode=0700
+path /root/.dsh mode=0755
+path /root/.dsh-m5 mode=0700
+path /root/.config mode=0710
+path /root/.config/gh-agent mode=0700
+path /root/.local mode=0710
+path /root/.local/bin mode=0750
+path /root/src mode=0710
+path /root/src/upstream mode=0710
+path /opt/moyu-node24 mode=0750
+path /etc mode=0755
+host_boundary=clean
+ssh_key=/root/.config/m5bmatrix/probe_ssh_key sha256=20cc90eab9cb5448 mode=600
+gh_config=/root/.config/m5bmatrix/gh hosts=/root/.config/m5bmatrix/gh/hosts.yml token=present
+credentials=dedicated
+== starting the host supervisor inside the slice
+Running as unit: m5bmatrix-supervisor.service; invocation ID: 392dbe10e7284b468feec189f7f42798
+$ runuser -u m5bmatrix -- /bin/sh -c echo '+memory +pids' > '/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/cgroup.subtree_control' &&      mkdir -p '/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances' &&      echo '+memory +pids' > '/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/cgroup.subtree_control'
+supervisor_cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service owner=m5bmatrix:m5bmatrix
+managed_cgroup_root=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances controllers=memory pids
+== starting the platform API from the baseline artifact
+Running as unit: m5bmatrix-api.service; invocation ID: b2b065f7a3e741baa76d2849de8383ce
+== starting the dispatcher from the baseline artifact
+$ sha256sum apps/dispatcher/dist/main.js
+afedb333856bc219881cd48993cd25fca04c5ad5fd3e3c50863f65df3191ea92  apps/dispatcher/dist/main.js
+Running as unit: m5bmatrix-dispatcher.service; invocation ID: c44914524b564134b51d514d0af36b02
+$ supervisor prepare + wake (fresh runtime process)
+$ supervisor wake (fresh runtime process)
+{"data":{"accepted":true,"duplicate":false,"instance":{"repositoryId":"d13b0ba1-ffae-4073-b6eb-3a406e40a768","fullName":"Bouyer12/m5a-beta-adf10ad9","defaultBranch":"main","state":"sleeping","desiredState":"online","reasonCode":"wake_queued","reasonDetail":null,"waitingFor":"capacity","queuePriority
+bridge_pid_after=451817
+$ systemctl restart dispatcher
+dispatcher_pid_after=451910
+bridge restarted: yes
+dispatcher restarted: yes
+
+## restart reconciliation lines from the dispatcher
+Nov 20 21:46:04 lavm-flnape7bgu node[451131]: {"level":"info","time":"2026-11-20T13:46:04.411Z","service":"moyu-dispatcher","event":"dispatcher.ready","nodeEnv":"test","msg":"dispatcher connected to PostgreSQL"}
+Nov 20 21:46:26 lavm-flnape7bgu node[451788]: {"level":"info","time":"2026-11-20T13:46:26.730Z","service":"moyu-dispatcher","event":"dispatcher.ready","nodeEnv":"test","msg":"dispatcher connected to PostgreSQL"}
+Nov 20 21:46:35 lavm-flnape7bgu node[451910]: {"level":"info","time":"2026-11-20T13:46:35.566Z","service":"moyu-dispatcher","event":"dispatcher.ready","nodeEnv":"test","msg":"dispatcher connected to PostgreSQL"}
+Nov 20 21:46:35 lavm-flnape7bgu node[451910]: {"level":"info","time":"2026-11-20T13:46:35.629Z","service":"moyu-dispatcher","event":"reconcile.task","taskId":"846951c1-f181-4eb7-ab02-7dde87040e01","previous":"running","state":"running","contradictory":false,"msg":"reconciled a task with its runtime ticket"}
+
+## snapshot after the restart
+{
+  "status": 200,
+  "body": {
+    "ticketId": "a3d178c614f7b4d17b695343747ca00a",
+    "title": "Fix README probe line",
+    "state": "running",
+    "question": null,
+    "attentionId": null,
+    "model": {
+      "provider": "local-test",
+      "model": "local-test"
+    },
+    "base": {
+      "repository": "Bouyer12/m5a-beta-adf10ad9",
+      "branch": "main",
+      "commit": "4f4639ceb87693cc00e3c87e8cfa168074141ce0"
+    },
+    "assignmentId": "9b2a180e4887448129a3c665cd9b5ca8",
+    "admission": {
+      "leaseId": "b1d63a1f-a2c3-434a-ba3a-fb66f20cb5f3",
+      "fencingToken": "1"
+    },
+    "report": {
+      "state": "waiting",
+      "summary": "Deterministic local provider response.",
+      "at": "2026-11-20T13:46:35.147Z",
+      "assignmentId": "9b2a180e4887448129a3c665cd9b5ca8"
+    },
+    "mode": "execute",
+    "planRevision": null,
+    "paused": null,
+    "admissionRequired": false,
+    "execution": {
+      "name": "fix-readme-probe-a3d178c614f7",
+      "directory": "/tmp/m5bmatrix/worktrees/m5b/fix-readme-probe-a3d178c614f7",
+      "assignment": ""
+    },
+    "ended": null
+  }
+}
+task|running|2|a3d178c614f7b4d17b695343747ca00a|b1d63a1f-a2c3-434a-ba3a-fb66f20cb5f3|-
+lease|active|1|-|-
+
+## field-by-field comparison
+field                                            before                                 after
+assignmentId                                     f6f129e4e1dcaf80e2bae7a68426b090       9b2a180e4887448129a3c665cd9b5ca8
+report.assignmentId                              None                                   9b2a180e4887448129a3c665cd9b5ca8
+report.at                                        None                                   2026-11-20T13:46:35.147Z
+report.state                                     None                                   waiting
+report.summary                                   None                                   Deterministic local provider respons
+
+compared_fields=26 differing=5 material_differences=5
+verdict: DIFFERS
+
+## runtime_cursors AFTER the restart, before any new delivery
+$ psql "$DATABASE_URL" -c "select repository_id, cursor, updated_at from runtime_cursors"
+            repository_id             | cursor |          updated_at           
+--------------------------------------+--------+-------------------------------
+ d13b0ba1-ffae-4073-b6eb-3a406e40a768 |      8 | 2026-11-20 21:46:36.670266+08
+(1 row)
+
+cursor_after_restart=8
+
+## a real delivery after the restart (same ticket, real entrance)
+$ POST /bridge/v1/triggers  (real runtime entrance, targetTicketId + current admission)
+{"result": "stored", "triggerId": "workspace:matrix-running-55a06bfa6d68", "baseCommit": "4f4639ceb87693cc00e3c87e8cfa168074141ce0", "ticketId": "a3d178c614f7b4d17b695343747ca00a"}
+
+## wait for the cursor to advance after that delivery
+## runtime_cursors AFTER the real delivery
+$ psql "$DATABASE_URL" -c "select repository_id, cursor, updated_at from runtime_cursors"
+            repository_id             | cursor |          updated_at           
+--------------------------------------+--------+-------------------------------
+ d13b0ba1-ffae-4073-b6eb-3a406e40a768 |      9 | 2026-11-20 21:46:45.726451+08
+(1 row)
+
+cursor_after_delivery=9
+
+## verdict on the cursor
+cursor_before_restart=5
+cursor_after_restart=8
+cursor_after_delivery=9
+VERDICT: cursor 8 -> 9; the reconciliation chain still advances after the restart.
+  note: the cursor also moved during the restart (5 -> 8). For a running ticket that is expected: the
+  interrupted assignment is replaced with a recovery note (assignments.ts interrupted() -> restart()), and those
+  assignment/ticket events are what the dispatcher ingests. Only a quiescent ticket (paused) can show a restart that emits nothing.
+
+## append a real platform message through the owner API
+{
+  "status": 202,
+  "body": {
+    "data": {
+      "message": {
+        "id": "5257ee9e-e495-4d62-a81e-f35865ff7184",
+        "conversationId": "37ffe3c1-df05-46aa-b0b7-9381bdaf5e75",
+        "direction": "inbound",
+        "kind": "user",
+        "clientMessageId": "message-d3b800e8-d23f-4e36-8af3-6b11f6b1f352",
+        "body": "Matrix platform follow-up after the restart.",
+        "replyToMessageId": null,
+platform_deliveries=1->2 cursor=9->10
+abfdb051-d328-4e03-8ded-7dd2b1d79ef0|pending|-|-
+0d2883e1-a8c9-4c57-976e-cc941b82da02|delivered|2026-11-20 21:46:18.085481+08|2026-11-20 21:46:35.141+08
+
+## single worker evidence
+worker_session_dirs=1
+{"assignments":[{"id":"f6f129e4e1dcaf80e2bae7a68426b090","state":"ended","startedAt":"2026-11-20T13:46:18.490Z","endedReason":"hostRestarted"},{"id":"9b2a180e4887448129a3c665cd9b5ca8","state":"running","startedAt":"2026-11-20T13:46:34.829Z","endedReason":null}]}

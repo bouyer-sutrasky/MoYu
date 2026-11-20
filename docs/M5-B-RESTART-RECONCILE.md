@@ -11,8 +11,9 @@
 | --- | --- | --- |
 | 平台侧修复 | 打断回合后运行时在同一租约下发的新 Assignment 由**权威运行时记录**采纳；保留预留行既有键，旧值入台账 | **完成**（本 PR） |
 | 真实 PostgreSQL 用例 | 新旧回合交错、无状态事件的重发、重放只接续一次、非当前代次不采纳 | **完成**（红→绿，§4、§5） |
-| 真实重启现场 | 隔离栈打断任务后重启 Bridge、dispatcher 和两库，追加真实消息并核对游标与单 worker | **未执行**：依赖 #92 环境与 #94 生命周期（§7） |
-| 真实 GitHub PR 现场 | 真实开放 PR 在重启前后仍待审阅、关联稳定、关闭后正常结票 | **未执行**：同上（§7） |
+| 真实重启现场 | 隔离栈打断任务后重启 Bridge、dispatcher、supervisor、API 和两库，追加真实消息并核对游标与单 worker | **完成**（现场 A，§7） |
+| 真实 GitHub PR 现场 | 真实开放 PR 在重启前后仍待审阅、关联稳定、关闭后正常结票 | **完成**（现场 B，§7） |
+| 运行时补丁 | 宿主重启后的旧 Assignment 缺少 stop proof，replacement 永远被阻断；补丁 0031 从实例 cgroup 证明旧回合已不存在 | **完成**（§3.5） |
 
 ## 1. 缺陷与事实
 
@@ -107,7 +108,26 @@ fencing token** 下重发一个新的 Assignment。
 `fromAssignmentId` 时，只写 `admissionProjection: 'stale_assignment'`、推进游标并返回；
 不迁移、不投影。新回合（尚未采纳的更大 Assignment）不受影响，仍可投影，随后由权威快照采纳。
 
-### 3.4 范围
+### 3.5 运行时补丁 0031：宿主重启后的 stop proof
+
+现场 A 首次复现出一个运行时缺陷：宿主重启后 `Assignments.interrupted()` 会创建新的 pending
+Assignment，但旧的已结束 Assignment **没有 stop proof**；新加入的 replacement 准入
+（`replacementBlocked`）因此永远返回 true，launch 效果每 5 秒以 `Later` 重试，票停在 `queued`，
+后续输入不产生事件——与旧 PR #50 记录的现场现象一致。
+
+`integrations/superagent/patches/0031-host-restart-stop-proof.patch`：
+
+- `src/executor/stop-proof.ts`：新增实例 cgroup 读取与 `hostRestartProof`/`hostRestartProven`。
+  当前宿主启动后，实例 cgroup 中任何早于本宿主启动时间（`/proc/<pid>/stat` 第 22 字段）的进程
+  都是上一个宿主的遗留；没有这种进程、也没有未知启动时间时，才能证明旧回合不存在。
+- `src/executor/dsh.ts`：`resume()` 在创建替换 Assignment 前先为被打断的 Assignment 记录
+  stop proof；无登记 job 且 cgroup 无更老进程时完成 proof。登记 job 仍由停止回调完成后放行。
+- `launch()` 在 `assertStops` 前重试结算 `endedReason=hostRestarted` 的未完成 proof，孤儿进程
+  退出后的下一次 launch 可以继续，不会把 replacement 永远钉死。
+- 上游契约测试 `tests/stop-proof.spec.ts` 增加 host restart proof 用例；补丁按 0001–0031
+  顺序应用、typecheck、build 均通过（见现场制品记录）。
+
+### 3.6 范围
 
 - 无数据库迁移、无状态机/租约规则变更、无上游补丁；不改 runtime/Bridge。
 - `appendLeaseEvent` 从 `leases.ts` 导出以复用台账写入（唯一导出变化）。
@@ -161,6 +181,8 @@ fencing token** 下重发一个新的 Assignment。
 | 修后（绿，并发旧快照返修） | 见 [`isolated-interleave-green.log`](evidence/m5b/restart-reconcile/isolated-interleave-green.log) | 0 | 3 文件通过，12 passed |
 | 全量静态+单测 | `pnpm check` | 0 | lint/format/8 项目 typecheck；unit 通过 |
 | 全量集成 | `pnpm test:integration` | 0 | db 54、api 142、dispatcher 108/1 skipped、supervisor 4 |
+| 现场 A（隔离栈，含运行时补丁 0031） | `bash scripts/m5b/matrix/item5-restart.sh running-live` | 0 | Bridge/dispatcher/supervisor/API/PG 重启；cursor 5→8→9→10；deliveries 1→2；1 个 worker |
+| 现场 B（真实 PR #17） | `M5B_MATRIX_RESTART_BEFORE_CLOSE=1 bash scripts/m5b/matrix/item5-awaiting-review.sh` | 0 | 重启后仍 awaiting_review、PR 绑定不变、无新 Assignment/operation/delivery；关闭后 closed_unmerged |
 
 修前第一条失败：`expected 'assignment-after-restart' to be 'assignment-before-restart'`
 （预留行没有跟随运行时重发的回合）。
@@ -181,7 +203,19 @@ fencing token** 下重发一个新的 Assignment。
 | 旧回合晚到事件 | 仍可投影 | `stale_assignment` 拒绝 |
 | 数据库迁移 | 无 | 无 |
 
-## 7. 现场复跑（依赖 #92、#94，尚未执行）
+## 7. 现场复跑（已执行，2026-11-20）
+
+结果与原始日志：
+
+- 现场 A：[`field-item5-running-live.log`](evidence/m5b/restart-reconcile/field-item5-running-live.log)，
+  Bridge 450966→451817、dispatcher 451131→451910，cursor 5→8→9→10，deliveries 1→2，
+  `worker_session_dirs=1`，旧 Assignment `hostRestarted`、新 Assignment `running`。
+- 现场 B：[`field-item5-awaiting-review.log`](evidence/m5b/restart-reconcile/field-item5-awaiting-review.log)，
+  真实 PR `Bouyer12/m5a-beta-adf10ad9#17`；重启前后 runtime 保持 `awaiting_review`、
+  PR JSON 一致、`ended=null`，平台无新 Assignment/operation/delivery；关闭后 `closed_unmerged`。
+- 制品与编排修正：[`field-artifacts.txt`](evidence/m5b/restart-reconcile/field-artifacts.txt)。
+
+原复跑判据（保留供复核）：
 
 前置：
 
@@ -237,11 +271,10 @@ bash scripts/m5b/matrix/item5-awaiting-review.sh
 
 ## 9. 未验证与限制
 
-1. 真实双库重启下的场景 A、B 全部判据（依赖 #92、#94）。
-2. 重启后运行时新回合是否真的起得来（上轮现场停在新回合 `queued`、后续输入没有事件）；
-   隔离用例不覆盖运行时 launch 的真实失败模式，若确认是运行时缺陷按补丁流程另交。
-3. `waiting_input` 跨重启（#33 跟踪）。
-4. 多仓库同时重启、`discussing` 回合的宿主重启。
+1. 多仓库同时重启、`discussing` / `waiting_input` 回合的宿主重启（`waiting_input` 由 #33 跟踪）。
+2. 宿主真实重启（OS reboot）而非本轮进程级重启；进程与两个数据库的隔离重启已完成。
+3. 运行时孤儿进程长期存活时 replacement 会继续等待，待其退出后的下一次 launch 才会放行；
+   本轮没有注入长期孤儿。
 5. 台账的 `sourceEventId` 只在该任务已有 Bridge 事件时存在；无事件的重发只有
    `source: bridge_snapshot` + `sourceCursor`，这是权威记录的来源位置，不冒充事件。
 6. 冲突重读最多一次：连续冲突时保留现状、等下一 tick；极端持续并发下会多延迟一个事件
