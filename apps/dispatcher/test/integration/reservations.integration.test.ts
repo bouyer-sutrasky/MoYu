@@ -231,4 +231,166 @@ describe('execution reservation on real PostgreSQL', () => {
     expect(claims[0]!.id).toBe(first.id);
     expect(claims[1]!.id).toBe(first.id);
   });
+
+  it('adopts a re-issued Assignment only from the matching authoritative record, once', async () => {
+    const key5 = `authoritative-${process.pid}`;
+    const first = await reserveExecution(db.pool, { ...input(), requestKey: key5 });
+    const claimed = await claimExecution(db.pool, { ...input(), requestKey: key5 });
+    expect(claimed.claimed).toBe(true);
+    const authoritative = {
+      ticketId: 'ticket-1',
+      assignmentId: 'assignment-reissued',
+      leaseId,
+      fencingToken: token,
+      state: 'queued',
+      sourceCursor: '7',
+      observedAt: '2026-11-20T05:30:00.000Z',
+    };
+
+    // A record that does not describe this exact generation and Ticket is not
+    // authority to move the reservation; the stored identity stays untouched.
+    for (const record of [
+      { ...authoritative, ticketId: 'ticket-other' },
+      { ...authoritative, leaseId: '00000000-0000-4000-8000-000000000000' },
+      { ...authoritative, fencingToken: String(Number(token) + 1) },
+      { ...authoritative, assignmentId: 'assignment-other' },
+      { ...authoritative, state: 'awaiting_review' },
+    ]) {
+      await expect(
+        claimExecution(db.pool, {
+          ...input(),
+          requestKey: key5,
+          assignmentId: authoritative.assignmentId,
+          authoritative: record,
+        }),
+      ).rejects.toThrow(/identity or generation/);
+    }
+    await expect(
+      claimExecution(db.pool, {
+        ...input(),
+        requestKey: key5,
+        assignmentId: authoritative.assignmentId,
+      }),
+    ).rejects.toThrow(/identity or generation/);
+    expect(await readReservation(db.pool, repository.id, key5)).toMatchObject({
+      assignmentId: 'assignment-1',
+      leaseId,
+      fencingToken: token,
+      state: 'claimed',
+    });
+
+    const adopted = await claimExecution(db.pool, {
+      ...input(),
+      requestKey: key5,
+      assignmentId: authoritative.assignmentId,
+      authoritative,
+    });
+    expect(adopted).toEqual({
+      claimed: false,
+      id: first.id,
+      supersededFrom: 'assignment-1',
+    });
+    const stored = await db.pool.query<{
+      id: string;
+      request_key: string;
+      ticket_id: string;
+      assignment_id: string;
+      lease_id: string;
+      fencing_token: string;
+      state: string;
+    }>(
+      `select id, request_key, ticket_id, assignment_id, lease_id, fencing_token, state
+         from execution_reservations where id = $1`,
+      [first.id],
+    );
+    // Only the Assignment value moves; the row and its existing keys stay.
+    expect(stored.rows[0]).toMatchObject({
+      id: first.id,
+      request_key: key5,
+      ticket_id: 'ticket-1',
+      assignment_id: 'assignment-reissued',
+      lease_id: leaseId,
+      fencing_token: token,
+      state: 'claimed',
+    });
+    const ledger = await db.pool.query<{ detail: Record<string, unknown> }>(
+      `select detail from runtime_lease_events
+        where lease_id = $1 and type = 'assignment_superseded'`,
+      [leaseId],
+    );
+    expect(ledger.rows).toHaveLength(1);
+    expect(ledger.rows[0]!.detail).toMatchObject({
+      ticketId: 'ticket-1',
+      requestKey: key5,
+      fromAssignmentId: 'assignment-1',
+      toAssignmentId: 'assignment-reissued',
+      reservationState: 'claimed',
+      source: 'bridge_snapshot',
+      sourceCursor: '7',
+      runtimeState: 'queued',
+      observedAt: '2026-11-20T05:30:00.000Z',
+    });
+
+    // Replaying the same authoritative record continues nothing.
+    const replay = await claimExecution(db.pool, {
+      ...input(),
+      requestKey: key5,
+      assignmentId: authoritative.assignmentId,
+      authoritative,
+    });
+    expect(replay).toEqual({ claimed: false, id: first.id, supersededFrom: null });
+    const stillOne = await db.pool.query<{ count: number }>(
+      `select count(*)::int as count from runtime_lease_events
+        where lease_id = $1 and type = 'assignment_superseded'`,
+      [leaseId],
+    );
+    expect(stillOne.rows[0]!.count).toBe(1);
+  });
+
+  it('adopts a concurrent re-issued turn exactly once', async () => {
+    const key6 = `authoritative-concurrent-${process.pid}`;
+    const first = await reserveExecution(db.pool, { ...input(), requestKey: key6 });
+    await claimExecution(db.pool, { ...input(), requestKey: key6 });
+    const authoritative = {
+      ticketId: 'ticket-1',
+      assignmentId: 'assignment-concurrent',
+      leaseId,
+      fencingToken: token,
+      state: 'running',
+      sourceCursor: '8',
+    };
+    // Two recovery passes read the same authoritative record; the lease row lock
+    // serialises them, so only the first adopts and the second is a replay.
+    const [left, right] = await Promise.all([
+      claimExecution(db.pool, {
+        ...input(),
+        requestKey: key6,
+        assignmentId: authoritative.assignmentId,
+        authoritative,
+      }),
+      claimExecution(db.pool, {
+        ...input(),
+        requestKey: key6,
+        assignmentId: authoritative.assignmentId,
+        authoritative,
+      }),
+    ]);
+    expect([left.supersededFrom, right.supersededFrom].filter(Boolean)).toEqual(['assignment-1']);
+    expect([left.id, right.id]).toEqual([first.id, first.id]);
+    const stored = await db.pool.query<{ assignment_id: string; state: string }>(
+      `select assignment_id, state from execution_reservations where id = $1`,
+      [first.id],
+    );
+    expect(stored.rows[0]).toMatchObject({
+      assignment_id: 'assignment-concurrent',
+      state: 'claimed',
+    });
+    const ledger = await db.pool.query<{ count: number }>(
+      `select count(*)::int as count from runtime_lease_events
+        where lease_id = $1 and type = 'assignment_superseded'
+          and detail->>'toAssignmentId' = $2`,
+      [leaseId, 'assignment-concurrent'],
+    );
+    expect(ledger.rows[0]!.count).toBe(1);
+  });
 });
