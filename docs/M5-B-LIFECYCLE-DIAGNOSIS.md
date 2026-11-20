@@ -160,13 +160,13 @@
 
 | 命令 | 结果 |
 | --- | --- |
-| `pnpm check` | exit 0；lint/format/typecheck 通过，supervisor 单元测试 142/142 |
-| `pnpm build` | exit 0；`apps/supervisor/dist/main.js` sha256 `5af9878304cfaa0684cc20e827419344952c8fd22ad35fc866ea746334682f9b` |
+| `pnpm check` | exit 0；lint/format/typecheck 通过，supervisor 单元测试 144/144 |
+| `pnpm build` | exit 0；`apps/supervisor/dist/main.js` sha256 `b0087042de7e5490e1262ea6d91a035c511a0121d48b101286384f8b699e0ea2` |
 | `TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm test:integration` | exit 0；db/api 通过，dispatcher 100 passed / 1 skipped，supervisor 4 passed |
-| `bash scripts/m5b/cgroup-lifecycle-probe.sh`（基线） | exit 1，19 项 FAIL |
-| `bash scripts/m5b/cgroup-lifecycle-probe.sh`（修复后） | exit 0，0 项 FAIL（29 项 pass） |
-| `bash scripts/m5b/cgroup-unit-delegation-check.sh`（基线） | exit 1，16 项 FAIL，`unit_result=exit-code` |
-| `bash scripts/m5b/cgroup-unit-delegation-check.sh`（修复后） | exit 0，0 项 FAIL，`unit_result=success` |
+| `bash scripts/m5b/cgroup-lifecycle-probe.sh`（基线） | exit 1，22 项 FAIL |
+| `bash scripts/m5b/cgroup-lifecycle-probe.sh`（修复后） | exit 0，0 项 FAIL（32 项 pass） |
+| `bash scripts/m5b/cgroup-unit-delegation-check.sh`（基线） | exit 1，19 项 FAIL，`unit_result=exit-code` |
+| `bash scripts/m5b/cgroup-unit-delegation-check.sh`（修复后） | exit 0，0 项 FAIL（28 项 pass），`unit_result=success` |
 
 基线为 `b6c2efab08e2703cc8e974dda7ff872db3122612`；修复后的被测代码提交见证据文件
 `head=` 与 `probe_bundle_sha256`。非 root 场景由同一份脚本用 esbuild bundle + `setpriv`
