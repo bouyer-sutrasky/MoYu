@@ -148,7 +148,13 @@ describe('supervisor process evidence', () => {
       const rootPid = parent.pid;
       const rootIdentity = identifyProcess(rootPid);
       if (!rootIdentity) throw new Error('no root identity');
-      const stored = { rootPid, pgid: rootIdentity.pgid, members: [rootIdentity], cgroup };
+      const stored = {
+        rootPid,
+        pgid: rootIdentity.pgid,
+        members: [rootIdentity],
+        cgroup,
+        cgroupInode: statSync(cgroup).ino,
+      };
       await waitUntil(() => !pidAlive(rootPid), 5000);
       const snapshot = collectOwnership(rootPid, stored);
       expect(snapshot.members.some((member) => member.pid !== rootPid)).toBe(true);
@@ -174,7 +180,13 @@ describe('supervisor process evidence', () => {
       }
       const identity = identifyProcess(root.pid);
       if (!identity) throw new Error('no identity');
-      const stored = { rootPid: root.pid, pgid: root.pid, members: [identity], cgroup };
+      const stored = {
+        rootPid: root.pid,
+        pgid: root.pid,
+        members: [identity],
+        cgroup,
+        cgroupInode: statSync(cgroup).ino,
+      };
       expect(cgroupTree(cgroup).pids).toEqual(expect.arrayContaining([root.pid, child.pid]));
       const result = await stopProcessTree(root.pid, 3000, stored);
       expect(result.stopped).toBe(true);
@@ -467,6 +479,50 @@ describe('cgroup cold start and restart ownership', () => {
     } finally {
       if (child.pid) await stopProcessTree(child.pid, 3000);
       removeCgroup(cgroup);
+    }
+  });
+
+  it('never touches a same-name new cgroup object holding a live foreign process', async () => {
+    const cgroup = createCgroup(`replaced-live-${process.pid}-${Date.now()}`);
+    if (!cgroup) return;
+    const holding = createCgroup(`replaced-holding-${process.pid}-${Date.now()}`);
+    if (!holding) return;
+    const foreign = spawnDetached('sleep', ['30']);
+    try {
+      if (!foreign.pid) throw new Error('no pid');
+      const oldInode = statSync(cgroup).ino;
+      expect(movePidToCgroup(holding, foreign.pid)).toBe(true);
+      removeCgroup(cgroup);
+      // The same path now names a different object; a foreign process lives in
+      // it and must never be collected, signalled or used as an empty proof.
+      mkdirSync(cgroup, { recursive: true });
+      expect(statSync(cgroup).ino).not.toBe(oldInode);
+      expect(movePidToCgroup(cgroup, foreign.pid)).toBe(true);
+      const dead = 4000003;
+      const stored = {
+        rootPid: dead,
+        pgid: dead,
+        cgroup,
+        cgroupInode: oldInode,
+        members: [{ pid: dead, startTime: '0', pgid: dead, sid: dead, command: 'dead' }],
+      };
+      const snapshot = collectOwnership(dead, stored);
+      expect(snapshot.cgroupReplaced).toBe(true);
+      expect(snapshot.unknown).toBe(true);
+      expect(snapshot.members.some((member) => member.pid === foreign.pid)).toBe(false);
+      const result = await stopProcessTree(dead, 1500, stored);
+      expect(result.stopped).toBe(false);
+      expect(result.unknown).toBe(true);
+      expect(result.boundary).toBe('replaced');
+      expect(pidAlive(foreign.pid)).toBe(true);
+      expect(cgroupPids(cgroup)).toContain(foreign.pid);
+    } finally {
+      if (foreign.pid && pidAlive(foreign.pid)) {
+        process.kill(foreign.pid, 'SIGKILL');
+      }
+      writeFileSync(join(cgroup, 'cgroup.kill'), '1');
+      removeCgroup(cgroup);
+      removeCgroup(holding);
     }
   });
 

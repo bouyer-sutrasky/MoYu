@@ -142,6 +142,10 @@
   `startTime`。重启后 inode 不符即视为对象已被替换；`tick`/`reconcileRestart` 会先校验
   PID+starttime，再把仍存活的 runtime 绑进新的 cgroup，而不是拿旧路径冒充同一对象，也
   不会把 PID 已被复用的陌生进程挪进我们的边界。
+- **对象绑定贯穿停止全程**：`collectOwnership` 只在 inode 与记录一致时才从该 cgroup 采集
+  成员；`stopProcessTree` 不再按路径二次遍历（同名目录重建后那会把新对象的成员加入停止
+  集合），信号只发给经 PID+starttime 校验的成员；空树证明也只对记录的那个对象成立。
+  路径被同名新对象替换时，新对象的存活进程不受影响，旧代次按 `unknown` 保留槽位。
 - **边界证明**：停止只在“可读且递归为空”或“边界对象已不存在且本代次无存活成员”时
   返回 `stopped`；不可读仍按未知归属保守占用容量。残留风险（接管前逃逸的后代）通过
   `unknown` 与日志 `supervisor.stop_proven_with_residual` 保留，不再永久 veto 空树。
@@ -177,6 +181,7 @@
 | 主 PID 退出但后代存活 | `apps/supervisor/test/lifecycle.test.ts`「stops a surviving descendant…」；`test/process.test.ts` 的 setsid/子进程用例 |
 | supervisor 重启 | `test/lifecycle.test.ts` 的 restart reconcile 用例；探针 `restart.*` 判定 |
 | 同名目录重建（inode 变化） | 探针 `restart_replacement_detected`；`test/lifecycle.test.ts`「re-binds when the same cgroup path was recreated…」 |
+| 同名新目录有存活进程 | 探针 `replaced_live_*`；`test/process.test.ts`「never touches a same-name new cgroup object holding a live foreign process」；`test/lifecycle.test.ts`「keeps the slot when a recreated cgroup still holds a live foreign process」 |
 | 陌生进程占端口 | `test/lifecycle.test.ts`「stops its own leftover listener but never signals a foreign process…」 |
 | 清理后下一代启动 | 探针 `gen2`：gen1 停止、cgroup 移除、端口释放后 gen2 仍能建根/计量/绑定 |
 | 休眠唤醒、完整 wake→online→sleep | 未跑：依赖 #92 的隔离运行环境与专用 gh token；不是本 PR 可自证的部分 |

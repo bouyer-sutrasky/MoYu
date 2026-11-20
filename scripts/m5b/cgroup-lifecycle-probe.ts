@@ -12,7 +12,7 @@
  *   4. 逐代次核对 PID、cgroup inode、存活后代；路径被复用/对象被替换时的归属判定；
  *   5. 权限不足（非 root、未委托）时明确失败且不返回未计量的实例路径。
  */
-import { mkdirSync, readFileSync, rmdirSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -370,6 +370,85 @@ async function restartChecks(): Promise<void> {
   removeCgroup(path);
 }
 
+/**
+ * A cgroup path can be reused after its object is removed. The new object holds
+ * a live foreign process; member collection, signaling and the empty proof must
+ * stay bound to the recorded generation inode, so the foreign process is never
+ * touched and the old generation keeps the slot.
+ */
+async function replacementWithLiveProcess(): Promise<void> {
+  console.log('## 5. 同名新目录有存活进程（绑定原代次 inode）');
+  const setup = normalizeSetup(ensureCgroup(`replaced-live-${process.pid}-${Date.now()}`));
+  if (!setup.ok || !setup.path) {
+    verdict('replaced_live_setup', false, setup.error ?? 'no cgroup');
+    return;
+  }
+  const path = setup.path;
+  const oldInode = statSync(path).ino;
+  const holding = normalizeSetup(ensureCgroup(`replaced-holding-${process.pid}-${Date.now()}`));
+  if (!holding.ok || !holding.path) {
+    verdict('replaced_live_setup', false, holding.error ?? 'no holding cgroup');
+    removeCgroup(path);
+    return;
+  }
+  const foreign = spawn('/bin/sleep', ['300'], { detached: true, stdio: 'ignore' });
+  if (!foreign.pid) {
+    verdict('replaced_live_setup', false, 'foreign process did not start');
+    removeCgroup(path);
+    removeCgroup(holding.path);
+    return;
+  }
+  try {
+    movePidToCgroup(holding.path, foreign.pid);
+    removeCgroup(path);
+    mkdirSync(path, { recursive: true });
+    const newInode = statSync(path).ino;
+    movePidToCgroup(path, foreign.pid);
+    const deadRoot = 4000005;
+    const stored = {
+      rootPid: deadRoot,
+      pgid: deadRoot,
+      cgroup: path,
+      cgroupInode: oldInode,
+      members: [{ pid: deadRoot, startTime: '0', pgid: deadRoot, sid: deadRoot, command: 'dead' }],
+    };
+    const snapshot = collectOwnership(deadRoot, stored);
+    emit('replaced_live.old_inode', oldInode);
+    emit('replaced_live.new_inode', newInode);
+    emit('replaced_live.unknown', snapshot.unknown);
+    emit(
+      'replaced_live.members',
+      snapshot.members.map((member) => `${member.pid}:${member.startTime}`),
+    );
+    verdict(
+      'replaced_live_not_owned',
+      snapshot.members.every((member) => member.pid !== foreign.pid),
+      `foreign pid ${foreign.pid} is not part of the old generation's members`,
+    );
+    const result = await stopProcessTree(deadRoot, 1500, stored);
+    emit('replaced_live.stop', {
+      stopped: result.stopped,
+      unknown: result.unknown,
+      boundary: result.boundary ?? null,
+    });
+    verdict(
+      'replaced_live_foreign_untouched',
+      pidAlive(foreign.pid),
+      `foreign pid ${foreign.pid} is still alive after the old generation stop`,
+    );
+    verdict(
+      'replaced_live_slot_retained',
+      result.stopped === false && result.unknown === true,
+      'unknown ownership keeps the slot instead of proving an empty generation',
+    );
+  } finally {
+    if (foreign.pid && pidAlive(foreign.pid)) process.kill(foreign.pid, 'SIGKILL');
+    writeFileSync(join(path, 'cgroup.kill'), '1');
+    removeCgroup(path);
+    removeCgroup(holding.path);
+  }
+}
+
 async function nonRoot(): Promise<void> {
   console.log('## 权限不足场景（非 root + 未委托目录）');
   const root = process.env.MOYU_CGROUP_ROOT ?? '';
@@ -405,6 +484,7 @@ async function main(): Promise<void> {
     if (second.ok && second.path) await generation('gen2', second.path);
     else verdict('gen2_cold_start', false, second.error ?? 'no cgroup');
     await restartChecks();
+    await replacementWithLiveProcess();
   }
   console.log(`## 判定：${failures === 0 ? '全部通过' : `${failures} 项不通过`}`);
   process.exitCode = failures === 0 ? 0 : 1;

@@ -60,6 +60,10 @@ export interface ProcessOwnershipSnapshot {
   /** State of the saved execution boundary: `none` when no cgroup was ever recorded. */
   cgroup: 'ok' | 'missing' | 'unreadable' | 'none';
   cgroupInode: number | null;
+  /** The current object is the one this generation created (recorded inode matches). */
+  cgroupVerified: boolean;
+  /** The path now names a different cgroup object than the recorded generation. */
+  cgroupReplaced: boolean;
 }
 
 export interface StoredOwnership {
@@ -89,7 +93,7 @@ export interface StopProcessResult {
   /** The saved group still has live members we cannot prove are ours. */
   unknown: boolean;
   /** What the saved execution boundary looked like at the final check. */
-  boundary: CgroupBoundaryState | 'none';
+  boundary: CgroupBoundaryState | 'none' | 'replaced' | 'unverified';
 }
 
 interface ProcStat {
@@ -609,6 +613,13 @@ export function sessionMembers(sid: number): ProcessIdentity[] {
   return members;
 }
 
+/** True when a live process is inside the cgroup subtree at `path`. */
+export function processInCgroup(pid: number, path: string): boolean {
+  const cgroup = pidCgroup(pid);
+  if (!cgroup) return false;
+  return cgroup === path || cgroup.startsWith(`${path}/`);
+}
+
 /**
  * Captures the root process, its owned process groups, and every descendant.
  * Start times are compared before a PID or PGID is accepted. When the root has
@@ -637,19 +648,22 @@ export function collectOwnership(
   const unknownMembers: ProcessIdentity[] = [];
   const cgroup = stored?.cgroup ?? null;
   const boundary = cgroupBoundary(cgroup);
-  const tree = boundary.state === 'ok' ? cgroupTree(boundary.path) : null;
+  const recordedInode = typeof stored?.cgroupInode === 'number' ? stored.cgroupInode : null;
+  // A cgroup path is reusable: only the recorded inode proves the path still
+  // names the object created for this generation. Without that proof its
+  // members are never captured (and therefore never signalled or used as an
+  // empty-tree proof); the boundary instead stays unknown ownership.
+  const boundaryReplaced =
+    boundary.state === 'ok' && recordedInode !== null && boundary.inode !== recordedInode;
+  const cgroupVerified =
+    boundary.state === 'ok' && recordedInode !== null && boundary.inode === recordedInode;
+  const tree = cgroupVerified ? cgroupTree(boundary.path) : null;
   // A readable tree is required: a partially unreadable subtree could hide a
   // member that a stop would then wrongly call gone.
-  const cgroupReadable = boundary.state === 'ok' && tree?.ok === true;
+  const cgroupReadable = cgroupVerified && tree?.ok === true;
   if (cgroupReadable && tree) {
     for (const pid of tree.pids) add(identifyProcess(pid));
   }
-  // A cgroup path is reusable: only the recorded inode proves this is still the
-  // boundary object created for this generation.
-  const boundaryReplaced =
-    boundary.state === 'ok' &&
-    typeof stored?.cgroupInode === 'number' &&
-    boundary.inode !== stored.cgroupInode;
   const ownedGroups = new Set<number>();
   if (root) ownedGroups.add(root.pgid);
   for (const member of normalized) ownedGroups.add(member.pgid);
@@ -739,6 +753,8 @@ export function collectOwnership(
     unknownMembers: liveUnknown,
     cgroup: cgroup === null ? 'none' : cgroupReadable ? 'ok' : boundary.state,
     cgroupInode: boundary.inode,
+    cgroupVerified,
+    cgroupReplaced: boundaryReplaced,
   };
 }
 
@@ -862,12 +878,21 @@ export async function stopProcessTree(
    * readable cgroup (or one that no longer exists at all) proves nothing of this
    * generation is left, while an unreadable one is still unknown ownership.
    */
-  const boundaryProof = (): { proven: boolean; boundary: CgroupBoundaryState | 'none' } => {
+  const boundaryProof = (): {
+    proven: boolean;
+    boundary: CgroupBoundaryState | 'none' | 'replaced' | 'unverified';
+  } => {
     const cgroup = stored?.cgroup ?? null;
     if (!cgroup) return { proven: false, boundary: 'none' };
     const boundary = cgroupBoundary(cgroup);
     if (boundary.state === 'missing') return { proven: true, boundary: 'missing' };
     if (boundary.state === 'unreadable') return { proven: false, boundary: 'unreadable' };
+    // The empty-tree proof is only about the object this generation created.
+    // A missing or mismatched recorded inode leaves the old generation unknown:
+    // the current object's members are foreign and never prove anything.
+    const recordedInode = typeof stored?.cgroupInode === 'number' ? stored.cgroupInode : null;
+    if (recordedInode === null) return { proven: false, boundary: 'unverified' };
+    if (boundary.inode !== recordedInode) return { proven: false, boundary: 'replaced' };
     const tree = cgroupEmpty(cgroup);
     return { proven: tree.ok && tree.empty, boundary: 'ok' };
   };
@@ -882,11 +907,10 @@ export async function stopProcessTree(
       members: [...(stored?.members ?? []), ...merged.values()],
     });
     for (const member of snapshot.members) merge(member);
-    if (stored?.cgroup && snapshot.cgroup !== 'missing') {
-      const tree = cgroupTree(stored.cgroup);
-      for (const pid of tree.pids) merge(identifyProcess(pid));
-      if (!tree.ok) unknown = true;
-    }
+    // collectOwnership already collected the boundary's members, and only when
+    // the recorded inode proves the object is this generation's. Do not traverse
+    // the path a second time here: after a same-name recreation that would add
+    // the new object's foreign members to the stop set.
     unknown = unknown || snapshot.unknown;
     return snapshot.pgid;
   };

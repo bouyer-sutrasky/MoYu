@@ -25,6 +25,7 @@ import {
   cgroupOomKilled,
   ownedByRoot,
   portOwners,
+  processInCgroup,
   removeCgroup,
   pidAlive,
   portFree,
@@ -362,7 +363,17 @@ export class InstanceManager {
       boundary.state === 'ok' &&
       typeof stored.cgroupInode === 'number' &&
       boundary.inode !== stored.cgroupInode;
-    if (boundary.state === 'ok' && !replaced) return stored;
+    if (boundary.state === 'ok' && !replaced) {
+      if (typeof stored.cgroupInode === 'number') return stored;
+      // Rows from before the generation binding have a path but no object
+      // identity. Accept it only when the live root is actually inside that
+      // object; otherwise the path is stale and the runtime is re-bound.
+      if (processInCgroup(row.pid, boundary.path)) {
+        const next = { ...stored, cgroupInode: boundary.inode };
+        await this.store.updateInstance(row.repositoryId, { ownership: next });
+        return next;
+      }
+    }
     // The saved boundary is gone or is no longer the object we created; the
     // live process is the only thing that can be verified now.
     const snapshot = collectOwnership(row.pid, { ...stored, cgroup: null });
@@ -424,9 +435,15 @@ export class InstanceManager {
     // only after the managed tree itself is confirmed empty; unknown ownership
     // keeps the reservation.
     if (snapshot.members.length > 0 || snapshot.unknownMembers.length > 0) return false;
-    const boundary = cgroupBoundary(storedOwnership(row).cgroup);
+    const stored = storedOwnership(row);
+    const boundary = cgroupBoundary(stored.cgroup);
     if (boundary.state === 'unreadable') return false;
     if (boundary.state === 'ok') {
+      // A replaced or unrecorded object says nothing about this generation; the
+      // slot stays occupied instead of releasing on a same-name new object.
+      if (typeof stored.cgroupInode !== 'number' || stored.cgroupInode !== boundary.inode) {
+        return false;
+      }
       const state = cgroupEmpty(boundary.path);
       if (!state.ok || !state.empty) return false;
     }
@@ -476,7 +493,7 @@ export class InstanceManager {
         snapshot.pgid,
         snapshot.members,
         stored.cgroup,
-        stored.cgroupInode ?? snapshot.cgroupInode ?? null,
+        stored.cgroupInode ?? (snapshot.cgroupVerified ? snapshot.cgroupInode : null),
       ),
       ...(stored.adoptedUnproven ? { adoptedUnproven: true } : {}),
       ...(stored.execution ? { execution: stored.execution } : {}),
@@ -496,7 +513,7 @@ export class InstanceManager {
     const rootAlive = row.pid ? pidAlive(row.pid) : false;
     const replaced = boundaryReplaced(snapshot, stored);
     if (await this.settleDeadRuntime(row, snapshot)) return;
-    if (rootAlive && (snapshot.cgroup !== 'ok' || replaced)) {
+    if (rootAlive && (snapshot.cgroup !== 'ok' || replaced || stored.cgroupInode == null)) {
       // A restart can lose the boundary object under the old path; a live
       // runtime is re-bound instead of being reported as unverified forever.
       stored = await this.attachCgroup(row, stored);
@@ -1110,7 +1127,9 @@ export class InstanceManager {
         const rootAliveNow = row.pid ? pidAlive(row.pid) : false;
         if (
           rootAliveNow &&
-          (snapshot.cgroup !== 'ok' || boundaryReplaced(snapshot, stored)) &&
+          (snapshot.cgroup !== 'ok' ||
+            boundaryReplaced(snapshot, stored) ||
+            stored.cgroupInode == null) &&
           (row.state === 'online' || row.state === 'starting')
         ) {
           // The boundary object disappeared (for example a recreated unit
@@ -1523,6 +1542,7 @@ export class InstanceManager {
           rootPid: owner.pid,
           pgid: owner.pgid,
           cgroup: boundary,
+          cgroupInode: boundary ? cgroupBoundary(boundary).inode : null,
           members: [owner],
         });
       }

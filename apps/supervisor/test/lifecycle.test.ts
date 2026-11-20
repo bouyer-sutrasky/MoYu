@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdirSync, statSync } from 'node:fs';
+import { mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import { join } from 'node:path';
 
@@ -322,6 +322,55 @@ describe('restart ownership convergence', () => {
       expect(boundary.inode).toBe(adopted.cgroupInode);
       expect(store.row.state).toBe('online');
     } finally {
+      removeCgroup(path);
+      removeCgroup(holding);
+    }
+  });
+
+  it('keeps the slot when a recreated cgroup still holds a live foreign process', async () => {
+    const setup = ensureCgroup(`lifecycle-foreign-${process.pid}-${Date.now()}`);
+    if (!setup.ok || !setup.path) return;
+    const path = setup.path;
+    const oldInode = statSync(path).ino;
+    const holding = freshRoot(`lifecycle-holding-${process.pid}-${Date.now()}`);
+    if (!holding) return;
+    const foreign = spawnIn(holding);
+    try {
+      removeCgroup(path);
+      mkdirSync(path, { recursive: true });
+      expect(statSync(path).ino).not.toBe(oldInode);
+      expect(movePidToCgroup(path, foreign.pid)).toBe(true);
+      const deadRoot = 4000004;
+      const row = baseRow({
+        pid: deadRoot,
+        state: 'stopping',
+        desiredState: 'sleeping',
+        ownership: {
+          rootPid: deadRoot,
+          pgid: deadRoot,
+          cgroup: path,
+          cgroupInode: oldInode,
+          members: [
+            { pid: deadRoot, startTime: '0', pgid: deadRoot, sid: deadRoot, command: 'dead' },
+          ],
+        },
+      });
+      const store = fakeStore(row);
+      const manager = new InstanceManager(config, store as unknown as SupervisorStore, logger);
+      await (
+        manager as unknown as { reconcileRestart(row: InstanceRow): Promise<void> }
+      ).reconcileRestart(row);
+      // The new object's process is never signalled, and the old generation's
+      // unknown ownership keeps the slot instead of releasing it.
+      expect(pidAlive(foreign.pid)).toBe(true);
+      expect(store.row.state).toBe('stopping');
+      expect(store.row.reasonCode).toBe('stop_failed');
+      expect(store.row.waitingFor).toBe('process_exit');
+      expect(store.row.ownership.cgroup).toBe(path);
+      expect(store.row.ownership.cgroupInode).toBe(oldInode);
+    } finally {
+      if (pidAlive(foreign.pid)) process.kill(foreign.pid, 'SIGKILL');
+      writeFileSync(join(path, 'cgroup.kill'), '1');
       removeCgroup(path);
       removeCgroup(holding);
     }
