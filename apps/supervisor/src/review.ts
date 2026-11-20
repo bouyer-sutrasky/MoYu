@@ -184,7 +184,8 @@ export async function runCommand(
   // descendants. It is created before the launcher execs user code; if the host
   // cannot provide one we fall back to the process-group scan and report
   // cleanup as unknown rather than pretending the tree is empty.
-  const cgroup = ensureCgroup(`check-${randomUUID()}`);
+  const setup = ensureCgroup(`check-${randomUUID()}`);
+  const cgroup = setup.ok ? setup.path : null;
   const launcher = cgroup ? ['/bin/sh', '-c', CGROUP_LAUNCHER, 'moyu-check', ...command] : command;
 
   return new Promise((resolve) => {
