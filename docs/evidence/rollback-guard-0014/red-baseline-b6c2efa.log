@@ -1,0 +1,81 @@
+# pre-fix red run 2026-11-20T06:01:48Z
+head=b6c2efab08e2703cc8e974dda7ff872db3122612
+forward_sha256=46344e9ba62e570e08f2797c21eaef6aaf194191378fa4860cee28444a01c1d3
+down_sha256=d46a35afb8da6917812eef2bcee3c091d031e2b65785cfcf04b4b6dfea00d09d
+database=moyu_guard_0014_red_1795154508
+admin_url=postgres://moyu@127.0.0.1:55432/postgres (isolated)
+
+## migrate
+$ tsx src/cli/migrate.ts
+{"level":"info","service":"moyu-db","event":"migrate.completed","message":"Database migrations applied successfully"}
+migrate_exit=0
+
+## snapshot before down
+           ?column?           
+------------------------------
+ table|execution_reservations
+(1 row)
+
+                                                     ?column?                                                      
+-------------------------------------------------------------------------------------------------------------------
+ fk|execution_reservations_delivery_fk|FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE SET NULL
+ fk|execution_reservations_repository_fk|FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE CASCADE
+ fk|execution_reservations_task_fk|FOREIGN KEY (task_id) REFERENCES task_links(id) ON DELETE SET NULL
+(3 rows)
+
+    ?column?     
+-----------------
+ ledger_total|25
+(1 row)
+
+      ?column?       
+---------------------
+ ledger_0014_count|1
+(1 row)
+
+               ?column?               
+--------------------------------------
+ ledger_0014_created_at|1794002928471
+(1 row)
+
+                                           ?column?                                           
+----------------------------------------------------------------------------------------------
+ ledger_latest|b52d305a529c2fb69ba8c401062120ee2424c9d9afc10953889aec277bfc397a|1795104810692
+(1 row)
+
+
+## run 0014 down (plain pg/psql, no hash variable)
+down_exit=0
+
+## snapshot after down
+    ?column?    
+----------------
+ table|<absent>
+(1 row)
+
+ ?column? 
+----------
+(0 rows)
+
+    ?column?     
+-----------------
+ ledger_total|24
+(1 row)
+
+      ?column?       
+---------------------
+ ledger_0014_count|0
+(1 row)
+
+            ?column?             
+---------------------------------
+ ledger_0014_created_at|<absent>
+(1 row)
+
+                                           ?column?                                           
+----------------------------------------------------------------------------------------------
+ ledger_latest|b52d305a529c2fb69ba8c401062120ee2424c9d9afc10953889aec277bfc397a|1795104810692
+(1 row)
+
+
+result=down succeeded with later migrations applied (defect reproduced)
