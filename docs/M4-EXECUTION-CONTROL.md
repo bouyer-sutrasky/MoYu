@@ -129,8 +129,9 @@ runtime 对同一 `paused.operationId` 再做一次有界停止检查（launch �
 - 租约代次已变化或原暂停 operation 丢失：保持 `blocked`，记 `nextStep: 'owner-review'`，不把旧代次的证明套到新代次。
 
 隔离验收栈可以用测试专用开关确定性复现 `timed-out`：给被测 runtime 设置 `MOYU_TEST_HOOKS=1` 和
-`MOYU_TEST_PAUSE_LAUNCH_MS=1` 把停止上限缩短到 1 ms，然后立即暂停正在 launch 的任务。生产部署不设置这两个变量，
-上限仍是 10 s；脚本见 [`scripts/m5b/matrix/item4-pause-recheck.sh`](../scripts/m5b/matrix/item4-pause-recheck.sh)。
+`MOYU_TEST_PAUSE_LAUNCH_MS=1` 把停止上限缩短到 1 ms，然后立即暂停正在 launch 的任务。隔离栈通过 supervisor 的
+实例环境文件传入这两个变量（`scripts/m5b/matrix/stack.sh` 的 `M5B_MATRIX_TEST_HOOKS`）；生产部署不设置它们，
+上限仍是 10 s。脚本见 [`scripts/m5b/matrix/item4-pause-recheck.sh`](../scripts/m5b/matrix/item4-pause-recheck.sh)。
 
 ### 2.6 服务重启
 

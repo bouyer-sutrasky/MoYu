@@ -70,7 +70,7 @@ pnpm check                                          # exit 0
 # apps/dispatcher/test/integration/dispatcher.integration.test.ts:805 未用 eslint-disable
 
 TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm test:integration
-# exit 0：db 54、api 143、dispatcher 103（1 skip）、supervisor 4
+# exit 0：db 64、api 143、dispatcher 103（1 skip）、supervisor 4（main 合流后的计数）
 ```
 
 第一次整链运行时 `@moyu/db` 出现一次 `terminating connection due to administrator command`（57P01），当时 54 个用例
@@ -89,6 +89,22 @@ env -u GIT_CONFIG_GLOBAL ./node_modules/.bin/vitest run tests/runtime.spec.ts te
 ```
 
 用干净环境重跑后没有本轮改动引入的失败。
+
+### 测试专用强制超时入口
+
+`item4` 的现场强制超时需要一个 1 ms 的停止上限。补丁 0031 在 runtime 里加了 `MOYU_TEST_HOOKS=1` +
+`MOYU_TEST_PAUSE_LAUNCH_MS` 的测试接缝；本轮又把它从 supervisor 的实例环境文件传给 runtime：
+
+- `apps/supervisor/src/provision.ts` 的 `instanceEnvironment` 只在 supervisor 自身带
+  `MOYU_TEST_HOOKS=1` 时写入这两个变量；非数字上限回退到 10000；
+- `scripts/m5b/matrix/stack.sh` 用 `M5B_MATRIX_TEST_HOOKS=1 M5B_MATRIX_TEST_PAUSE_LAUNCH_MS=1`
+  启动 supervisor 时透传；生产栈不设置；
+- `apps/supervisor/test/provision-env.test.ts` 覆盖开/关与非法值回退。
+
+```bash
+PATH=/opt/moyu-node24/bin:$PATH pnpm --filter @moyu/supervisor exec vitest run test/provision-env.test.ts
+# exit 0；2 tests passed
+```
 
 新增/修改的平台集成断言：
 

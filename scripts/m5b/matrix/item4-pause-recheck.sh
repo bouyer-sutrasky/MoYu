@@ -61,13 +61,38 @@ say "patch_artifact=$(sha256sum "$PATCH" 2>/dev/null | cut -d' ' -f1)"
 say "script_artifact=$(sha256sum "$0" | cut -d' ' -f1)"
 
 PROBE_TOKEN=''
-cleanup() { PROBE_TOKEN=''; }
+PROBE_GH_CONFIG=''
+cleanup() { PROBE_TOKEN=''; PROBE_GH_CONFIG=''; }
 trap cleanup EXIT
 
+# The probe credential comes through one restricted input only: a gh config
+# directory the matrix already trusts, or a 0600 token file. Neither path prints
+# token material; a gh config directory never has its token read by this script.
 read_probe_credential() {
+  local dir=${M5B_MATRIX_PROBE_GH_CONFIG_DIR:-${M5B_MATRIX_GH_CONFIG_DIR:-}}
+  if [[ -n $dir ]]; then
+    if [[ ! -d $dir || ! -f $dir/hosts.yml ]]; then
+      fail "probe gh config is missing: $dir/hosts.yml"
+      return 1
+    fi
+    local mode owner
+    mode=$(stat -c '%a' "$dir")
+    owner=$(stat -c '%U' "$dir")
+    if (( (8#$mode & 002) != 0 )); then
+      fail "probe gh config mode $mode is world-writable; restrict it"
+      return 1
+    fi
+    if [[ $owner != "$(id -un)" && $owner != root ]]; then
+      fail "probe gh config owner $owner is neither this user nor root"
+      return 1
+    fi
+    PROBE_GH_CONFIG=$dir
+    say "probe_credential=restricted gh-config dir mode=$mode owner=$owner"
+    return 0
+  fi
   local file=${M5B_MATRIX_PROBE_GH_TOKEN_FILE:-}
   if [[ -z $file ]]; then
-    fail "M5B_MATRIX_PROBE_GH_TOKEN_FILE is required for the GitHub phase (owner-issued probe identity)"
+    fail "set M5B_MATRIX_PROBE_GH_CONFIG_DIR (restricted gh config) or M5B_MATRIX_PROBE_GH_TOKEN_FILE (0600 file)"
     return 1
   fi
   if [[ ! -f $file ]]; then
@@ -94,7 +119,13 @@ read_probe_credential() {
   say "probe_credential=restricted mode=$mode owner=$owner"
 }
 
-probe_gh() { GH_TOKEN=$PROBE_TOKEN gh "$@"; }
+probe_gh() {
+  if [[ -n $PROBE_GH_CONFIG ]]; then
+    GH_CONFIG_DIR=$PROBE_GH_CONFIG gh "$@"
+  else
+    GH_TOKEN=$PROBE_TOKEN gh "$@"
+  fi
+}
 
 # --- 数据库与 runtime 读取（只读） -----------------------------------------
 sql() { m5b_sql "$1"; }

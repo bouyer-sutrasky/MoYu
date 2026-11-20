@@ -320,6 +320,18 @@ export function instanceEnvironment(input: {
     // Managed instances always enforce execution admission; the capability
     // is advertised only when this flag is on.
     'MOYU_REQUIRE_ADMISSION=1',
+    // Test-only: an isolated acceptance stack may shorten the runtime's launch-stop bound to reach the
+    // `timed-out` branch deterministically. The supervisor never sets this itself and production leaves it unset.
+    ...(process.env.MOYU_TEST_HOOKS === '1'
+      ? [
+          'MOYU_TEST_HOOKS=1',
+          `MOYU_TEST_PAUSE_LAUNCH_MS=${
+            /^[0-9]+$/.test(process.env.MOYU_TEST_PAUSE_LAUNCH_MS ?? '')
+              ? (process.env.MOYU_TEST_PAUSE_LAUNCH_MS as string)
+              : '10000'
+          }`,
+        ]
+      : []),
     '',
   ].join('\n');
 }
