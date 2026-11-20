@@ -60,23 +60,33 @@ runtime：`ticket.paused = { at, by:'human', operationId, stoppedAt?, evidence?,
 
 ### 2.3 停止完成证据
 
-至少包含：
+一次暂停的证据至少包含：
 
 ```jsonc
 {
-  "ticketId": "…", "assignmentId": "…", "sessionId": "worker-…",
+  "ticketId": "…", "operationId": "发起暂停的操作", "sessionId": "worker-…",
+  "assignmentId": "…",                       // 只有存在 Assignment 时才有
   "harnessPid": 12345, "cgroup": "0::/system.slice/dsh-superagent.service",
   "startedAt": "…", "stoppedAt": "…",
-  "agentStatus": "idle",
+  "agentStatus": "idle",                     // 或 "absent"：宿主重启后 Session 未装载
   "jobsBefore": [{ "id": "bash-…", "name": "npm test" }],
   "jobsAfter": [],
   "subagentsAfter": 0,
-  "cancelledTurn": true
+  "cancelledTurn": true,
+  "launch": "none | aborted | timed-out"
 }
 ```
 
-DSH 的 worker 是同进程内的 Agent Session，不产生独立 worker PID；证据用 harness PID + cgroup + Session 状态 +
-后台 job 集合前后对比表示。不得把「不再投递消息」当成进程已结束。
+- `assignmentId` 只在有 Assignment 时才写。GitHub 入口在平台准入前（`pending_admission`）就没有 Assignment；这种暂停以
+  `ticketId` + `paused.operationId` 认身份，Executor 仍要回答「这票没有任何东西还在跑」。不得因为拿不到 `assignmentId`
+  就跳过结算。
+- `launch` 是本次暂停看到的启动阶段：`none` 没有正在进行的 launch，`aborted` 已在停止上限内结束，`timed-out` 没结束。
+  `timed-out` 不是停止，即使其余字段看起来是空的；平台必须保留占位并走 §2.5 的重新核对。
+- 证据不写 `lingeringPids`。DSH 的 worker 是同进程内的 Agent Session，不产生独立 worker PID；判定只看本票自己的
+  Session 状态、job 集合、subagent 集合和 launch。`harnessPid`/`cgroup`/`processesBefore`/`processesAfter` 只作证据，
+  不把整棵 harness 进程树当判定边界（其他票、provider 和 launch 共享它）。
+- 后台 job 或 subagent 仍在、worker 未 idle、或 `launch: timed-out` 时，Bridge operation 记 `failed`，平台进入 `blocked`，
+  `stop_evidence` 写入 `problem`、`pauseOperationId`、`leaseId`、`fencingToken` 和 `nextStep`。
 
 ### 2.4 继续
 
@@ -85,7 +95,45 @@ DSH 的 worker 是同进程内的 Agent Session，不产生独立 worker PID；�
 （`runtime_leases` 一条 `active` 行，带 fencing token），并把 `{leaseId, fencingToken}` 作为 admission 传给 Bridge。
 没有租约或现场核验失败时平台置 `blocked`，不调用 resume。
 
-### 2.5 服务重启
+工作目录规则：有 Assignment 真正启动过（有 `startedAt`）而目录已不在时，resume 返回 409 `worktreeMissing`；从未启动过
+的票（prepare 被暂停中止）允许 resume 重新 prepare。resume 成功只清除一次暂停并只创建一个新 Assignment；同一个暂停不能
+再次 resume，重复命令按 operation id 幂等返回第一次结果。
+
+### 2.5 停止未确认：重新核对原暂停操作
+
+`launch: timed-out` 或其他无法证明的停止不应把票永久锁死。平台在 `blocked` 占位上提供一次「重新核对停止」：
+`POST /api/v1/tasks/:id/stop` 在任务为 `blocked` 且 `stop_evidence.nextStep === 'recheck-stop'` 时不再发起新的停止，
+而是创建一次停止核对 operation（`task_operations.kind = 'pause'`）。dispatcher 取原暂停 operation 的 leaseId +
+fencingToken，确认当前 `task_links.runtime_lease_id` 仍是同一代次且租约仍 `active`，然后把
+`{operationId, pauseOperationId, admission}` 发给 Bridge 的 `POST /bridge/v1/tickets/:id/pause`。
+runtime 需要声明 `capabilities.pauseRecheck = true`；未声明时 operation 直接失败，占位改记为 `nextStep: 'runtime-upgrade'`。
+
+runtime 对同一 `paused.operationId` 再做一次有界停止检查（launch 是否结束、Session 是否 idle、job/subagent 是否为空），
+成功时把 `stoppedAt` 和绑定证据写入 `ticket.paused`，失败时仍无 `stoppedAt`、只更新 `error`。核对证据至少额外包含：
+
+```jsonc
+{
+  "ticketId": "…", "operationId": "原暂停操作", "recheckOperationId": "本次核对操作",
+  "leaseId": "…", "fencingToken": "…", "recheck": true, "reconciledAt": "…",
+  "launch": "none", "stopIncomplete": null
+}
+```
+
+平台只有在五者全部一致时才把它当成停止证明：当前 ticket、原暂停操作、本次核对操作、租约 id、fencing token。
+任何一项不符都不改写任务、不释放租约，`stop_evidence` 记 `bindingProblem` 和 `nextStep: 'owner-review'`。
+
+- 核对成功：同一个数据库事务把任务置 `stopped`、写 `stopped_at` 和新证据，并在事务提交后按该代次释放执行租约；
+  之后 resume 才被允许。
+- 核对失败（launch 仍未结束、job/subagent 仍在等）：保持 `blocked`，更新 `problem` 和 `nextStep: 'recheck-stop'`，
+  允许再次核对；租约与执行名额继续占用，绝不放行替代执行。
+- 租约代次已变化或原暂停 operation 丢失：保持 `blocked`，记 `nextStep: 'owner-review'`，不把旧代次的证明套到新代次。
+
+隔离验收栈可以用测试专用开关确定性复现 `timed-out`：给被测 runtime 设置 `MOYU_TEST_HOOKS=1` 和
+`MOYU_TEST_PAUSE_LAUNCH_MS=1` 把停止上限缩短到 1 ms，然后立即暂停正在 launch 的任务。隔离栈通过 supervisor 的
+实例环境文件传入这两个变量（`scripts/m5b/matrix/stack.sh` 的 `M5B_MATRIX_TEST_HOOKS`）；生产部署不设置它们，
+上限仍是 10 s。脚本见 [`scripts/m5b/matrix/item4-pause-recheck.sh`](../scripts/m5b/matrix/item4-pause-recheck.sh)。
+
+### 2.6 服务重启
 
 - 已人工暂停（`paused` 有 `stoppedAt`）的 Ticket 保持暂停：runtime 的 `resume()` 不重启它，平台保持 `stopped`。
 - 重启前 `running` 的 Ticket：runtime 按既有 `assignmentInterrupted` 处理；平台启动核对以 Bridge Ticket 快照为准。
@@ -207,6 +255,11 @@ operation 必须持久化（append-only，位于 `<stateDir>/bridge/operations.j
 - 讨论 Session 没有写工具、没有 shell/job/subagent 工具，permission preset 为 `read-only`；写入调用被拒绝且没有修改工作目录。
 - 讨论转执行后同一个 Ticket、同一个工作目录、同一个 PR 继续工作；不新建会话或 Ticket。
 - pause 后 shell jobs 与 subagents 实际结束，证据含 harness PID、Session idle、job 前后集合；只有 `stoppedAt` 后才显示 stopped。
+- 暂停在 launch 阶段超时（`launch: timed-out`）时任务停在 `blocked`、保留 `blocked` 占位与下一步；核对原暂停操作成功才写
+  `stoppedAt`，证据同时绑定 ticket、原 operation、核对 operation、leaseId 与 fencingToken；绑定不符不得结清。
+- 核对成功在同一事务内把任务置 `stopped` 并释放该代次租约；之后 resume 只创建一个新 Assignment，重复 resume 被拒。
+- 没有 Assignment 的暂停（`pending_admission` 或 GitHub 入口）也能结算：证据不含 `assignmentId`，以 `ticketId` +
+  `paused.operationId` 认身份；不能因为没有 Assignment 就永远停在 `stopping`。
 - resume 前必须取得 `runtime_leases` 租约；没有租约时不调用 Bridge，任务 `blocked`。
 - 暂停期间平台消息保持 `stored`，resume 后按序投递；`read` 必须有执行器证据。
 - 平台重启：暂停保持 `stopped`；`running` 以快照核对；不可确认 `blocked`。

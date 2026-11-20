@@ -1835,4 +1835,247 @@ describe('M4 task operations, reconciliation and GitHub import on real PostgreSQ
       reconciliationError: expect.stringContaining('not found'),
     });
   }, 30_000);
+
+  /** Seeds a blocked stop placeholder with its original pause operation and retained lease generation. */
+  async function seedFailedStop(): Promise<{
+    fixture: Seed;
+    original: string;
+    leaseId: string;
+    fencingToken: string;
+  }> {
+    const fixture = await seed({
+      state: 'blocked',
+      stopEvidence: {
+        nextStep: 'recheck-stop',
+        problem: 'The start in flight did not end within 10000 ms',
+      },
+    });
+    const original = await insertOperation(fixture, 'pause', `cmd-original-${Date.now()}`);
+    const lease = await testDatabase.pool.query<{ id: string; fencing_token: string }>(
+      `insert into runtime_leases (repository_id, holder_id, expires_at)
+       values ($1, 'dispatcher:test', now() + interval '10 minutes') returning id, fencing_token`,
+      [fixture.repository.id],
+    );
+    const leaseRow = lease.rows[0]!;
+    await testDatabase.pool.query(
+      `update task_links set runtime_lease_id = $2,
+              stop_evidence = stop_evidence || $3::jsonb
+        where id = $1`,
+      [
+        fixture.taskId,
+        leaseRow.id,
+        JSON.stringify({
+          pauseOperationId: original,
+          leaseId: leaseRow.id,
+          fencingToken: String(leaseRow.fencing_token),
+          recheckTicketId: fixture.ticketId,
+        }),
+      ],
+    );
+    await testDatabase.pool.query(
+      `update task_operations
+          set state = 'failed', bridge_operation_id = id, runtime_lease_id = $2, fencing_token = $3,
+              error = 'The start in flight did not end within 10000 ms'
+        where id = $1`,
+      [original, leaseRow.id, leaseRow.fencing_token],
+    );
+    return {
+      fixture,
+      original,
+      leaseId: leaseRow.id,
+      fencingToken: String(leaseRow.fencing_token),
+    };
+  }
+
+  it('checks a failed stop again for the original operation and settles it atomically', async () => {
+    const { fixture, original, leaseId, fencingToken } = await seedFailedStop();
+    const recheck = await insertOperation(fixture, 'pause', `cmd-recheck-${Date.now()}`);
+    const logger = createConsoleLogger('test');
+    fakeBridge.operationState = 'succeeded';
+    fakeBridge.operationError = null;
+    fakeBridge.operationEvidence = {
+      ticketId: fixture.ticketId,
+      operationId: original,
+      recheckOperationId: recheck,
+      leaseId,
+      fencingToken,
+      sessionId: `worker-${fixture.ticketId}`,
+      harnessPid: 4321,
+      agentStatus: 'idle',
+      jobsBefore: [],
+      jobsAfter: [],
+      subagentsAfter: 0,
+      launch: 'none',
+      recheck: true,
+      cancelledTurn: false,
+      stoppedAt: new Date().toISOString(),
+    };
+
+    const callsBefore = fakeBridge.calls.length;
+    expect(
+      await operationsOnce(
+        testDatabase.pool,
+        config,
+        fixture.repository,
+        client,
+        logger,
+        true,
+        true,
+      ),
+    ).toBe(true);
+    expect(fakeBridge.calls.length).toBe(callsBefore + 1);
+    expect(fakeBridge.calls.at(-1)).toMatchObject({
+      kind: 'pause',
+      ticketId: fixture.ticketId,
+      body: {
+        operationId: recheck,
+        pauseOperationId: original,
+        admission: { leaseId, fencingToken },
+      },
+    });
+    // The check does not settle the stop by itself; its polled proof does.
+    expect(await readTask(fixture.taskId)).toMatchObject({ state: 'blocked' });
+
+    await makeOperationsDue();
+    expect(
+      await operationsOnce(
+        testDatabase.pool,
+        config,
+        fixture.repository,
+        client,
+        logger,
+        true,
+        true,
+      ),
+    ).toBe(true);
+    const task = await readTask(fixture.taskId);
+    expect(task.state).toBe('stopped');
+    expect(task.stoppedAt).toBeInstanceOf(Date);
+    expect(task.runtimeLeaseId).toBeNull();
+    expect(task.stopEvidence).toMatchObject({
+      ticketId: fixture.ticketId,
+      operationId: original,
+      recheckOperationId: recheck,
+      leaseId,
+      fencingToken,
+      recheck: true,
+    });
+    const lease = await testDatabase.pool.query(`select state from runtime_leases where id = $1`, [
+      leaseId,
+    ]);
+    expect(lease.rows[0]?.state).toBe('released');
+    const operation = await testDatabase.pool.query(
+      `select state from task_operations where id = $1`,
+      [recheck],
+    );
+    expect(operation.rows[0]?.state).toBe('succeeded');
+    fakeBridge.operationEvidence = {};
+  }, 30_000);
+
+  it('keeps a stop check whose evidence names another generation blocked and holds the lease', async () => {
+    const { fixture, original, leaseId, fencingToken } = await seedFailedStop();
+    const recheck = await insertOperation(fixture, 'pause', `cmd-recheck-bad-${Date.now()}`);
+    const logger = createConsoleLogger('test');
+    fakeBridge.operationState = 'succeeded';
+    fakeBridge.operationError = null;
+    fakeBridge.operationEvidence = {
+      ticketId: fixture.ticketId,
+      operationId: original,
+      recheckOperationId: recheck,
+      // Another generation: the platform must not apply this proof.
+      leaseId: '00000000-0000-4000-8000-000000000000',
+      fencingToken,
+      agentStatus: 'idle',
+      jobsAfter: [],
+      subagentsAfter: 0,
+      launch: 'none',
+      stoppedAt: new Date().toISOString(),
+    };
+
+    await operationsOnce(testDatabase.pool, config, fixture.repository, client, logger, true, true);
+    await makeOperationsDue();
+    await operationsOnce(testDatabase.pool, config, fixture.repository, client, logger, true, true);
+    const task = await readTask(fixture.taskId);
+    expect(task.state).toBe('blocked');
+    expect(task.stoppedAt).toBeNull();
+    expect(task.runtimeLeaseId).toBe(leaseId);
+    expect(task.stopEvidence).toMatchObject({
+      nextStep: 'owner-review',
+      bindingProblem: 'The stop evidence names another execution lease',
+    });
+    const lease = await testDatabase.pool.query(`select state from runtime_leases where id = $1`, [
+      leaseId,
+    ]);
+    expect(lease.rows[0]?.state).toBe('active');
+    const operation = await testDatabase.pool.query(
+      `select state, error from task_operations where id = $1`,
+      [recheck],
+    );
+    expect(operation.rows[0]).toMatchObject({ state: 'failed' });
+    expect(String(operation.rows[0]?.error)).toContain('another execution lease');
+    fakeBridge.operationEvidence = {};
+  }, 30_000);
+
+  it('does not send a stop check the runtime does not support', async () => {
+    const { fixture, original } = await seedFailedStop();
+    await insertOperation(fixture, 'pause', `cmd-recheck-unsupported-${Date.now()}`);
+    const logger = createConsoleLogger('test');
+    const callsBefore = fakeBridge.calls.length;
+    expect(
+      await operationsOnce(
+        testDatabase.pool,
+        config,
+        fixture.repository,
+        client,
+        logger,
+        true,
+        false,
+      ),
+    ).toBe(true);
+    expect(fakeBridge.calls.length).toBe(callsBefore);
+    const task = await readTask(fixture.taskId);
+    expect(task.state).toBe('blocked');
+    expect(task.stopEvidence).toMatchObject({
+      nextStep: 'runtime-upgrade',
+      problem: expect.stringContaining('does not support'),
+    });
+    expect(task.stopEvidence).toMatchObject({ pauseOperationId: original });
+  }, 30_000);
+
+  it('keeps a blocked stop placeholder when a later non-terminal pause intent arrives', async () => {
+    const fixture = await seed({
+      state: 'blocked',
+      stopEvidence: {
+        nextStep: 'recheck-stop',
+        pauseOperationId: 'pause-blocked',
+        launch: 'timed-out',
+      },
+    });
+    const dbClient = await testDatabase.pool.connect();
+    try {
+      await dbClient.query('begin');
+      await applyEvent(
+        dbClient,
+        fixture.repository,
+        {
+          seq: 99,
+          id: `ticket-paused:blocked-intent:${fixture.taskId}`,
+          type: 'ticket.paused',
+          at: '2026-11-04T06:00:00.000Z',
+          data: {
+            ticketId: fixture.ticketId,
+            operationId: 'pause-intent-later',
+            evidence: { launch: 'none', agentStatus: 'idle' },
+          },
+        },
+        createConsoleLogger('test'),
+      );
+      await dbClient.query('commit');
+    } finally {
+      dbClient.release();
+    }
+    const task = await readTask(fixture.taskId);
+    expect(task.state).toBe('blocked');
+    expect(task.stopEvidence).toMatchObject({ nextStep: 'recheck-stop', launch: 'timed-out' });
+  }, 30_000);
 });

@@ -65,6 +65,13 @@ export const bridgeCapabilitiesSchema = z.object({
      * strict trigger schema would answer 400, so the platform never sends them.
      */
     attachments: z.boolean().optional(),
+    /**
+     * M5-B legacy follow-up: a pause whose stop proof timed out can be checked
+     * again for the original operation under the execution lease admission.
+     * Absent means an old Bridge would refuse the stop-check request, so the
+     * platform keeps the blocked placeholder and explains the missing support.
+     */
+    pauseRecheck: z.boolean().optional(),
   }),
   source: z.object({ kind: z.string(), enabled: z.boolean() }),
 });
@@ -302,7 +309,17 @@ export const bridgeOperationAcceptedSchema = z.object({
 export type BridgeOperationAccepted = z.infer<typeof bridgeOperationAcceptedSchema>;
 
 export const bridgePauseInputSchema = z
-  .object({ operationId: z.string().min(1).max(200), reason: z.string().max(1000).optional() })
+  .object({
+    operationId: z.string().min(1).max(200),
+    reason: z.string().max(1000).optional(),
+    /**
+     * A stop check for an already-paused Ticket names the operation that paused
+     * it and the execution lease generation it was admitted under. Both travel
+     * together: half a check is malformed, and an ordinary pause sends neither.
+     */
+    pauseOperationId: z.string().min(1).max(200).optional(),
+    admission: bridgeAdmissionSchema.optional(),
+  })
   .strict();
 
 export type BridgePauseInput = z.infer<typeof bridgePauseInputSchema>;

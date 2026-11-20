@@ -10,8 +10,15 @@ import { claimExecution, reconcileExecutionClaimOn } from './reservations';
 import { appendEventSql } from './events-sql';
 import { sendRoutedNotice } from './routed-notices';
 import { endedState, stateFromSnapshot, TASK_COLUMNS, taskSummary, type TaskRow } from './tasks';
-import { pauseEvidenceProblem, pauseEvidenceProven } from './pause-evidence';
-import { acquireExecutionLeaseOn } from './leases';
+import {
+  PAUSE_RECHECK_NEXT_STEP,
+  pauseEvidenceProblem,
+  pauseEvidenceProven,
+  pauseRecheckBindingFromEvidence,
+  pauseRecheckBindingProblem,
+  pauseRecheckRequested,
+} from './pause-evidence';
+import { acquireExecutionLeaseOn, releaseTaskLeaseOn } from './leases';
 
 /** Last projection branch per Bridge event, for lifecycle diagnostics/tests. */
 export const projectionBranches = new Map<string, string>();
@@ -713,28 +720,63 @@ async function applyPausedEvent(
   }
   const evidence = asRecord(data.evidence);
   const pauseError = asString(data.error);
-  const proven = pauseEvidenceProven({ ...evidence, stoppedAt: data.stoppedAt });
-  const problem = proven
-    ? undefined
-    : pauseEvidenceProblem({ ...evidence, stoppedAt: data.stoppedAt });
+  const recheck = pauseRecheckRequested(task.stopEvidence);
+  const observation = { ...evidence, stoppedAt: data.stoppedAt };
+  let proven = pauseEvidenceProven(observation);
+  // A stop check only settles this task when its evidence names the ticket, the
+  // original pause operation and the lease generation the check was sent under.
+  let bindingProblem: string | undefined;
+  if (proven && recheck) {
+    const expected = pauseRecheckBindingFromEvidence(task.stopEvidence);
+    bindingProblem = expected
+      ? pauseRecheckBindingProblem(observation, expected)
+      : 'The platform did not record which stop check and lease generation this answer belongs to';
+    if (bindingProblem) proven = false;
+  }
+  const problem = proven ? undefined : (bindingProblem ?? pauseEvidenceProblem(observation));
   const stoppedAt = proven ? asString(data.stoppedAt) : undefined;
   const state = proven
     ? 'stopped'
     : pauseError || data.stoppedAt !== undefined
       ? 'blocked'
       : 'stopping';
+  const terminal = Boolean(pauseError) || data.stoppedAt !== undefined;
+  // A non-terminal intent event may arrive after the failed pause operation already
+  // parked the task as blocked. It must not downgrade the placeholder to stopping or
+  // replace the evidence that names the next step.
+  if (!terminal && (task.state === 'blocked' || task.state === 'stopped')) {
+    return;
+  }
+  const operationId = asString(data.operationId);
   const storedEvidence = proven
     ? evidence
     : {
         ...evidence,
         ...(problem ? { problem } : {}),
+        ...(bindingProblem ? { bindingProblem } : {}),
         ...(pauseError ? { error: pauseError } : {}),
+        ...(terminal
+          ? { nextStep: bindingProblem ? 'owner-review' : PAUSE_RECHECK_NEXT_STEP }
+          : {}),
+        ...(operationId ? { pauseOperationId: operationId } : {}),
+        ...(recheck && task.stopEvidence.recheckOperationId
+          ? { recheckOperationId: task.stopEvidence.recheckOperationId }
+          : {}),
+        ...(recheck && task.upstreamTicketId ? { recheckTicketId: task.upstreamTicketId } : {}),
+        ...(recheck && task.stopEvidence.leaseId ? { leaseId: task.stopEvidence.leaseId } : {}),
+        ...(recheck && task.stopEvidence.fencingToken
+          ? { fencingToken: task.stopEvidence.fencingToken }
+          : {}),
       };
+  // A non-terminal intent event may race the failed pause operation's blocked
+  // update: the row was still `stopping` when this event read it, then the
+  // operation parked it as `blocked`. The conditional update never downgrades a
+  // settled placeholder, whatever order the two transactions commit in.
   const updated = await client.query(
     `update task_links
-        set state = $2,
-            stopped_at = $3::timestamptz,
-            stop_evidence = $4::jsonb,
+        set state = (case when $2 = 'stopping' and state in ('blocked', 'stopped') then state::text else $2::text end)::task_state,
+            stopped_at = case when $2 = 'stopping' and state in ('blocked', 'stopped') then stopped_at else $3::timestamptz end,
+            stop_evidence = case when $2 = 'stopping' and state in ('blocked', 'stopped') then stop_evidence else $4::jsonb end,
             last_event_seq = greatest(coalesce(last_event_seq, 0), $5),
             version = version + 1,
             updated_at = now()
@@ -751,7 +793,10 @@ async function applyPausedEvent(
   // event records the intent and has no `stoppedAt`; treating its expected
   // "did not record when the worker stopped" as a failure would fail the
   // operation before the settled event with evidence arrives.
-  if (data.stoppedAt !== undefined || pauseError) {
+  if (terminal) {
+    // Only the operation this event names settles here. A stop check is a
+    // different operation and settles from its own polled result, where its
+    // binding is checked against the same recorded pause operation.
     await client.query(
       `update task_operations
           set state = $2,
@@ -759,15 +804,26 @@ async function applyPausedEvent(
               evidence = $4::jsonb,
               error = $5,
               updated_at = now()
-        where task_id = $1 and kind = 'pause' and state in ('queued', 'running')`,
+        where task_id = $1 and kind = 'pause' and state in ('queued', 'running')
+          and (id::text = $6 or bridge_operation_id = $6)`,
       [
         task.id,
         proven ? 'succeeded' : 'failed',
-        asString(data.operationId),
+        operationId,
         JSON.stringify(storedEvidence),
         proven ? null : (pauseError ?? problem),
+        operationId,
       ],
     );
+  }
+  // A proven stop event is a terminal settlement too: release the generation in
+  // this same transaction, so a resume issued right after "stopped" never queues
+  // behind a lease that only the later operation poll would free.
+  if (proven) {
+    await releaseTaskLeaseOn(client, repository.id, task.id, 'proven pause event', {
+      expectedLeaseId: task.runtimeLeaseId ?? undefined,
+      proof: evidence,
+    });
   }
   const next = await taskByTicket(client, ticketId, repository.id);
   if (next) {

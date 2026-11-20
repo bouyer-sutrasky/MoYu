@@ -24,6 +24,8 @@ stage_profile_tree() {
   # verifies that exact path before it reports the instance online.
   sed -i "/^- id: webserver/{n;n;n;s#^    port: .*#    port: $port#}" "$stage/cordis.patch.yml"
   sed -i "s#^    stateDir: .*#    stateDir: $dsh_home/state/$profile#" "$stage/cordis.patch.yml"
+  # The loopback provider port is a run parameter: a second isolated stack cannot bind 3851 beside the first.
+  sed -i "s#127.0.0.1:3851#127.0.0.1:${M5B_MATRIX_PROVIDER_PORT:-3851}#g" "$stage/cordis.patch.yml"
   grep -n "stateDir:" "$stage/cordis.patch.yml"
   # The isolated matrix runs on the loopback provider only. This fixture is
   # applied to the staged copy, so the shared m5b profile stays untouched.
