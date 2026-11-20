@@ -315,3 +315,35 @@ M5B_MATRIX_CONTROL_REPOSITORY=Bouyer12/m5a-beta-adf10ad9 bash scripts/m5b/matrix
 
 **授权状态更新**：第 5 节第 1 项（专用 gh token）已由所有者配置，正式 precheck 已 clean；
 共享凭据轮换与多探测仓 key 仍是所有者动作。
+
+## 10. 返修：显式空对照仓必须被启动入口拒绝（P2）
+
+**问题**：`precheck` 直接运行时会拒绝显式为空的 `M5B_MATRIX_CONTROL_REPOSITORY`，但
+`lib.sh` 用 `${M5B_MATRIX_CONTROL_REPOSITORY:-默认值}`，显式空值被替换成默认对照仓，
+`stack.sh up` 因此继续启动而不是拒绝。
+
+**修复**：
+
+- `lib.sh` 改为 `${M5B_MATRIX_CONTROL_REPOSITORY-默认值}`：仅变量**未设置**时采用默认仓
+  `Bouyer12/m5a-epsilon-adf10ad9`，显式空值原样传给 gate。
+- `precheck` 的选项解析保留显式空 flag（`--control-repository ""`），不再把它当作“未提供”
+  而回退默认值。
+- 回归 `scripts/m5b/matrix/control-repository.test.mjs`：未设置 → 默认；显式空 → 空；
+  自定义 → 自定义。
+
+**正式入口复跑**：
+
+```bash
+M5B_MATRIX_CONTROL_REPOSITORY= bash scripts/m5b/matrix/stack.sh up
+# exit 1; scope/control-repository: a controlled private control repository is required
+# 0 个单元启动
+# 见 isolated-env/stack-up-empty-control.txt
+
+env -u M5B_MATRIX_CONTROL_REPOSITORY bash scripts/m5b/matrix/stack.sh up
+# 使用默认 Bouyer12/m5a-epsilon-adf10ad9；gate clean；完整启动
+# bridge {"ok":true}；随后 down exit 0
+# 见 isolated-env/stack-up-unset-control.txt
+```
+
+`node scripts/m5b/matrix/precheck.mjs --gate --online --control-repository ''` 同样 exit 1
+（required）。未设置变量时的默认仓仍是受控私有仓，不影响 fail-closed。

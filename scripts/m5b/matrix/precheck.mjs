@@ -70,8 +70,12 @@ const argv = process.argv.slice(2);
 const flags = new Set(argv.filter((value) => value.startsWith('--')));
 const option = (name, fallback) => {
   const index = argv.indexOf(`--${name}`);
-  if (index >= 0 && argv[index + 1] && !argv[index + 1].startsWith('--')) return argv[index + 1];
-  return fallback;
+  if (index < 0) return fallback;
+  const value = argv[index + 1];
+  // Preserve an explicitly empty value (for example --control-repository "")
+  // so the validator rejects it instead of falling back to a default.
+  if (value === undefined || value.startsWith('--')) return fallback;
+  return value;
 };
 
 const json = flags.has('--json');

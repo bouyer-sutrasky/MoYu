@@ -43,7 +43,9 @@ export M5B_MATRIX_REPOSITORY=${M5B_MATRIX_REPOSITORY:-Bouyer12/m5a-beta-adf10ad9
 # dedicated probe credentials must not reach. The startup gate passes this same
 # value, so a missing/invalid/writable control fails the run instead of skipping
 # the negative probe. It must differ from every probe repository.
-export M5B_MATRIX_CONTROL_REPOSITORY=${M5B_MATRIX_CONTROL_REPOSITORY:-Bouyer12/m5a-epsilon-adf10ad9}
+# Deliberately ${VAR-default}, not ${VAR:-default}: an explicitly empty value must
+# reach the gate and be rejected, not be silently replaced by the default.
+export M5B_MATRIX_CONTROL_REPOSITORY=${M5B_MATRIX_CONTROL_REPOSITORY-Bouyer12/m5a-epsilon-adf10ad9}
 export M5B_MATRIX_PROFILE=${M5B_MATRIX_PROFILE:-m5b}
 # The matrix gets its own harness home. The shared m5b profile is only a
 # read-only source: the staged copy lives under the run root and carries the
