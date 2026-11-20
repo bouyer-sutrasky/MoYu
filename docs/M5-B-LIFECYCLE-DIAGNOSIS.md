@@ -164,7 +164,7 @@
 | 命令 | 结果 |
 | --- | --- |
 | `pnpm check` | exit 0；lint/format/typecheck 通过，supervisor 单元测试 145/145 |
-| `pnpm build` | exit 0；`apps/supervisor/dist/main.js` sha256 `b0087042de7e5490e1262ea6d91a035c511a0121d48b101286384f8b699e0ea2` |
+| `pnpm build` | exit 0；`apps/supervisor/dist/main.js` sha256 `21b09b8e8c046ddc246860c4f365706765d9edc30716613494715d7f95a62d38` |
 | `TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm test:integration` | exit 0；db/api 通过，dispatcher 100 passed / 1 skipped，supervisor 4 passed |
 | `bash scripts/m5b/cgroup-lifecycle-probe.sh`（基线） | exit 1，22 项 FAIL |
 | `bash scripts/m5b/cgroup-lifecycle-probe.sh`（修复后） | exit 0，0 项 FAIL（32 项 pass） |
