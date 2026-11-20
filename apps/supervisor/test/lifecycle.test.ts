@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { statSync } from 'node:fs';
+import { mkdirSync, statSync } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import { join } from 'node:path';
 
@@ -14,6 +14,8 @@ import {
   ensureCgroup,
   identifyProcess,
   movePidToCgroup,
+  pidAlive,
+  portFree,
   removeCgroup,
   stopProcessTree,
 } from '../src/process';
@@ -41,9 +43,11 @@ function baseRow(patch: Partial<InstanceRow> = {}): InstanceRow {
     waitingFor: null,
     queuePriority: 0,
     wakeRequestedAt: null,
+    activationRequestedAt: null,
     lastActivityAt: null,
     lastProgressAt: null,
     lastStartedAt: null,
+    lastOnlineAt: null,
     lastStoppedAt: null,
     lastHealthAt: null,
     pid: null,
@@ -61,6 +65,15 @@ function baseRow(patch: Partial<InstanceRow> = {}): InstanceRow {
     resourceState: 'ok',
     resourceDetail: null,
     resourceCheckedAt: null,
+    gitState: 'none',
+    gitPhase: null,
+    gitProgress: null,
+    gitDetail: null,
+    gitStartedAt: null,
+    gitFinishedAt: null,
+    gitAttempts: 0,
+    gitHead: null,
+    createdAt: new Date(0),
     updatedAt: new Date(0),
     ...patch,
   };
@@ -149,6 +162,28 @@ function spawnIn(cgroup: string): { pid: number } {
   const { pid } = spawnPlain();
   if (!movePidToCgroup(cgroup, pid)) throw new Error('could not move the process');
   return { pid };
+}
+
+/** A listener that stands in for a leftover runtime or a foreign service. */
+function spawnListener(port: number): { pid: number } {
+  const child = spawn(
+    process.execPath,
+    ['-e', `require('net').createServer((s) => s.end()).listen(${port}, '127.0.0.1')`],
+    { detached: true, stdio: 'ignore' },
+  );
+  if (!child.pid) throw new Error('no listener pid');
+  child.unref();
+  spawned.push(child.pid);
+  return { pid: child.pid };
+}
+
+async function waitUntil(predicate: () => boolean | Promise<boolean>, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error('condition timed out');
 }
 
 async function listenOnRandomPort(): Promise<{ port: number; server: Server }> {
@@ -247,6 +282,51 @@ describe('restart ownership convergence', () => {
     removeCgroup(adopted.cgroup as string);
   });
 
+  it('re-binds when the same cgroup path was recreated with a new inode', async () => {
+    const host = freshRoot(`lifecycle-replaced-${process.pid}-${Date.now()}`);
+    if (!host) return;
+    const setup = ensureCgroup(`lifecycle-recycled-${process.pid}-${Date.now()}`);
+    if (!setup.ok || !setup.path) return;
+    const path = setup.path;
+    const oldInode = statSync(path).ino;
+    const holding = freshRoot(`lifecycle-holding-${process.pid}-${Date.now()}`);
+    if (!holding) return;
+    const { pid } = spawnPlain();
+    try {
+      expect(movePidToCgroup(holding, pid)).toBe(true);
+      removeCgroup(path);
+      // The same name now denotes a different cgroup object. A saved inode that
+      // no longer matches must not be treated as the original boundary.
+      mkdirSync(path, { recursive: true });
+      expect(statSync(path).ino).not.toBe(oldInode);
+      const row = baseRow({
+        pid,
+        ownership: {
+          rootPid: pid,
+          pgid: pid,
+          cgroup: path,
+          cgroupInode: oldInode,
+          members: [identifyProcess(pid)],
+        },
+      });
+      const store = fakeStore(row);
+      const manager = new InstanceManager(config, store as unknown as SupervisorStore, logger);
+      await (
+        manager as unknown as { reconcileRestart(row: InstanceRow): Promise<void> }
+      ).reconcileRestart(row);
+      const adopted = store.row.ownership;
+      expect(adopted.adoptedUnproven).toBe(true);
+      expect(adopted.cgroup).not.toBe(path);
+      const boundary = cgroupBoundary(adopted.cgroup as string);
+      expect(boundary.state).toBe('ok');
+      expect(boundary.inode).toBe(adopted.cgroupInode);
+      expect(store.row.state).toBe('online');
+    } finally {
+      removeCgroup(path);
+      removeCgroup(holding);
+    }
+  });
+
   it('releases a row whose boundary is empty instead of leaving it stopping', async () => {
     const cgroup = freshRoot(`lifecycle-empty-${process.pid}-${Date.now()}`);
     if (!cgroup) return;
@@ -270,11 +350,84 @@ describe('restart ownership convergence', () => {
       ).reconcileRestart(row);
       // The runtime is gone and its boundary is recursively empty: this is a
       // proven stop, so the slot is released instead of staying `stopping`.
-      expect(store.row.state).toBe('fault');
+      // The row is queued again when it was wanted online.
+      expect(store.row.state).toBe('sleeping');
+      expect(store.row.desiredState).toBe('online');
       expect(store.row.pid).toBeNull();
       expect(store.row.reasonCode).toBe('instance_lost');
       expect(store.row.ownership).toEqual({});
     } finally {
+      removeCgroup(cgroup);
+    }
+  });
+
+  it('stops a surviving descendant instead of releasing a row whose root died', async () => {
+    const cgroup = freshRoot(`lifecycle-survivor-${process.pid}-${Date.now()}`);
+    if (!cgroup) return;
+    try {
+      const { pid: descendant } = spawnIn(cgroup);
+      const deadRoot = 4000002;
+      const row = baseRow({
+        pid: deadRoot,
+        ownership: {
+          rootPid: deadRoot,
+          pgid: deadRoot,
+          cgroup,
+          cgroupInode: statSync(cgroup).ino,
+          members: [
+            { pid: deadRoot, startTime: '0', pgid: deadRoot, sid: deadRoot, command: 'gone' },
+          ],
+        },
+      });
+      const store = fakeStore(row);
+      const manager = new InstanceManager(config, store as unknown as SupervisorStore, logger);
+      await (
+        manager as unknown as { reconcileRestart(row: InstanceRow): Promise<void> }
+      ).reconcileRestart(row);
+      // The dead root alone is not proof that the generation is gone: the live
+      // descendant is stopped first, and only then is the slot released.
+      expect(pidAlive(descendant)).toBe(false);
+      expect(store.row.state).toBe('fault');
+      expect(store.row.reasonCode).toBe('instance_lost');
+      expect(store.row.pid).toBeNull();
+      expect(store.row.ownership).toEqual({});
+    } finally {
+      removeCgroup(cgroup);
+    }
+  });
+
+  it('stops its own leftover listener but never signals a foreign process holding the port', async () => {
+    const cgroup = freshRoot(`lifecycle-port-${process.pid}-${Date.now()}`);
+    if (!cgroup) return;
+    const foreign = await listenOnRandomPort();
+    try {
+      const row = baseRow({ repositoryId: 'repo-1', port: foreign.port, bridgePort: null });
+      const store = fakeStore(row);
+      const manager = new InstanceManager(config, store as unknown as SupervisorStore, logger);
+      const foreignConflict = await (
+        manager as unknown as {
+          resolvePortConflict(instance: InstanceRow, ports: number[]): Promise<string | null>;
+        }
+      ).resolvePortConflict(row, [foreign.port]);
+      // A listener outside the managed cgroup root is reported, never signalled.
+      expect(foreignConflict).toContain('outside');
+      expect(await portFree(foreign.port)).toBe(false);
+
+      const own = spawnListener(foreign.port + 1);
+      await waitUntil(async () => !(await portFree(foreign.port + 1)));
+      expect(movePidToCgroup(cgroup, own.pid)).toBe(true);
+      const ownConflict = await (
+        manager as unknown as {
+          resolvePortConflict(instance: InstanceRow, ports: number[]): Promise<string | null>;
+        }
+      ).resolvePortConflict(row, [foreign.port + 1]);
+      // Our own leftover is stopped together with its boundary, so the next
+      // start can use the port again.
+      expect(ownConflict).toBeNull();
+      expect(pidAlive(own.pid)).toBe(false);
+      expect(await portFree(foreign.port + 1)).toBe(true);
+    } finally {
+      await new Promise<void>((resolve) => foreign.server.close(() => resolve()));
       removeCgroup(cgroup);
     }
   });
