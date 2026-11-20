@@ -1,0 +1,89 @@
+# preflight — Issue #42 8 GiB aggregate boundary and memory admission hysteresis (read-only)
+recorded=2026-11-08T15:01:37+08:00
+branch=agent/aggregate-pressure-191f90cd4bf2 head=6dda36a0d807ed8fed798dcc10bc7826ed85ed95
+
+## 1. dependency state (gh, at capture time)
+$ gh issue view 36 --json number,state,title --jq ...
+#36 OPEN M5-B [P1] 隔离现场验收环境的凭据与特权文件
+$ gh issue view 41 --json number,state,title --jq ...
+#41 OPEN M5-B [P1] 修复 cgroup 冷启动与重启后的进程归属
+$ gh pr view 49 --json number,state,mergeable,mergeStateStatus,statusCheckRollup --jq ...
+{"baseRefName":"main","checks":[{"conclusion":"SUCCESS","name":"check (lint, format, types, unit tests, build)"},{"conclusion":"SUCCESS","name":"integration (real PostgreSQL)"}],"headRefName":"agent/harness-isolation-e0cf0d2e13dc","isDraft":false,"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","number":49,"state":"OPEN"}
+$ gh pr view 53 --json number,state,mergeable,mergeStateStatus,statusCheckRollup --jq ...
+{"baseRefName":"main","checks":[{"conclusion":"SUCCESS","name":"check (lint, format, types, unit tests, build)"},{"conclusion":"SUCCESS","name":"integration (real PostgreSQL)"}],"headRefName":"agent/cgroup-lifecycle-919809486b16","isDraft":false,"mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","number":53,"state":"OPEN"}
+
+## 2. host isolation facts (#36 field convergence not executed)
+$ stat -c '%U:%G %a %n' /root/.dsh-m5 /root/.config/gh-agent /tmp/m5bmatrix
+root:m5bmatrix 770 /root/.dsh-m5
+root:m5bmatrix 770 /root/.config/gh-agent
+m5bmatrix:m5bmatrix 755 /tmp/m5bmatrix
+$ getent passwd m5bmatrix
+m5bmatrix:x:995:986::/home/m5bmatrix:/usr/sbin/nologin
+$ ls /root/.config/m5bmatrix
+ls: cannot access '/root/.config/m5bmatrix': No such file or directory
+
+## 3. boundary preflight
+$ M5B_MATRIX_ROOT=$PWD bash scripts/m5b/aggregate-boundary/preflight.sh
+# M5-B aggregate boundary preflight (Issue #42)
+recorded=2026-11-08T15:01:43+08:00
+host=lavm-flnape7bgu kernel=6.8.0-53-generic systemd=255
+slice=/sys/fs/cgroup/m5bmatrix.slice
+declared_boundary=memory.max 8192 MiB / memory.high 6144 MiB / swap.max 0
+matrix_root=/root/src/aggregate-pressure-191f90cd4bf2
+
+## cgroup v2 and the memory controller
+  PASS       unified cgroup v2 hierarchy
+  PASS       memory controller available at the root
+  PASS       memory PSI (memory.pressure) is readable
+
+## the target slice
+  memory.max=8589934592 memory.high=6442450944 memory.swap.max=0
+  memory.current=14512128
+  memory.peak=534065152
+  memory.events=[low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 ]
+  memory.events.local=[low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 ]
+  PASS       slice memory.max equals the declared 8192 MiB
+  PASS       slice memory.high equals the declared 6144 MiB
+  PASS       slice memory.swap.max=0, so the boundary cannot be escaped through swap
+
+## members of the slice (a member outside the slice proves nothing)
+  m5bmatrix-pg.service not active (inactive)
+  m5bmatrix-api.service not active (inactive)
+  m5bmatrix-dispatcher.service not active (inactive)
+  m5bmatrix-supervisor.service not active (inactive)
+  m5bmatrix-provider.service not active (inactive)
+  stack is down: this preflight only clears the preconditions; run it again after stack.sh up and require every member inside the slice before any pressure step
+
+## host headroom
+  MemTotal=15989 MiB MemAvailable=14155 MiB SwapTotal=4095 MiB
+  run floor: abort when MemAvailable drops below 4096 MiB
+  PASS       MemTotal covers the 8192 MiB slice plus the 4096 MiB floor
+  PASS       MemAvailable now leaves at least 2 GiB above the 8192 MiB slice
+
+## isolation precondition (#36, PR #49)
+  INCOMPLETE isolation precheck is absent in /root/src/aggregate-pressure-191f90cd4bf2; it lands with #36 / PR #49, and no matrix run may start before it passes
+
+## artifacts the harness will start
+  INCOMPLETE dispatcher artifact /root/src/aggregate-pressure-191f90cd4bf2/apps/dispatcher/dist/main.js is missing; build /root/src/aggregate-pressure-191f90cd4bf2 from the verified head first
+  INCOMPLETE artifact missing: apps/supervisor/dist/main.js
+  INCOMPLETE artifact missing: apps/api/dist/server.js
+  PASS       artifact present: scripts/m5b/local-provider.mjs
+
+## admission arithmetic for the hysteresis scenario (from apps/supervisor/src/config.ts and resources.ts)
+  target=4096 MiB budget=6144 MiB
+  hard=8192 MiB reserve=1024 MiB hysteresis=256 MiB
+  instance estimate = min(INSTANCE_MEMORY_MAX, ceil(target / max_online))
+  max_online=2: estimate=2048 MiB
+    blocked repository stays in resource_wait while aggregate current in (3840, 4096] MiB
+    a fresh repository is refused as over_budget when aggregate current > 6144 MiB
+  max_online=3: estimate=1366 MiB
+    blocked repository stays in resource_wait while aggregate current in (4522, 4778] MiB
+    a fresh repository is refused as over_budget when aggregate current > 6826 MiB
+
+## verdict
+verdict=unverified (prerequisite missing; keep this preflight, do not run the boundary probe)
+[exit=2]
+
+## verdict
+unverified: the 8 GiB hard boundary and the memory-admission hysteresis were NOT measured in this round.
+The run stays blocked until #36 and #41 are merged and the #36 §4 owner actions are executed.
