@@ -1,13 +1,12 @@
 diff --git a/docs/007-architecture.md b/docs/007-architecture.md
-index 2600465..2c52677 100644
+index 2600465..a2cc43d 100644
 --- a/docs/007-architecture.md
 +++ b/docs/007-architecture.md
-@@ -418,6 +418,8 @@ Some generic modules still refer directly to GitHub or Feishu:
+@@ -418,6 +418,7 @@ Some generic modules still refer directly to GitHub or Feishu:
  | `tests/discussion.spec.ts` | Discussion mode: the read-only tool allow-list and permission preset, the read-only worktree boundary and refusal of local tools such as subagent, the work tools and `danger-full-access` for execute, replacing the restriction when the mode changes, the discussion assignment text, and `discussing` state projection |
  | `tests/pause.spec.ts` | A human pause and resume: Inputs and attention kept, the Executor pause, `stoppedAt` evidence and failures, resume admission and ticket identity, starting a discuss plan, non-retryability, and `DshExecutor.pause` stopping jobs with its evidence |
  | `tests/admission.spec.ts` | Execution admission in the core: retry/start/admit without a usable token, an invalid or stale generation, the repository-wide fence for delayed Triggers, and pause-before-admit creating no Assignment |
 +| `tests/pause-start.spec.ts` | A stop before or during the start lands in bounded time: a Web ticket whose launch is still preparing settles `stoppedAt` and ends that start, a GitHub ticket paused in `pending_admission` with no Assignment settles too, another process of the shared harness cannot fail a clean stop, and the resume of a start that never reached a worker is accepted |
-+
  | `tests/stop-proof-red.spec.ts` | Recovery red evidence: a real recorded process has exited, but without an authoritative stop completion the proof stays unproven and replacement stays blocked |
  | `tests/stop-proof.spec.ts` | Durable stop proof: an unproven record blocks replacement while a recorded job/pid lives, missing admitted proof blocks, and only gone identities settle the proof |
  | `tests/bridge-control.spec.ts` | M4 execution control: the operation log across a reopen, pause/resume/start/retry endpoints and their 202/404/409/422 answers, idempotency, settlement from Ticket state, operation persistence across a Bridge restart, the M4 ticket snapshot, `targetTicketId` attach/conflict/ended cases, `ticket.paused` events, and one-time GitHub `ticket.imported` events |
@@ -401,10 +400,10 @@ index 70ace2e..e69bd23 100644
    /** Each Session's next step, which takes the messages that wait for one. */
 diff --git a/tests/pause-start.spec.ts b/tests/pause-start.spec.ts
 new file mode 100644
-index 0000000..ae933cc
+index 0000000..724cbe1
 --- /dev/null
 +++ b/tests/pause-start.spec.ts
-@@ -0,0 +1,215 @@
+@@ -0,0 +1,223 @@
 +/**
 + * A person's stop must land in bounded time whether the worker has not started yet (the launch is still
 + * preparing) or the start is in flight. Before this regression only a worker that could report its own
@@ -415,6 +414,14 @@ index 0000000..ae933cc
 + * The two entrances differ in one fact, and these tests keep it: a Web ticket is accepted with its first
 + * Assignment (the launch is queued or already preparing), while a GitHub ticket waits in
 + * `pending_admission` with no Assignment at all until the platform admits it.
++ *
++ * The other shape a stop can take is to refuse it and leave the ticket `queued`, which was rejected:
++ * the pause transaction has already committed and the platform already shows the request, so a refusal
++ * would hand the ticket back to a launch that may still prompt a worker after the person asked it to
++ * stop. Settling instead is the honest answer, because it is true: a start ended before it prepared or
++ * prompted anything leaves no turn, no job and no subagent of the ticket, which is exactly what
++ * `stoppedAt` claims. The ticket also stays resumable, since a resume prepares the workspace again; the
++ * cost is that the work in flight is dropped rather than finished, which is what a stop asks for.
 + */
 +import { spawn } from 'node:child_process'
 +import { once } from 'node:events'
