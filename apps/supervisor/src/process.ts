@@ -98,6 +98,9 @@ export interface StopProcessResult {
   unknown: boolean;
   /** What the saved execution boundary looked like at the final check. */
   boundary: CgroupBoundaryState | 'none' | 'replaced' | 'unverified';
+  /** Result of removing the now-empty, verified per-instance cgroup. */
+  cleanup: CgroupCleanupState;
+  cleanupDetail: string | null;
 }
 
 interface ProcStat {
@@ -998,6 +1001,78 @@ function signalPid(pid: number, signal: NodeJS.Signals): void {
   }
 }
 
+export type CgroupCleanupState = 'removed' | 'skipped' | 'failed' | 'not-needed';
+
+export interface CgroupCleanup {
+  state: CgroupCleanupState;
+  detail: string | null;
+}
+
+/**
+ * Removes the per-instance cgroup only while the path still names the verified
+ * generation object. cgroupfs does not expose an fd-relative rmdir, so the
+ * identity is re-checked immediately before the path removal; a mismatch skips
+ * cleanup with a recorded reason instead of touching the new object.
+ */
+export function cleanupVerifiedCgroup(
+  cgroup: string | null | undefined,
+  recordedInode: number | null,
+): CgroupCleanup {
+  if (!cgroup) return { state: 'not-needed', detail: 'no cgroup was recorded' };
+  const opened = openCgroupObject(cgroup, recordedInode);
+  try {
+    if (opened.state === 'missing') {
+      return { state: 'not-needed', detail: 'the boundary object no longer exists' };
+    }
+    if (opened.state !== 'ok') {
+      return {
+        state: 'skipped',
+        detail: `the path no longer names the recorded object (${opened.state})`,
+      };
+    }
+    const empty = cgroupEmptyAt(opened.fd as number);
+    if (!empty.ok) {
+      return { state: 'skipped', detail: 'the verified boundary cannot be read before removal' };
+    }
+    if (!empty.empty) {
+      return { state: 'skipped', detail: 'the verified boundary is no longer empty' };
+    }
+    // Re-open the same identity immediately before removal and keep the
+    // descriptor open while the path is removed, so the decision is tied to the
+    // object that was just proven empty.
+    const confirmed = openCgroupObject(cgroup, recordedInode);
+    try {
+      if (confirmed.state !== 'ok') {
+        return {
+          state: 'skipped',
+          detail: `the boundary became ${confirmed.state} before removal`,
+        };
+      }
+      try {
+        rmdirSync(cgroup);
+        return { state: 'removed', detail: null };
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT') return { state: 'removed', detail: 'the object was already gone' };
+        if (code === 'ENOTEMPTY') {
+          return {
+            state: 'skipped',
+            detail: 'nested cgroups remain; left for a later verified cleanup',
+          };
+        }
+        return {
+          state: 'failed',
+          detail: `removal failed: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+    } finally {
+      confirmed.close();
+    }
+  } finally {
+    opened.close();
+  }
+}
+
 /**
  * Stops a detached runtime and all of its descendants.
  *
@@ -1070,6 +1145,9 @@ export async function stopProcessTree(
   let pgid = refresh();
   if (!pidAlive(rootPid) && merged.size === 0) {
     const proof = boundaryProof();
+    const cleaned = proof.proven
+      ? cleanupVerifiedCgroup(stored?.cgroup ?? null, stored?.cgroupInode ?? null)
+      : { state: 'not-needed' as const, detail: 'the boundary was not proven empty' };
     return {
       stopped: proof.proven || (!unknown && proof.boundary === 'none'),
       rootPid,
@@ -1079,6 +1157,8 @@ export async function stopProcessTree(
       // descendants). It no longer vetoes an empty, readable boundary.
       unknown,
       boundary: proof.boundary,
+      cleanup: cleaned.state,
+      cleanupDetail: cleaned.detail,
     };
   }
 
@@ -1126,7 +1206,7 @@ export async function stopProcessTree(
         // generation that created it. `unknown` can be a PID/PGID reused outside
         // it, so it must not keep capacity occupied forever. A caller without a
         // cgroup still needs the unknown boundary to block.
-        removeCgroup(stored?.cgroup);
+        const cleaned = cleanupVerifiedCgroup(stored?.cgroup ?? null, stored?.cgroupInode ?? null);
         return {
           stopped: proof.proven || (!unknown && proof.boundary === 'none'),
           rootPid,
@@ -1134,6 +1214,8 @@ export async function stopProcessTree(
           remaining: [],
           unknown,
           boundary: proof.boundary,
+          cleanup: cleaned.state,
+          cleanupDetail: cleaned.detail,
         };
       }
       if (finalAlive.length === 0) {
@@ -1146,6 +1228,8 @@ export async function stopProcessTree(
           remaining: [],
           unknown: true,
           boundary: proof.boundary,
+          cleanup: 'not-needed',
+          cleanupDetail: 'the boundary could not be proven empty',
         };
       }
       merged.clear();
@@ -1160,6 +1244,8 @@ export async function stopProcessTree(
         remaining: [...merged.values()].filter(identityAlive),
         unknown,
         boundary: stored?.cgroup ? boundary : 'none',
+        cleanup: 'not-needed',
+        cleanupDetail: 'the stop timed out before the boundary was proven empty',
       };
     }
   }

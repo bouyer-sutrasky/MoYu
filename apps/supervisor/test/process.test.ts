@@ -15,6 +15,7 @@ import {
   cgroupPids,
   cgroupTree,
   cgroupTreeAt,
+  cleanupVerifiedCgroup,
   childPids,
   collectOwnership,
   descendants,
@@ -597,6 +598,42 @@ describe('cgroup cold start and restart ownership', () => {
       expect(result.unknown).toBe(true);
       expect(result.boundary).toBe('replaced');
       expect(pidAlive(foreign.pid)).toBe(true);
+    } finally {
+      if (foreign.pid && pidAlive(foreign.pid)) process.kill(foreign.pid, 'SIGKILL');
+      writeFileSync(join(cgroup, 'cgroup.kill'), '1');
+      removeCgroup(cgroup);
+      removeCgroup(holding);
+    }
+  });
+
+  it('skips cleanup when the path is replaced after the empty proof', async () => {
+    const cgroup = createCgroup(`cleanup-race-${process.pid}-${Date.now()}`);
+    if (!cgroup) return;
+    const holding = createCgroup(`cleanup-holding-${process.pid}-${Date.now()}`);
+    if (!holding) return;
+    const foreign = spawnDetached('sleep', ['30']);
+    try {
+      if (!foreign.pid) throw new Error('no pid');
+      const oldInode = statSync(cgroup).ino;
+      // The original generation is proven empty through its verified object.
+      const opened = openCgroupObject(cgroup, oldInode);
+      expect(opened.state).toBe('ok');
+      expect(cgroupEmptyAt(opened.fd as number).empty).toBe(true);
+      opened.close();
+      // Replace the path after that proof and before cleanup. The new object
+      // holds a foreign process and must stay exactly as it is.
+      expect(movePidToCgroup(holding, foreign.pid)).toBe(true);
+      removeCgroup(cgroup);
+      mkdirSync(cgroup, { recursive: true });
+      const newInode = statSync(cgroup).ino;
+      expect(newInode).not.toBe(oldInode);
+      expect(movePidToCgroup(cgroup, foreign.pid)).toBe(true);
+      const cleaned = cleanupVerifiedCgroup(cgroup, oldInode);
+      expect(cleaned.state).toBe('skipped');
+      expect(cleaned.detail).toContain('replaced');
+      expect(statSync(cgroup).ino).toBe(newInode);
+      expect(pidAlive(foreign.pid)).toBe(true);
+      expect(cgroupPids(cgroup)).toContain(foreign.pid);
     } finally {
       if (foreign.pid && pidAlive(foreign.pid)) process.kill(foreign.pid, 'SIGKILL');
       writeFileSync(join(cgroup, 'cgroup.kill'), '1');

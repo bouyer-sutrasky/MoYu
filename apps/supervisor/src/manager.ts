@@ -2207,6 +2207,30 @@ export class InstanceManager {
       pgid,
       members: [...(stored.members ?? []), ...snapshot.members],
     });
+    // Cleanup has its own state: a skipped or failed removal never changes the
+    // stop verdict, which is based only on the verified generation evidence.
+    if (result.cleanup === 'skipped' || result.cleanup === 'failed') {
+      this.logger.warn(
+        {
+          event: 'supervisor.cgroup_cleanup',
+          repositoryId: instance.repositoryId,
+          cgroup: stored.cgroup,
+          cleanup: result.cleanup,
+          detail: result.cleanupDetail,
+        },
+        'the verified instance cgroup was not removed; the stop verdict is unchanged',
+      );
+    } else if (result.cleanup === 'removed') {
+      this.logger.debug(
+        {
+          event: 'supervisor.cgroup_cleanup',
+          repositoryId: instance.repositoryId,
+          cgroup: stored.cgroup,
+          cleanup: result.cleanup,
+        },
+        'removed the verified empty instance cgroup',
+      );
+    }
     // Both listeners must be gone: the panel port is what the next start
     // probes, so stopping only the Bridge would leave a start blocked later.
     const ports = [instance.port, instance.bridgePort].filter(
