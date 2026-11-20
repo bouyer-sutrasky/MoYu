@@ -257,6 +257,45 @@ describe('M4 task commands', () => {
     expect(conflict.statusCode).toBe(409);
   }, 30_000);
 
+  it('turns a blocked unproven stop into a check of the original pause instead of a second stop', async () => {
+    const conversation = await createConversation(harness, 'execute');
+    const task = await makeRuntimeAccepted(harness, conversation.id, 'blocked');
+    const [blocked] = await harness.database
+      .update(taskLinks)
+      .set({
+        stopRequestedAt: new Date(),
+        stopEvidence: {
+          nextStep: 'recheck-stop',
+          problem: 'The start in flight did not end within 10000 ms',
+          pauseOperationId: randomUUID(),
+          leaseId: randomUUID(),
+          fencingToken: '7',
+        },
+        version: task.version + 1,
+      })
+      .where(eq(taskLinks.id, task.id))
+      .returning();
+    const response = await command(harness, task.id, 'stop', {
+      expectedVersion: blocked?.version ?? 0,
+      clientCommandId: `recheck-${randomUUID()}`,
+    });
+    expect(response.statusCode).toBe(202);
+    const data = taskCommandDataSchema.parse(envelope(response.json()));
+    expect(data.operation.kind).toBe('pause');
+    // The placeholder is kept: the stop is still unproven until the runtime's check answers.
+    expect(data.task.state).toBe('blocked');
+    expect(data.task.stopEvidence).toMatchObject({ nextStep: 'recheck-stop' });
+
+    // A blocked task without that placeholder has no stop to check and keeps refusing a second stop.
+    const otherConversation = await createConversation(harness, 'execute');
+    const other = await makeRuntimeAccepted(harness, otherConversation.id, 'blocked');
+    const refused = await command(harness, other.id, 'stop', {
+      expectedVersion: other.version,
+      clientCommandId: `stop-${randomUUID()}`,
+    });
+    expect(refused.statusCode).toBe(409);
+  }, 30_000);
+
   it('requires a newer plan revision and only starts a discussion', async () => {
     const discussion = await createConversation(harness);
     const task = await makeRuntimeAccepted(harness, discussion.id, 'awaiting_review');

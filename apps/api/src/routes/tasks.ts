@@ -136,6 +136,12 @@ function planCommand(
   }
   if (kind === 'pause') {
     if (!STOPPABLE.has(task.state)) {
+      // A stop whose proof could not be established keeps its blocked placeholder;
+      // the same command then asks the runtime to check that original stop again.
+      // Nothing else is a reason to send another stop.
+      if (task.state === 'blocked' && task.stopEvidence['nextStep'] === 'recheck-stop') {
+        return {};
+      }
       throw ApiProblem.conflict('Only an active task can be stopped for later continuation');
     }
     return { state: 'stopping', stopRequestedAt: new Date() };

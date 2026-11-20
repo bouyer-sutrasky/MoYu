@@ -75,8 +75,8 @@ M2 实际 Cookie：https origin 使用 `__Host-moyu_session` 与 `__Host-moyu_bo
 | GET /api/v1/conversations/:id/messages | **M3 已实现**：游标分页，包含方向/kind、回复关联、来源与投递状态；M4-UX 使用 `(createdAt,id)` 不透明游标，支持 `before`（更早）与 `after`（更新），返回 `nextCursor`、`newerCursor`、`hasMore`、`hasNewer`；同时间戳由 id 决胜，游标不匹配返回 422 |
 | GET /api/v1/conversations/:id/messages/:messageId | **M4-UX 返修**：返回 `{message}`，含当前投递/read 投影；消息不属于该会话或不存在返回 404；供 SSE `message.delivery_changed` 就地刷新已加载行 |
 | POST /api/v1/tasks/:id/start | **M4 已实现**：`{planRevision,expectedVersion,clientCommandId}`；同一会话/工作目录/PR 只读讨论→执行；记录 `planRevision` 与已冻结 `baseCommit`；202 返回 operation |
-| POST /api/v1/tasks/:id/stop | **M4 已实现**：`{expectedVersion,clientCommandId}`；幂等进入 `stopping`，经 Bridge `pause`，有停止证据后才变 `stopped`；不是上游终态 stop |
-| POST /api/v1/tasks/:id/resume | **M4 已实现**：`{expectedVersion,clientCommandId}`；只允许 `stopped`，dispatcher 重新取得仓库租约并核验现场后调用 Bridge `resume` |
+| POST /api/v1/tasks/:id/stop | **M4 已实现**：`{expectedVersion,clientCommandId}`；幂等进入 `stopping`，经 Bridge `pause`，有停止证据后才变 `stopped`；不是上游终态 stop。`blocked` 且 `stopEvidence.nextStep === 'recheck-stop'` 时同一命令改为核对原暂停操作：绑定原 operation 与租约代次，确认后原子结清并允许 resume，未确认保留 `blocked` 并给出下一步 |
+| POST /api/v1/tasks/:id/resume | **M4 已实现**：`{expectedVersion,clientCommandId}`；只允许 `stopped`，dispatcher 重新取得仓库租约并核验现场后调用 Bridge `resume`；同一暂停只能成功 resume 一次 |
 | POST /api/v1/tasks/:id/retry | **M4 已实现**：失败/受阻重试，经 Bridge `retry`，与人工停止的 resume 分开 |
 | GET /api/v1/tasks/:id/artifacts | **M3 已实现 PR 引用**：Bridge 投影的 `pull_request` 产物 |
 | GET /api/v1/tasks/:id/review | **M6-A 已实现**：读取已持久化的 `diff` / `check_report` 产物，返回变更（文件、增删行、逐文件 patch）、检查运行（命令、exit code、时间戳、输出末尾）、提交（完整 SHA、分支、提交说明）与 PR 号 + 状态；未采集时返回 `state:'unavailable'` 与原因，不用推断值 |

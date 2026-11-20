@@ -10,7 +10,14 @@ import { claimExecution, reconcileExecutionClaimOn } from './reservations';
 import { appendEventSql } from './events-sql';
 import { sendRoutedNotice } from './routed-notices';
 import { endedState, stateFromSnapshot, TASK_COLUMNS, taskSummary, type TaskRow } from './tasks';
-import { pauseEvidenceProblem, pauseEvidenceProven } from './pause-evidence';
+import {
+  PAUSE_RECHECK_NEXT_STEP,
+  pauseEvidenceProblem,
+  pauseEvidenceProven,
+  pauseRecheckBindingFromEvidence,
+  pauseRecheckBindingProblem,
+  pauseRecheckRequested,
+} from './pause-evidence';
 import { acquireExecutionLeaseOn } from './leases';
 
 /** Last projection branch per Bridge event, for lifecycle diagnostics/tests. */
@@ -683,22 +690,47 @@ async function applyPausedEvent(
   }
   const evidence = asRecord(data.evidence);
   const pauseError = asString(data.error);
-  const proven = pauseEvidenceProven({ ...evidence, stoppedAt: data.stoppedAt });
-  const problem = proven
-    ? undefined
-    : pauseEvidenceProblem({ ...evidence, stoppedAt: data.stoppedAt });
+  const recheck = pauseRecheckRequested(task.stopEvidence);
+  const observation = { ...evidence, stoppedAt: data.stoppedAt };
+  let proven = pauseEvidenceProven(observation);
+  // A stop check only settles this task when its evidence names the ticket, the
+  // original pause operation and the lease generation the check was sent under.
+  let bindingProblem: string | undefined;
+  if (proven && recheck) {
+    const expected = pauseRecheckBindingFromEvidence(task.stopEvidence);
+    bindingProblem = expected
+      ? pauseRecheckBindingProblem(observation, expected)
+      : 'The platform did not record which stop check and lease generation this answer belongs to';
+    if (bindingProblem) proven = false;
+  }
+  const problem = proven ? undefined : (bindingProblem ?? pauseEvidenceProblem(observation));
   const stoppedAt = proven ? asString(data.stoppedAt) : undefined;
   const state = proven
     ? 'stopped'
     : pauseError || data.stoppedAt !== undefined
       ? 'blocked'
       : 'stopping';
+  const terminal = Boolean(pauseError) || data.stoppedAt !== undefined;
+  const operationId = asString(data.operationId);
   const storedEvidence = proven
     ? evidence
     : {
         ...evidence,
         ...(problem ? { problem } : {}),
+        ...(bindingProblem ? { bindingProblem } : {}),
         ...(pauseError ? { error: pauseError } : {}),
+        ...(terminal
+          ? { nextStep: bindingProblem ? 'owner-review' : PAUSE_RECHECK_NEXT_STEP }
+          : {}),
+        ...(operationId ? { pauseOperationId: operationId } : {}),
+        ...(recheck && task.stopEvidence.recheckOperationId
+          ? { recheckOperationId: task.stopEvidence.recheckOperationId }
+          : {}),
+        ...(recheck && task.upstreamTicketId ? { recheckTicketId: task.upstreamTicketId } : {}),
+        ...(recheck && task.stopEvidence.leaseId ? { leaseId: task.stopEvidence.leaseId } : {}),
+        ...(recheck && task.stopEvidence.fencingToken
+          ? { fencingToken: task.stopEvidence.fencingToken }
+          : {}),
       };
   const updated = await client.query(
     `update task_links
@@ -721,7 +753,10 @@ async function applyPausedEvent(
   // event records the intent and has no `stoppedAt`; treating its expected
   // "did not record when the worker stopped" as a failure would fail the
   // operation before the settled event with evidence arrives.
-  if (data.stoppedAt !== undefined || pauseError) {
+  if (terminal) {
+    // Only the operation this event names settles here. A stop check is a
+    // different operation and settles from its own polled result, where its
+    // binding is checked against the same recorded pause operation.
     await client.query(
       `update task_operations
           set state = $2,
@@ -729,13 +764,15 @@ async function applyPausedEvent(
               evidence = $4::jsonb,
               error = $5,
               updated_at = now()
-        where task_id = $1 and kind = 'pause' and state in ('queued', 'running')`,
+        where task_id = $1 and kind = 'pause' and state in ('queued', 'running')
+          and (id::text = $6 or bridge_operation_id = $6)`,
       [
         task.id,
         proven ? 'succeeded' : 'failed',
-        asString(data.operationId),
+        operationId,
         JSON.stringify(storedEvidence),
         proven ? null : (pauseError ?? problem),
+        operationId,
       ],
     );
   }

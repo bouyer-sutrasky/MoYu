@@ -1,0 +1,714 @@
+diff --git a/docs/007-architecture.md b/docs/007-architecture.md
+index 00496e5..8f1e1fd 100644
+--- a/docs/007-architecture.md
++++ b/docs/007-architecture.md
+@@ -346,7 +346,7 @@ Some generic modules still refer directly to GitHub or Feishu:
+ | `src/app/tools/main.ts` | The main Session's tools |
+ | `src/app/tools/executor.ts` | An Executor Session's tools |
+ | `src/app/http.ts` | The `/orchestrator/api` routes: the same-origin check, request limits and one status per kind of failure |
+-| `src/app/bridge.ts` | The machine Bridge of the MoYu platform: its loopback server and bearer check, `POST /bridge/v1/triggers` (repository, mode, model and base commit checks, and `targetTicketId` attachment to an existing Ticket), the pause/resume/start/retry operations and `GET /bridge/v1/operations/:id`, `GET /bridge/v1/{capabilities,models,branches,events,tickets}`, the `EventLog` under `<stateDir>/bridge/events.jsonl` with fsynced append-only events, `projectTicketState`, the one-time `ticket.imported` event of a GitHub-origin Ticket, and the once-a-second projection of stored Tickets and worker `task.progress` |
++| `src/app/bridge.ts` | The machine Bridge of the MoYu platform: its loopback server and bearer check, `POST /bridge/v1/triggers` (repository, mode, model and base commit checks, and `targetTicketId` attachment to an existing Ticket), the pause/resume/start/retry operations (a pause may be a stop check of the original pause operation under its lease admission) and `GET /bridge/v1/operations/:id`, `GET /bridge/v1/{capabilities,models,branches,events,tickets}`, the `EventLog` under `<stateDir>/bridge/events.jsonl` with fsynced append-only events, `projectTicketState`, the one-time `ticket.imported` event of a GitHub-origin Ticket, and the once-a-second projection of stored Tickets and worker `task.progress` |
+ | `src/app/operations.ts` | `OperationLog`, the fsynced append-only log of machine operations under `<stateDir>/bridge/operations.jsonl`, its latest record per operation id, and the queued or running operations the Bridge settles from Ticket state |
+ | `src/app/api.ts` | `Api`, every route with its parameters, query, body and response, and the filters of the lists; it imports only types, so the panel bundles it |
+ | `src/app/views/text.ts` | The two forms of a view's text: `preview`, plain text on one line, and `markdown` without HTML; `plain` and `readable` |
+@@ -422,12 +422,12 @@ Some generic modules still refer directly to GitHub or Feishu:
+ | `tests/discussion.spec.ts` | Discussion mode: the read-only tool allow-list and permission preset, the read-only worktree boundary and refusal of local tools such as subagent, the work tools and `danger-full-access` for execute, replacing the restriction when the mode changes, the discussion assignment text, and `discussing` state projection |
+ | `tests/pause.spec.ts` | A human pause and resume: Inputs and attention kept, the Executor pause, `stoppedAt` evidence and failures, resume admission and ticket identity, starting a discuss plan, non-retryability, and `DshExecutor.pause` stopping jobs with its evidence |
+ | `tests/admission.spec.ts` | Execution admission in the core: retry/start/admit without a usable token, an invalid or stale generation, the repository-wide fence for delayed Triggers, and pause-before-admit creating no Assignment |
+-| `tests/pause-start.spec.ts` | A stop before or during the start lands in bounded time: a Web ticket whose launch is still preparing settles `stoppedAt` and ends that start, a GitHub ticket paused in `pending_admission` with no Assignment settles too, another process of the shared harness cannot fail a clean stop, and the resume of a start that never reached a worker is accepted |
++| `tests/pause-start.spec.ts` | A stop before or during the start lands in bounded time: a Web ticket whose launch is still preparing settles `stoppedAt` and ends that start, a GitHub ticket paused in `pending_admission` with no Assignment settles too, another process of the shared harness cannot fail a clean stop, the resume of a start that never reached a worker is accepted, and a launch-abort timeout keeps the placeholder until a stop check of the original pause operation proves the stop and then allows exactly one resume |
+ | `tests/prepare-progress.spec.ts` | The Executor's checkout phase reported to the machine Bridge: a successful prepare says the workspace is ready and the worker is starting, a failed checkout names the phase and says no worker started, and a workspace that fails verification reports the same |
+ 
+ | `tests/stop-proof-red.spec.ts` | Recovery red evidence: a real recorded process has exited, but without an authoritative stop completion the proof stays unproven and replacement stays blocked |
+ | `tests/stop-proof.spec.ts` | Durable stop proof: an unproven record blocks replacement while a recorded job/pid lives, missing admitted proof blocks, and only gone identities settle the proof |
+-| `tests/bridge-control.spec.ts` | M4 execution control: the operation log across a reopen, pause/resume/start/retry endpoints and their 202/404/409/422 answers, idempotency, settlement from Ticket state, operation persistence across a Bridge restart, the M4 ticket snapshot, `targetTicketId` attach/conflict/ended cases, `ticket.paused` events, and one-time GitHub `ticket.imported` events |
++| `tests/bridge-control.spec.ts` | M4 execution control: the operation log across a reopen, pause/resume/start/retry endpoints and their 202/404/409/422 answers, a stop check bound to the original pause operation and its lease admission, idempotency, settlement from Ticket state, operation persistence across a Bridge restart, the M4 ticket snapshot, `targetTicketId` attach/conflict/ended cases, `ticket.paused` events, and one-time GitHub `ticket.imported` events |
+ | `tests/bridge-branches.spec.ts` | The read-only branch list: the sorted 200 shape and `branches` capability, one page versus pagination, the ten-page `hasMore` cap, repository-scoped `commands.api` paths, a CLI failure as 503, malformed data as 502, and bearer auth |
+ | `tests/process-tree.spec.ts` | The harness process tree used as stop evidence: a live child PID and its command, and its disappearance after exit |
+ | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
+diff --git a/src/app/bridge.ts b/src/app/bridge.ts
+index e378aba..2029768 100644
+--- a/src/app/bridge.ts
++++ b/src/app/bridge.ts
+@@ -184,7 +184,7 @@ export interface BridgeHost {
+   readonly store: Pick<Store, 'tickets' | 'triggers' | 'decisions'>
+   readonly commands: Pick<Commands, 'api'>
+   /** The Engine commands pause, resume, start, and retry run through; the Bridge decides nothing about a Ticket itself. */
+-  readonly engine: Pick<EngineForPeople, 'pauseTicket' | 'resumeTicket' | 'startTicket' | 'retryTicket' | 'admitTicket'>
++  readonly engine: Pick<EngineForPeople, 'pauseTicket' | 'recheckPause' | 'resumeTicket' | 'startTicket' | 'retryTicket' | 'admitTicket'>
+   /** Whether deployment setup finished; a Trigger posted before that is answered 503. */
+   configured(): boolean
+   /** The resolved deployment; throws while setup is pending. */
+@@ -236,7 +236,11 @@ const ExecutionSpecSchema = z.object({
+   mode: z.enum(['execute', 'discuss']),
+ }).strict()
+ const OperationIdSchema = z.string().trim().min(1).max(200)
+-const PauseSchema = z.object({ operationId: OperationIdSchema, reason: z.string().trim().max(2000).optional() }).strict()
++// A pause may be a stop check for the operation that already paused the Ticket (`pauseOperationId`) under the execution
++// lease it was sent with (`admission`). Without both it stays the first pause and is idempotent as before.
++const PauseSchema = z.object({ operationId: OperationIdSchema, reason: z.string().trim().max(2000).optional(),
++  pauseOperationId: OperationIdSchema.optional(), admission: z.object({ leaseId: z.string().trim().min(1).max(200),
++    fencingToken: z.string().trim().min(1).max(200) }).strict().optional() }).strict()
+ const AdmissionSchema = z.object({ leaseId: z.string().trim().min(1).max(200), fencingToken: z.string().trim().min(1).max(200) }).strict()
+ const ResumeSchema = z.object({ operationId: OperationIdSchema, admission: AdmissionSchema }).strict()
+ // `planRevision` is checked by the Engine (`>= 1`, an integer) so the domain's own refusal carries the answer.
+@@ -684,7 +688,7 @@ export class Bridge {
+       protocolVersion: PROTOCOL_VERSION,
+       upstream: { ...UPSTREAM },
+       capabilities: { trigger: true, events: true, tickets: true, models: true, branches: true, pause: true, resume: true, retry: true,
+-        readOnlyDiscussion: true, start: true, admission: this.requireAdmission, attachments: true },
++        readOnlyDiscussion: true, start: true, admission: this.requireAdmission, attachments: true, pauseRecheck: true },
+       source: { kind: 'workspace', enabled: this.host.workspaceEnabled() },
+     })
+   }
+@@ -785,6 +789,25 @@ export class Bridge {
+     // A duplicate request gets the recorded operation; an already-paused Ticket gets the operation that paused it.
+     if (this.replay(res, body.operationId, ticketId, 'pause')) return
+     if (ticket.paused) {
++      // A stop check is a new operation for the operation that already paused the Ticket, under the lease generation that
++      // pause was admitted with. It must name both; a missing half is a malformed request, not an idempotent pause.
++      if ((body.pauseOperationId === undefined) !== (body.admission === undefined)) {
++        return json(res, 422, { error: 'A stop check needs both pauseOperationId and its admission' })
++      }
++      if (body.pauseOperationId !== undefined && body.admission !== undefined && !ticket.paused.stoppedAt) {
++        if (body.pauseOperationId !== ticket.paused.operationId) {
++          return json(res, 409, { error: 'pause_operation_mismatch', code: 'pauseOperationMismatch' })
++        }
++        this.operations.append({ operationId: body.operationId, ticketId, kind: 'pause', state: 'queued',
++          updatedAt: new Date().toISOString(), baseline: { ...this.baseline(ticket), pauseOperationId: body.pauseOperationId } })
++        try {
++          this.host.engine.recheckPause(ticketId, body.pauseOperationId, body.operationId, body.admission)
++          return this.accepted(res, this.operations.get(body.operationId)!)
++        } catch (error) {
++          this.operations.update(body.operationId, { state: 'failed', error: errorText(error) }, new Date().toISOString())
++          return this.refuse(res, error)
++        }
++      }
+       const prior = ticket.paused.operationId ? this.operations.get(ticket.paused.operationId) : undefined
+       if (prior) return this.accepted(res, prior)
+       // Paused before this operation log existed: keep the operation id the pause recorded, so a later query finds it.
+@@ -919,7 +942,15 @@ export class Bridge {
+       switch (operation.kind) {
+         case 'pause':
+           if (ticket.paused?.error) failed(ticket.paused.error)
+-          else if (ticket.paused?.stoppedAt) succeeded(ticket.paused.evidence)
++          else if (ticket.paused?.stoppedAt) {
++            // A stop check succeeds only with evidence for the operation it checked. A successful first pause has no
++            // `pauseOperationId` baseline and its evidence is the pause's own.
++            const expected = operation.baseline?.pauseOperationId
++            const evidence = ticket.paused.evidence
++            if (expected !== undefined && evidence?.operationId !== expected) {
++              failed(`The stop evidence does not name pause operation ${expected}`)
++            } else succeeded(evidence)
++          }
+           else if (!ticket.paused) failed(ticket.ended ? 'Ticket ended before its worker stopped' : 'The ticket is no longer paused')
+           // The pause is recorded but its worker is still stopping: the operation is running until `stoppedAt` lands.
+           else if (operation.state === 'queued') this.operations.update(operation.operationId, { state: 'running' }, at)
+diff --git a/src/app/operations.ts b/src/app/operations.ts
+index 813acdd..67be894 100644
+--- a/src/app/operations.ts
++++ b/src/app/operations.ts
+@@ -17,6 +17,8 @@ export interface OperationBaseline {
+   mode?: 'execute' | 'discuss'
+   planRevision?: number
+   paused?: { at: string; stoppedAt?: string }
++  /** A stop check: the operation that paused the Ticket, whose identity the settled evidence must repeat. */
++  pauseOperationId?: string
+ }
+ /** One operation record as stored; every transition appends the whole record again. */
+ export interface BridgeOperation {
+diff --git a/src/client/locales.ts b/src/client/locales.ts
+index 0e6a654..764a302 100644
+--- a/src/client/locales.ts
++++ b/src/client/locales.ts
+@@ -700,6 +700,7 @@ const TEXT = {
+   'userError.notRetryable': ['只有进行中的工单可以重试，而且仅当执行器最近一次报告为失败或受阻且此后没有人发过消息，或者向执行器送达输入失败时才可以。', USER_ERRORS.notRetryable[1]],
+   'userError.notPaused': ['只有已暂停的工单可以继续。', USER_ERRORS.notPaused[1]],
+   'userError.pauseStopping': ['执行器还没有停止完成，等停止证据落库后再继续。', USER_ERRORS.pauseStopping[1]],
++  'userError.pauseOperationMismatch': ['重新核对的暂停操作不是让这个工单进入暂停的那一次；请按原暂停记录重试。', USER_ERRORS.pauseOperationMismatch[1]],
+   'userError.admissionRequired': ['继续执行需要仓库执行租约：租约 id 与围栏令牌缺一不可。', USER_ERRORS.admissionRequired[1]],
+   'userError.admissionStale': ['执行租约代次已过期：请使用当前代次重试。', USER_ERRORS.admissionStale[1]],
+   'userError.resumeStateLost': ['这个工单冻结的模型、仓库或起点已不存在，无法恢复原来的执行现场。', USER_ERRORS.resumeStateLost[1]],
+diff --git a/src/core/engine.ts b/src/core/engine.ts
+index c848771..0f259dd 100644
+--- a/src/core/engine.ts
++++ b/src/core/engine.ts
+@@ -172,6 +172,16 @@ export class Engine {
+    * @throws UserError when the ticket is unknown or has ended.
+    */
+   pauseTicket(ticketId: string, operationId: string): Ticket { return this.repo.atomic(() => this.tickets.pause(ticketId, operationId)) }
++  /**
++   * A person asks for a still-unproven pause to be checked again: the Executor re-examines the start in flight, the Session,
++   * its jobs and subagents for the original pause operation, under the execution lease the pause was sent with. A proven stop
++   * settles the pause; otherwise the ticket stays paused without `stoppedAt`. It creates no Assignment.
++   * @throws UserError when the ticket is unknown, not paused, already stopped, the pause operation is not the one that paused
++   *   it, or the admission is missing/stale.
++   */
++  recheckPause(ticketId: string, pauseOperationId: string, recheckOperationId: string, admission: { leaseId: string; fencingToken: string }): Ticket {
++    return this.repo.atomic(() => this.tickets.recheckPause(ticketId, pauseOperationId, recheckOperationId, admission))
++  }
+   /**
+    * A person resumes a paused ticket under an execution lease admission: the paused state clears, the ticket keeps its id and
+    * worktree, and a new Assignment starts. No automatic event resumes it.
+@@ -278,9 +288,9 @@ export class Engine {
+   pauseSettled(ticketId: string, assignmentId: string | undefined, evidence: Record<string, unknown>): void {
+     this.repo.atomic(() => { this.tickets.pauseSettled(ticketId, assignmentId, evidence) })
+   }
+-  /** The Executor's fact that it could not stop a paused ticket's worker; the error is kept and no `stoppedAt` is written. */
+-  pauseFailed(ticketId: string, assignmentId: string | undefined, error: string): void {
+-    this.repo.atomic(() => { this.tickets.pauseFailed(ticketId, assignmentId, error) })
++  /** The Executor's fact that it could not stop a paused ticket's worker; the error and what it saw are kept, and no `stoppedAt`. */
++  pauseFailed(ticketId: string, assignmentId: string | undefined, error: string, evidence?: Record<string, unknown>): void {
++    this.repo.atomic(() => { this.tickets.pauseFailed(ticketId, assignmentId, error, evidence) })
+   }
+   /**
+    * Handles an assignment that was running when the host stopped: restarts it with a recovery note unless its latest report is
+@@ -307,7 +317,7 @@ export type EngineForSources = Pick<Engine, 'receive' | 'bindThread' | 'threadCl
+ /** What the main Session asks of the Engine. */
+ export type EngineForMainSession = Pick<Engine, 'candidate' | 'candidateDelivered' | 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'>
+ /** What people ask of the Engine, through the panel or the main Session. */
+-export type EngineForPeople = Pick<Engine, 'stopTicket' | 'retryTicket' | 'pauseTicket' | 'resumeTicket' | 'startTicket' | 'admitTicket' | 'reevaluate'
++export type EngineForPeople = Pick<Engine, 'stopTicket' | 'retryTicket' | 'pauseTicket' | 'recheckPause' | 'resumeTicket' | 'startTicket' | 'admitTicket' | 'reevaluate'
+   | 'unsubscribe' | 'dismiss'>
+ /** What Settings tells the Engine. */
+ export type EngineForSettings = Pick<Engine, 'policyChanged'>
+diff --git a/src/core/errors.ts b/src/core/errors.ts
+index 5013dd9..4ae8206 100644
+--- a/src/core/errors.ts
++++ b/src/core/errors.ts
+@@ -17,6 +17,7 @@ export const USER_ERRORS = {
+   notRetryable: ['refused', 'Only an open ticket can be retried, and only when its worker last reported failed or blocked and no person has sent a message since, or when delivering an Input to its worker failed'],
+   notPaused: ['refused', 'Only a paused ticket can be resumed'],
+   pauseStopping: ['refused', 'The worker has not finished stopping yet; wait until the pause records stoppedAt'],
++  pauseOperationMismatch: ['refused', 'The stop check names a pause operation that is not the one that paused this ticket'],
+   admissionRequired: ['refused', 'Execution requires the execution lease admission: a lease id and a fencing token'],
+   admissionStale: ['refused', 'The execution lease admission is older than the generation this ticket already accepted'],
+   resumeStateLost: ['refused', 'The frozen model, repository, or base of this ticket is no longer present; its execution state cannot be resumed'],
+diff --git a/src/core/ports.ts b/src/core/ports.ts
+index 3563f2f..3b1e438 100644
+--- a/src/core/ports.ts
++++ b/src/core/ports.ts
+@@ -74,6 +74,14 @@ export interface Executor {
+    * Unlike `stop`, the ticket stays open and resumable; called after the pause transaction commits.
+    */
+   pause(ticket: Ticket, assignment: Assignment | undefined, operationId: string): void
++  /**
++   * Check an unproven pause again for its original operation and under the execution lease admission that pause recorded:
++   * this is the same bounded stop proof as `pause`, and its evidence names the ticket, the original pause operation, the new
++   * recheck operation and the lease generation. It settles through `Engine.pauseSettled`/`Engine.pauseFailed`, creates no
++   * Assignment and changes no domain state itself; the previous error is passed only so the new evidence can explain it.
++   */
++  recheck(ticket: Ticket, pauseOperationId: string, recheckOperationId: string, admission: { leaseId: string; fencingToken: string },
++    previousError?: string): void
+ }
+ 
+ /** A message for a Channel; `ticketId` names the Ticket it is for, when there is one. */
+@@ -99,7 +107,7 @@ export interface DomainEvents {
+   'ticket.resumed': { ticketId: string; triggerId: string }
+   'ticket.ended': { ticketId: string; by: TicketEndBy; outcome: TicketOutcome; reason?: string }
+   /** A human paused a ticket, or its worker's stop settled or failed; `stoppedAt` and `evidence` arrive on settlement. */
+-  'ticket.paused': { ticketId: string; operationId?: string; at: string; stoppedAt?: string; evidence?: Record<string, unknown>; error?: string }
++  'ticket.paused': { ticketId: string; operationId?: string; at: string; stoppedAt?: string; evidence?: Record<string, unknown>; error?: string; recheckOperationId?: string }
+   /** An owner started a discuss ticket's plan on the same Ticket (`mode` is now execute and a new Assignment exists). */
+   'ticket.started': { ticketId: string; planRevision: number }
+   'assignment.started': { ticketId: string; assignmentId: string }
+diff --git a/src/core/tickets.ts b/src/core/tickets.ts
+index 80e8281..b7b2b9c 100644
+--- a/src/core/tickets.ts
++++ b/src/core/tickets.ts
+@@ -221,6 +221,33 @@ export class Tickets extends EnginePart {
+     this.options.executor.pause(this.require(ticketId), latest, operationId)
+     return ticket
+   }
++  /**
++   * Ask the Executor to check a still-unproven pause again, for the original operation and under the execution lease
++   * admission the pause itself recorded. The previous failure is cleared so the new answer can settle the pause; nothing is
++   * guessed while the worker is still busy. The ticket gets no new Assignment: a proven stop still has to be resumed explicitly.
++   * @throws UserError when the ticket is unknown, not paused, already stopped, the pause operation is not the one that paused
++   *   this ticket, or the admission is missing/stale.
++   */
++  recheckPause(ticketId: string, pauseOperationId: string, recheckOperationId: string, admission: TicketAdmission): Ticket {
++    const ticket = this.require(ticketId)
++    const paused = ticket.paused
++    if (!paused) throw new UserError('notPaused')
++    if (paused.stoppedAt) return ticket
++    if (paused.operationId !== pauseOperationId) throw new UserError('pauseOperationMismatch')
++    // The admission is the generation the pause was sent under. Accepting it binds the new stop evidence to that generation;
++    // a stale or foreign admission must not be able to settle work the platform never admitted.
++    this.acceptAdmission(ticket, admission)
++    const previousError = paused.error
++    // Clearing the earlier failure is what lets a new, successful stop proof settle the pause. Until the Executor reports
++    // again the pause stays unproven and the platform keeps its blocked placeholder.
++    delete paused.error
++    ticket.updatedAt = this.now()
++    this.repo.tickets.save(ticket)
++    this.emit('ticket.paused', { ticketId, operationId: pauseOperationId, at: paused.at, recheckOperationId })
++    this.options.executor.recheck(this.require(ticketId), pauseOperationId, recheckOperationId, admission,
++      previousError === undefined ? undefined : previousError)
++    return ticket
++  }
+   /**
+    * Resume a paused ticket under an execution lease admission: require `stoppedAt`, clear `paused`, keep the ticket and its
+    * worktree, record the admission, put back what the stopped Assignment received but never read, add the resume brief, and
+@@ -303,13 +330,17 @@ export class Tickets extends EnginePart {
+     this.repo.tickets.save(ticket)
+     this.emit('ticket.paused', { ticketId, operationId: paused.operationId, at: paused.at, stoppedAt: paused.stoppedAt, evidence })
+   }
+-  /** The Executor's fact that a pause could not stop the worker: keep the ticket paused with the error and no `stoppedAt`. */
+-  pauseFailed(ticketId: string, assignmentId: string | undefined, error: string): void {
++  /**
++   * The Executor's fact that a pause could not stop the worker: keep the ticket paused with the error, the evidence it could
++   * inspect and no `stoppedAt`. The evidence lets the platform show why the stop is unproven and what the next check needs.
++   */
++  pauseFailed(ticketId: string, assignmentId: string | undefined, error: string, evidence?: Record<string, unknown>): void {
+     const ticket = this.repo.tickets.get(ticketId)
+     const paused = ticket?.paused
+     if (!ticket || !paused || paused.stoppedAt) return
+     if (assignmentId !== undefined && latestAssignment(ticket)?.id !== assignmentId) return
+     paused.error = error
++    if (evidence) paused.evidence = evidence
+     ticket.updatedAt = this.now()
+     this.repo.tickets.save(ticket)
+     this.emit('ticket.paused', { ticketId, operationId: paused.operationId, at: paused.at, error })
+diff --git a/src/executor/dsh.ts b/src/executor/dsh.ts
+index cde519d..96e7217 100644
+--- a/src/executor/dsh.ts
++++ b/src/executor/dsh.ts
+@@ -38,7 +38,18 @@ const BACKGROUND_LIMIT_MS = 30 * 60_000
+ /** How long a host stop waits for the workers' background work to stop. */
+ const SHUTDOWN_STOP_MS = 10_000
+ /** How long a human pause waits for the worker's background work to stop, and then for its turn to go idle. */
+-const PAUSE_STOP_MS = 10_000, PAUSE_IDLE_MS = 10_000, PAUSE_LAUNCH_MS = 10_000
++const PAUSE_STOP_MS = 10_000, PAUSE_IDLE_MS = 10_000
++/**
++ * The same launch-stop bound for every deployment, with one test-only seam: an isolated acceptance stack may set
++ * `MOYU_TEST_HOOKS=1` and a short `MOYU_TEST_PAUSE_LAUNCH_MS` to reach the `timed-out` branch deterministically. Production
++ * never sets either, so the shipped bound stays 10 s.
++ */
++const PAUSE_LAUNCH_MS = testPauseLaunchMs()
++function testPauseLaunchMs(): number {
++  if (process.env.MOYU_TEST_HOOKS !== '1') return 10_000
++  const value = Number(process.env.MOYU_TEST_PAUSE_LAUNCH_MS)
++  return Number.isFinite(value) && value >= 1 ? value : 10_000
++}
+ /** Root of per-assignment discussion snapshots and homes. */
+ const DISCUSS_ROOT = process.env.DSH_DISCUSS_ROOT ?? '/srv/m4-discuss/runs'
+ /** How long a worker that goes on after a passing failure waits for a worker slot, or for processing to resume, between looks. */
+@@ -55,6 +66,8 @@ class PrepareFailed extends Error {}
+  * paused, not failed: the launch reports nothing, and a resume prepares the workspace again.
+  */
+ class PrepareAborted extends Error {}
++/** What a second stop proof adds to the evidence: both operation identities and the admitted lease generation. */
++interface Recheck { recheckOperationId: string; admission: { leaseId: string; fencingToken: string }; previousError?: string }
+ const PASSING = new RegExp(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND', 'EPIPE', 'UND_ERR', 'socket hang up', 'fetch failed',
+   'network error', 'overloaded', 'rate limit', '\\b(?:408|429|50[0-4])\\b'].join('|'), 'i')
+ /**
+@@ -547,14 +560,30 @@ export class DshExecutor implements Executor {
+    * refusal to answer. It never calls the terminal `stop`.
+    */
+   pause(ticket: Ticket, assignment: Assignment | undefined, operationId: string): void {
+-    this.host.store.afterCommit(() => { void this.background(this.pauseWork(ticket.id, assignment?.id, operationId)) })
++    this.host.store.afterCommit(() => { void this.background(this.pauseWork(ticket.id, assignment?.id, operationId, undefined)) })
++  }
++  /**
++   * A second, bounded stop proof for a pause whose first proof did not settle: re-read the launch, Session, jobs and subagents
++   * and settle through the same `pauseSettled`/`pauseFailed`, with evidence that names the original pause operation, this
++   * recheck operation and the execution lease generation the pause was admitted under.
++   */
++  recheck(ticket: Ticket, pauseOperationId: string, recheckOperationId: string,
++    admission: { leaseId: string; fencingToken: string }, previousError?: string): void {
++    this.host.store.afterCommit(() => { void this.background(this.pauseWork(ticket.id, latestAssignment(ticket)?.id,
++      pauseOperationId, { recheckOperationId, admission, ...previousError === undefined ? {} : { previousError } })) })
+   }
+   /** Whether the ticket is paused right now, read from the store for a launch that may have been ended by that pause. */
+   private currentPaused(ticketId: string): boolean { return !!this.host.store.tickets.get(ticketId)?.paused }
+-  private async pauseWork(ticketId: string, assignmentId: string | undefined, operationId: string): Promise<void> {
++  /** What a second stop proof has to record besides the stop itself: both operation ids and the admitted lease generation. */
++  private recheckBinding(recheck?: Recheck): Record<string, unknown> {
++    return recheck ? { recheckOperationId: recheck.recheckOperationId, leaseId: recheck.admission.leaseId,
++      fencingToken: recheck.admission.fencingToken,
++      ...recheck.previousError === undefined ? {} : { previousError: recheck.previousError } } : {}
++  }
++  private async pauseWork(ticketId: string, assignmentId: string | undefined, operationId: string, recheck?: Recheck): Promise<void> {
+     const discuss = this.discuss.get(ticketId)
+     if (discuss && discuss.assignmentId === assignmentId) {
+-      await this.pauseDiscuss(ticketId, assignmentId!, operationId, discuss)
++      await this.pauseDiscuss(ticketId, assignmentId!, operationId, discuss, recheck)
+       return
+     }
+     const startedAt = now()
+@@ -594,9 +623,10 @@ export class DshExecutor implements Executor {
+     // ticket's boundary (M5-B reached the same conclusion for stop proofs and keyed them by the ticket's own job ids). What
+     // this ticket owns is its Session, its jobs, its subagents and its launch, and those are exactly what the check above and
+     // this one cover, so a leftover process of another ticket cannot fail a stop that is in fact clean.
+-    const evidence = { ticketId, ...assignmentId ? { assignmentId } : {}, operationId, sessionId, harnessPid: process.pid,
+-      ...controlGroup ? { cgroup: controlGroup } : {}, startedAt, stoppedAt, agentStatus, jobsBefore, jobsAfter, subagentsAfter,
+-      processesBefore, processesAfter, launch: launchEnded, cancelledTurn }
++    const evidence = { ticketId, ...assignmentId ? { assignmentId } : {}, operationId, ...this.recheckBinding(recheck),
++      sessionId, harnessPid: process.pid, ...controlGroup ? { cgroup: controlGroup } : {}, startedAt, stoppedAt, agentStatus,
++      jobsBefore, jobsAfter, subagentsAfter, processesBefore, processesAfter, launch: launchEnded, cancelledTurn,
++      ...recheck ? { recheck: true, reconciledAt: stoppedAt } : {} }
+     // Success needs every part: the start in flight ended, the stop finished, the worker answered idle in time (an unloaded
+     // Session has no turn), and no shell job or subagent is left.
+     const idleWorker = !agent || agentStatus === 'idle'
+@@ -605,12 +635,14 @@ export class DshExecutor implements Executor {
+       this.host.engine.pauseSettled(ticketId, assignmentId, evidence)
+       return
+     }
+-    const reason = stopError !== undefined ? String(stopError)
++    const failed = stopError !== undefined ? String(stopError)
+       : launchEnded === 'timed-out' ? `The start in flight did not end within ${PAUSE_LAUNCH_MS} ms`
+       : stopped === false ? `Stopping the worker's background work timed out after ${PAUSE_STOP_MS} ms`
+       : idle === false ? `The worker did not go idle within ${PAUSE_IDLE_MS} ms`
+       : `The worker did not stop cleanly: agent ${agentStatus}, ${jobsAfter.length} job(s) and ${subagentsAfter} subagent(s) remain`
+-    this.host.engine.pauseFailed(ticketId, assignmentId, reason)
++    // Keep what this attempt saw: the platform shows the failed phase, and its next check is about the same operation.
++    this.host.engine.pauseFailed(ticketId, assignmentId, recheck ? `Recheck: ${failed}` : failed,
++      { ...evidence, proven: false, stopIncomplete: failed })
+   }
+   /** Stop what a ticket's worker runs in the background (see `stopBackground`). */
+   private stopWork(ticketId: string, reason: string, keepInbox = false, assignmentId?: string): void {
+@@ -837,7 +869,8 @@ export class DshExecutor implements Executor {
+     try { this.host.engine.report(ticketId, report) } catch { /* the assignment ended before this report */ }
+   }
+   /** Stops one external discussion run and records the same stop evidence as an in-process pause. */
+-  private async pauseDiscuss(ticketId: string, assignmentId: string, operationId: string, run: DiscussRun): Promise<void> {
++  private async pauseDiscuss(ticketId: string, assignmentId: string, operationId: string, run: DiscussRun,
++    recheck?: Recheck): Promise<void> {
+     const startedAt = now()
+     const sessionId = run.sessionId
+     let pgid: number | undefined
+@@ -865,15 +898,16 @@ export class DshExecutor implements Executor {
+     }
+     const processesAfter = pgid !== undefined && Number.isFinite(pgid) ? processGroupTree(pgid) : []
+     const stoppedAt = now()
+-    const evidence = { ticketId, assignmentId, operationId, sessionId, harnessPid: process.pid, startedAt, stoppedAt,
+-      agentStatus: 'idle', jobsBefore: [], jobsAfter: [], subagentsAfter: 0, processesBefore, processesAfter, lingeringPids,
+-      cancelledTurn: true }
++    const evidence = { ticketId, assignmentId, operationId, ...this.recheckBinding(recheck), sessionId, harnessPid: process.pid,
++      startedAt, stoppedAt, agentStatus: 'idle', jobsBefore: [], jobsAfter: [], subagentsAfter: 0, processesBefore,
++      processesAfter, lingeringPids, cancelledTurn: true, ...recheck ? { recheck: true, reconciledAt: stoppedAt } : {} }
+     if (finished !== false && lingeringPids.length === 0) {
+       this.host.engine.pauseSettled(ticketId, assignmentId, evidence)
+       return
+     }
+-    this.host.engine.pauseFailed(ticketId, assignmentId,
+-      `The isolated discussion did not stop cleanly: ${lingeringPids.length} process(es) remain`)
++    const failed = `The isolated discussion did not stop cleanly: ${lingeringPids.length} process(es) remain`
++    this.host.engine.pauseFailed(ticketId, assignmentId, recheck ? `Recheck: ${failed}` : failed,
++      { ...evidence, proven: false, stopIncomplete: failed })
+   }
+ 
+   /** Returns the stored ticket for `agent` when it is a worker session, or undefined otherwise. */
+diff --git a/tests/admission.spec.ts b/tests/admission.spec.ts
+index 891954d..2b7e43a 100644
+--- a/tests/admission.spec.ts
++++ b/tests/admission.spec.ts
+@@ -30,6 +30,7 @@ function harness() {
+     deliver: (_ticket, assignment) => { deliveries.push(assignment.id) },
+     stop: (_ticket, assignment) => { stops.push(assignment.id) },
+     pause: () => {},
++    recheck: () => {},
+   }
+   const outbox: Outbox = { send: () => {}, status: () => undefined, withdraw: () => {} }
+   const policy: Policy = { version: 'v1', paused: false, evalTimeoutMs: 60_000,
+diff --git a/tests/assessment.spec.ts b/tests/assessment.spec.ts
+index a25e0a7..08e2d6a 100644
+--- a/tests/assessment.spec.ts
++++ b/tests/assessment.spec.ts
+@@ -44,7 +44,7 @@ function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.fr
+   const assessor = new MasterAssessor(host)
+   const policy: Policy = { version: 'v1', paused: false, evalTimeoutMs: 600_000, gate: () => ({ admissible: true, strength, basis: { via: 'followup' } }),
+     revalidate: () => true, admitsInferred: rules => rules.length > 0 }
+-  const executor: Executor = { start: async () => {}, deliver: async () => {}, stop: async () => {}, pause: async () => {} }
++  const executor: Executor = { start: async () => {}, deliver: async () => {}, stop: async () => {}, pause: async () => {}, recheck: async () => {} }
+   const scope = { scope: () => ({ listened: true as const, observed: true }) }
+   const outbox = { send: () => {}, status: () => undefined, withdraw: () => {} }
+   engine = new Engine({ repo, policy: () => policy, scope, assessor, executor, outbox })
+diff --git a/tests/bridge-control.spec.ts b/tests/bridge-control.spec.ts
+index 213309d..36e33b7 100644
+--- a/tests/bridge-control.spec.ts
++++ b/tests/bridge-control.spec.ts
+@@ -49,7 +49,7 @@ interface ControlHarness {
+   repo: MemoryRepositories
+   received: Trigger[]
+   commands: { api: ReturnType<typeof vi.fn> }
+-  engine: { pauseTicket: ReturnType<typeof vi.fn>; resumeTicket: ReturnType<typeof vi.fn>; startTicket: ReturnType<typeof vi.fn>; retryTicket: ReturnType<typeof vi.fn> }
++  engine: { pauseTicket: ReturnType<typeof vi.fn>; recheckPause: ReturnType<typeof vi.fn>; resumeTicket: ReturnType<typeof vi.fn>; startTicket: ReturnType<typeof vi.fn>; retryTicket: ReturnType<typeof vi.fn> }
+ }
+ function harness(overrides: Partial<BridgeHost> = {}): ControlHarness {
+   const repo = new MemoryRepositories()
+@@ -67,6 +67,18 @@ function harness(overrides: Partial<BridgeHost> = {}): ControlHarness {
+       repo.tickets.save(t)
+       return t
+     }),
++    recheckPause: vi.fn((id: string, pauseOperationId: string, recheckOperationId: string,
++      admission: { leaseId: string; fencingToken: string }) => {
++      const t = repo.tickets.get(id)!
++      if (!t.paused) throw new UserError('notPaused')
++      if (t.paused.stoppedAt) return t
++      if (t.paused.operationId !== pauseOperationId) throw new UserError('pauseOperationMismatch')
++      t.admission = admission
++      delete t.paused.error
++      repo.tickets.save(t)
++      void recheckOperationId
++      return t
++    }),
+     resumeTicket: vi.fn((id: string, admission: { leaseId: string; fencingToken: string }) => {
+       const t = repo.tickets.get(id)!
+       delete t.paused
+@@ -213,6 +225,57 @@ describe('POST /bridge/v1/tickets/:id/pause', () => {
+     expect(h.engine.pauseTicket).not.toHaveBeenCalled()
+   })
+ 
++  it('checks a failed stop again for the original pause operation under its admission', async () => {
++    const h = harness()
++    h.repo.tickets.save(frozen(ticket('t1', { paused: { at: '2026-11-03T12:10:00.000Z', by: 'human', operationId: 'prior-op',
++      error: 'The start in flight did not end within 10000 ms' } })))
++    const { bridge, call } = await serve(h)
++    const response = await call('POST', '/bridge/v1/tickets/t1/pause', { operationId: 'op-check', pauseOperationId: 'prior-op',
++      admission: { leaseId: 'lease-1', fencingToken: '1' } })
++    expect(response).toMatchObject({ status: 202, body: { operationId: 'op-check', kind: 'pause', state: 'queued' } })
++    expect(h.engine.recheckPause).toHaveBeenCalledWith('t1', 'prior-op', 'op-check', { leaseId: 'lease-1', fencingToken: '1' })
++    // The earlier failure is cleared, so the check is running rather than immediately failed.
++    expect(h.repo.tickets.get('t1')?.paused?.error).toBeUndefined()
++    bridge.settle()
++    expect(await call('GET', '/bridge/v1/operations/op-check')).toMatchObject({ body: { state: 'running' } })
++    // Only evidence that repeats the original operation settles the check.
++    const paused = h.repo.tickets.get('t1')!
++    paused.paused = { ...paused.paused!, stoppedAt: '2026-11-03T12:20:00.000Z', evidence: { ticketId: 't1', operationId: 'prior-op',
++      recheckOperationId: 'op-check', leaseId: 'lease-1', fencingToken: '1', jobsAfter: [], subagentsAfter: 0 } }
++    h.repo.tickets.save(paused)
++    bridge.settle()
++    expect(await call('GET', '/bridge/v1/operations/op-check')).toMatchObject({ status: 200, body: { state: 'succeeded',
++      evidence: { operationId: 'prior-op', recheckOperationId: 'op-check' } } })
++    expect(await call('GET', '/bridge/v1/tickets/t1')).toMatchObject({ body: { state: 'stopped' } })
++  })
++
++  it('does not settle a stop check whose evidence names another operation', async () => {
++    const h = harness()
++    h.repo.tickets.save(frozen(ticket('t1', { paused: { at: '2026-11-03T12:10:00.000Z', by: 'human', operationId: 'prior-op',
++      error: 'The start in flight did not end within 10000 ms' } })))
++    const { bridge, call } = await serve(h)
++    expect(await call('POST', '/bridge/v1/tickets/t1/pause', { operationId: 'op-check', pauseOperationId: 'prior-op',
++      admission: { leaseId: 'lease-1', fencingToken: '1' } })).toMatchObject({ status: 202 })
++    const paused = h.repo.tickets.get('t1')!
++    paused.paused = { ...paused.paused!, stoppedAt: '2026-11-03T12:20:00.000Z', evidence: { ticketId: 't1', operationId: 'other-op' } }
++    h.repo.tickets.save(paused)
++    bridge.settle()
++    expect(await call('GET', '/bridge/v1/operations/op-check')).toMatchObject({ body: { state: 'failed',
++      error: 'The stop evidence does not name pause operation prior-op' } })
++  })
++
++  it('refuses a stop check for another pause operation or without both halves', async () => {
++    const h = harness()
++    h.repo.tickets.save(frozen(ticket('t1', { paused: { at: '2026-11-03T12:10:00.000Z', by: 'human', operationId: 'prior-op' } })))
++    const { call } = await serve(h)
++    expect(await call('POST', '/bridge/v1/tickets/t1/pause', { operationId: 'op-check', pauseOperationId: 'other-op',
++      admission: { leaseId: 'lease-1', fencingToken: '1' } }))
++      .toMatchObject({ status: 409, body: { code: 'pauseOperationMismatch' } })
++    expect(await call('POST', '/bridge/v1/tickets/t1/pause', { operationId: 'op-half', pauseOperationId: 'prior-op' }))
++      .toMatchObject({ status: 422 })
++    expect(h.engine.recheckPause).not.toHaveBeenCalled()
++  })
++
+   it('refuses an ended ticket', async () => {
+     const h = harness()
+     h.repo.tickets.save(frozen(ticket('t1', { ended: { at: 'e', by: 'human', outcome: 'stopped' } })))
+diff --git a/tests/core-engine.spec.ts b/tests/core-engine.spec.ts
+index 2d3cd96..3d70615 100644
+--- a/tests/core-engine.spec.ts
++++ b/tests/core-engine.spec.ts
+@@ -27,6 +27,7 @@ function harness(policyOverrides: Partial<Policy> = {}, { emit, prepareTicket }:
+   const executor: Executor = {
+     start: vi.fn((ticket, assignment) => { launches.push([ticket, assignment]) }), deliver: vi.fn(ticket => { deliveries.add(ticket.id) }), stop: vi.fn(),
+     pause: vi.fn(),
++    recheck: vi.fn(),
+   }
+   let version = 'v1', paused = false
+   const policy: Policy = {
+diff --git a/tests/fixtures/host.ts b/tests/fixtures/host.ts
+index e69bd23..eb3fa7c 100644
+--- a/tests/fixtures/host.ts
++++ b/tests/fixtures/host.ts
+@@ -150,16 +150,17 @@ export async function startRuntime(seed?: (store: Store) => void) {
+     ['git config -z --show-origin --get-all credential.https://github.com.helper']: `file:${workerGitConfig(directory)}\0${credentialHelper(AGENT)}\0`,
+     [scoped]: `global\0credential.helper\n\0global\0credential.https://github.com.helper\n${credentialHelper(AGENT)}\0`,
+   }
+-  /** A prepare command (`sh -c`) waits for this while it is set. */
+-  const hooks: { prepare?: Promise<void> } = {}
++  /** A prepare command (`sh -c`) waits for this while it is set; `prepareIgnoresAbort` models a command that outlives the stop bound. */
++  const hooks: { prepare?: Promise<void>; prepareIgnoresAbort?: boolean } = {}
+   const subprocess = { spawn: vi.fn((spec: { argv: readonly string[]; signal?: AbortSignal }) => {
+     const argv = [...spec.argv]
+     while (argv[0] === 'env' || /^[A-Z_]+=/.test(argv[0] ?? '')) argv.shift()
+     const reader = (text: string) => ({ readFrom: () => ({ text, nextOffset: text.length, lossy: false }) })
+     const exited = { exitCode: 0, signal: null }
+     const run = argv[0] === 'sh' && hooks.prepare ? hooks.prepare.then(() => exited) : Promise.resolve(exited)
+-    // DSH ends a spawned command when its signal aborts; a prepare command held by a test must do the same.
+-    const guarded = spec.signal
++    // DSH ends a spawned command when its signal aborts; a prepare command held by a test must do the same, unless the test
++    // deliberately models a command that ignores the abort so a pause's stop bound can expire.
++    const guarded = spec.signal && !hooks.prepareIgnoresAbort
+       ? Promise.race([run, new Promise<never>((_, reject) => {
+         const stop = () => reject(Object.assign(new Error('The command was aborted'), { name: 'AbortError' }))
+         if (spec.signal!.aborted) stop()
+diff --git a/tests/pause-start.spec.ts b/tests/pause-start.spec.ts
+index ae933cc..0ac60fa 100644
+--- a/tests/pause-start.spec.ts
++++ b/tests/pause-start.spec.ts
+@@ -213,3 +213,45 @@ describe('the stop proof a pause records', () => {
+     }
+   })
+ })
++
++describe('a stop check after the launch abort timed out', () => {
++  it('settles the original pause operation once and then allows one resume', async () => {
++    const host = await webRuntime()
++    const release = holdPrepare(host)
++    // The prepare command deliberately ignores the abort, so the first stop bound expires before the launch ends.
++    host.hooks.prepareIgnoresAbort = true
++    try {
++      const ticket = await acceptedWebTicket(host)
++      host.runtime.engine.pauseTicket(ticket.id, 'op-pause-timeout')
++      const timedOut = await pausedTicket(host, ticket.id, 12_000)
++      expect(timedOut.paused?.stoppedAt).toBeUndefined()
++      expect(timedOut.paused?.error).toContain('did not end within')
++      expect(projectTicketState(timedOut)).toBe('stopping')
++      // A stop check while the launch still refuses to end stays unconfirmed: the placeholder is kept, nothing is guessed.
++      host.runtime.engine.recheckPause(ticket.id, 'op-pause-timeout', 'op-recheck-stuck',
++        { leaseId: 'lease-1', fencingToken: '1' })
++      await waitFor('the second stop bound', () => host.runtime.store.tickets.get(ticket.id)!.paused?.error?.startsWith('Recheck:') === true, 12_000)
++      expect(host.runtime.store.tickets.get(ticket.id)!.paused?.stoppedAt).toBeUndefined()
++      // The launch ends; checking the same original operation now proves the stop.
++      release()
++      host.runtime.engine.recheckPause(ticket.id, 'op-pause-timeout', 'op-recheck-ok',
++        { leaseId: 'lease-1', fencingToken: '1' })
++      await waitFor('the stop proof', () => !!host.runtime.store.tickets.get(ticket.id)!.paused?.stoppedAt)
++      const proved = host.runtime.store.tickets.get(ticket.id)!
++      expect(projectTicketState(proved)).toBe('stopped')
++      const evidence = proved.paused!.evidence as Record<string, unknown>
++      expect(evidence).toMatchObject({ ticketId: ticket.id, operationId: 'op-pause-timeout',
++        recheckOperationId: 'op-recheck-ok', leaseId: 'lease-1', fencingToken: '1', recheck: true })
++      expect(['none', 'aborted']).toContain(evidence.launch)
++      expect(evidence.assignmentId).toEqual(latestAssignment(proved)!.id)
++      // One admitted resume creates exactly one new Assignment; the cleared pause cannot be resumed a second time.
++      const resumed = host.runtime.engine.resumeTicket(ticket.id, { leaseId: 'lease-1', fencingToken: '1' })
++      expect(resumed.paused).toBeUndefined()
++      expect(resumed.assignments).toHaveLength(ticket.assignments.length + 1)
++      expect(() => host.runtime.engine.resumeTicket(ticket.id, { leaseId: 'lease-1', fencingToken: '1' })).toThrow()
++    } finally {
++      release()
++      await host.stop()
++    }
++  }, 30_000)
++})
+diff --git a/tests/pause.spec.ts b/tests/pause.spec.ts
+index c45d178..c5cc29e 100644
+--- a/tests/pause.spec.ts
++++ b/tests/pause.spec.ts
+@@ -24,11 +24,13 @@ function harness(options: { requireAdmission?: boolean } = {}) {
+   const starts: string[] = []
+   const stops: string[] = []
+   const pauses: { ticketId: string; assignmentId: string; operationId: string }[] = []
++  const rechecks: { ticketId: string; pauseOperationId: string; recheckOperationId: string; admission: { leaseId: string; fencingToken: string } }[] = []
+   const executor: Executor = {
+     start: (_ticket, assignment) => { starts.push(assignment.id) },
+     deliver: () => {},
+     stop: (_ticket, assignment) => { stops.push(assignment.id) },
+     pause: (ticket, assignment, operationId) => { pauses.push({ ticketId: ticket.id, assignmentId: assignment?.id ?? '', operationId }) },
++    recheck: (ticket, pauseOperationId, recheckOperationId, admission) => { rechecks.push({ ticketId: ticket.id, pauseOperationId, recheckOperationId, admission }) },
+   }
+   const outbox: Outbox = { send: () => {}, status: () => undefined, withdraw: () => {} }
+   const policy: Policy = { version: 'v1', paused: false, evalTimeoutMs: 60_000,
+@@ -51,7 +53,7 @@ function harness(options: { requireAdmission?: boolean } = {}) {
+     engine.assignmentStarted(ticket.id, latestAssignment(ticket)!.id)
+     return repo.tickets.get(ticket.id)!
+   }
+-  return { repo, engine, accept, starts, stops, pauses, requests }
++  return { repo, engine, accept, starts, stops, pauses, rechecks, requests }
+ }
+ 
+ describe('a discussion plan', () => {
+@@ -141,6 +143,33 @@ describe('a human pause', () => {
+     expect(canRetry(paused)).toBe(false)
+   })
+ 
++  it('checks the failed stop again for the original operation under its admission', () => {
++    const h = harness()
++    const accepted = h.accept()
++    h.engine.pauseTicket(accepted.id, 'op-1')
++    const assignmentId = latestAssignment(h.repo.tickets.get(accepted.id)!)!.id
++    h.engine.pauseFailed(accepted.id, assignmentId, 'The start in flight did not end within 10000 ms',
++      { ticketId: accepted.id, assignmentId, operationId: 'op-1', launch: 'timed-out' })
++    const failed = h.repo.tickets.get(accepted.id)!
++    expect(failed.paused?.error).toEqual(expect.any(String))
++    expect(failed.paused?.evidence).toMatchObject({ launch: 'timed-out' })
++    // The check names the operation that paused this ticket, not any pause operation.
++    expect(() => h.engine.recheckPause(accepted.id, 'op-other', 'op-check', TEST_ADMISSION)).toThrow(/not the one/)
++    h.engine.recheckPause(accepted.id, 'op-1', 'op-check', TEST_ADMISSION)
++    expect(h.rechecks).toEqual([{ ticketId: accepted.id, pauseOperationId: 'op-1', recheckOperationId: 'op-check',
++      admission: TEST_ADMISSION }])
++    // The earlier failure is cleared, but the ticket is still unproven until the Executor answers.
++    const checking = h.repo.tickets.get(accepted.id)!
++    expect(checking.paused?.error).toBeUndefined()
++    expect(checking.paused?.stoppedAt).toBeUndefined()
++    // An older generation cannot be used to settle this pause.
++    expect(() => h.engine.recheckPause(accepted.id, 'op-1', 'op-check-2', { leaseId: 'test-lease', fencingToken: '1' }))
++      .toThrow(/older/)
++    h.engine.pauseSettled(accepted.id, assignmentId, { ticketId: accepted.id, operationId: 'op-1', recheckOperationId: 'op-check',
++      leaseId: 'test-lease', fencingToken: '999999', jobsAfter: [], subagentsAfter: 0 })
++    expect(h.repo.tickets.get(accepted.id)!.paused?.stoppedAt).toEqual(expect.any(String))
++  })
++
+   it('cannot be retried and is not woken by a pass or by new Inputs', () => {
+     const h = harness()
+     const accepted = h.accept()
+diff --git a/tests/sources.spec.ts b/tests/sources.spec.ts
+index 7f049f7..54a52ce 100644
+--- a/tests/sources.spec.ts
++++ b/tests/sources.spec.ts
+@@ -33,7 +33,7 @@ function host(overrides: Partial<SourceContextDeps> = {}) {
+   const deployment = testDeployment()
+   sources.register(feishuKind); sources.register(githubKind)
+   const assessor: Assessor = { request: vi.fn(async () => {}) }
+-  const executor: Executor = { start: vi.fn(async () => {}), deliver: vi.fn(async () => {}), stop: vi.fn(async () => {}), pause: vi.fn(async () => {}) }
++  const executor: Executor = { start: vi.fn(async () => {}), deliver: vi.fn(async () => {}), stop: vi.fn(async () => {}), pause: vi.fn(async () => {}), recheck: vi.fn(async () => {}) }
+   const outbox = { send: () => {}, status: () => undefined, withdraw: () => {} }
+   const engine = new Engine({ repo: store, scope: sources, policy: () => settingsPolicy(store.settings(), sources), assessor, executor, outbox })
+   const commands = new Commands(() => deployment, {}, new AbortController().signal)
+@@ -1079,7 +1079,7 @@ describe('feishu event consumer', () => {
+     const sources = new SourceRegistry(() => store.settings(), board)
+     sources.register(feishuKind)
+     const assessor: Assessor = { request: vi.fn(async () => {}) }
+-    const executor: Executor = { start: vi.fn(async () => {}), deliver: vi.fn(async () => {}), stop: vi.fn(async () => {}), pause: vi.fn(async () => {}) }
++    const executor: Executor = { start: vi.fn(async () => {}), deliver: vi.fn(async () => {}), stop: vi.fn(async () => {}), pause: vi.fn(async () => {}), recheck: vi.fn(async () => {}) }
+     const outbox = { send: () => {}, status: () => undefined, withdraw: () => {} }
+     const policy = () => settingsPolicy(store.settings(), sources)
+     const engine = new Engine({ repo: store, scope: sources, policy, assessor, executor, outbox })
+diff --git a/tests/ticket-freeze.spec.ts b/tests/ticket-freeze.spec.ts
+index 1183d63..6928637 100644
+--- a/tests/ticket-freeze.spec.ts
++++ b/tests/ticket-freeze.spec.ts
+@@ -17,7 +17,7 @@ function harness() {
+   const repo = new MemoryRepositories()
+   const requests: Candidate[] = []
+   const assessor: Assessor = { request: candidate => { requests.push(candidate) } }
+-  const executor: Executor = { start: () => {}, deliver: () => {}, stop: () => {}, pause: () => {} }
++  const executor: Executor = { start: () => {}, deliver: () => {}, stop: () => {}, pause: () => {}, recheck: () => {} }
+   const outbox: Outbox = { send: () => {}, status: () => undefined, withdraw: () => {} }
+   const policy: Policy = { version: 'v1', paused: false, evalTimeoutMs: 60_000,
+     gate: () => ({ admissible: true, strength: 'explicit', basis: { via: 'listed' } }), revalidate: () => true, admitsInferred: () => true }
+diff --git a/tests/timeline.spec.ts b/tests/timeline.spec.ts
+index 8e295aa..eac14c4 100644
+--- a/tests/timeline.spec.ts
++++ b/tests/timeline.spec.ts
+@@ -22,7 +22,7 @@ const sources = new SourceRegistry(() => SettingsSchema.parse({}))
+ sources.register(githubKind)
+ const host = () => ({ store, sources, links: (channel: ChannelRef) => githubLink(channel.address, {}) })
+ const engine = () => new Engine({ repo: store, scope: sources, policy: () => settingsPolicy(SettingsSchema.parse({}), sources),
+-  assessor: { request: () => {} }, executor: { start: async () => {}, deliver: async () => {}, stop: async () => {}, pause: async () => {} },
++  assessor: { request: () => {} }, executor: { start: async () => {}, deliver: async () => {}, stop: async () => {}, pause: async () => {}, recheck: async () => {} },
+   outbox: { send: () => {}, status: () => undefined, withdraw: () => {} } })
+ const comment = (id: string, at: string): Trigger => ({ id, source: 'github', threads: [{ source: 'github', id: '7' }], actor: { source: 'github', id: 'alice' },
+   human: true, at, text: `comment ${id}`, meta: {} })

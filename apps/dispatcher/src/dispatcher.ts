@@ -133,9 +133,13 @@ async function runRepositoryWorker(
   });
   let admissionSupported = false;
   let attachmentsSupported = false;
+  let pauseRecheckSupported = false;
   try {
     const capabilities = await bridge.capabilities();
     admissionSupported = capabilities.capabilities.admission === true;
+    // A failed stop can only be checked again by a runtime that declares it; without this the platform keeps the blocked
+    // placeholder and explains that the runtime needs upgrading, instead of sending a request the old strict schema refuses.
+    pauseRecheckSupported = capabilities.capabilities.pauseRecheck === true;
     // L113: absent means unsupported. An old Bridge's strict trigger schema
     // rejects unknown keys with a non-retryable 400, so this stays false until
     // the runtime explicitly declares the capability.
@@ -156,6 +160,7 @@ async function runRepositoryWorker(
       repository: repository.fullName,
       admissionSupported,
       attachmentsSupported,
+      pauseRecheckSupported,
     },
     'dispatching for repository runtime',
   );
@@ -191,7 +196,15 @@ async function runRepositoryWorker(
       syncOnce(pool, repository, bridge, logger),
     ),
     runLoop('operations', config.operationIntervalMs, signal, logger, () =>
-      operationsOnce(pool, config, repository, bridge, logger, admissionSupported),
+      operationsOnce(
+        pool,
+        config,
+        repository,
+        bridge,
+        logger,
+        admissionSupported,
+        pauseRecheckSupported,
+      ),
     ),
     runLoop('leases', 5000, signal, logger, async () => {
       await maintainLeases(pool, config, repository, bridge, logger);

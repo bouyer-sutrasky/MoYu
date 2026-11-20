@@ -1,0 +1,151 @@
+# 遗留重构 4 — 暂停超时后的停止核对与恢复：证据
+
+日期：2026-11-20。范围：#97（衔接 #79 的第四步）。复核基线 `b6c2efab08e2703cc8e974dda7ff872db3122612`
+（`origin/main`）。本日志只记录实际执行过的命令、退出码和脱敏快照；未执行项单列。
+
+## 1. 结论
+
+- 平台与上游补丁已实现「停止未证明 → 保留 `blocked` 占位 → 对原暂停操作重新核对 → 原子结清并释放该代次租约 → 允许一次 resume」。
+- 单元与集成层面全部通过；补丁 `0031-pause-recheck.patch` 顺序应用、类型检查、构建与 54 个定向运行时用例均通过。
+- **现场联验未完成**：`#92` 的隔离环境在专用 gh token 缺失时按设计 fail closed（见 PR #100），`#94` 仍未合流。
+  因此本日志没有 Web/GitHub 双入口的现场运行；这两项是待验项，不能当作已通过。UI 的修前/修后是同一应用、
+  同一数据库状态下的真实页面截图（§6），不是现场执行链路证据。
+
+## 2. 制品与哈希
+
+| 项 | 值 |
+| --- | --- |
+| 基线 | `b6c2efab08e2703cc8e974dda7ff872db3122612` |
+| 上游固定 commit | `6337fc823ce20251c8de8085948165c81aaa701e`（补丁 0001–0031） |
+| 补丁 | `integrations/superagent/patches/0031-pause-recheck.patch` = `b87e1c25ca24f647f970ae500948ca5c4bdfd21fb900679f72b134c0b04731fd` |
+| runtime 制品 | `lib/index.js` = `dfe5288b403f939d936d012290c69ec50e167d3c5ba7f5b0ecb437a683980aa4`；`lib/workspace-watch.js` = `dd754970119e44df9db093ae42012592aefbe34395d377920edea533e61cdc4f` |
+| dispatcher 制品 | `apps/dispatcher/dist/main.js` = `a5e4bb2c456f81dab74d47664c30f659c036f9a66b44b9060e1ea27115242b2c` |
+| API 制品 | `apps/api/dist/server.js` = `24e3e93718c10edf43dad192c767e06319a947c0f2c14006d5e4de49e61548a8` |
+| Web 修前 | `/tmp/ui-before/index.html` = `a6574e97a5bde00bcdd069ed746e3115172dabae860ede2eda0f4ddc98ca33da`（工作树 + `origin/main` 的 `ConversationPane.tsx`） |
+| Web 修后 | `/tmp/ui-after/index.html` = `bd244424b7d0f46af527373df0328a8dffa3e876892dd4004c885d58490bd785` |
+| 验收脚本 | `scripts/m5b/matrix/item4-pause-recheck.sh` = `4ac277f89740d54dcaf9e41200f19233405e0a2f313f3241433012029c978aea` |
+| UI 修前截图 | `docs/evidence/m5b/pause-recheck-before.png` = `234e7ec32367e03542c1563100f3096aadda5b1bfbec11d36a7a60c94446fb04` |
+| UI 修后截图 | `docs/evidence/m5b/pause-recheck-after.png` = `9ddaa7b5916fb90e3e6e8ff9c5cf05078eb272b8c76dbf12f41cc41c55467626` |
+
+runtime 制品由 `pause-recovery-final` 构建：pristine `6337fc8` 顺序应用 0001–0031，`tsdown` exit 0。制品未部署到任何
+现场实例；平台 3082、生产库与共享 55432 均未触碰。
+
+## 3. 修前（红）
+
+基线 runtime 为补丁 0001–0030；只把本轮的运行时用例与测试夹具放到该树上运行：
+
+```bash
+cd /root/src/upstream/pause-recovery-base        # 0001–0030
+./node_modules/.bin/vitest run tests/pause-start.spec.ts
+# exit=1
+# FAIL  a stop check after the launch abort timed out > settles the original pause operation once and then allows one resume
+# TypeError: host.runtime.engine.recheckPause is not a function
+# Tests 1 failed | 5 passed (6)
+```
+
+这与旧行为一致：launch 中止超时后没有平台出口，票停在 `stopping → blocked`，resume 与再次停止都被拒，租约继续占用。
+
+## 4. 修后（绿）
+
+```bash
+cd /root/src/upstream/pause-recovery-final         # 0001–0031
+./node_modules/.bin/tsc --noEmit                    # exit 0
+./node_modules/.bin/vitest run tests/pause.spec.ts tests/pause-start.spec.ts tests/bridge-control.spec.ts
+# exit 0；3 files / 54 tests passed
+#   ✓ tests/pause-start.spec.ts (6 tests) 20.8s
+#     ✓ settles the original pause operation once and then allows one resume 20.1s
+```
+
+该用例覆盖：launch 忽略 abort 使第一次停止上限到期 → `blocked` 占位；再次核对仍未确认时保持占位；launch 结束后对
+**原暂停 operation** 再核对 → `stoppedAt` 落库，证据同时含 `ticketId`/`operationId`/`recheckOperationId`/
+`leaseId`/`fencingToken`；随后 resume 只创建一个新 Assignment，第二次 resume 抛错。`bridge-control.spec.ts` 另覆盖
+错误 operation、缺 admission、证据不匹配三种拒绝。
+
+平台侧：
+
+```bash
+cd /root/src/pause-timeout-recovery-02c92e9b51a2
+pnpm check                                          # exit 0
+# lint/format/typecheck/unit 全过；唯一 warning 是 main 上就有的
+# apps/dispatcher/test/integration/dispatcher.integration.test.ts:805 未用 eslint-disable
+
+TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm test:integration
+# exit 0：db 54、api 143、dispatcher 103（1 skip）、supervisor 4
+```
+
+第一次整链运行时 `@moyu/db` 出现一次 `terminating connection due to administrator command`（57P01），当时 54 个用例
+全过，仅 teardown 报错；单跑 `@moyu/db test:integration` 与整链重跑都 exit 0。与旧 PR #55 记录的同一瞬时现象一致。
+
+新增/修改的平台集成断言：
+
+- `operations.integration.test.ts`：核对成功后同一事务把任务置 `stopped` 并释放原租约；证据五项绑定一致；绑定到
+  另一租约时保持 `blocked`、租约仍 `active`、`nextStep=owner-review`；runtime 未声明能力时不发请求、占位改记
+  `runtime-upgrade`。
+- `tasks.integration.test.ts`：`blocked` + `nextStep=recheck-stop` 时 `/stop` 生成 `pause` operation 且保留占位；
+  其他 `blocked` 仍拒绝。
+
+## 5. 补丁应用与构建
+
+```bash
+cd /root/src/upstream/pause-recovery-final
+for p in integrations/superagent/patches/*.patch; do git apply "$p"; done   # 0001–0031 全部 apply
+./node_modules/.bin/tsdown
+# exit 0；lib/index.js sha256 dfe5288b…
+```
+
+## 6. UI 修前 / 修后（同一应用、同一数据库状态）
+
+同一份 `blocked` 任务（`stop_evidence.nextStep='recheck-stop'`，problem 为 launch 超时）由同一 API/数据库渲染：
+
+- 修前：`origin/main` 的 `ConversationPane.tsx` 构造成 Web 包，页面显示「受阻」和「重试」，没有说明下一步；
+- 修后：显示「重新核对停止」按钮和「停止状态尚未确认」提示，隐藏无效的「重试」。
+
+采集方式：临时数据库（迁移后 seed 一条 blocked 任务与一个会话），两个 API 实例共用同一数据库、分别指向
+`/tmp/ui-before` 与 `/tmp/ui-after` 的 Web 构建；Playwright 1440×900 浅色主题、同一会话 cookie 打开同一个
+`?repo=…&conversation=…`。DOM 事实见 `docs/evidence/m5b/pause-recheck-ui.json`。
+
+```jsonc
+{
+  "before": { "buttons": ["…", "重试", "详情"], "hasRecheckButton": false, "hasNotice": false },
+  "after":  { "buttons": ["…", "重新核对停止", "详情"], "hasRecheckButton": true, "hasNotice": true,
+              "hasProblem": true, "hasRetry": false }
+}
+```
+
+## 7. 待验项（现场，未完成）
+
+依赖事实（2026-11-20 复核）：
+
+- `#92` / PR #100 的隔离环境在专用 gh token 缺失时 `stack.sh up` fail closed；所有者尚未签发该 token。因此没有
+  可用的隔离栈来跑 Web 与独立 GitHub 身份两个现场。
+- `#94` / PR #102 仍在审阅，停止证据的 cgroup 归属联验尚未合流。
+- 旧 PR #55 也未合并，其文档内容（无 assignment 证据、`launch` 字段、`lingeringPids` 删除）已并入本轮 §2.3。
+
+拿到隔离环境后应运行（脚本已入库，关键断言失败退出非零、凭据只从受限文件读取、记录制品哈希）：
+
+```bash
+# Web：启动前/中/后暂停、强制超时、核对、恢复
+M5B_MATRIX_FORCE_LAUNCH_TIMEOUT=1 \
+  scripts/m5b/matrix/item4-pause-recheck.sh web
+M5B_MATRIX_FORCE_LAUNCH_TIMEOUT=1 \
+  scripts/m5b/matrix/item4-pause-recheck.sh forced
+
+# 独立 GitHub 身份：0600 的探测 token 文件，身份必须不是 Bouyer12
+M5B_MATRIX_PROBE_GH_TOKEN_FILE=/root/.config/m5bmatrix/probe_gh_token \
+M5B_MATRIX_PROBE_LOGIN=<probe-login> \
+M5B_MATRIX_REPOSITORY=Bouyer12/m5a-beta-adf10ad9 \
+M5B_MATRIX_GITHUB_ISSUE=<number> \
+  scripts/m5b/matrix/item4-pause-recheck.sh github
+```
+
+强制超时用测试专用开关：被测 runtime 以 `MOYU_TEST_HOOKS=1 MOYU_TEST_PAUSE_LAUNCH_MS=1` 启动，立即暂停正在
+launch 的任务即可稳定进入 `timed-out`。生产不设置这两个变量，停止上限仍是 10 s。
+
+仍需所有者/依赖方提供：
+
+1. 专用探测 gh token（#92 的授权缺项 1），安装后 `precheck --online` 应为 exit 0；
+2. #92 与 #94 合流（或明确允许在未合流分支上跑现场）；
+3. 探测仓与一个可 @ agent 的 issue/PR 编号。
+
+未验证项：现场 Web/GitHub 双入口、真实 worker/租约/退出码/脱敏日志的现场快照、与 #94 的 cgroup 停止证据联验。
+因此本单不宣称现场验收通过，也不应据此合并。

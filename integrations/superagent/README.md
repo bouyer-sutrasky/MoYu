@@ -80,6 +80,7 @@ node --test integrations/superagent/tests/verify-lock.test.mjs
 
 | 补丁 | 作用 |
 | --- | --- |
+| `0031-pause-recheck.patch` | 暂停停止证据超时后的恢复路径：Bridge `pause` 可携带原 `pauseOperationId` 与当前租约 `admission` 对同一暂停再做一次有界核对；成功才写 `stoppedAt` 与绑定 ticket/原操作/核对操作/leaseId/fencingToken 的证据，失败保留占位并记录原因。平台只有在五项绑定一致时原子结清并释放该代次租约，随后才允许 resume；未声明 `pauseRecheck` 的旧 runtime 不发送该请求。 |
 | `0030-language-section.patch` | 在两种角色的系统提示词里加入固定的 `## language` 段：接单、提问、进度、失败和完成正文使用源会话语言（源为中文时用中文），代码标识、路径、命令和必要术语可保留英文。该段位于团队可覆盖的沟通段之前，不覆盖已有用户提示词或版本历史；同时更新提示词预览/编辑器测试。 |
 
 ## 约束
