@@ -1,0 +1,173 @@
+# M5-B matrix item 8 — real DSH instance lifecycle and cgroup ownership
+recorded=2026-11-20T20:13:28+08:00
+head=50e21199cc48692a86e70eef2f40f5e93996cd92
+slice=/m5bmatrix.slice cgroup_root=/m5bmatrix.slice/m5bmatrix-supervisor.service/instances
+supervisor_artifact=69aa134da721de2e70f406cd01da1e2961e85cb675b8a005724bc52306daa4bf (433731 bytes)
+api_artifact=266248522a2965af412e42445ae6588473c3af9b9d0fdb9464103c87c1be94d6
+dispatcher_artifact=aae1c459f76f55683413ee9dff3e40721fb79c548d5a2a3fed027218198b0004
+identity=m5bmatrix uid=995
+
+## initial generation 2026-11-20T20:13:28+08:00
+state=online desired=online pid=363471 reason=listening waiting=None
+cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-1795176770126 inode=1954026 rootPid=363471
+members=[(363471, '346674327')]
+ports=3404/3403 memory.current=217513984 memory.max=3221225472
+cgroup_dir=m5b-1795176770126 inode=1954026 pids=[363471 ]
+listeners=[127.0.0.1:3403 127.0.0.1:3404 ] capacity=1 active_leases=0
+instance_row|online|online|363471|listening|-
+
+### 1. sleep / wake
+## after sleep 2026-11-20T20:13:29+08:00
+state=sleeping desired=sleeping pid=None reason=sleeping waiting=None
+cgroup=None inode=None rootPid=None
+members=[]
+ports=3404/3403 memory.current=217513984 memory.max=3221225472
+cgroup_dir=m5b-1795176770126 inode=1954026 pids=[]
+listeners=[] capacity=0 active_leases=0
+instance_row|sleeping|sleeping|-|sleeping|-
+
+verdict sleep_pid_gone=pass old pid 363471 cleared
+verdict sleep_ports_released=pass listeners=[]
+verdict sleep_capacity_released=pass capacity=0
+## after wake 2026-11-20T20:13:36+08:00
+state=online desired=online pid=364051 reason=listening waiting=None
+cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-1795176809433 inode=1954117 rootPid=364051
+members=[(364051, '346678256')]
+ports=3404/3403 memory.current=273883136 memory.max=3221225472
+cgroup_dir=m5b-1795176770126 inode=1954026 pids=[]
+cgroup_dir=m5b-1795176809433 inode=1954117 pids=[364051 364218 ]
+listeners=[127.0.0.1:3403 127.0.0.1:3404 ] capacity=1 active_leases=0
+instance_row|online|online|364051|listening|-
+
+verdict wake_new_pid=pass old=363471 new=364051
+verdict wake_new_inode=pass old=1954026 new=1954117
+verdict wake_ports_listening=pass listeners=[127.0.0.1:3403 127.0.0.1:3404 ]
+verdict wake_capacity_used=pass capacity=1
+### 2. empty-root cold start
+verdict empty_root_removed=pass root_missing=yes
+## after cold start 2026-11-20T20:13:45+08:00
+state=online desired=online pid=364311 reason=listening waiting=None
+cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-1795176817264 inode=1954201 rootPid=364311
+members=[(364311, '346679039'), (364532, '346679823')]
+ports=3404/3403 memory.current=272334848 memory.max=3221225472
+cgroup_dir=m5b-1795176817264 inode=1954201 pids=[364311 364532 ]
+listeners=[127.0.0.1:3403 127.0.0.1:3404 ] capacity=1 active_leases=0
+instance_row|online|online|364311|listening|-
+
+verdict empty_root_recreated=pass root_exists=yes
+verdict empty_root_controllers=pass controllers=[memory pids] subtree=[memory pids]
+verdict empty_root_metered=pass memory.current=284819456 memory.max=3221225472 pids.current=17
+verdict empty_root_new_generation=pass old=364051 new=364311 inode=1954201
+### 3. root PID exits, descendants survive
+task=56e4a971-e2be-4ffb-bf65-5ef6ccafed31
+## before root exit 2026-11-20T20:13:49+08:00
+state=online desired=online pid=364311 reason=listening waiting=None
+cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-1795176817264 inode=1954201 rootPid=364311
+members=[(364311, '346679039')]
+ports=3404/3403 memory.current=272334848 memory.max=3221225472
+cgroup_dir=m5b-1795176817264 inode=1954201 pids=[364311 364708 364709 364710 ]
+listeners=[127.0.0.1:3403 127.0.0.1:3404 ] capacity=1 active_leases=1
+instance_row|online|online|364311|listening|-
+
+verdict descendants_present=pass cgroup_procs=4
+verdict root_exit_lease_recorded=pass task=56e4a971-e2be-4ffb-bf65-5ef6ccafed31 lease=0f68f895-c921-4ef5-9b36-9f097c1ac5c1 active=1
+## after root exit 2026-11-20T20:13:53+08:00
+state=sleeping desired=sleeping pid=None reason=sleeping waiting=None
+cgroup=None inode=None rootPid=None
+members=[]
+ports=3404/3403 memory.current=272334848 memory.max=3221225472
+cgroup_dir=m5b-1795176817264 inode=1954201 pids=[]
+listeners=[] capacity=0 active_leases=1
+instance_row|sleeping|sleeping|-|sleeping|-
+
+verdict root_exit_descendants_stopped=pass cgroup_procs=0
+verdict root_exit_ports_released=pass listeners=[]
+verdict root_exit_capacity_released=pass capacity=0
+verdict root_exit_lease_released=pass active_leases=0
+## next generation after root exit 2026-11-20T20:14:03+08:00
+state=online desired=online pid=364856 reason=listening waiting=None
+cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-1795176833770 inode=1954243 rootPid=364856
+members=[(364856, '346680690')]
+ports=3404/3403 memory.current=268795904 memory.max=3221225472
+cgroup_dir=m5b-1795176817264 inode=1954201 pids=[]
+cgroup_dir=m5b-1795176833770 inode=1954243 pids=[364856 ]
+listeners=[127.0.0.1:3403 127.0.0.1:3404 ] capacity=1 active_leases=0
+instance_row|online|online|364856|listening|-
+
+verdict root_exit_next_generation=pass listeners=[127.0.0.1:3403 127.0.0.1:3404 ] capacity=1
+### 4. foreign process holds the instance port
+foreign_pid=365127 foreign_cgroup=system.slice/dsh-superagent.service
+verdict foreign_port_listening=pass port 3404 held by 365127
+## after foreign-port wake 2026-11-20T20:14:04+08:00
+state=fault desired=sleeping pid=None reason=port_in_use waiting=None
+cgroup=None inode=None rootPid=None
+members=[]
+ports=3404/3403 memory.current=268795904 memory.max=3221225472
+cgroup_dir=m5b-1795176817264 inode=1954201 pids=[]
+cgroup_dir=m5b-1795176833770 inode=1954243 pids=[]
+listeners=[127.0.0.1:3404 ] capacity=0 active_leases=0
+instance_row|fault|sleeping|-|port_in_use|-
+
+verdict foreign_owner_reported=pass A port is already in use: port 3404 is held by pid 365127 outside /sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances (/sys/fs/cgroup/system.slice/dsh-superagent.service)
+verdict foreign_still_alive=pass pid 365127 alive
+verdict foreign_slot_not_used=pass capacity=0
+## next generation after foreign port 2026-11-20T20:14:15+08:00
+state=online desired=online pid=365201 reason=listening waiting=None
+cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-1795176846173 inode=1954285 rootPid=365201
+members=[(365201, '346681930'), (365343, '346682670')]
+ports=3404/3403 memory.current=281329664 memory.max=3221225472
+cgroup_dir=m5b-1795176817264 inode=1954201 pids=[]
+cgroup_dir=m5b-1795176833770 inode=1954243 pids=[]
+cgroup_dir=m5b-1795176846173 inode=1954285 pids=[365201 ]
+listeners=[127.0.0.1:3403 127.0.0.1:3404 ] capacity=1 active_leases=0
+instance_row|online|online|365201|listening|-
+
+verdict foreign_port_next_generation=pass listeners=[127.0.0.1:3403 127.0.0.1:3404 ] capacity=1
+### 5. same-name cgroup recreation with a live foreign process
+generation_pid=365201 cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-1795176846173 inode=1954285 supervisor=363453
+## same-name cgroup after resume 2026-11-20T20:14:30+08:00
+state=stopping desired=sleeping pid=365201 reason=stop_failed waiting=process_exit
+cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-1795176846173 inode=1954285 rootPid=365201
+members=[]
+ports=3404/3403 memory.current=None memory.max=None
+cgroup_dir=m5b-1795176817264 inode=1954201 pids=[]
+cgroup_dir=m5b-1795176833770 inode=1954243 pids=[]
+cgroup_dir=m5b-1795176846173 inode=1954369 pids=[365440 ]
+cgroup_dir=ticket94-holding inode=1954327 pids=[]
+listeners=[] capacity=1 active_leases=0
+instance_row|stopping|sleeping|365201|stop_failed|process_exit
+
+verdict same_name_inode_replaced=pass recorded=1954285 current=1954369
+verdict same_name_foreign_untouched=pass foreign=365440 pids=[365440 ]
+verdict same_name_slot_retained=pass state=stopping reason=stop_failed capacity=1
+verdict same_name_old_identity_kept=pass ownership_cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-1795176846173 inode=1954285
+scripts/m5b/matrix/item8-cgroup-lifecycle.sh: line 293: 365440 Killed                  runuser -u "$M5B_MATRIX_USER" -- /bin/sleep 600 > /dev/null 2>&1
+verdict same_name_capacity_released=pass capacity=0
+## next generation after same-name cleanup 2026-11-20T20:14:39+08:00
+state=online desired=online pid=365579 reason=listening waiting=None
+cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-1795176872503 inode=1954411 rootPid=365579
+members=[(365579, '346684563'), (365675, '346685056')]
+ports=3404/3403 memory.current=191422464 memory.max=3221225472
+cgroup_dir=m5b-1795176817264 inode=1954201 pids=[]
+cgroup_dir=m5b-1795176833770 inode=1954243 pids=[]
+cgroup_dir=m5b-1795176872503 inode=1954411 pids=[365579 ]
+listeners=[127.0.0.1:3403 127.0.0.1:3404 ] capacity=1 active_leases=0
+instance_row|online|online|365579|listening|-
+
+verdict same_name_next_generation=pass listeners=[127.0.0.1:3403 127.0.0.1:3404 ] capacity=1
+### 6. supervisor restart
+## after supervisor restart 2026-11-20T20:14:46+08:00
+state=online desired=online pid=365784 reason=listening waiting=None
+cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-1795176880029 inode=1954597 rootPid=365784
+members=[(365784, '346685317'), (365877, '346685790')]
+ports=3404/3403 memory.current=266268672 memory.max=3221225472
+cgroup_dir=m5b-1795176880029 inode=1954597 pids=[365784 365909 ]
+listeners=[127.0.0.1:3403 127.0.0.1:3404 ] capacity=1 active_leases=0
+instance_row|online|online|365784|listening|-
+
+verdict supervisor_restarted=pass unit=active
+verdict supervisor_new_generation=pass old=365579/1954411 new=365784/1954597
+verdict supervisor_capacity_used=pass capacity=1
+verdict supervisor_ports_listening=pass listeners=[127.0.0.1:3403 127.0.0.1:3404 ]
+## verdict
+all lifecycle verdicts passed
