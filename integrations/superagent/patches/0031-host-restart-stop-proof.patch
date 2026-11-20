@@ -1,0 +1,137 @@
+diff --git a/src/executor/dsh.ts b/src/executor/dsh.ts
+index cde519d..dc2b2d0 100644
+--- a/src/executor/dsh.ts
++++ b/src/executor/dsh.ts
+@@ -22,7 +22,7 @@ import { WorktreeNameSchema } from '../app/assessment.ts'
+ import { resultRelay } from '../app/notices.ts'
+ import type { HealthEntry } from '../infra/health.ts'
+ import { cancelled, collectJob, killJobs, liveSubagents, runningJobs, stopBackground, stopSubagents, until, untilQuiet } from './background.ts'
+-import { completeStopProof, readStopProof, recordStopProof, replacementBlocked } from './stop-proof.ts'
++import { completeStopProof, hostRestartProven, readStopProof, recordStopProof, replacementBlocked } from './stop-proof.ts'
+ 
+ const now = (): string => new Date().toISOString()
+ /** Returns the worker session ID (`worker-<ticketId>`) for a ticket. */
+@@ -725,6 +725,7 @@ export class DshExecutor implements Executor {
+     if (!current()) return
+     // The background work of the Assignment this one replaces stops first, so its end does not clear this one's message.
+     await this.stopped(ticket.id)
++    this.settleHostRestartProofs(ticket)
+     this.assertStops(ticket)
+     if (!current()) return
+     // A message put back for this Assignment may still wait in the Session, kept by a restart's cancel or persisted across a
+@@ -941,11 +942,38 @@ export class DshExecutor implements Executor {
+         // Input that was handed over but not yet taken.
+         this.host.context.agents.get(workerSessionId(ticket.id) as SessionId)?.cancel({ kind: 'user' }, { keepInbox: true })
+         this.stopWork(ticket.id, 'dsh-superagent restarted', true)
++        this.recordHostRestartProof(ticket, running)
+         this.host.engine.assignmentInterrupted(ticket.id, running.id)
+       }
+       else if (latest?.state === 'pending' && !waitsForPerson(ticket)) this.start(ticket, latest)
+     }
+   }
++  /**
++   * The previous host died while this Assignment ran. Record its durable stop
++   * proof before the replacement is created: with no registered worker job and
++   * no process older than this host left in the instance cgroup, nothing of the
++   * old turn survives and the proof is complete. A registered job is proven by
++   * the stop callback; a surviving older process keeps the proof unproven, so a
++   * replacement waits instead of running beside an orphan.
++   */
++  private recordHostRestartProof(ticket: Ticket, assignment: Assignment): void {
++    if (readStopProof(this.host.store, ticket.id, assignment.id)) return
++    const jobs = runningJobs(this.host.context, workerSessionId(ticket.id)).map(job => ({ id: job.id, name: jobName(job) }))
++    const proof = recordStopProof(this.host.store, ticket, assignment, jobs, [])
++    if (jobs.length === 0 && hostRestartProven()) completeStopProof(this.host.store, proof)
++  }
++  /** Completes a host-restart proof once its jobs and any older process are gone. */
++  private settleHostRestartProofs(ticket: Ticket): void {
++    if (!hostRestartProven()) return
++    const live = new Set(runningJobs(this.host.context, workerSessionId(ticket.id)).map(job => job.id))
++    for (const assignment of ticket.assignments) {
++      if (assignment.state !== 'ended' || assignment.endedReason !== 'hostRestarted') continue
++      const proof = readStopProof(this.host.store, ticket.id, assignment.id)
++      if (!proof || proof.state === 'proven') continue
++      if (proof.jobs.some(job => live.has(job.id))) continue
++      completeStopProof(this.host.store, proof)
++    }
++  }
+   /**
+    * A hard restart loses the in-memory run map but may leave a discussion process
+    * group alive. Run directories are assignment-owned; kill only a group whose
+diff --git a/src/executor/stop-proof.ts b/src/executor/stop-proof.ts
+index 6af837e..34178f6 100644
+--- a/src/executor/stop-proof.ts
++++ b/src/executor/stop-proof.ts
+@@ -97,6 +97,39 @@ export function settleStopProof(store: Store, proof: StopProof, liveJobs: { id:
+   return proven
+ }
+ 
++/** The process identities currently in this runtime's instance cgroup, or null when it cannot be read. */
++export function instanceCgroupMembers(): ProcessIdentity[] | null {
++  try {
++    const line = readFileSync('/proc/self/cgroup', 'utf8').split('\n').find(item => item.startsWith('0::'))
++    const path = line?.slice(3).trim() ?? ''
++    if (!path || path === '/') return null
++    const pids = readFileSync(`/sys/fs/cgroup${path}/cgroup.procs`, 'utf8').trim().split('\n')
++      .filter(Boolean).map(Number).filter(Number.isFinite).filter(pid => pid !== process.pid)
++    return pids.map(pid => readProcessIdentity(pid)).filter((identity): identity is ProcessIdentity => identity !== null)
++  } catch { return null }
++}
++
++/**
++ * Whether a restarted host can prove that the previous host's worker turns are gone.
++ * The supervisor starts a new runtime only in an instance cgroup with no surviving
++ * member of the previous host. A member that started before this host is such a
++ * survivor; a member that started after it is this host's own child. Unreadable
++ * membership or an unknown start time is unknown and never proves a stop.
++ */
++export function hostRestartProof(self: ProcessIdentity, members: ProcessIdentity[]): boolean {
++  if (self.startTime === 'unknown' || !Number.isFinite(Number(self.startTime))) return false
++  const selfStart = Number(self.startTime)
++  return members.every(member => member.startTime !== 'unknown'
++    && Number.isFinite(Number(member.startTime)) && Number(member.startTime) > selfStart)
++}
++
++/** {@link hostRestartProof} over the runtime's own instance cgroup. */
++export function hostRestartProven(): boolean {
++  const self = readProcessIdentity(process.pid)
++  const members = instanceCgroupMembers()
++  return self !== null && members !== null && hostRestartProof(self, members)
++}
++
+ /**
+  * A replacement may proceed only when every ended Assignment of the Ticket has a
+  * durable proof whose identities are gone. An admitted Ticket without a proof is
+diff --git a/tests/stop-proof.spec.ts b/tests/stop-proof.spec.ts
+index 20fe54d..1e972a5 100644
+--- a/tests/stop-proof.spec.ts
++++ b/tests/stop-proof.spec.ts
+@@ -1,6 +1,6 @@
+ import { describe, expect, it } from 'vitest'
+ import { spawn } from 'node:child_process'
+-import { completeStopProof, identityAlive, readProcessIdentity, readStopProof, recordStopProof, replacementBlocked, settleStopProof } from '../src/executor/stop-proof.ts'
++import { completeStopProof, hostRestartProof, identityAlive, readProcessIdentity, readStopProof, recordStopProof, replacementBlocked, settleStopProof } from '../src/executor/stop-proof.ts'
+ import type { Assignment, Ticket } from '../src/core/index.ts'
+ 
+ function store() {
+@@ -53,6 +53,20 @@ describe('durable stop proof', () => {
+ })
+ 
+ 
++describe('host restart proof', () => {
++  it('proves that no process of the previous host survives in the instance cgroup', () => {
++    const self = { pid: 100, startTime: '200', cgroup: '/instance' }
++    // No member remains, or only processes this host started after itself.
++    expect(hostRestartProof(self, [])).toBe(true)
++    expect(hostRestartProof(self, [{ pid: 101, startTime: '300' }])).toBe(true)
++    // An older process is an orphan of the previous host and blocks.
++    expect(hostRestartProof(self, [{ pid: 99, startTime: '150' }])).toBe(false)
++    // Unknown identity or start time is never proof.
++    expect(hostRestartProof(self, [{ pid: 99, startTime: 'unknown' }])).toBe(false)
++    expect(hostRestartProof({ ...self, startTime: 'unknown' }, [])).toBe(false)
++  })
++})
++
+ describe('process identity across an orphan', () => {
+   it('keeps a real orphan alive after its parent exits and detects the same start time', async () => {
+     const child = spawn('sleep', ['10'], { detached: false, stdio: 'ignore' })

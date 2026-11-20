@@ -231,4 +231,264 @@ describe('execution reservation on real PostgreSQL', () => {
     expect(claims[0]!.id).toBe(first.id);
     expect(claims[1]!.id).toBe(first.id);
   });
+
+  it('adopts a re-issued Assignment only from the matching authoritative record, once', async () => {
+    const key5 = `authoritative-${process.pid}`;
+    const first = await reserveExecution(db.pool, { ...input(), requestKey: key5 });
+    const claimed = await claimExecution(db.pool, { ...input(), requestKey: key5 });
+    expect(claimed.claimed).toBe(true);
+    const authoritative = {
+      ticketId: 'ticket-1',
+      assignmentId: 'assignment-reissued',
+      leaseId,
+      fencingToken: token,
+      state: 'queued',
+      sourceCursor: '7',
+      observedAt: '2026-11-20T05:30:00.000Z',
+    };
+
+    // A record that does not describe this exact generation and Ticket is not
+    // authority to move the reservation; the stored identity stays untouched.
+    for (const record of [
+      { ...authoritative, ticketId: 'ticket-other' },
+      { ...authoritative, leaseId: '00000000-0000-4000-8000-000000000000' },
+      { ...authoritative, fencingToken: String(Number(token) + 1) },
+      { ...authoritative, assignmentId: 'assignment-other' },
+      { ...authoritative, state: 'awaiting_review' },
+    ]) {
+      await expect(
+        claimExecution(db.pool, {
+          ...input(),
+          requestKey: key5,
+          assignmentId: authoritative.assignmentId,
+          expectedAssignmentId: 'assignment-1',
+          authoritative: record,
+        }),
+      ).rejects.toThrow(/identity or generation/);
+    }
+    await expect(
+      claimExecution(db.pool, {
+        ...input(),
+        requestKey: key5,
+        assignmentId: authoritative.assignmentId,
+        expectedAssignmentId: 'assignment-1',
+      }),
+    ).rejects.toThrow(/identity or generation/);
+    expect(await readReservation(db.pool, repository.id, key5)).toMatchObject({
+      assignmentId: 'assignment-1',
+      leaseId,
+      fencingToken: token,
+      state: 'claimed',
+    });
+
+    const adopted = await claimExecution(db.pool, {
+      ...input(),
+      requestKey: key5,
+      assignmentId: authoritative.assignmentId,
+      expectedAssignmentId: 'assignment-1',
+      authoritative,
+    });
+    expect(adopted).toEqual({
+      claimed: false,
+      id: first.id,
+      supersededFrom: 'assignment-1',
+    });
+    const stored = await db.pool.query<{
+      id: string;
+      request_key: string;
+      ticket_id: string;
+      assignment_id: string;
+      lease_id: string;
+      fencing_token: string;
+      state: string;
+    }>(
+      `select id, request_key, ticket_id, assignment_id, lease_id, fencing_token, state
+         from execution_reservations where id = $1`,
+      [first.id],
+    );
+    // Only the Assignment value moves; the row and its existing keys stay.
+    expect(stored.rows[0]).toMatchObject({
+      id: first.id,
+      request_key: key5,
+      ticket_id: 'ticket-1',
+      assignment_id: 'assignment-reissued',
+      lease_id: leaseId,
+      fencing_token: token,
+      state: 'claimed',
+    });
+    const ledger = await db.pool.query<{ detail: Record<string, unknown> }>(
+      `select detail from runtime_lease_events
+        where lease_id = $1 and type = 'assignment_superseded'`,
+      [leaseId],
+    );
+    expect(ledger.rows).toHaveLength(1);
+    expect(ledger.rows[0]!.detail).toMatchObject({
+      ticketId: 'ticket-1',
+      requestKey: key5,
+      fromAssignmentId: 'assignment-1',
+      toAssignmentId: 'assignment-reissued',
+      reservationState: 'claimed',
+      source: 'bridge_snapshot',
+      sourceCursor: '7',
+      runtimeState: 'queued',
+      observedAt: '2026-11-20T05:30:00.000Z',
+    });
+
+    // Replaying the same authoritative record continues nothing.
+    const replay = await claimExecution(db.pool, {
+      ...input(),
+      requestKey: key5,
+      assignmentId: authoritative.assignmentId,
+      expectedAssignmentId: 'assignment-reissued',
+      authoritative,
+    });
+    expect(replay).toEqual({ claimed: false, id: first.id, supersededFrom: null });
+
+    // A pass that read the old identity before this adoption is now stale: it
+    // must conflict instead of moving the reservation back, and append nothing.
+    const stale = await claimExecution(db.pool, {
+      ...input(),
+      requestKey: key5,
+      assignmentId: 'assignment-1',
+      expectedAssignmentId: 'assignment-1',
+      authoritative: {
+        ...authoritative,
+        assignmentId: 'assignment-1',
+      },
+    });
+    expect(stale).toMatchObject({ claimed: false, id: first.id, conflict: 'reservation_moved' });
+    expect((await readReservation(db.pool, repository.id, key5))?.assignmentId).toBe(
+      'assignment-reissued',
+    );
+    const stillOne = await db.pool.query<{ count: number }>(
+      `select count(*)::int as count from runtime_lease_events
+        where lease_id = $1 and type = 'assignment_superseded'`,
+      [leaseId],
+    );
+    expect(stillOne.rows[0]!.count).toBe(1);
+  });
+
+  it('adopts a concurrent re-issued turn exactly once', async () => {
+    const key6 = `authoritative-concurrent-${process.pid}`;
+    const first = await reserveExecution(db.pool, { ...input(), requestKey: key6 });
+    await claimExecution(db.pool, { ...input(), requestKey: key6 });
+    const authoritative = {
+      ticketId: 'ticket-1',
+      assignmentId: 'assignment-concurrent',
+      leaseId,
+      fencingToken: token,
+      state: 'running',
+      sourceCursor: '8',
+    };
+    // Two recovery passes read the same authoritative record; the lease row lock
+    // serialises them, so only the first adopts and the second is a replay.
+    const [left, right] = await Promise.all([
+      claimExecution(db.pool, {
+        ...input(),
+        requestKey: key6,
+        assignmentId: authoritative.assignmentId,
+        expectedAssignmentId: 'assignment-1',
+        authoritative,
+      }),
+      claimExecution(db.pool, {
+        ...input(),
+        requestKey: key6,
+        assignmentId: authoritative.assignmentId,
+        expectedAssignmentId: 'assignment-1',
+        authoritative,
+      }),
+    ]);
+    // The lease lock serialises both passes. Whichever locks second sees that the
+    // row it expected is gone and conflicts, so only one adoption is written.
+    const results = [left, right];
+    expect(results.filter((item) => item.supersededFrom === 'assignment-1')).toHaveLength(1);
+    expect(results.filter((item) => item.conflict === 'reservation_moved')).toHaveLength(1);
+    expect([left.id, right.id]).toEqual([first.id, first.id]);
+    const stored = await db.pool.query<{ assignment_id: string; state: string }>(
+      `select assignment_id, state from execution_reservations where id = $1`,
+      [first.id],
+    );
+    expect(stored.rows[0]).toMatchObject({
+      assignment_id: 'assignment-concurrent',
+      state: 'claimed',
+    });
+    const ledger = await db.pool.query<{ count: number }>(
+      `select count(*)::int as count from runtime_lease_events
+        where lease_id = $1 and type = 'assignment_superseded'
+          and detail->>'toAssignmentId' = $2`,
+      [leaseId, 'assignment-concurrent'],
+    );
+    expect(ledger.rows[0]!.count).toBe(1);
+  });
+
+  it('never moves the reservation back when an older snapshot lands last', async () => {
+    const key7 = `authoritative-backward-${process.pid}`;
+    const first = await reserveExecution(db.pool, { ...input(), requestKey: key7 });
+    await claimExecution(db.pool, { ...input(), requestKey: key7 });
+    const record = (assignmentId: string) => ({
+      ticketId: 'ticket-1',
+      assignmentId,
+      leaseId,
+      fencingToken: token,
+      state: 'running',
+      sourceCursor: '9',
+    });
+    // A2 commits first, A3 second; then the stale A2 snapshot arrives.
+    const second = await claimExecution(db.pool, {
+      ...input(),
+      requestKey: key7,
+      assignmentId: 'assignment-backward-2',
+      expectedAssignmentId: 'assignment-1',
+      authoritative: record('assignment-backward-2'),
+    });
+    expect(second.supersededFrom).toBe('assignment-1');
+    const third = await claimExecution(db.pool, {
+      ...input(),
+      requestKey: key7,
+      assignmentId: 'assignment-backward-3',
+      expectedAssignmentId: 'assignment-backward-2',
+      authoritative: record('assignment-backward-3'),
+    });
+    expect(third.supersededFrom).toBe('assignment-backward-2');
+
+    // The stale target is already on the ledger as replaced: no migration.
+    const lateOld = await claimExecution(db.pool, {
+      ...input(),
+      requestKey: key7,
+      assignmentId: 'assignment-backward-2',
+      expectedAssignmentId: 'assignment-backward-3',
+      authoritative: record('assignment-backward-2'),
+    });
+    expect(lateOld).toMatchObject({ conflict: 'target_superseded' });
+    // Its observation is stale as well: the row has moved on.
+    const lateExpected = await claimExecution(db.pool, {
+      ...input(),
+      requestKey: key7,
+      assignmentId: 'assignment-backward-2',
+      expectedAssignmentId: 'assignment-backward-2',
+      authoritative: record('assignment-backward-2'),
+    });
+    expect(lateExpected).toMatchObject({ conflict: 'reservation_moved' });
+
+    expect(await readReservation(db.pool, repository.id, key7)).toMatchObject({
+      assignmentId: 'assignment-backward-3',
+      state: 'claimed',
+    });
+    const ledger = await db.pool.query<{ detail: Record<string, unknown> }>(
+      `select detail from runtime_lease_events
+        where lease_id = $1 and type = 'assignment_superseded'
+          and detail->>'requestKey' = $2
+        order by created_at, id`,
+      [leaseId, key7],
+    );
+    expect(ledger.rows.map((row) => row.detail.toAssignmentId)).toEqual([
+      'assignment-backward-2',
+      'assignment-backward-3',
+    ]);
+    expect(ledger.rows.map((row) => row.detail.fromAssignmentId)).toEqual([
+      'assignment-1',
+      'assignment-backward-2',
+    ]);
+    expect(first.id).toBeDefined();
+  });
 });

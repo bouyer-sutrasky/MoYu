@@ -67,7 +67,7 @@ describe('execution reservation on real PostgreSQL', () => {
     fencingToken,
   });
 
-  it('review recovery repeated identical mismatch is idempotent', async () => {
+  it('review recovery repeated identical supersession is idempotent', async () => {
     await db.pool.query("update task_links set upstream_ticket_id='ticket-1' where id=$1", [
       taskId,
     ]);
@@ -75,7 +75,10 @@ describe('execution reservation on real PostgreSQL', () => {
     const bridge = {
       ticket: async () => ({
         ticketId: 'ticket-1',
-        assignmentId: 'wrong',
+        // The runtime re-issued this turn under the same lease and token while
+        // the projected state stayed queued, so only the authoritative record
+        // announces it. The first pass adopts it; repeating it changes nothing.
+        assignmentId: 'assignment-reissued',
         state: 'queued',
         base: null,
         admission: { leaseId, fencingToken: token },
@@ -83,6 +86,25 @@ describe('execution reservation on real PostgreSQL', () => {
     };
     const logger = { info: () => {}, warn: () => {}, error: () => {} };
     await recoverReservedTasks(db.pool, repository, bridge as never, logger);
+    const adopted = await db.pool.query<{ assignment_id: string; state: string }>(
+      `select assignment_id, state from execution_reservations
+        where repository_id = $1 and request_key = $2`,
+      [repository.id, 'admit:' + taskId],
+    );
+    expect(adopted.rows[0]).toMatchObject({
+      assignment_id: 'assignment-reissued',
+      state: 'claimed',
+    });
+    const ledger = await db.pool.query<{ detail: Record<string, unknown> }>(
+      `select detail from runtime_lease_events
+        where lease_id = $1 and type = 'assignment_superseded'`,
+      [leaseId],
+    );
+    expect(ledger.rows).toHaveLength(1);
+    expect(ledger.rows[0]!.detail).toMatchObject({
+      fromAssignmentId: 'assignment-1',
+      toAssignmentId: 'assignment-reissued',
+    });
     const before = (
       await db.pool.query('select version,stop_evidence from task_links where id=$1', [taskId])
     ).rows[0];
@@ -90,7 +112,13 @@ describe('execution reservation on real PostgreSQL', () => {
     const after = (
       await db.pool.query('select version,stop_evidence from task_links where id=$1', [taskId])
     ).rows[0];
-    console.log('REVIEW_REPEATED_MISMATCH', JSON.stringify({ before, after }));
+    console.log('REVIEW_REPEATED_SUPERSESSION', JSON.stringify({ before, after }));
     expect(after).toEqual(before);
+    const stillOne = await db.pool.query<{ count: number }>(
+      `select count(*)::int as count from runtime_lease_events
+        where lease_id = $1 and type = 'assignment_superseded'`,
+      [leaseId],
+    );
+    expect(stillOne.rows[0]!.count).toBe(1);
   });
 });

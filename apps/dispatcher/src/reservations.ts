@@ -1,5 +1,7 @@
 import type pg from 'pg';
 
+import { appendLeaseEvent } from './leases';
+
 export interface ExecutionReservation {
   ticketId: string;
   assignmentId: string;
@@ -12,6 +14,51 @@ export interface ReserveInput extends ExecutionReservation {
   taskId?: string | null;
   deliveryId?: string | null;
 }
+
+/**
+ * The live execution identity as the runtime's authoritative ticket record
+ * states it: the Bridge snapshot's Ticket, Assignment, lease generation, and
+ * ticket state at the moment the platform read it. A host restart ends one
+ * Assignment and re-issues another under the *same* lease token, so the
+ * platform generation (Ticket, lease, token) is unchanged while the runtime's
+ * Assignment id moves. That is a supersession of the runtime turn, not a stale
+ * platform generation.
+ */
+export interface AuthoritativeRuntimeAssignment {
+  ticketId: string;
+  assignmentId: string;
+  leaseId: string;
+  fencingToken: string;
+  /** Runtime ticket state carried by the record; only live states may adopt. */
+  state: string;
+  /** Event-log cursor when the record was read, for the audit ledger. */
+  sourceCursor?: string | null;
+  /** Last bridge event projected for this task, when one exists. */
+  sourceEventId?: string | null;
+  observedAt?: string;
+}
+
+export interface ClaimExecutionInput extends ReserveInput {
+  /**
+   * Set only by the authoritative recovery path. When the stored reservation
+   * still names the Assignment the runtime replaced, the claim migrates it to
+   * the live identity in the same transaction and keeps every existing key.
+   */
+  authoritative?: AuthoritativeRuntimeAssignment;
+  /**
+   * The Assignment the caller observed when it read the authoritative record.
+   * The row is re-checked against it under the reservation lock: if another pass
+   * already moved the reservation, the claim returns `reservation_moved` instead
+   * of letting a snapshot that is now stale overwrite the newer Assignment.
+   */
+  expectedAssignmentId?: string;
+}
+
+/** Why a claim left the row alone instead of adopting the record it was given. */
+export type ClaimExecutionConflict = 'reservation_moved' | 'target_superseded';
+
+/** Runtime states in which an Assignment can still be executing. */
+const ADOPTABLE_RUNTIME_STATES = new Set(['queued', 'running']);
 
 /** Persist one execution identity per idempotency key and current lease. */
 export async function reserveExecution(
@@ -139,11 +186,26 @@ export async function readReservation(
   };
 }
 
-/** Claim a reservation exactly once; replays return the already claimed row. */
+/**
+ * Claim a reservation exactly once; replays return the already claimed row.
+ *
+ * When the caller passes the runtime's authoritative record and that record
+ * names a different Assignment under the same Ticket, lease and fencing token,
+ * the reservation follows the runtime's re-issued turn in this same transaction:
+ * the row keeps its id, request key, task and delivery keys, only the Assignment
+ * value moves, and the replaced value is appended to `runtime_lease_events`.
+ * Every other difference still throws, so a stale or foreign generation is never
+ * adopted.
+ */
 export async function claimExecution(
   pool: pg.Pool,
-  input: ReserveInput,
-): Promise<{ claimed: boolean; id: string }> {
+  input: ClaimExecutionInput,
+): Promise<{
+  claimed: boolean;
+  id: string;
+  supersededFrom: string | null;
+  conflict?: ClaimExecutionConflict;
+}> {
   const client = await pool.connect();
   try {
     await client.query('begin');
@@ -165,24 +227,7 @@ export async function claimExecution(
         'execution claim requires the current active lease generation for this repository',
       );
     }
-    const updated = await client.query<{ id: string }>(
-      `update execution_reservations set state = 'claimed', updated_at = now()
-        where repository_id = $1 and request_key = $2 and ticket_id = $3 and assignment_id = $4
-          and lease_id = $5 and fencing_token = $6 and state = 'reserved'
-        returning id`,
-      [
-        input.repositoryId,
-        input.requestKey,
-        input.ticketId,
-        input.assignmentId,
-        input.leaseId,
-        input.fencingToken,
-      ],
-    );
-    if (updated.rows[0]) {
-      await client.query('commit');
-      return { claimed: true, id: updated.rows[0].id };
-    }
+    // Same lock order as reserveExecution: the lease first, then the reservation.
     const existing = await client.query<{
       id: string;
       state: string;
@@ -192,22 +237,112 @@ export async function claimExecution(
       fencing_token: string;
     }>(
       `select id, state, ticket_id, assignment_id, lease_id, fencing_token
-         from execution_reservations where repository_id = $1 and request_key = $2`,
+         from execution_reservations
+        where repository_id = $1 and request_key = $2
+        for update`,
       [input.repositoryId, input.requestKey],
     );
-    await client.query('commit');
     const row = existing.rows[0];
     if (!row) throw new Error('execution reservation is missing');
     if (
-      row.state !== 'claimed' ||
       row.ticket_id !== input.ticketId ||
-      row.assignment_id !== input.assignmentId ||
       row.lease_id !== input.leaseId ||
       String(row.fencing_token) !== input.fencingToken
     ) {
       throw new Error('execution reservation identity or generation does not match');
     }
-    return { claimed: false, id: row.id };
+    // The caller's snapshot was read before this lock. If the row already moved
+    // since then, the record may be older than the live Assignment; leave it to
+    // the caller to re-read the authoritative record instead of overwriting.
+    if (
+      input.expectedAssignmentId !== undefined &&
+      row.assignment_id !== input.expectedAssignmentId
+    ) {
+      await client.query('commit');
+      return {
+        claimed: false,
+        id: row.id,
+        supersededFrom: null,
+        conflict: 'reservation_moved',
+      };
+    }
+    let supersededFrom: string | null = null;
+    if (row.assignment_id !== input.assignmentId) {
+      const record = input.authoritative;
+      const recordMatches =
+        record !== undefined &&
+        record.ticketId === input.ticketId &&
+        record.assignmentId === input.assignmentId &&
+        record.leaseId === input.leaseId &&
+        String(record.fencingToken) === input.fencingToken;
+      if (
+        !recordMatches ||
+        input.expectedAssignmentId === undefined ||
+        !ADOPTABLE_RUNTIME_STATES.has(record.state) ||
+        (row.state !== 'reserved' && row.state !== 'claimed')
+      ) {
+        throw new Error('execution reservation identity or generation does not match');
+      }
+      // A target the ledger already records as replaced is an old turn, even if
+      // the record that names it still looks internally consistent.
+      const replaced = await client.query(
+        `select 1 from runtime_lease_events
+          where lease_id = $1 and type = 'assignment_superseded'
+            and detail->>'fromAssignmentId' = $2
+          limit 1`,
+        [input.leaseId, input.assignmentId],
+      );
+      if ((replaced.rowCount ?? 0) > 0) {
+        await client.query('commit');
+        return {
+          claimed: false,
+          id: row.id,
+          supersededFrom: null,
+          conflict: 'target_superseded',
+        };
+      }
+      await client.query(
+        `update execution_reservations set assignment_id = $2, updated_at = now() where id = $1`,
+        [row.id, input.assignmentId],
+      );
+      await appendLeaseEvent(client, {
+        leaseId: input.leaseId,
+        repositoryId: input.repositoryId,
+        fencingToken: input.fencingToken,
+        type: 'assignment_superseded',
+        detail: {
+          ticketId: input.ticketId,
+          requestKey: input.requestKey,
+          fromAssignmentId: row.assignment_id,
+          toAssignmentId: input.assignmentId,
+          reservationState: row.state,
+          source: 'bridge_snapshot',
+          sourceEventId: record.sourceEventId ?? null,
+          sourceCursor: record.sourceCursor ?? null,
+          runtimeState: record.state,
+          observedAt: record.observedAt ?? new Date().toISOString(),
+        },
+      });
+      supersededFrom = row.assignment_id;
+    }
+    if (row.state === 'reserved') {
+      const updated = await client.query<{ id: string }>(
+        `update execution_reservations set state = 'claimed', updated_at = now()
+          where id = $1 and assignment_id = $2 and state = 'reserved'
+          returning id`,
+        [row.id, input.assignmentId],
+      );
+      if (!updated.rows[0]) {
+        throw new Error('execution reservation identity or generation does not match');
+      }
+      await client.query('commit');
+      return { claimed: true, id: row.id, supersededFrom };
+    }
+    if (row.state !== 'claimed') {
+      throw new Error('execution reservation identity or generation does not match');
+    }
+    await client.query('commit');
+    return { claimed: false, id: row.id, supersededFrom };
   } catch (error) {
     await client.query('rollback').catch(() => undefined);
     throw error;

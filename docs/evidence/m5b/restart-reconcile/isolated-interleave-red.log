@@ -1,0 +1,154 @@
+# 修前红测：并发旧快照返修（真实 PostgreSQL 16，隔离库）
+# 代码为上一提交（0c97a7f，未含锁内 expected assignment 校验），测试为本轮新增/更新的用例。
+#   PATH=/opt/moyu-node24/bin:$PATH \\
+#   TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \\
+#   pnpm --filter @moyu/dispatcher exec vitest run \\
+#     test/integration/restart-interrupted-reconcile.integration.test.ts \\
+#     test/integration/reservations.integration.test.ts \\
+#     test/integration/recovery-review-idempotent.integration.test.ts
+# 退出码：1（5 failed / 7 passed，12 tests）
+# 敏感信息：无；数据库为隔离实例，日志不含 token。
+
+
+ RUN  v3.2.7 /root/src/restart-reconcile-retry-cdeeef5a10fd/apps/dispatcher
+
+stdout | test/integration/recovery-review-idempotent.integration.test.ts > execution reservation on real PostgreSQL > review recovery repeated identical supersession is idempotent
+REVIEW_REPEATED_SUPERSESSION {"before":{"version":1,"stop_evidence":{}},"after":{"version":1,"stop_evidence":{}}}
+
+ ✓ test/integration/recovery-review-idempotent.integration.test.ts (1 test) 744ms
+ ❯ test/integration/reservations.integration.test.ts (6 tests | 3 failed) 756ms
+   ✓ execution reservation on real PostgreSQL > claims a reserved identity from a queued state event only for the current lease 20ms
+   ✓ execution reservation on real PostgreSQL > keeps one reserved identity across a lost Bridge response before claim 10ms
+   ✓ execution reservation on real PostgreSQL > replays the same reservation, rejects identity and stale-fence changes, and claims once 19ms
+   × execution reservation on real PostgreSQL > adopts a re-issued Assignment only from the matching authoritative record, once 40ms
+     → expected { claimed: false, …(2) } to match object { claimed: false, …(2) }
+(1 matching property omitted from actual)
+   × execution reservation on real PostgreSQL > adopts a concurrent re-issued turn exactly once 11ms
+     → expected [] to have a length of 1 but got +0
+   × execution reservation on real PostgreSQL > never moves the reservation back when an older snapshot lands last 14ms
+     → expected { claimed: false, …(2) } to match object { conflict: 'target_superseded' }
+(3 matching properties omitted from actual)
+ ❯ test/integration/restart-interrupted-reconcile.integration.test.ts (5 tests | 2 failed) 915ms
+   ✓ restart reconciliation on real PostgreSQL > adopts the assignment a restart re-issues under the same lease, records it once, and continues 148ms
+   ✓ restart reconciliation on real PostgreSQL > never adopts an Assignment from a generation that is not the live one 41ms
+   × restart reconciliation on real PostgreSQL > keeps the newest Assignment when a stale snapshot lands after a newer adoption 42ms
+     → expected 1 to be 2 // Object.is equality
+   × restart reconciliation on real PostgreSQL > never adopts backwards when the re-read record is still the stale one 32ms
+     → expected 1 to be 2 // Object.is equality
+   ✓ restart reconciliation on real PostgreSQL > neither starts work nor drops the PR of an awaiting_review ticket across a restart, and ends it when the PR closes 31ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 5 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/integration/reservations.integration.test.ts > execution reservation on real PostgreSQL > adopts a re-issued Assignment only from the matching authoritative record, once
+AssertionError: expected { claimed: false, …(2) } to match object { claimed: false, …(2) }
+(1 matching property omitted from actual)
+
+- Expected
++ Received
+
+  {
+    "claimed": false,
+-   "conflict": "reservation_moved",
+    "id": "424e3675-725f-4ee2-ba9f-f674f0ab0894",
+  }
+
+ ❯ test/integration/reservations.integration.test.ts:359:19
+    357|       },
+    358|     });
+    359|     expect(stale).toMatchObject({ claimed: false, id: first.id, confli…
+       |                   ^
+    360|     expect((await readReservation(db.pool, repository.id, key5))?.assi…
+    361|       'assignment-reissued',
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/5]⎯
+
+ FAIL  test/integration/reservations.integration.test.ts > execution reservation on real PostgreSQL > adopts a concurrent re-issued turn exactly once
+AssertionError: expected [] to have a length of 1 but got +0
+
+- Expected
++ Received
+
+- 1
++ 0
+
+ ❯ test/integration/reservations.integration.test.ts:405:77
+    403|     const results = [left, right];
+    404|     expect(results.filter((item) => item.supersededFrom === 'assignmen…
+    405|     expect(results.filter((item) => item.conflict === 'reservation_mov…
+       |                                                                             ^
+    406|     expect([left.id, right.id]).toEqual([first.id, first.id]);
+    407|     const stored = await db.pool.query<{ assignment_id: string; state:…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/5]⎯
+
+ FAIL  test/integration/reservations.integration.test.ts > execution reservation on real PostgreSQL > never moves the reservation back when an older snapshot lands last
+AssertionError: expected { claimed: false, …(2) } to match object { conflict: 'target_superseded' }
+(3 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+-   "conflict": "target_superseded",
++   "claimed": false,
++   "id": "a2849bc1-dedc-4775-9535-0d08588e8881",
++   "supersededFrom": "assignment-backward-3",
+  }
+
+ ❯ test/integration/reservations.integration.test.ts:462:21
+    460|       authoritative: record('assignment-backward-2'),
+    461|     });
+    462|     expect(lateOld).toMatchObject({ conflict: 'target_superseded' });
+       |                     ^
+    463|     // Its observation is stale as well: the row has moved on.
+    464|     const lateExpected = await claimExecution(db.pool, {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/5]⎯
+
+ FAIL  test/integration/restart-interrupted-reconcile.integration.test.ts > restart reconciliation on real PostgreSQL > keeps the newest Assignment when a stale snapshot lands after a newer adoption
+AssertionError: expected 1 to be 2 // Object.is equality
+
+- Expected
++ Received
+
+- 2
++ 1
+
+ ❯ test/integration/restart-interrupted-reconcile.integration.test.ts:636:25
+    634|     }
+    635| 
+    636|     expect(ticketCalls).toBe(2);
+       |                         ^
+    637|     const reservation = await db.pool.query<{ assignment_id: string; s…
+    638|       `select assignment_id, state from execution_reservations
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/5]⎯
+
+ FAIL  test/integration/restart-interrupted-reconcile.integration.test.ts > restart reconciliation on real PostgreSQL > never adopts backwards when the re-read record is still the stale one
+AssertionError: expected 1 to be 2 // Object.is equality
+
+- Expected
++ Received
+
+- 2
++ 1
+
+ ❯ test/integration/restart-interrupted-reconcile.integration.test.ts:729:25
+    727|     }
+    728| 
+    729|     expect(ticketCalls).toBe(2);
+       |                         ^
+    730|     const reservation = await db.pool.query<{ assignment_id: string; s…
+    731|       `select assignment_id, state from execution_reservations
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/5]⎯
+
+
+ Test Files  2 failed | 1 passed (3)
+      Tests  5 failed | 7 passed (12)
+   Start at  15:03:47
+   Duration  2.50s (transform 609ms, setup 0ms, collect 3.93s, tests 2.41s, environment 1ms, prepare 255ms)
+
+undefined
+/root/src/restart-reconcile-retry-cdeeef5a10fd/apps/dispatcher:
+[ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL] Command failed with exit code 1: vitest run test/integration/restart-interrupted-reconcile.integration.test.ts test/integration/reservations.integration.test.ts test/integration/recovery-review-idempotent.integration.test.ts

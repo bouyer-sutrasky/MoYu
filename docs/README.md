@@ -15,7 +15,7 @@
 
 - 首次搭建：[分阶段派单模板](./ISSUE-PLAN.md)、[独立实例引导](./BOOTSTRAP-RUNBOOK.md)、[概念实现方案](./IMPLEMENTATION.md)。
 - M1–M3：[数据库](./M1-VERIFICATION.md)、[认证](./M2-VERIFICATION.md)、[投递](./M3-VERIFICATION.md)、[SSE 边界](./M3-SSE-BOUNDARY-VERIFICATION.md)。
-- M4–M5：[执行控制](./M4-VERIFICATION.md)、[工作台体验](./M4-UX-VERIFICATION.md)、[多仓库实例](./M5-A-VERIFICATION.md)、[资源与租约](./M5-B-VERIFICATION.md)。
+- M4–M5：[执行控制](./M4-VERIFICATION.md)、[工作台体验](./M4-UX-VERIFICATION.md)、[多仓库实例](./M5-A-VERIFICATION.md)、[资源与租约](./M5-B-VERIFICATION.md)、[重启对账](./M5-B-RESTART-RECONCILE.md)。
 - M6：[附件与审阅](./M6-A-VERIFICATION.md)、[通知与历史清理](./M6-B-VERIFICATION.md)、[M6-C 验收表](./M6-C-ACCEPTANCE.md)、
   [M6-C 验证记录](./M6-C-VERIFICATION.md)、[2026-11-16 发布与验收快照](./M6-C-FINAL-STATUS-2026-11-16.md)。
 - [按阶段存放的原始证据](./evidence/)和[环境调研](./research/)用于追溯当时的版本、命令和结论。

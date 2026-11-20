@@ -622,8 +622,34 @@ case ${1:-} in
   status)
     status
     ;;
+  services-up)
+    # Restart the platform services over the existing database and run state.
+    # Used by the restart scenarios after PostgreSQL is restarted with the
+    # services stopped; it recreates the transient systemd units without
+    # resetting the database or the ticket state.
+    prepare_environment
+    start_supervisor
+    start_api
+    start_dispatcher
+    ;;
+  reset-state)
+    # Rebuild the database and runtime state over the existing slice, without a
+    # second scope gate: used between restart scenarios after the gate passed.
+    prepare_environment
+    systemctl stop "${SLICE%.slice}-dispatcher.service" "${SLICE%.slice}-api.service" \
+      "${SLICE%.slice}-supervisor.service" 2>/dev/null || true
+    reset_owned_state
+    migrate_and_seed
+    write_instances_config
+    stage_dsh_home
+    start_supervisor
+    start_api
+    start_runtime
+    start_dispatcher
+    write_state
+    ;;
   *)
-    echo "usage: $0 {up|down|status}" >&2
+    echo "usage: $0 {up|down|status|services-up|reset-state}" >&2
     exit 2
     ;;
 esac
