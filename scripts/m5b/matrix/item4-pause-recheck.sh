@@ -29,7 +29,7 @@ LIVE="node $M5B_MATRIX_ROOT/scripts/m5b/matrix/live.mjs"
 SESSIONS=$M5B_MATRIX_DSH_HOME/sessions
 PROFILE_LINK=$M5B_MATRIX_DSH_HOME/profiles/$M5B_MATRIX_PROFILE/node_modules/dsh-superagent
 OPERATIONS=$M5B_MATRIX_DSH_HOME/state/$M5B_MATRIX_PROFILE/bridge/operations.jsonl
-PATCH=$M5B_MATRIX_ROOT/integrations/superagent/patches/0031-pause-recheck.patch
+PATCH=$M5B_MATRIX_ROOT/integrations/superagent/patches/0032-pause-recheck.patch
 AGENT_LOGIN=${M5B_MATRIX_AGENT_LOGIN:-Bouyer12}
 
 CHECKS=0
