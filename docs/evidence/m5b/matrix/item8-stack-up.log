@@ -1,0 +1,153 @@
+== stopping matrix units
+  stop m5bmatrix-pg.service
+  stop m5bmatrix-provider.service
+  stop m5bmatrix-supervisor.service
+  stop m5bmatrix-dispatcher.service
+  stop m5bmatrix-api.service
+  note: /sys/fs/cgroup/m5bmatrix.slice still exists (held by a remaining member)
+  removed run secrets from /tmp/m5bmatrix/protected
+== verifying the isolated run layout
+run_root=/tmp/m5bmatrix mode=755 uid=0
+protected=/tmp/m5bmatrix/protected mode=0700 uid=0
+config=/tmp/m5bmatrix/config mode=0750 uid=0 gid=986
+owned=/tmp/m5bmatrix/tmp,/tmp/m5bmatrix/credentials,/tmp/m5bmatrix/dsh-home uid=995 gid=986
+path /root mode=0710
+path /root/.ssh mode=0700
+path /root/.dsh mode=0755
+path /root/.dsh-m5 mode=0700
+path /root/.config mode=0710
+path /root/.config/gh-agent mode=0700
+path /root/.local mode=0710
+path /root/.local/bin mode=0750
+path /root/src mode=0710
+path /root/src/upstream mode=0710
+path /opt/moyu-node24 mode=0750
+path /etc mode=0755
+host_boundary=clean
+ssh_key=/root/.config/m5bmatrix/probe_ssh_key sha256=20cc90eab9cb5448 mode=600
+gh_config=/root/.config/m5bmatrix/gh hosts=/root/.config/m5bmatrix/gh/hosts.yml token=present
+credentials=dedicated
+== cleaning temporary state from the previous run
+cleaned=/tmp/m5bmatrix/tmp entries=1
+cleaned=/tmp/m5bmatrix/credentials entries=0
+cleaned=/tmp/m5bmatrix/instance-env entries=0
+cleaned=/tmp/m5bmatrix/instance-logs entries=1
+cleaned=/tmp/m5bmatrix/worktrees entries=1
+cleaned=/tmp/m5bmatrix/dsh-home entries=5
+== verifying probe-only credential scope before starting the stack
+$ node /root/src/cgroup-instance-lifecycle-f9febd112eb1/scripts/m5b/matrix/precheck.mjs --gate --online --user m5bmatrix --run /tmp/m5bmatrix --ssh-key /root/.config/m5bmatrix/probe_ssh_key --gh-config /root/.config/m5bmatrix/gh --control-repository Bouyer12/m5a-epsilon-adf10ad9
+# M5-B matrix isolation precheck
+recorded=2026-11-20T12:03:59.518Z
+host=lavm-flnape7bgu user=m5bmatrix mode=gate
+matrix_home=/home/m5bmatrix
+ssh_key=/root/.config/m5bmatrix/probe_ssh_key
+gh_config=/root/.config/m5bmatrix/gh
+run_root=/tmp/m5bmatrix
+probe_repositories=Bouyer12/m5a-beta-adf10ad9
+control_repository=Bouyer12/m5a-epsilon-adf10ad9
+
+## identity
+  PASS       m5bmatrix — uid=995 gid=986 groups=986
+## credentials
+  PASS       ssh-key:/root/.config/m5bmatrix/probe_ssh_key — sha256=20cc90eab9cb5448 mode=600
+  PASS       gh-config:/root/.config/m5bmatrix/gh — token=present sha256=3e3e2e27b33865b3 (value not printed)
+## scope
+  PASS       git-push-dry-run:Bouyer12/m5a-beta-adf10ad9 — allowed — To ssh://ssh.github.com:443/Bouyer12/m5a-beta-adf10ad9.git
+  PASS       gh-refs-write:Bouyer12/m5a-beta-adf10ad9 — allowed (stage=write http=422) — gh: refs/heads/__m5b_scope_probe__1795176243532qxsosc..__ is not a valid ref name. (HTTP 422)
+  PASS       gh-refs-side-effects:Bouyer12/m5a-beta-adf10ad9 — refs=11 pull requests=12
+  PASS       gh-issues-write:Bouyer12/m5a-beta-adf10ad9 — allowed (stage=write http=422) — gh: Invalid request.
+  PASS       gh-issues-side-effects:Bouyer12/m5a-beta-adf10ad9 — issues=2
+  PASS       gh-pulls-write:Bouyer12/m5a-beta-adf10ad9 — allowed (stage=write http=422) — gh: Invalid request.
+  PASS       gh-pulls-side-effects:Bouyer12/m5a-beta-adf10ad9 — pull requests=12
+  PASS       git-push-dry-run:Bouyer12/m5a-epsilon-adf10ad9 (must be denied) — denied — ERROR: Repository not found.
+  PASS       gh-refs-write:Bouyer12/m5a-epsilon-adf10ad9 (must be denied) — denied (stage=read-repo) — gh: Not Found (HTTP 404)
+  SKIP       gh-refs-side-effects:Bouyer12/m5a-epsilon-adf10ad9 (must be denied) — read denied; no write was attempted
+  PASS       gh-issues-write:Bouyer12/m5a-epsilon-adf10ad9 (must be denied) — denied (stage=read-repo) — gh: Not Found (HTTP 404)
+  SKIP       gh-issues-side-effects:Bouyer12/m5a-epsilon-adf10ad9 (must be denied) — read denied; no write was attempted
+  PASS       gh-pulls-write:Bouyer12/m5a-epsilon-adf10ad9 (must be denied) — denied (stage=read-repo) — gh: Not Found (HTTP 404)
+  SKIP       gh-pulls-side-effects:Bouyer12/m5a-epsilon-adf10ad9 (must be denied) — read denied; no write was attempted
+
+verdict=clean
+== creating the aggregate slice
+Running as unit: m5bmatrix-anchor.service; invocation ID: 908ed8eb6f7e483290e76b3cfa19b2eb
+$ systemctl set-property --runtime m5bmatrix.slice MemoryMax=8192M MemoryHigh=6144M MemorySwapMax=0
+slice=/sys/fs/cgroup/m5bmatrix.slice
+  memory.max=8589934592
+  memory.high=6442450944
+  memory.current=11001856
+  memory.peak=509374464
+  memory.events=low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 
+  memory.swap.max=0
+host_mem_available_kb=13031328
+== starting the isolated PostgreSQL inside the slice
+pgdata=/tmp/m5bmatrix/pgdata mode=0700 uid=111 gid=112
+Running as unit: m5bmatrix-pg.service; invocation ID: 9efb2fc84b124abb9ec4bd26d5ea6f9e
+127.0.0.1:55433 - accepting connections
+pg unit cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-pg.service
+pgdata=postgres:postgres 700 /tmp/m5bmatrix/pgdata
+== creating m5b_matrix and applying migrations
+$ env DATABASE_URL=postgres://moyu@127.0.0.1:55433/m5b_matrix corepack pnpm --filter @moyu/db db:migrate
+$ tsx src/cli/migrate.ts
+{"level":"info","service":"moyu-db","event":"migrate.completed","message":"Database migrations applied successfully"}
+== seeding the owner, repository and one browser session
+owner=4e49ee5b-1f2b-4c6b-8285-3ce9778b981c repository=c6c5f720-2511-4614-bdaa-4f5b1cdcec76
+seed_file=/tmp/m5bmatrix/protected/seed.env mode=600 owner=root
+== starting the loopback test provider
+Running as unit: m5bmatrix-provider.service; invocation ID: f556a1e668f6400787dc090f0b59d26a
+instances_config=/tmp/m5bmatrix/config/instances.json owner=root:m5bmatrix mode=640
+== staging the runtime profile m5b (webserver port 3404) into a matrix-owned harness home
+8:    stateDir: /tmp/m5bmatrix/dsh-home/state/m5b
+25:            reasoningEfforts:
+31:    provider: local-test
+dsh_home=/tmp/m5bmatrix/dsh-home profile=/tmp/m5bmatrix/stage/profiles/m5b/profile owner=m5bmatrix:m5bmatrix
+staged_stage=/tmp/m5bmatrix/stage owner=root:m5bmatrix mode=750
+profile=/tmp/m5bmatrix/dsh-home/profiles/m5b -> /root/src/upstream/m5b-admission-build21
+== starting the host supervisor inside the slice
+Running as unit: m5bmatrix-supervisor.service; invocation ID: 1bf07ec55ac7433e80789c8692313125
+$ runuser -u m5bmatrix -- /bin/sh -c echo '+memory +pids' > '/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/cgroup.subtree_control' &&      mkdir -p '/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances' &&      echo '+memory +pids' > '/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/cgroup.subtree_control'
+supervisor_cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service owner=m5bmatrix:m5bmatrix
+managed_cgroup_root=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances controllers=memory pids
+== starting the platform API from the baseline artifact
+Running as unit: m5bmatrix-api.service; invocation ID: e666910ad04c448098250460723220cf
+== preparing and waking the runtime instance through the supervisor
+$ supervisor_call POST /control/v1/instances/c6c5f720-2511-4614-bdaa-4f5b1cdcec76/prepare (authorization: Bearer ***)
+{"data":{"repositoryId":"c6c5f720-2511-4614-bdaa-4f5b1cdcec76","fullName":"Bouyer12/m5a-beta-adf10ad9","defaultBranch":"main","state":"sleeping","desiredState":"sleeping","reasonCode":"sleeping","reasonDetail":null,"waitingFor":null,"queuePriority":100,"wakeRequestedAt":null,"activationRequestedAt":null,"lastActivityAt":null,"lastProgressAt":null,"lastStartedAt":null,"lastOnlineAt":null,"lastStoppedAt":null,"lastHealthAt":null,"pid":null,"port":3404,"bridgePort":3403,"profile":"m5b","ownership":{},"attemptCount":0,"errorCode":null,"errorDetail":null,"memoryCurrentBytes":null,"memoryPeakBytes":null,"memoryLimitBytes":null,"memoryEvents":{},"resourceState":"unknown","resourceDetail":null,"resourceCheckedAt":null,"gitState":"preparing","gitPhase":"connecting","gitProgress":null,"gitDetail":"正在连接远端并准备可复用的仓库副本…","gitStartedAt":"2026-11-20T12:05:02.054Z","gitFinishedAt":null,"gitAttempts":1,"gitHead":null,"createdAt":"2026-11-20T12:05:02.046Z","updatedAt":"2026-11-20T12:05:02.054Z"}}
+$ supervisor_call POST /control/v1/instances/c6c5f720-2511-4614-bdaa-4f5b1cdcec76/wake (authorization: Bearer ***)
+{"data":{"accepted":true,"duplicate":false,"instance":{"repositoryId":"c6c5f720-2511-4614-bdaa-4f5b1cdcec76","fullName":"Bouyer12/m5a-beta-adf10ad9","defaultBranch":"main","state":"sleeping","desiredState":"online","reasonCode":"wake_queued","reasonDetail":null,"waitingFor":"capacity","queuePriority":20,"wakeRequestedAt":"2026-11-20T12:05:02.078Z","activationRequestedAt":"2026-11-20T12:05:02.078Z","lastActivityAt":"2026-11-20T12:05:02.078Z","lastProgressAt":null,"lastStartedAt":null,"lastOnlineAt":null,"lastStoppedAt":null,"lastHealthAt":null,"pid":null,"port":3404,"bridgePort":3403,"profile":"m5b","ownership":{},"attemptCount":0,"errorCode":null,"errorDetail":null,"memoryCurrentBytes":null,"memoryPeakBytes":null,"memoryLimitBytes":null,"memoryEvents":{},"resourceState":"unknown","resourceDetail":null,"resourceCheckedAt":null,"gitState":"preparing","gitPhase":"connecting","gitProgress":null,"gitDetail":"Cloning into bare repository '/tmp/m5bmatrix/worktrees/m5b/.repository.git.partial-354827-1795176302056'...","gitStartedAt":"2026-11-20T12:05:02.056Z","gitFinishedAt":null,"gitAttempts":1,"gitHead":null,"createdAt":"2026-11-20T12:05:02.046Z","updatedAt":"2026-11-20T12:05:02.080Z"}}}
+bridge healthz: {"ok":true,"configured":false}
+instance row:
+online|online|354925|3404|3403|m5b|listening
+== starting the dispatcher from the baseline artifact
+$ sha256sum apps/dispatcher/dist/main.js
+aae1c459f76f55683413ee9dff3e40721fb79c548d5a2a3fed027218198b0004  apps/dispatcher/dist/main.js
+Running as unit: m5bmatrix-dispatcher.service; invocation ID: fdfb3abbca8f49c7b9ea9116ab9a5a81
+== stack state written to /tmp/m5bmatrix/protected/state.env (bootstrap secrets; not committed)
+== stack is up
+slice=/sys/fs/cgroup/m5bmatrix.slice
+  memory.max=8589934592
+  memory.high=6442450944
+  memory.current=461078528
+  memory.peak=509374464
+  memory.events=low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 
+  memory.swap.max=0
+host_mem_available_kb=12546724
+units:
+  m5bmatrix-pg.service                     active pid=354610 cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-pg.service
+  m5bmatrix-provider.service               active pid=354737 cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-provider.service
+  m5bmatrix-supervisor.service             active pid=354827 cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service
+  m5bmatrix-dispatcher.service             active pid=355123 cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-dispatcher.service
+  m5bmatrix-api.service                    active pid=354858 cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-api.service
+protected layout:
+  root:root 700 /tmp/m5bmatrix/protected
+  root:m5bmatrix 750 /tmp/m5bmatrix/config
+  m5bmatrix:m5bmatrix 700 /tmp/m5bmatrix/credentials
+  m5bmatrix:m5bmatrix 700 /tmp/m5bmatrix/tmp
+  bridge_credentials=1
+state file:
+export M5B_OWNER_ID=4e49ee5b-1f2b-4c6b-8285-3ce9778b981c
+export M5B_REPOSITORY_ID=c6c5f720-2511-4614-bdaa-4f5b1cdcec76
+export M5B_SESSION_TOKEN=***
+export M5B_BRIDGE_URL=http://127.0.0.1:3403
+export M5B_BRIDGE_TOKEN=***
+export M5B_RUNTIME_PID=354827
+export M5B_SLICE=m5bmatrix.slice

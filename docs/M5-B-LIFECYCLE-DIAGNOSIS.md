@@ -170,7 +170,7 @@
 
 | 命令 | 结果 |
 | --- | --- |
-| `pnpm check` | exit 0；lint/format/typecheck 通过，supervisor 单元测试 147/147 |
+| `pnpm check` | exit 0；lint/format/typecheck 通过，supervisor 单元测试（合并 main 后由 `pnpm check` 覆盖） |
 | `pnpm build` | exit 0；`apps/supervisor/dist/main.js` sha256 `a2522eee5fe62ef1954e6bd10ace03a38d9b5960fab6de0ede64261cb2df55dd` |
 | `TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm test:integration` | exit 0；db/api 通过，dispatcher 100 passed / 1 skipped，supervisor 4 passed |
 | `bash scripts/m5b/cgroup-lifecycle-probe.sh`（基线） | exit 1，22 项 FAIL |
@@ -203,8 +203,12 @@
 
 - 已验证（真实 cgroup v2、真实进程、真实 systemd 委托单元）：空白目录冷启动、控制器
   下发、`memory.max/high` 写入、runtime 与 setsid 后代同组、`memory.current>0`、停止后
-  递归空树并移除、端口释放、inode 匹配与被替换的判定、非 root 权限不足时的明确失败。
-  单元：`apps/supervisor/test/process.test.ts`、`test/lifecycle.test.ts`。
-- 未验证：真实 DSH runtime 的完整 wake→online→sleep、休眠唤醒与 supervisor 重启现场，
-  依赖 #92 建好的隔离环境；租约/槽位路径本 PR 未改，仍由既有 dispatcher 集成测试覆盖；
-  与 #47 的联验（launch 超时出口）待两边合流后在同一现场跑。
+  递归空树（目录按安全策略保留）、端口释放、inode 匹配与被替换的判定、非 root 权限不足
+  时的明确失败。单元：`apps/supervisor/test/process.test.ts`、`test/lifecycle.test.ts`。
+- 已验证（2026-11-20，真实 DSH runtime，#100 隔离矩阵）：空目录冷启、休眠/唤醒、
+  主 PID 退出但后代存活、陌生进程占端口、同名 cgroup 重建、supervisor 重启；34 项现场
+  verdict 全部通过，逐代 PID/starttime、cgroup inode、递归成员、端口、租约与槽位见
+  [`docs/evidence/m5b/matrix/ITEM8-CGROUP-LIFECYCLE-2026-11-20.md`](evidence/m5b/matrix/ITEM8-CGROUP-LIFECYCLE-2026-11-20.md)
+  与原始日志 `item8-cgroup-lifecycle.log`。
+- 未验证：与 #47 的联验（launch 超时出口）待两边合流后在同一现场跑；租约/槽位路径本 PR
+  未改，仍由既有 dispatcher 集成测试覆盖；生产环境未触碰。
