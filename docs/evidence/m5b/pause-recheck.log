@@ -142,40 +142,38 @@ for p in integrations/superagent/patches/*.patch; do git apply "$p"; done   # 00
 }
 ```
 
-## 7. 待验项（现场，未完成）
+## 7. 现场依赖与待验项
 
-依赖事实（2026-11-20 复核）：
+依赖状态（2026-11-20 21:00 复核）：
 
-- `#92` / PR #100 的隔离环境在专用 gh token 缺失时 `stack.sh up` fail closed；所有者尚未签发该 token。因此没有
-  可用的隔离栈来跑 Web 与独立 GitHub 身份两个现场。
-- `#94` / PR #102 仍在审阅，停止证据的 cgroup 归属联验尚未合流。
-- 旧 PR #55 也未合并，其文档内容（无 assignment 证据、`launch` 字段、`lingeringPids` 删除）已并入本轮 §2.3。
+- `#92` 的隔离环境已合流（PR #100，2026-11-20T11:31:09Z）；所有者随后配置了专用探测 gh token。
+  `node scripts/m5b/matrix/precheck.mjs` 现场结果 `verdict=clean`、exit 0；SSH/gh 配置都只在 root 受限目录，
+  `stack.sh up` 的凭据门禁可放行。
+- `#94` 的 cgroup/进程归属修复已合流（PR #102，2026-11-20T12:38:06Z），停止证据联验不再被分支阻塞。
+- 旧 PR #55 仍未合并；其文档内容（无 assignment 证据、`launch` 字段、`lingeringPids` 删除）已并入本轮 §2.3。
 
-拿到隔离环境后应运行（脚本已入库，关键断言失败退出非零、凭据只从受限文件读取、记录制品哈希）：
+隔离栈是**串行共享**资源（固定 3403/3404 端口与 `/tmp/m5bmatrix`）。本单恢复时另一个工单的现场回归正在使用
+它；本单的 Web/强制超时现场已排入队列，拿到窗口后自动执行：
 
 ```bash
-# Web：启动前/中/后暂停、强制超时、核对、恢复
-M5B_MATRIX_FORCE_LAUNCH_TIMEOUT=1 \
-  scripts/m5b/matrix/item4-pause-recheck.sh web
-M5B_MATRIX_FORCE_LAUNCH_TIMEOUT=1 \
-  scripts/m5b/matrix/item4-pause-recheck.sh forced
+# 无测试钩子的栈：启动前/后暂停、证据、恢复、重复 resume
+scripts/m5b/matrix/item4-pause-recheck.sh web
+# 以 MOYU_TEST_HOOKS=1 MOYU_TEST_PAUSE_LAUNCH_MS=1 启动的栈：强制超时→核对→恢复
+M5B_MATRIX_FORCE_LAUNCH_TIMEOUT=1 scripts/m5b/matrix/item4-pause-recheck.sh forced
+```
 
-# 独立 GitHub 身份：0600 的探测 token 文件，身份必须不是 Bouyer12
-M5B_MATRIX_PROBE_GH_TOKEN_FILE=/root/.config/m5bmatrix/probe_gh_token \
-M5B_MATRIX_PROBE_LOGIN=<probe-login> \
+独立 GitHub 身份仍有一个**所有者动作**：已配置的探测 token 属于 `Bouyer12`（`gh api user` 返回 Bouyer12），
+与 agent 自身账号相同。上游 GitHub Source 用 `sameName` 过滤 agent 自己的评论，因此这个 token 发出的
+`@Bouyer12` 不会形成入口事件。要跑 GitHub 现场，需要另一个 GitHub 身份（例如所有者本人）在探测仓的一个
+issue/PR 上发一条 @ agent 的提及；脚本会校验 `M5B_MATRIX_PROBE_LOGIN` 与 agent login 不同。
+
+```bash
+M5B_MATRIX_PROBE_GH_CONFIG_DIR=/root/.config/m5bmatrix/gh \
+M5B_MATRIX_PROBE_LOGIN=<independent-login> \
 M5B_MATRIX_REPOSITORY=Bouyer12/m5a-beta-adf10ad9 \
 M5B_MATRIX_GITHUB_ISSUE=<number> \
   scripts/m5b/matrix/item4-pause-recheck.sh github
 ```
 
-强制超时用测试专用开关：被测 runtime 以 `MOYU_TEST_HOOKS=1 MOYU_TEST_PAUSE_LAUNCH_MS=1` 启动，立即暂停正在
-launch 的任务即可稳定进入 `timed-out`。生产不设置这两个变量，停止上限仍是 10 s。
-
-仍需所有者/依赖方提供：
-
-1. 专用探测 gh token（#92 的授权缺项 1），安装后 `precheck --online` 应为 exit 0；
-2. #92 与 #94 合流（或明确允许在未合流分支上跑现场）；
-3. 探测仓与一个可 @ agent 的 issue/PR 编号。
-
-未验证项：现场 Web/GitHub 双入口、真实 worker/租约/退出码/脱敏日志的现场快照、与 #94 的 cgroup 停止证据联验。
-因此本单不宣称现场验收通过，也不应据此合并。
+未验证项直到实际跑完前保持：现场 Web/GitHub 双入口、真实 worker/租约/退出码/脱敏日志的现场快照、
+与 #94 的 cgroup 停止证据联验。本单不会在只跑完本地检查时宣称现场验收通过。

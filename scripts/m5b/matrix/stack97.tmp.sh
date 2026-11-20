@@ -1,0 +1,628 @@
+#!/usr/bin/env bash
+# Boots and tears down the isolated M5-B matrix stack.
+#
+#   scripts/m5b/matrix/stack.sh up      # fresh slice, PG, migrations, seed, runtime, API, dispatcher
+#   scripts/m5b/matrix/stack.sh down    # stops everything this run created, removes run secrets
+#   scripts/m5b/matrix/stack.sh status  # prints measured facts, touches nothing
+#
+# The stack is one enforceable slice so API, PostgreSQL, dispatcher, supervisor,
+# runtime and test processes are all inside the same managed memory boundary.
+# Production 3082, the production database and the shared 55432 PostgreSQL are
+# never touched.
+#
+# Privileged bootstrap files (supervisor token, seeded session token, bridge
+# credentials, staged profile) only live in directories `guard.mjs` verified:
+# root-owned 0700 for root-written tokens, matrix-owned 0700 for files the
+# supervisor writes. The test identity never gets the host agent key or the
+# shared gh configuration; `prepare-nonroot.sh` installs dedicated probe-only
+# credentials and `guard audit-*` refuses to start without them.
+set -uo pipefail
+
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=scripts/m5b/matrix/lib.sh
+source "$HERE/lib.sh"
+
+SLICE=$M5B_MATRIX_SLICE
+ANCHOR="${SLICE%.slice}-anchor.service"
+PG_UNIT="${SLICE%.slice}-pg.service"
+SUP_UNIT="${SLICE%.slice}-supervisor.service"
+DISP_UNIT="${SLICE%.slice}-dispatcher.service"
+API_UNIT="${SLICE%.slice}-api.service"
+PROV_UNIT="${SLICE%.slice}-provider.service"
+ALL_UNITS=("$PG_UNIT" "$PROV_UNIT" "$SUP_UNIT" "$DISP_UNIT" "$API_UNIT")
+
+RUN=$M5B_MATRIX_RUN
+PGDATA="$RUN/pgdata"
+PROVIDER_LOG="$M5B_MATRIX_TMP/local-provider.jsonl"
+
+cleanup_failed_up() {
+  echo "!! up failed; stopping units and removing run secrets" >&2
+  local unit
+  local args=(--user "$M5B_MATRIX_USER" --protected "$M5B_MATRIX_PROTECTED"
+    --credentials "$M5B_MATRIX_CREDENTIALS" --instance-env "$M5B_MATRIX_INSTANCE_ENV"
+    --cgroup-root "$M5B_MATRIX_CGROUP_ROOT")
+  for unit in "${ALL_UNITS[@]}" "$ANCHOR"; do
+    args+=(--unit "$unit")
+  done
+  m5b_lifecycle cleanup-failed-up "${args[@]}" \
+    || echo "!! cleanup verification FAILED: see the leftover list above" >&2
+}
+
+fail() {
+  local message=$*
+  echo "FAIL: ${message}" >&2
+  if [[ ${M5B_MATRIX_UP_ACTIVE:-0} == 1 ]]; then
+    M5B_MATRIX_UP_ACTIVE=0
+    cleanup_failed_up
+  fi
+  exit 1
+}
+
+# A deterministic failure point for the cleanup regression (never in normal runs).
+maybe_inject_failure() {
+  if [[ ${M5B_MATRIX_INJECT_FAILURE:-} == "$1" ]]; then
+    fail "injected failure after step: $1"
+  fi
+}
+
+# The credentials actually used by the services must reach only the probe
+# repositories. This runs with the same dedicated key/config the units receive.
+scope_gate() {
+  note "verifying probe-only credential scope before starting the stack"
+  m5b_run node "$HERE/precheck.mjs" --gate --online --user "$M5B_MATRIX_USER" \
+    --run "$RUN" --ssh-key "$M5B_MATRIX_SSH_KEY" --gh-config "$M5B_MATRIX_GH_CONFIG_DIR" \
+    --control-repository "$M5B_MATRIX_CONTROL_REPOSITORY" \
+    || fail "the probe credential scope gate did not pass"
+}
+
+note() {
+  echo "== $*"
+}
+
+stop_unit() {
+  local unit=$1
+  systemctl stop "$unit" 2>/dev/null || true
+  systemctl reset-failed "$unit" 2>/dev/null || true
+}
+
+# Refuses to run unless the run layout is protected, the test identity cannot
+# write host configuration and its credentials are dedicated to the probe
+# repositories. The host-side convergence is an owner action (see
+# docs/evidence/m5b/matrix/HARNESS-ISOLATION.md); the harness never repairs
+# shared host configuration by itself.
+prepare_environment() {
+  note "verifying the isolated run layout"
+  [[ $(id -u) -eq 0 ]] || fail "stack.sh must run as root"
+  m5b_prepare_run || fail "could not prepare the protected run layout"
+  m5b_audit_host \
+    || fail "the test identity can write host configuration; the owner must run prepare-nonroot.sh --revoke first"
+  m5b_audit_credentials \
+    || fail "dedicated probe credentials are missing or invalid; see prepare-nonroot.sh --check"
+  runuser -u "$M5B_MATRIX_USER" -- test -r "$M5B_MATRIX_ROOT/apps/dispatcher/dist/main.js" \
+    || fail "the test identity cannot read $M5B_MATRIX_ROOT; run prepare-nonroot.sh --apply"
+  runuser -u "$M5B_MATRIX_USER" -- test -x "$M5B_MATRIX_GH_CLI" \
+    || fail "the test identity cannot execute $M5B_MATRIX_GH_CLI"
+}
+
+# Empties the temporary, matrix-owned parts of a previous run. Keeps pgdata so
+# the next start can reuse the cluster; the database itself is rebuilt below.
+reset_owned_state() {
+  note "cleaning temporary state from the previous run"
+  local dir
+  for dir in "$M5B_MATRIX_TMP" "$M5B_MATRIX_CREDENTIALS" "$M5B_MATRIX_INSTANCE_ENV" \
+    "$M5B_MATRIX_INSTANCE_LOGS" "$M5B_MATRIX_WORKTREES" "$M5B_MATRIX_DSH_HOME"; do
+    [[ -d $dir ]] || continue
+    m5b_clean_owned "$dir" || fail "could not clean $dir"
+  done
+  # Staging is root-owned (never handed to the identity) and rebuilt from the
+  # read-only profile source.
+  if [[ -d $M5B_MATRIX_STAGE ]]; then
+    rm -rf "${M5B_MATRIX_STAGE:?}"
+    mkdir -p "$M5B_MATRIX_STAGE"
+    chgrp "$M5B_MATRIX_GROUP" "$M5B_MATRIX_STAGE"
+    chmod 0750 "$M5B_MATRIX_STAGE"
+  fi
+  # Root->identity control inputs are root-owned; the identity can only read.
+  if [[ -d $M5B_MATRIX_CONTROL ]]; then
+    find "$M5B_MATRIX_CONTROL" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  fi
+}
+
+down() {
+  note "stopping matrix units"
+  for unit in "${ALL_UNITS[@]}"; do
+    printf '  stop %s\n' "$unit"
+    stop_unit "$unit"
+  done
+  stop_unit "$ANCHOR"
+  # The supervisor moves a runtime into its own instance cgroup, so stopping the
+  # supervisor unit does not stop that runtime. Tear the instance subtree down
+  # explicitly, otherwise the next start fails with `port_in_use`.
+  if [[ -d $M5B_MATRIX_CGROUP_ROOT ]]; then
+    [[ $M5B_MATRIX_CGROUP_ROOT == "$M5B_MATRIX_SLICE_PATH/"* ]] \
+      || fail "refusing to clean a cgroup outside $M5B_MATRIX_SLICE_PATH"
+    local dir
+    while IFS= read -r dir; do
+      [[ -f $dir/cgroup.kill ]] && { echo 1 >"$dir/cgroup.kill" 2>/dev/null || true; }
+    done < <(find "$M5B_MATRIX_CGROUP_ROOT" -mindepth 1 -maxdepth 2 -type d 2>/dev/null)
+    for _ in $(seq 1 40); do
+      local busy=0
+      while IFS= read -r dir; do
+        [[ -n $(tr -d '[:space:]' <"$dir/cgroup.procs" 2>/dev/null) ]] && busy=1
+      done < <(find "$M5B_MATRIX_CGROUP_ROOT" -mindepth 1 -maxdepth 2 -type d 2>/dev/null)
+      (( busy == 0 )) && break
+      sleep 0.25
+    done
+    find "$M5B_MATRIX_CGROUP_ROOT" -depth -mindepth 1 -maxdepth 2 -type d -exec rmdir {} \; 2>/dev/null || true
+  fi
+  # Wait for the loopback ports to be released before the next start.
+  for _ in $(seq 1 40); do
+    ss -ltn 2>/dev/null | grep -qE '127\.0\.0\.1:(3403|3404) ' || break
+    sleep 0.25
+  done
+  # A leftover unit keeps the slice alive; stop the slice only after its members.
+  for _ in $(seq 1 20); do
+    [[ -d $M5B_MATRIX_SLICE_PATH ]] || break
+    sleep 0.25
+  done
+  if [[ -d $M5B_MATRIX_SLICE_PATH ]]; then
+    echo "  note: ${M5B_MATRIX_SLICE_PATH} still exists (held by a remaining member)"
+  else
+    echo "  slice ${SLICE} removed"
+  fi
+  # The pre-guard layout wrote bootstrap secrets directly into the run root.
+  # Removing a link removes the link itself (rm never follows it), so a replaced
+  # path cannot delete a host file.
+  local legacy
+  for legacy in supervisor-token seed.env state.env; do
+    if [[ -e $RUN/$legacy || -L $RUN/$legacy ]]; then
+      rm -f "$RUN/$legacy"
+      echo "  removed legacy bootstrap file $RUN/$legacy"
+    fi
+  done
+  # A stopped stack keeps no bootstrap secret: rotating them on every stop keeps
+  # the lifetime bounded to the run. Scratch/state paths are verified first.
+  if [[ -d $M5B_MATRIX_PROTECTED ]]; then
+    local name
+    for name in supervisor-token seed.env state.env; do
+      m5b_protected_remove "$name" >/dev/null 2>&1 || echo "  note: could not remove $name"
+    done
+    echo "  removed run secrets from $M5B_MATRIX_PROTECTED"
+  fi
+  local owned
+  for owned in "$M5B_MATRIX_CREDENTIALS" "$M5B_MATRIX_INSTANCE_ENV"; do
+    [[ -d $owned ]] && m5b_clean_owned "$owned" >/dev/null 2>&1 || true
+  done
+}
+
+start_slice() {
+  local available_before
+  available_before=$(awk '/MemAvailable/{print $2}' /proc/meminfo)
+  (( available_before >= 4 * 1024 * 1024 )) || fail "host MemAvailable ${available_before} kB is below the 4 GiB safety floor"
+  note "creating the aggregate slice"
+  m5b_run systemd-run --unit="${ANCHOR%.service}" --slice="$SLICE" \
+    --uid="$M5B_MATRIX_USER" --gid="$M5B_MATRIX_GROUP" \
+    --property=MemoryMax=64M --property=MemorySwapMax=0 \
+    /bin/sleep 86400 >/dev/null || fail "could not create the slice anchor"
+  m5b_run systemctl set-property --runtime "$SLICE" \
+    "MemoryMax=${M5B_MATRIX_BUDGET_MB}M" "MemoryHigh=${M5B_MATRIX_HIGH_MB}M" \
+    MemorySwapMax=0 || fail "could not set the slice memory policy"
+  local max high
+  max=$(cat "$M5B_MATRIX_SLICE_PATH/memory.max")
+  high=$(cat "$M5B_MATRIX_SLICE_PATH/memory.high")
+  [[ $max == $(( M5B_MATRIX_BUDGET_MB * 1024 * 1024 )) ]] || fail "slice memory.max is ${max}"
+  [[ $high == $(( M5B_MATRIX_HIGH_MB * 1024 * 1024 )) ]] || fail "slice memory.high is ${high}"
+  # The instance cgroups live under the supervisor's own delegated unit cgroup,
+  # which only exists once that unit starts; start_supervisor sets them up as the
+  # matrix identity. Nothing is created here.
+  m5b_slice_facts
+}
+
+start_postgres() {
+  note "starting the isolated PostgreSQL inside the slice"
+  m5b_guard prepare-pgdata --run "$RUN" --dir "$PGDATA" --user postgres \
+    || fail "could not create the PostgreSQL data directory"
+  if [[ ! -f $PGDATA/PG_VERSION ]]; then
+    m5b_run runuser -u postgres -- /usr/lib/postgresql/16/bin/initdb \
+      -D "$PGDATA" -U moyu --auth=trust -E UTF8 >"$M5B_MATRIX_LOGS/initdb.log" 2>&1 \
+      || fail "initdb failed, see $M5B_MATRIX_LOGS/initdb.log"
+  fi
+  m5b_run systemd-run --unit="${PG_UNIT%.service}" --slice="$SLICE" \
+    --uid=postgres --gid=postgres --property=MemoryMax=1G --property=MemorySwapMax=0 \
+    /usr/lib/postgresql/16/bin/postgres -D "$PGDATA" \
+    -p "$M5B_MATRIX_PG_PORT" -k /tmp -c listen_addresses=127.0.0.1 \
+    >/dev/null || fail "could not start the matrix PostgreSQL"
+  for _ in $(seq 1 120); do
+    pg_isready -h 127.0.0.1 -p "$M5B_MATRIX_PG_PORT" -q && break
+    sleep 0.5
+  done
+  pg_isready -h 127.0.0.1 -p "$M5B_MATRIX_PG_PORT" || fail "PostgreSQL did not accept connections"
+  echo "pg unit cgroup=$(m5b_unit_cgroup "$PG_UNIT")"
+  echo "pgdata=$(stat -c '%U:%G %a %n' "$PGDATA")"
+}
+
+migrate_and_seed() {
+  note "creating ${M5B_MATRIX_DB} and applying migrations"
+  m5b_sql_admin "drop database if exists ${M5B_MATRIX_DB} with (force)" >/dev/null
+  m5b_sql_admin "create database ${M5B_MATRIX_DB}" >/dev/null
+  ( cd "$M5B_MATRIX_ROOT" \
+    && m5b_run env DATABASE_URL="$M5B_MATRIX_PG_URL" \
+      corepack pnpm --filter @moyu/db db:migrate ) || fail "migrations failed"
+
+  note "seeding the owner, repository and one browser session"
+  local session_token owner_id repo_id
+  session_token=$(head -c 32 /dev/urandom | base64 | tr -d '=+/' | cut -c1-43)
+  m5b_sql "insert into owners (display_name) values ('M5-B Matrix Owner') returning id" >/dev/null
+  owner_id=$(m5b_sql "select id from owners order by created_at limit 1")
+  repo_id=$(m5b_sql "insert into repositories (owner_id, full_name, default_branch, status)
+                     values ('$owner_id', '$M5B_MATRIX_REPOSITORY', 'main', 'provisioning')
+                     returning id" | tr -d '[:space:]')
+  local token_hash
+  token_hash=$(printf '%s' "$session_token" | sha256sum | cut -d' ' -f1)
+  m5b_sql "insert into sessions (owner_id, token_hash, expires_at)
+           values ('$owner_id', '$token_hash', now() + interval '10 days')" >/dev/null
+  # Extra repositories for items that need several at once (M5B_MATRIX_EXTRA_REPOS).
+  local extra=${M5B_MATRIX_EXTRA_REPOS:-} pair name
+  if [[ -n $extra ]]; then
+    local IFS=','
+    for pair in $extra; do
+      name=${pair%%:*}
+      m5b_sql "insert into repositories (owner_id, full_name, default_branch, status)
+               select id, '$name', 'main', 'active' from owners limit 1" >/dev/null
+      echo "extra repository=$name"
+    done
+    unset IFS
+  fi
+  # The seeded browser/owner tokens are privileged bootstrap material: they go
+  # into the root-only protected directory, never into the matrix-owned run root.
+  m5b_protected_write seed.env \
+    "$(printf 'export M5B_OWNER_ID=%s\nexport M5B_REPOSITORY_ID=%s\nexport M5B_SESSION_TOKEN=%s\n' \
+      "$owner_id" "$repo_id" "$session_token")" >/dev/null \
+    || fail "could not write the seeded bootstrap file"
+  echo "owner=$owner_id repository=$repo_id"
+  echo "seed_file=$M5B_MATRIX_SEED_FILE mode=$(stat -c %a "$M5B_MATRIX_SEED_FILE") owner=$(stat -c %U "$M5B_MATRIX_SEED_FILE")"
+}
+
+start_provider() {
+  note "starting the loopback test provider"
+  # A stale file owned by another user makes the provider's own writes fail; the
+  # scratch directory is verified and emptied before the unit starts.
+  m5b_lowpriv remove --user "$M5B_MATRIX_USER" --root "$M5B_MATRIX_TMP" \
+    --path "$PROVIDER_LOG" --path "$M5B_MATRIX_TMP/provider-prompts.jsonl" \
+    >/dev/null || true
+  m5b_run systemd-run --unit="${PROV_UNIT%.service}" --slice="$SLICE" \
+    --uid="$M5B_MATRIX_USER" --gid="$M5B_MATRIX_GROUP" \
+    --property=MemoryMax=512M --property=MemorySwapMax=0 \
+    --setenv=LOCAL_PROVIDER_PORT="$M5B_MATRIX_PROVIDER_PORT" \
+    --setenv=LOCAL_PROVIDER_LOG="$PROVIDER_LOG" \
+    ${M5B_MATRIX_PROVIDER_DUMP:+--setenv=LOCAL_PROVIDER_DUMP="$M5B_MATRIX_TMP/provider-prompts.jsonl"} \
+    --setenv=LOCAL_PROVIDER_WORKER_REPORT="${M5B_MATRIX_WORKER_REPORT:-}" \
+    --setenv=LOCAL_PROVIDER_WORKER_REPORT_FILE="$M5B_MATRIX_CONTROL/worker-report.json" \
+    --setenv=LOCAL_PROVIDER_WORKER_SLEEP_FILE="$M5B_MATRIX_CONTROL/worker-sleep.txt" \
+    --setenv=LOCAL_PROVIDER_WORKER_DELAY_FILE="$M5B_MATRIX_CONTROL/worker-delay.txt" \
+    --setenv=LOCAL_PROVIDER_WORKER_OPEN_PR_FILE="$M5B_MATRIX_CONTROL/open-pr.txt" \
+    --setenv=LOCAL_PROVIDER_PR_NUMBER_FILE="$M5B_MATRIX_CONTROL/pr-number.txt" \
+    --setenv=LOCAL_PROVIDER_WORKER_MEM_FILE="$M5B_MATRIX_CONTROL/worker-mem.txt" \
+    --setenv=LOCAL_PROVIDER_ALLOCATE_MB_FILE="$M5B_MATRIX_CONTROL/provider-alloc.txt" \
+    --working-directory="$M5B_MATRIX_ROOT" \
+    /usr/bin/node scripts/m5b/local-provider.mjs >/dev/null \
+    || fail "could not start the local test provider"
+  m5b_wait_http "http://127.0.0.1:${M5B_MATRIX_PROVIDER_PORT}/v1/models" 20000 "local provider" \
+    || fail "local provider did not answer"
+}
+
+# One profile per repository instance: the supervisor's repository_instances has a
+# unique constraint on profile, so a second repository cannot reuse the first one's
+# profile. Extras take <profile>-b, <profile>-c, ... in the order given.
+matrix_extra_profiles() {
+  local extra=${M5B_MATRIX_EXTRA_REPOS:-} pair index=0 letters=abcdefgh
+  [[ -z $extra ]] && return 0
+  local IFS=','
+  for pair in $extra; do
+    echo "${M5B_MATRIX_PROFILE}-${letters:$index:1}"
+    index=$((index + 1))
+  done
+  unset IFS
+}
+
+write_instances_config() {
+  # M5B_MATRIX_EXTRA_REPOS ("owner/name:bridgePort" pairs, comma separated) lets a
+  # matrix item start with several repositories. They must be configured before the
+  # supervisor boots: a supervisor restarted underneath a live runtime adopts it and
+  # can no longer prove its descendants, which leaves the instance serving but
+  # unverified and admission waiting on `runtime`.
+  local extra=${M5B_MATRIX_EXTRA_REPOS:-}
+  local entries="    { \"repository\": \"$M5B_MATRIX_REPOSITORY\", \"profile\": \"$M5B_MATRIX_PROFILE\", \"dshPort\": 3404, \"bridgePort\": 3403 }"
+  local pair repo bridge index=0 profile
+  if [[ -n $extra ]]; then
+    local IFS=','
+    for pair in $extra; do
+      repo=${pair%%:*}
+      bridge=${pair##*:}
+      profile=$(matrix_extra_profiles | sed -n "$((index + 1))p")
+      index=$((index + 1))
+      entries+=",$(printf '\n    { "repository": "%s", "profile": "%s", "dshPort": %s, "bridgePort": %s }' \
+        "$repo" "$profile" "$((bridge + 1))" "$bridge")"
+    done
+    unset IFS
+  fi
+  local json
+  json=$(cat <<JSON
+{
+  "instances": [
+$entries
+  ],
+  "portRange": { "start": 3411, "end": 3499 }
+}
+JSON
+)
+  # The supervisor reads this file as the matrix identity; it is root-owned,
+  # group readable and lives in the shared-config partition, not in scratch.
+  m5b_config_write instances.json "$json" >/dev/null || fail "could not write instances.json"
+  echo "instances_config=$M5B_MATRIX_INSTANCES_JSON owner=$(stat -c %U:%G "$M5B_MATRIX_INSTANCES_JSON") mode=$(stat -c %a "$M5B_MATRIX_INSTANCES_JSON")"
+}
+
+stage_dsh_home() {
+  local staged=${1:-$M5B_MATRIX_PROFILE}
+  local port=${2:-3404}
+  note "staging the runtime profile $staged (webserver port $port) into a matrix-owned harness home"
+  stage_profile_tree "$staged" "$port" "$M5B_MATRIX_PROFILE_SOURCE" "$M5B_MATRIX_UPSTREAM_BUILD" \
+    "$M5B_MATRIX_STAGE" "$M5B_MATRIX_DSH_HOME" "$M5B_MATRIX_USER" "$M5B_MATRIX_GROUP" \
+    || fail "the matrix identity could not stage profile $staged"
+  echo "profile=$M5B_MATRIX_DSH_HOME/profiles/$staged -> $(readlink "$M5B_MATRIX_DSH_HOME/profiles/$staged/node_modules/dsh-superagent")"
+}
+
+start_supervisor() {
+  note "starting the host supervisor inside the slice"
+  if ! m5b_protected_read supervisor-token >/dev/null 2>&1; then
+    m5b_protected_write supervisor-token \
+      "$(head -c 32 /dev/urandom | base64 | tr -d '=+/')" >/dev/null \
+      || fail "could not write the supervisor token"
+  fi
+  local sup_token
+  sup_token=$(m5b_protected_read supervisor-token) || fail "could not read the supervisor token"
+  m5b_run_redacted systemd-run --unit="${SUP_UNIT%.service}" --slice="$SLICE" \
+    --uid="$M5B_MATRIX_USER" --gid="$M5B_MATRIX_GROUP" \
+    --property=Delegate=yes --property=DelegateSubgroup=payload \
+    --property=MemoryMax="${M5B_MATRIX_SUPERVISOR_MAX:-512M}" --property=MemorySwapMax=0 \
+    --setenv=MOYU_CGROUP_ROOT="$M5B_MATRIX_SUPERVISOR_CGROUP/instances" \
+    --setenv=NODE_ENV=production \
+    --setenv=LOG_LEVEL=info \
+    --setenv=SUPERVISOR_HOST=127.0.0.1 \
+    --setenv=SUPERVISOR_PORT="$M5B_MATRIX_SUP_PORT" \
+    --setenv=SUPERVISOR_TOKEN="$sup_token" \
+    --setenv=DATABASE_URL="$M5B_MATRIX_PG_URL" \
+    --setenv=INSTANCES_CONFIG="$M5B_MATRIX_INSTANCES_JSON" \
+    --setenv=DSH_HOME="$M5B_MATRIX_DSH_HOME" \
+    --setenv=PLATFORM_URL="http://127.0.0.1:${M5B_MATRIX_API_PORT}" \
+    --setenv=RUNTIME_CREDENTIALS_DIR="$M5B_MATRIX_CREDENTIALS" \
+    --setenv=INSTANCE_ENV_DIR="$M5B_MATRIX_INSTANCE_ENV" \
+    --setenv=INSTANCE_LOG_DIR="$M5B_MATRIX_INSTANCE_LOGS" \
+    --setenv=WORKTREE_ROOT="$M5B_MATRIX_WORKTREES" \
+    --setenv=AGGREGATE_CGROUP="$M5B_MATRIX_SLICE_PATH" \
+    --setenv=PLATFORM_CGROUP="$M5B_MATRIX_SLICE_PATH/${SLICE%.slice}-api.service" \
+    --setenv=POSTGRES_CGROUP="$M5B_MATRIX_SLICE_PATH/${SLICE%.slice}-pg.service" \
+    --setenv=MAX_START_ATTEMPTS=3 \
+    --setenv=TICK_INTERVAL_MS=1000 \
+    --setenv=RESOURCE_SAMPLE_INTERVAL_MS=5000 \
+    --setenv=MEMORY_TARGET_MB=4096 \
+    --setenv=MEMORY_BUDGET_MB="${M5B_MATRIX_MEMORY_BUDGET_MB:-6144}" \
+    --setenv=MEMORY_HARD_LIMIT_MB="${M5B_MATRIX_BUDGET_MB}" \
+    --setenv=INSTANCE_MEMORY_MAX_MB="${M5B_MATRIX_INSTANCE_MAX_MB:-3072}" \
+    --setenv=INSTANCE_MEMORY_HIGH_MB="${M5B_MATRIX_INSTANCE_HIGH_MB:-2560}" \
+    --setenv=GITHUB_CLI="$M5B_MATRIX_GH_CLI" \
+    --setenv=M5B_MATRIX_GH_CONFIG_DIR="$M5B_MATRIX_GH_CONFIG_DIR" \
+    --setenv=GITHUB_CONFIG_DIR="$M5B_MATRIX_GH_CONFIG_DIR" \
+    --setenv=M5B_MATRIX_GH_HOME="$M5B_MATRIX_GH_HOME" \
+    --setenv=EXECUTOR_MODEL=local-test/local-test \
+    ${M5B_MATRIX_TEST_HOOKS:+--setenv=MOYU_TEST_HOOKS=1} \
+    ${M5B_MATRIX_TEST_HOOKS:+--setenv=MOYU_TEST_PAUSE_LAUNCH_MS=${M5B_MATRIX_TEST_PAUSE_LAUNCH_MS:-1}} \
+    --working-directory="$M5B_MATRIX_ROOT" \
+    /usr/bin/node apps/supervisor/dist/main.js >/dev/null \
+    || fail "could not start the supervisor"
+  local health=''
+  for _ in $(seq 1 60); do
+    health=$(curl -sS -m 2 -H "authorization: Bearer ${sup_token}" \
+      "http://127.0.0.1:${M5B_MATRIX_SUP_PORT}/control/v1/health" 2>/dev/null || true)
+    [[ $health == *'"status":"ok"'* ]] && break
+    sleep 0.5
+  done
+  [[ $health == *'"status":"ok"'* ]] || fail "supervisor did not answer: ${health}"
+  # A process may only be moved inside its own delegated subtree, so the managed
+  # root lives under the supervisor's unit cgroup. systemd delegates that cgroup
+  # to the unit user (Delegate=yes); create the root and enable the controllers
+  # as that user, then prove the delegation with a real write.
+  # DelegateSubgroup keeps the service's own processes in `<unit>/payload`, so the
+  # unit cgroup stays process-free and the identity can enable the memory
+  # controller in its own subtree (the kernel forbids doing that while a cgroup
+  # holds processes).
+  m5b_run runuser -u "$M5B_MATRIX_USER" -- /bin/sh -c \
+    "echo '+memory +pids' > '$M5B_MATRIX_SUPERVISOR_CGROUP/cgroup.subtree_control' && \
+     mkdir -p '$M5B_MATRIX_SUPERVISOR_CGROUP/instances' && \
+     echo '+memory +pids' > '$M5B_MATRIX_SUPERVISOR_CGROUP/instances/cgroup.subtree_control'" \
+    || fail "the matrix identity cannot manage its delegated cgroup subtree"
+  echo "supervisor_cgroup=$M5B_MATRIX_SUPERVISOR_CGROUP owner=$(stat -c %U:%G "$M5B_MATRIX_SUPERVISOR_CGROUP")"
+  echo "managed_cgroup_root=$M5B_MATRIX_SUPERVISOR_CGROUP/instances controllers=$(cat "$M5B_MATRIX_SUPERVISOR_CGROUP/instances/cgroup.subtree_control")"
+}
+
+supervisor_call() {
+  local method=$1 path=$2 token=$3
+  printf '$ supervisor_call %s %s (authorization: Bearer ***)\n' "$method" "$path"
+  curl -sS -X "$method" \
+    -H "authorization: Bearer ${token}" \
+    -H 'content-type: application/json' \
+    -d "${4:-{\}}" \
+    "http://127.0.0.1:${M5B_MATRIX_SUP_PORT}${path}"
+}
+
+start_runtime() {
+  note "preparing and waking the runtime instance through the supervisor"
+  local repo_id token
+  repo_id=$(m5b_protected_read seed.env | sed -n 's/^export M5B_REPOSITORY_ID=//p')
+  token=$(m5b_protected_read supervisor-token)
+  supervisor_call POST "/control/v1/instances/${repo_id}/prepare" "$token" '{}'
+  echo
+  supervisor_call POST "/control/v1/instances/${repo_id}/wake" "$token" '{"priority":20,"reason":"manual"}'
+  echo
+  # Configuring the profile restarts dsh-superagent once, so a single successful
+  # probe can be a reset window. Require three consecutive answers instead.
+  local streak=0 health=''
+  for _ in $(seq 1 240); do
+    health=$(curl -fsS -m 2 "http://127.0.0.1:3403/healthz" 2>/dev/null || true)
+    if [[ $health == *'"ok":true'* ]]; then
+      streak=$(( streak + 1 ))
+      (( streak >= 3 )) && break
+    else
+      streak=0
+    fi
+    sleep 0.5
+  done
+  (( streak >= 3 )) || fail "runtime bridge did not become healthy"
+  # The supervisor finishes configuring the profile after the bridge answers;
+  # wait for its own online projection before the stack is reported ready.
+  local instance=''
+  for _ in $(seq 1 240); do
+    instance=$(supervisor_call GET "/control/v1/instances/${repo_id}" "$token")
+    [[ $instance == *'"state":"online"'* && $instance == *'"reasonCode":"listening"'* ]] && break
+    sleep 0.5
+  done
+  [[ $instance == *'"state":"online"'* && $instance == *'"reasonCode":"listening"'* ]] \
+    || fail "runtime instance did not reach online/listening: ${instance}"
+  echo "bridge healthz: ${health}"
+  echo "instance row:"
+  m5b_sql "select state, desired_state, pid, port, bridge_port, profile, reason_code from repository_instances where repository_id='$repo_id'"
+}
+
+start_dispatcher() {
+  note "starting the dispatcher from the baseline artifact"
+  m5b_run sha256sum apps/dispatcher/dist/main.js
+  m5b_run systemd-run --unit="${DISP_UNIT%.service}" --slice="$SLICE" \
+    --uid="$M5B_MATRIX_USER" --gid="$M5B_MATRIX_GROUP" \
+    --property=MemoryMax=512M --property=MemorySwapMax=0 \
+    --setenv=NODE_ENV=test \
+    --setenv=LOG_LEVEL=info \
+    --setenv=DATABASE_URL="$M5B_MATRIX_PG_URL" \
+    --setenv=RUNTIME_CREDENTIALS_DIR="$M5B_MATRIX_CREDENTIALS" \
+    --setenv=RECONCILE_ON_START=true \
+    --working-directory="$M5B_MATRIX_ROOT" \
+    /usr/bin/node apps/dispatcher/dist/main.js >/dev/null \
+    || fail "could not start the dispatcher"
+  sleep 2
+  systemctl is-active "$DISP_UNIT" >/dev/null || fail "dispatcher is not running"
+}
+
+start_api() {
+  note "starting the platform API from the baseline artifact"
+  local sup_token
+  sup_token=$(m5b_protected_read supervisor-token) || fail "could not read the supervisor token"
+  m5b_run_redacted systemd-run --unit="${API_UNIT%.service}" --slice="$SLICE" \
+    --uid="$M5B_MATRIX_USER" --gid="$M5B_MATRIX_GROUP" \
+    --property=MemoryMax=1G --property=MemorySwapMax=0 \
+    --setenv=NODE_ENV=production \
+    --setenv=LOG_LEVEL=info \
+    --setenv=API_HOST=127.0.0.1 \
+    --setenv=API_PORT="$M5B_MATRIX_API_PORT" \
+    --setenv=DATABASE_URL="$M5B_MATRIX_PG_URL" \
+    --setenv=WEBAUTHN_RP_ID=127.0.0.1 \
+    --setenv=WEBAUTHN_RP_NAME=MoYu \
+    --setenv=WEBAUTHN_ORIGIN="http://127.0.0.1:${M5B_MATRIX_API_PORT}" \
+    --setenv=AUTH_COOKIE_SECURE=false \
+    --setenv=WEB_DIST_DIR="$M5B_MATRIX_ROOT/apps/web/dist" \
+    --setenv=SUPERVISOR_URL="http://127.0.0.1:${M5B_MATRIX_SUP_PORT}" \
+    --setenv=SUPERVISOR_TOKEN="$sup_token" \
+    --setenv=RUNTIME_CREDENTIALS_DIR="$M5B_MATRIX_CREDENTIALS" \
+    --setenv=GITHUB_CLI="$M5B_MATRIX_GH_CLI" \
+    --setenv=M5B_MATRIX_GH_CONFIG_DIR="$M5B_MATRIX_GH_CONFIG_DIR" \
+    --setenv=M5B_MATRIX_GH_HOME="$M5B_MATRIX_GH_HOME" \
+    --working-directory="$M5B_MATRIX_ROOT" \
+    /usr/bin/node apps/api/dist/server.js >/dev/null \
+    || fail "could not start the API"
+  m5b_wait_http "http://127.0.0.1:${M5B_MATRIX_API_PORT}/healthz" 30000 "API" || fail "API did not answer"
+}
+
+write_state() {
+  local repo_id bridge_token bridge_url
+  repo_id=$(m5b_protected_read seed.env | sed -n 's/^export M5B_REPOSITORY_ID=//p')
+  bridge_token=$(python3 -c "import json,sys;print(json.load(open('$M5B_MATRIX_CREDENTIALS/$repo_id.json'))['bridgeToken'])")
+  bridge_url=$(python3 -c "import json,sys;print(json.load(open('$M5B_MATRIX_CREDENTIALS/$repo_id.json'))['bridgeUrl'])")
+  local content
+  content=$(
+    m5b_protected_read seed.env
+    printf '\nexport M5B_BRIDGE_URL=%s\nexport M5B_BRIDGE_TOKEN=%s\n' "$bridge_url" "$bridge_token"
+    printf 'export M5B_RUNTIME_PID=%s\n' "$(m5b_unit_pid "$SUP_UNIT")"
+    printf 'export M5B_SLICE=%s\n' "$SLICE"
+  )
+  m5b_protected_write state.env "$content" >/dev/null || fail "could not write the run state"
+  note "stack state written to $M5B_MATRIX_STATE (bootstrap secrets; not committed)"
+}
+
+status() {
+  m5b_slice_facts
+  echo "units:"
+  for unit in "${ALL_UNITS[@]}"; do
+    printf '  %-40s %s pid=%s cgroup=%s\n' "$unit" "$(systemctl is-active "$unit" 2>/dev/null)" \
+      "$(m5b_unit_pid "$unit")" "$(m5b_unit_cgroup "$unit")"
+  done
+  if [[ -d $M5B_MATRIX_PROTECTED ]]; then
+    echo "protected layout:"
+    stat -c '  %U:%G %a %n' "$M5B_MATRIX_PROTECTED" "$M5B_MATRIX_CONFIG" \
+      "$M5B_MATRIX_CREDENTIALS" "$M5B_MATRIX_TMP" 2>/dev/null
+    local credentials_count=0
+    [[ -d $M5B_MATRIX_CREDENTIALS ]] && credentials_count=$(find "$M5B_MATRIX_CREDENTIALS" -maxdepth 1 -type f | wc -l)
+    echo "  bridge_credentials=$credentials_count"
+  fi
+  if [[ -f $M5B_MATRIX_STATE ]]; then
+    echo "state file:"
+    m5b_protected_read state.env | sed 's/TOKEN=.*/TOKEN=***/; s/TOKEN:.*/TOKEN: ***/'
+  fi
+}
+
+case ${1:-} in
+  up)
+    down
+    prepare_environment
+    reset_owned_state
+    scope_gate
+    M5B_MATRIX_UP_ACTIVE=1
+    start_slice
+    maybe_inject_failure start_slice
+    start_postgres
+    maybe_inject_failure start_postgres
+    migrate_and_seed
+    maybe_inject_failure migrate_and_seed
+    start_provider
+    maybe_inject_failure start_provider
+    write_instances_config
+    stage_dsh_home
+    extra_profile=''
+    extra_port=''
+    index=0
+    for extra_profile in $(matrix_extra_profiles); do
+      extra_port=$(printf '%s' "$M5B_MATRIX_EXTRA_REPOS" | cut -d, -f$((index + 1)) | awk -F: '{print $NF}')
+      stage_dsh_home "$extra_profile" "$((extra_port + 1))"
+      index=$((index + 1))
+    done
+    start_supervisor
+    maybe_inject_failure start_supervisor
+    start_api
+    maybe_inject_failure start_api
+    start_runtime
+    maybe_inject_failure start_runtime
+    start_dispatcher
+    maybe_inject_failure start_dispatcher
+    write_state
+    M5B_MATRIX_UP_ACTIVE=0
+    note "stack is up"
+    status
+    ;;
+  down)
+    down
+    ;;
+  status)
+    status
+    ;;
+  *)
+    echo "usage: $0 {up|down|status}" >&2
+    exit 2
+    ;;
+esac
