@@ -100,13 +100,16 @@
 - 回归：`apps/dispatcher/test/integration/recovery-projection-branches.integration.test.ts`（2/2）。
 - 外部真实 HTTP/PG：`tests/moyu-review-cedcb82-current-projection.spec.ts` 与 `...pid-barrier-1039.spec.ts` 4/4。
 
-## cgroup 冷启动与重启归属（Issue #41，M5B-D02F07F-CGROUP-LIFECYCLE）
+## cgroup 冷启动与重启归属（Issue #94，衔接旧 Issue #41 / 旧 PR #53）
 
-现场矩阵的两条产品缺陷（`docs/evidence/m5b/matrix/SUMMARY.md`「现场发现」1、5）在这里
-闭合：空白委托目录无法首次使用，以及停止/重启后实例仍占端口或一直报
-`ownership_unverified`。基线 `1001c25`，命令与原始输出见
-`docs/evidence/m5b/cgroup-coldstart-{before,after}.txt` 与
-`docs/evidence/m5b/cgroup-unit-delegation-{before,after}.txt`。
+2026-11-20 复核后的第二轮工作，在最新
+`main@b6c2efab08e2703cc8e974dda7ff872db3122612` 上重做旧 PR #53 的增量；旧 PR #53
+保持打开供追溯。现场矩阵的两条产品缺陷（`docs/evidence/m5b/matrix/SUMMARY.md`
+「现场发现」1、5）在这里闭合：空白委托目录无法首次使用，以及停止/重启后实例仍占端口
+或一直报 `ownership_unverified`。修前/修后使用同一份探针、同一台宿主：
+
+- `docs/evidence/m5b/cgroup-coldstart-{before,after}.txt`
+- `docs/evidence/m5b/cgroup-unit-delegation-{before,after}.txt`
 
 ### 根因
 
@@ -117,7 +120,7 @@
 2. 归属只记 cgroup 路径，不记对象身份。路径被移除或复用（例如单元 cgroup 被重建）后，
    记录与进程对不上，`collectOwnership` 只能报 `unknown`；而 `tick`/`reconcileRestart`
    对 `unknown` 只写 `stopping`/`stop_failed` 或 `ownership_unverified`，不再尝试停止，
-   也没有清空路径，于是名字与容量一直卡住，只能人工处理。
+   也没有清空路径，于是名字、端口与容量一直卡住，只能人工处理。
 3. 停止只等 Bridge 端口，且端口被占时只看 TCP：无法区分“我们自己上一代的残留”和
    “别人的服务”，前者只能人工清理，后者必须保持不动。
 4. 采用（adoption）标记 `adoptedUnproven` 只写不清，一旦接管过一个已在运行的 runtime，
@@ -135,17 +138,48 @@
   （非 root 时由 systemd 委托 chown）才会写；root 身份下若该层仍含 `.service`/`.scope`/
   `.slice` 子组（共享 systemd 层级）则拒绝，错误里点名目录并指向委托单元 cgroup，绝不改写
   宿主其他服务的控制器。
-- **逐代次对象身份**：每代次记录 `cgroup` 路径 + `cgroupInode`。重启后 inode 不符即视为
-  对象已被替换，按“边界消失/被替换”处理，而不是拿旧路径冒充同一对象。
+- **逐代次对象身份**：每代次记录 `cgroup` 路径 + `cgroupInode`，并同时保留 PID 的
+  `startTime`。重启后 inode 不符即视为对象已被替换；`tick`/`reconcileRestart` 会先校验
+  PID+starttime，再把仍存活的 runtime 绑进新的 cgroup，而不是拿旧路径冒充同一对象，也
+  不会把 PID 已被复用的陌生进程挪进我们的边界。
 - **边界证明**：停止只在“可读且递归为空”或“边界对象已不存在且本代次无存活成员”时
   返回 `stopped`；不可读仍按未知归属保守占用容量。残留风险（接管前逃逸的后代）通过
   `unknown` 与日志 `supervisor.stop_proven_with_residual` 保留，不再永久 veto 空树。
-- **边界消失即重绑**：`tick`/`reconcileRestart` 发现根活着但边界不可用/被替换时，用
-  校验过 PID+starttime 的身份把它绑进新的 cgroup（`adoptedUnproven`），恢复计量与可停止性；
-  身份对不上（PID 复用）不会把陌生进程挪进我们的 cgroup。
+- **主 PID 退出不等于代次结束**：`settleDeadRuntime` 只有在本代次成员为空且边界可读为空
+  （或边界对象已不存在）时才释放槽位；主 PID 已退出但后代仍存活时先按归属停止后代，
+  失败/不可读则继续占用槽位。
 - **端口归属**：`portOwners` 用 `/proc/net/tcp{,6}` 的 socket inode 反查监听进程，按
   `MOYU_CGROUP_ROOT` 判断是否为我们自己的实例 cgroup；只有能证明是自己的残留才停止，
   其他情况写清 pid/cgroup 后保持不动。停止同时等 panel 与 Bridge 两个端口。
+
+### 本轮验证命令（2026-11-20，本机宿主）
+
+| 命令 | 结果 |
+| --- | --- |
+| `pnpm check` | exit 0；lint/format/typecheck 通过，supervisor 单元测试 142/142 |
+| `pnpm build` | exit 0；`apps/supervisor/dist/main.js` sha256 `5af9878304cfaa0684cc20e827419344952c8fd22ad35fc866ea746334682f9b` |
+| `TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm test:integration` | exit 0；db/api 通过，dispatcher 100 passed / 1 skipped，supervisor 4 passed |
+| `bash scripts/m5b/cgroup-lifecycle-probe.sh`（基线） | exit 1，19 项 FAIL |
+| `bash scripts/m5b/cgroup-lifecycle-probe.sh`（修复后） | exit 0，0 项 FAIL（29 项 pass） |
+| `bash scripts/m5b/cgroup-unit-delegation-check.sh`（基线） | exit 1，16 项 FAIL，`unit_result=exit-code` |
+| `bash scripts/m5b/cgroup-unit-delegation-check.sh`（修复后） | exit 0，0 项 FAIL，`unit_result=success` |
+
+基线为 `b6c2efab08e2703cc8e974dda7ff872db3122612`；修复后的被测代码提交见证据文件
+`head=` 与 `probe_bundle_sha256`。非 root 场景由同一份脚本用 esbuild bundle + `setpriv`
+跑；systemd 场景为 `User=nobody`、`Delegate=yes`、`DelegateSubgroup=payload` 的临时单元。
+
+### 本轮覆盖的场景
+
+| 场景 | 证据 |
+| --- | --- |
+| 空目录冷启（root，空白委托目录） | `cgroup-coldstart-after.txt`：建根、控制器、计量文件、`memory.max/high` 全部 pass |
+| 空目录冷启（非 root + systemd 委托单元） | `cgroup-unit-delegation-after.txt`：`unit_result=success`，0 FAIL |
+| 主 PID 退出但后代存活 | `apps/supervisor/test/lifecycle.test.ts`「stops a surviving descendant…」；`test/process.test.ts` 的 setsid/子进程用例 |
+| supervisor 重启 | `test/lifecycle.test.ts` 的 restart reconcile 用例；探针 `restart.*` 判定 |
+| 同名目录重建（inode 变化） | 探针 `restart_replacement_detected`；`test/lifecycle.test.ts`「re-binds when the same cgroup path was recreated…」 |
+| 陌生进程占端口 | `test/lifecycle.test.ts`「stops its own leftover listener but never signals a foreign process…」 |
+| 清理后下一代启动 | 探针 `gen2`：gen1 停止、cgroup 移除、端口释放后 gen2 仍能建根/计量/绑定 |
+| 休眠唤醒、完整 wake→online→sleep | 未跑：依赖 #92 的隔离运行环境与专用 gh token；不是本 PR 可自证的部分 |
 
 ### 已验证 / 未验证
 
@@ -153,6 +187,6 @@
   下发、`memory.max/high` 写入、runtime 与 setsid 后代同组、`memory.current>0`、停止后
   递归空树并移除、端口释放、inode 匹配与被替换的判定、非 root 权限不足时的明确失败。
   单元：`apps/supervisor/test/process.test.ts`、`test/lifecycle.test.ts`。
-- 未验证：真实 DSH runtime 的完整 wake→online→sleep 现场（依赖 Issue #36 的隔离身份与
-  凭据）；真实 dispatcher/Bridge 的租约代次（本 PR 未改租约路径，仍由既有
-  `apps/dispatcher/test/integration/leases.integration.test.ts` 覆盖）。
+- 未验证：真实 DSH runtime 的完整 wake→online→sleep、休眠唤醒与 supervisor 重启现场，
+  依赖 #92 建好的隔离环境；租约/槽位路径本 PR 未改，仍由既有 dispatcher 集成测试覆盖；
+  与 #47 的联验（launch 超时出口）待两边合流后在同一现场跑。

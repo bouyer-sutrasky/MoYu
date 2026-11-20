@@ -23,9 +23,11 @@ BASE=/sys/fs/cgroup/moyu-cprobe-$$
 NONROOT_BASE=${BASE}-nonroot
 NONROOT_DELEGATED=${BASE}-delegated
 BUNDLE_DIR=$(mktemp -d /tmp/moyu-cprobe-bundle-XXXXXX)
+PROBE_LOG=$(mktemp /tmp/moyu-cprobe-log-XXXXXX)
 
 cleanup() {
   rm -rf "$BUNDLE_DIR"
+  rm -f "$PROBE_LOG"
   for dir in "$BASE" "$NONROOT_BASE" "$NONROOT_DELEGATED"; do
     [[ -d $dir ]] || continue
     # Kill anything left in the subtree through the kernel's own interface.
@@ -85,6 +87,7 @@ run_probe() {
   "$ESBUILD" "$REPO/scripts/m5b/cgroup-lifecycle-probe.ts" --bundle --platform=node \
     --format=esm --log-level=warning --outfile="$BUNDLE_DIR/probe.mjs"
   chmod 0755 "$BUNDLE_DIR" "$BUNDLE_DIR/probe.mjs"
+  echo "nonroot_bundle_sha256=$(sha256sum "$BUNDLE_DIR/probe.mjs" | cut -d' ' -f1)"
   mkdir "$NONROOT_BASE" "$NONROOT_DELEGATED"
   chmod 0755 "$NONROOT_BASE"
   # (a) root 所有的目录：连根都建不出来。
@@ -105,6 +108,10 @@ run_probe() {
     setpriv --reuid=65534 --regid=65534 --clear-groups \
     timeout 60 "$RUN_NODE" "$BUNDLE_DIR/probe.mjs" nonroot
   echo "exit=$?"
-} 2>&1 | tee "$LOG"
-
-exit "${PIPESTATUS[0]}"
+} >"$PROBE_LOG" 2>&1
+cat "$PROBE_LOG" | tee "$LOG"
+if grep -q "verdict .*=FAIL" "$PROBE_LOG"; then
+  echo "probe reported failing verdicts" >&2
+  exit 1
+fi
+exit 0

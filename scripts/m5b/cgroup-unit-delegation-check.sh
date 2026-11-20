@@ -40,6 +40,7 @@ command -v systemd-run >/dev/null || {
 "$ESBUILD" "$HERE/cgroup-lifecycle-probe.ts" --bundle --platform=node --format=esm \
   --log-level=warning --outfile="$BUNDLE_DIR/probe.mjs"
 chmod 0755 "$BUNDLE_DIR" "$BUNDLE_DIR/probe.mjs"
+BUNDLE_SHA256=$(sha256sum "$BUNDLE_DIR/probe.mjs" | cut -d' ' -f1)
 
 {
   echo "# M5-B 委托单元探针（非 root + 空白委托目录）"
@@ -47,6 +48,7 @@ chmod 0755 "$BUNDLE_DIR" "$BUNDLE_DIR/probe.mjs"
   echo "head=$(cd "$REPO" && git rev-parse HEAD)"
   echo "unit=$UNIT.service user=nobody group=nogroup"
   echo "delegation=Delegate=yes DelegateSubgroup=payload"
+  echo "probe_bundle_sha256=$BUNDLE_SHA256"
   echo
   echo "\$ systemd-run --unit=$UNIT -p User=nobody -p Group=nogroup -p Delegate=yes -p DelegateSubgroup=payload \\"
   echo "    -p Environment=MOYU_CGROUP_ROOT=/sys/fs/cgroup/system.slice/$UNIT.service/instances \\"

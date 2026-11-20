@@ -68,6 +68,12 @@ OS 错误的 `cgroup_unavailable`，不会启动一个没有计量的实例。�
 supervisor 报出的错误会直接指出这一点。每代次同时记录 cgroup 路径与 **inode**：重启后
 inode 不符即视为路径被复用、旧边界已消失，不会拿旧记录冒充同一对象。
 
+停止与休眠以执行边界自己的证据为准：只有边界可读且递归为空，或边界对象已不存在且本代次
+没有存活成员时，才释放槽位；主 PID 退出但后代仍存活、或边界不可读时继续占用。端口释放
+同时等待 panel 与 Bridge 两个端口；端口上的监听者按 `/proc/net/tcp{,6}` 的 socket inode
+反查，只有位于 `MOYU_CGROUP_ROOT` 且不属于另一个在册实例的残留才停止，陌生进程只记录
+pid/cgroup 并保持不动。
+
 supervisor 同时读取该 slice 的 `memory.max`：若 slice 上限高于
 `MEMORY_HARD_LIMIT_MB`（默认 8192），拒绝新准入而不是假装 8 GB 边界成立；若 slice 当前
 `memory.current` 大于各分项之和，采用 slice 的实测值。
