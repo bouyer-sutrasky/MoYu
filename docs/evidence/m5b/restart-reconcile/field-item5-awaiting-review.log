@@ -1,0 +1,197 @@
+# 现场 B：真实开放 PR 下重启，仍待审阅，关闭后结票
+# 现场代码 head：183ac11871055dfbd5d6c867f53caedf67cc20a3；运行时 build22（含 0031 补丁）
+# 命令：
+#   source /tmp/m5bmatrix/protected/state.env
+#   M5B_MATRIX_RESTART_BEFORE_CLOSE=1 bash scripts/m5b/matrix/item5-awaiting-review.sh
+# 退出码：0
+# 结果：真实 draft PR #17（Bouyer12/m5a-beta-adf10ad9）；重启前后 runtime awaiting_review、PR JSON 不变、ended=null；
+#       平台任务 awaiting_review + PR17 + 租约已释放；无新 Assignment/operation/delivery；关闭 PR 后 closed_unmerged。
+# 敏感信息：test 仓库与本地隔离环境；日志不含 token/私钥。
+# item 5 — awaiting_review with a real open PR (criterion change accepted by the owner)
+recorded=2026-11-20T21:48:26+08:00
+head=183ac11871055dfbd5d6c867f53caedf67cc20a3
+dispatcher_artifact=afedb333856bc219881cd48993cd25fca04c5ad5fd3e3c50863f65df3191ea92 (284684 bytes)
+fixture_repository=Bouyer12/m5a-beta-adf10ad9 (test repository only; never the MoYu repository)
+
+## the worker fixture: push its ticket branch
+script=scripts/m5b/matrix/fixture-open-pr.sh (push only; the PR is opened by the harness)
+open_pr_fixture=/root/src/restart-reconcile-retry-cdeeef5a10fd/scripts/m5b/matrix/fixture-open-pr.sh
+
+## create the ticket through the real owner API
+{
+  "conversationId": "2bfab2c0-1ef5-47af-8d9b-84396f370793",
+  "taskId": "9c868aaa-7eb6-422f-9de7-323a9f87330f",
+  "state": "pending_admission",
+  "messageStatus": 202,
+  "clientRequestId": "item5-review-1795182506"
+}
+
+## wait for the ticket
+ticket=2d1857396fb648b8b0ecff326320b319
+ticket_name=fix-readme-probe-2d1857396fb6
+ticket_branch=agent/fix-readme-probe-2d1857396fb6
+
+## wait for the worker's push, then open a real draft PR from that branch
+$ gh pr create --repo Bouyer12/m5a-beta-adf10ad9 --head agent/fix-readme-probe-2d1857396fb6 --base main --draft
+fixture_pr=17
+{"headRefName":"agent/fix-readme-probe-2d1857396fb6","isDraft":true,"number":17,"state":"OPEN","url":"https://github.com/Bouyer12/m5a-beta-adf10ad9/pull/17"}
+
+## wait for awaiting_review
+runtime_ticket_state=awaiting_review
+## raw ticket snapshot while awaiting review
+{
+  "ticketId": "2d1857396fb648b8b0ecff326320b319",
+  "title": "Fix README probe line",
+  "state": "awaiting_review",
+  "question": null,
+  "attentionId": null,
+  "model": {
+    "provider": "local-test",
+    "model": "local-test"
+  },
+  "base": {
+    "repository": "Bouyer12/m5a-beta-adf10ad9",
+    "branch": "main",
+    "commit": "4f4639ceb87693cc00e3c87e8cfa168074141ce0"
+  },
+  "assignmentId": "9d259b211a6ef75e5bba6a28056d7ab2",
+  "admission": {
+    "leaseId": "2484e496-42dd-41b8-9435-ebbbc79ab11d",
+    "fencingToken": "1"
+  },
+  "report": {
+    "state": "ready",
+    "summary": "Lifecycle probe ready for review.",
+    "at": "2026-11-20T13:48:48.147Z",
+    "assignmentId": "9d259b211a6ef75e5bba6a28056d7ab2"
+  },
+  "mode": "execute",
+  "planRevision": null,
+  "paused": null,
+  "admissionRequired": false,
+  "execution": {
+    "name": "fix-readme-probe-2d1857396fb6",
+    "directory": "/tmp/m5bmatrix/worktrees/m5b/fix-readme-probe-2d1857396fb6",
+    "assignment": ""
+  },
+  "pr": {
+    "number": 17,
+    "url": "https://github.com/Bouyer12/m5a-beta-adf10ad9/pull/17"
+  },
+  "ended": null
+}
+
+## restart Bridge, dispatcher and both databases while awaiting_review
+before: bridge=453771 dispatcher=454236 assignment=9d259b211a6ef75e5bba6a28056d7ab2 operations=0 deliveries=1 pr={"headRefName":"agent/fix-readme-probe-2d1857396fb6","isDraft":true,"number":17,"state":"OPEN","url":"https://github.com/Bouyer12/m5a-beta-adf10ad9/pull/17"}
+$ supervisor sleep --manual (idle assignment stops with its cgroup)
+{"data":{"accepted":true,"duplicate":false,"instance":{"repositoryId":"3e579335-7d88-4d84-bc7d-23306367f7c8","fullName":"Bouyer12/m5a-beta-adf10ad9","defaultBranch":"main","state":"sleeping","desiredState":"sleeping","reasonCode":"sleeping"
+old bridge pid alive after stop: 0
+$ systemctl stop dispatcher api supervisor (coordinated two-database restart)
+$ systemctl restart matrix PostgreSQL (the platform database)
+$ stack.sh services-up (recreate the stopped units over the same database)
+== verifying the isolated run layout
+run_root=/tmp/m5bmatrix mode=755 uid=0
+protected=/tmp/m5bmatrix/protected mode=0700 uid=0
+config=/tmp/m5bmatrix/config mode=0750 uid=0 gid=986
+owned=/tmp/m5bmatrix/tmp,/tmp/m5bmatrix/credentials,/tmp/m5bmatrix/dsh-home uid=995 gid=986
+path /root mode=0710
+path /root/.ssh mode=0700
+path /root/.dsh mode=0755
+path /root/.dsh-m5 mode=0700
+path /root/.config mode=0710
+path /root/.config/gh-agent mode=0700
+path /root/.local mode=0710
+path /root/.local/bin mode=0750
+path /root/src mode=0710
+path /root/src/upstream mode=0710
+path /opt/moyu-node24 mode=0750
+path /etc mode=0755
+host_boundary=clean
+ssh_key=/root/.config/m5bmatrix/probe_ssh_key sha256=20cc90eab9cb5448 mode=600
+gh_config=/root/.config/m5bmatrix/gh hosts=/root/.config/m5bmatrix/gh/hosts.yml token=present
+credentials=dedicated
+== starting the host supervisor inside the slice
+Running as unit: m5bmatrix-supervisor.service; invocation ID: 773ecc6fc621406b87a2aac4c6e37812
+$ runuser -u m5bmatrix -- /bin/sh -c echo '+memory +pids' > '/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/cgroup.subtree_control' &&      mkdir -p '/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances' &&      echo '+memory +pids' > '/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/cgroup.subtree_control'
+supervisor_cgroup=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service owner=m5bmatrix:m5bmatrix
+managed_cgroup_root=/sys/fs/cgroup/m5bmatrix.slice/m5bmatrix-supervisor.service/instances controllers=memory pids
+== starting the platform API from the baseline artifact
+Running as unit: m5bmatrix-api.service; invocation ID: 0f8341d2cac843128f9be233d792118c
+== starting the dispatcher from the baseline artifact
+$ sha256sum apps/dispatcher/dist/main.js
+afedb333856bc219881cd48993cd25fca04c5ad5fd3e3c50863f65df3191ea92  apps/dispatcher/dist/main.js
+Running as unit: m5bmatrix-dispatcher.service; invocation ID: ab9702c40dc64aaf9dfdff8cf94bf1f0
+$ supervisor prepare + wake (fresh runtime process)
+$ supervisor wake (fresh runtime process)
+{"data":{"accepted":true,"duplicate":false,"instance":{"repositoryId":"3e579335-7d88-4d84-bc7d-23306367f7c8","fullName":"Bouyer12/m5a-beta-adf10ad9","defaultBranch":"main","state":"sleeping","desiredState":"online","reasonCode":"wake_queued
+after: runtime_state=awaiting_review ended_at=null pr={"headRefName":"agent/fix-readme-probe-2d1857396fb6","isDraft":true,"number":17,"state":"OPEN","url":"https://github.com/Bouyer12/m5a-beta-adf10ad9/pull/17"} assignment=9d259b211a6ef75e5bba6a28056d7ab2
+platform_task=awaiting_review|https://github.com/Bouyer12/m5a-beta-adf10ad9/pull/17|17|- operations=0 deliveries=1
+pids: bridge=453771->455274 dispatcher=454236->455200
+VERDICT: awaiting_review and the real open PR survived the Bridge/dispatcher/two-database restart; no new Assignment, operation or delivery.
+## close the fixture PR (never merged) and watch the ticket end
+$ gh pr close 17 --repo Bouyer12/m5a-beta-adf10ad9
+✓ Closed pull request Bouyer12/m5a-beta-adf10ad9#17 (m5b-matrix-fixture: awaiting_review probe)
+runtime_ticket_state_after_close=closed_unmerged
+## raw ticket snapshot after the close
+{
+  "ticketId": "2d1857396fb648b8b0ecff326320b319",
+  "title": "Fix README probe line",
+  "state": "closed_unmerged",
+  "question": null,
+  "attentionId": null,
+  "model": {
+    "provider": "local-test",
+    "model": "local-test"
+  },
+  "base": {
+    "repository": "Bouyer12/m5a-beta-adf10ad9",
+    "branch": "main",
+    "commit": "4f4639ceb87693cc00e3c87e8cfa168074141ce0"
+  },
+  "assignmentId": "9d259b211a6ef75e5bba6a28056d7ab2",
+  "admission": {
+    "leaseId": "2484e496-42dd-41b8-9435-ebbbc79ab11d",
+    "fencingToken": "1"
+  },
+  "report": {
+    "state": "ready",
+    "summary": "Lifecycle probe ready for review.",
+    "at": "2026-11-20T13:48:48.147Z",
+    "assignmentId": "9d259b211a6ef75e5bba6a28056d7ab2"
+  },
+  "mode": "execute",
+  "planRevision": null,
+  "paused": null,
+  "admissionRequired": false,
+  "execution": {
+    "name": "fix-readme-probe-2d1857396fb6",
+    "directory": "/tmp/m5bmatrix/worktrees/m5b/fix-readme-probe-2d1857396fb6",
+    "assignment": ""
+  },
+  "pr": {
+    "number": 17,
+    "url": "https://github.com/Bouyer12/m5a-beta-adf10ad9/pull/17"
+  },
+  "ended": {
+    "at": "2026-11-20T13:49:23.000Z",
+    "by": "executor",
+    "outcome": "closed"
+  }
+}
+
+## the fixture PR as GitHub reports it now
+  state
+  statusCheckRollup
+  title
+  updatedAt
+  url
+
+## the platform task as recorded
+9c868aaa-7eb6-422f-9de7-323a9f87330f|awaiting_review|4|2d1857396fb648b8b0ecff326320b319
+
+## verdict
+awaiting_review_state=awaiting_review
+state_after_close=closed_unmerged
+fixture_pr=17 fixture_repo=Bouyer12/m5a-beta-adf10ad9
+VERDICT: with a real open PR the ticket projects as awaiting_review, and closing that PR ends it as closed_unmerged. Sub-state passed.
+note: the fixture PR exists only in Bouyer12/m5a-beta-adf10ad9 (the test repository). It was closed without merging; its branch remains on the test repository until pruned.

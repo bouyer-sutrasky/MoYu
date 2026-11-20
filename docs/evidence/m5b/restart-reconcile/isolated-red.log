@@ -1,0 +1,142 @@
+# 修前红测（真实 PostgreSQL 16，隔离库）
+# 基线：main@b6c2efab08e2703cc8e974dda7ff872db3122612；仅加入本单新增/更新的测试文件，apps/dispatcher/src 保持基线。
+# 命令：
+#   PATH=/opt/moyu-node24/bin:$PATH \
+#   TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
+#   pnpm --filter @moyu/dispatcher exec vitest run \
+#     test/integration/restart-interrupted-reconcile.integration.test.ts \
+#     test/integration/reservations.integration.test.ts \
+#     test/integration/recovery-review-idempotent.integration.test.ts
+# 退出码：1（3 个文件失败，5 failed / 4 passed）
+# 敏感信息：无；数据库地址为隔离实例，日志不含 token。
+
+
+ RUN  v3.2.7 /root/src/restart-reconcile-retry-cdeeef5a10fd/apps/dispatcher
+
+ ❯ test/integration/recovery-review-idempotent.integration.test.ts (1 test | 1 failed) 771ms
+   × execution reservation on real PostgreSQL > review recovery repeated identical supersession is idempotent 22ms
+     → expected { assignment_id: 'assignment-1', …(1) } to match object { …(2) }
+ ❯ test/integration/reservations.integration.test.ts (5 tests | 2 failed) 792ms
+   ✓ execution reservation on real PostgreSQL > claims a reserved identity from a queued state event only for the current lease 26ms
+   ✓ execution reservation on real PostgreSQL > keeps one reserved identity across a lost Bridge response before claim 11ms
+   ✓ execution reservation on real PostgreSQL > replays the same reservation, rejects identity and stale-fence changes, and claims once 22ms
+   × execution reservation on real PostgreSQL > adopts a re-issued Assignment only from the matching authoritative record, once 35ms
+     → execution reservation identity or generation does not match
+   × execution reservation on real PostgreSQL > adopts a concurrent re-issued turn exactly once 8ms
+     → execution reservation identity or generation does not match
+ ❯ test/integration/restart-interrupted-reconcile.integration.test.ts (3 tests | 2 failed) 809ms
+   × restart reconciliation on real PostgreSQL > adopts the assignment a restart re-issues under the same lease, records it once, and continues 71ms
+     → expected { …(8) } to match object { …(8) }
+   × restart reconciliation on real PostgreSQL > never adopts an Assignment from a generation that is not the live one 44ms
+     → expected { Object (admissionProjection) } to match object { Object (admissionRecovery) }
+(1 matching property omitted from actual)
+   ✓ restart reconciliation on real PostgreSQL > neither starts work nor drops the PR of an awaiting_review ticket across a restart, and ends it when the PR closes 33ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 5 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/integration/recovery-review-idempotent.integration.test.ts > execution reservation on real PostgreSQL > review recovery repeated identical supersession is idempotent
+AssertionError: expected { assignment_id: 'assignment-1', …(1) } to match object { …(2) }
+
+- Expected
++ Received
+
+  {
+-   "assignment_id": "assignment-reissued",
+-   "state": "claimed",
++   "assignment_id": "assignment-1",
++   "state": "reserved",
+  }
+
+ ❯ test/integration/recovery-review-idempotent.integration.test.ts:94:29
+     92|       [repository.id, 'admit:' + taskId],
+     93|     );
+     94|     expect(adopted.rows[0]).toMatchObject({
+       |                             ^
+     95|       assignment_id: 'assignment-reissued',
+     96|       state: 'claimed',
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/5]⎯
+
+ FAIL  test/integration/reservations.integration.test.ts > execution reservation on real PostgreSQL > adopts a re-issued Assignment only from the matching authoritative record, once
+Error: execution reservation identity or generation does not match
+ ❯ claimExecution src/reservations.ts:208:13
+    206|       String(row.fencing_token) !== input.fencingToken
+    207|     ) {
+    208|       throw new Error('execution reservation identity or generation do…
+       |             ^
+    209|     }
+    210|     return { claimed: false, id: row.id };
+ ❯ test/integration/reservations.integration.test.ts:282:21
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/5]⎯
+
+ FAIL  test/integration/reservations.integration.test.ts > execution reservation on real PostgreSQL > adopts a concurrent re-issued turn exactly once
+Error: execution reservation identity or generation does not match
+ ❯ claimExecution src/reservations.ts:208:13
+    206|       String(row.fencing_token) !== input.fencingToken
+    207|     ) {
+    208|       throw new Error('execution reservation identity or generation do…
+       |             ^
+    209|     }
+    210|     return { claimed: false, id: row.id };
+ ❯ test/integration/reservations.integration.test.ts:364:27
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/5]⎯
+
+ FAIL  test/integration/restart-interrupted-reconcile.integration.test.ts > restart reconciliation on real PostgreSQL > adopts the assignment a restart re-issues under the same lease, records it once, and continues
+AssertionError: expected { …(8) } to match object { …(8) }
+
+- Expected
++ Received
+
+@@ -1,7 +1,7 @@
+  {
+-   "assignment_id": "assignment-after-restart",
++   "assignment_id": "assignment-before-restart",
+    "fencing_token": "1",
+    "id": "b14cb715-f778-415b-8014-31a3ad7ff381",
+    "lease_id": "35bcada0-55da-4058-87fe-3de59352c1d2",
+    "request_key": "admit:baef6b6d-a812-498a-ad0b-1b84650227b6",
+    "state": "claimed",
+
+ ❯ test/integration/restart-interrupted-reconcile.integration.test.ts:360:29
+    358|       [reserved.id],
+    359|     );
+    360|     expect(adopted.rows[0]).toMatchObject({
+       |                             ^
+    361|       id: before.rows[0]!.id,
+    362|       request_key: before.rows[0]!.request_key,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/5]⎯
+
+ FAIL  test/integration/restart-interrupted-reconcile.integration.test.ts > restart reconciliation on real PostgreSQL > never adopts an Assignment from a generation that is not the live one
+AssertionError: expected { Object (admissionProjection) } to match object { Object (admissionRecovery) }
+(1 matching property omitted from actual)
+
+- Expected
++ Received
+
+  {
+-   "admissionRecovery": "snapshot_mismatch",
++   "admissionProjection": "stale_generation",
+  }
+
+ ❯ test/integration/restart-interrupted-reconcile.integration.test.ts:535:41
+    533|     );
+    534|     expect(kept.rows[0]!.assignment_id).toBe(live);
+    535|     expect(kept.rows[0]!.stop_evidence).toMatchObject({ admissionRecov…
+       |                                         ^
+    536|     const stillNone = await db.pool.query(
+    537|       `select 1 from runtime_lease_events where lease_id = $1 and type…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/5]⎯
+
+
+ Test Files  3 failed (3)
+      Tests  5 failed | 4 passed (9)
+   Start at  14:34:06
+   Duration  2.45s (transform 669ms, setup 0ms, collect 4.07s, tests 2.37s, environment 1ms, prepare 283ms)
+
+undefined
+/root/src/restart-reconcile-retry-cdeeef5a10fd/apps/dispatcher:
+[ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL] Command failed with exit code 1: vitest run test/integration/restart-interrupted-reconcile.integration.test.ts test/integration/reservations.integration.test.ts test/integration/recovery-review-idempotent.integration.test.ts
