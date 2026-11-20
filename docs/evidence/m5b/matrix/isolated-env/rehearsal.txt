@@ -1,0 +1,74 @@
+# M5-B isolated environment lifecycle rehearsal
+recorded=2026-11-20T14:07:37+08:00
+host=lavm-flnape7bgu
+run=/tmp/m5bmatrix
+identity=uid=995(m5bmatrix) gid=986(m5bmatrix) groups=986(m5bmatrix)
+probe_repository=Bouyer12/m5a-beta-adf10ad9
+deny_repository=Bouyer12/m5a-epsilon-adf10ad9
+
+sentinel=/var/tmp/m5b-host-sentinel
+sentinel_before=sha256=0b2ce9aa30daf106338c815a8f30c483df65dfa639f286711c7bef17402141af mode=600 uid=0 size=41 mtime=2026-11-20 14:07:37.214067569 +0800
+
+########## round 1 ##########
+## init: prepare the protected layout
+run_root=/tmp/m5bmatrix mode=755 uid=0
+protected=/tmp/m5bmatrix/protected mode=0700 uid=0
+config=/tmp/m5bmatrix/config mode=0750 uid=0 gid=986
+owned=/tmp/m5bmatrix/tmp,/tmp/m5bmatrix/credentials,/tmp/m5bmatrix/dsh-home uid=995 gid=986
+PASS: round 1: protected secrets are root-only and the identity cannot write them
+## identity runtime state
+PASS: round 1: identity wrote its own runtime state
+## abnormal exit: kill a matrix process and leave a half-written state
+Killed
+scripts/m5b/matrix/environment-rehearsal.sh: line 76: 4179939 Killed                  identity_shell sleep 300
+PASS: round 1: the matrix process was killed; the next start must clean its state
+## malicious path replacement: cleanup must not follow a link
+PASS: round 1: unlinking the replaced path left the host sentinel unchanged
+## cleanup: empty identity state and remove protected secrets
+PASS: round 1: protected secrets removed and identity state emptied
+## restart: prepare the layout again
+run_root=/tmp/m5bmatrix mode=755 uid=0
+protected=/tmp/m5bmatrix/protected mode=0700 uid=0
+config=/tmp/m5bmatrix/config mode=0750 uid=0 gid=986
+owned=/tmp/m5bmatrix/tmp,/tmp/m5bmatrix/credentials,/tmp/m5bmatrix/dsh-home uid=995 gid=986
+PASS: round 1: restart re-created the protected layout with root ownership
+## credential scope: probe authorized, controlled private repository denied
+probe_allowed=Bouyer12/m5a-beta-adf10ad9 exit=0 (dry-run, no ref updated)
+private_denied=Bouyer12/m5a-epsilon-adf10ad9 exit=128
+scope_validated=probe-only
+
+########## round 2 ##########
+## init: prepare the protected layout
+run_root=/tmp/m5bmatrix mode=755 uid=0
+protected=/tmp/m5bmatrix/protected mode=0700 uid=0
+config=/tmp/m5bmatrix/config mode=0750 uid=0 gid=986
+owned=/tmp/m5bmatrix/tmp,/tmp/m5bmatrix/credentials,/tmp/m5bmatrix/dsh-home uid=995 gid=986
+PASS: round 2: protected secrets are root-only and the identity cannot write them
+## identity runtime state
+PASS: round 2: identity wrote its own runtime state
+## abnormal exit: kill a matrix process and leave a half-written state
+Killed
+scripts/m5b/matrix/environment-rehearsal.sh: line 76: 4180352 Killed                  identity_shell sleep 300
+PASS: round 2: the matrix process was killed; the next start must clean its state
+## malicious path replacement: cleanup must not follow a link
+PASS: round 2: unlinking the replaced path left the host sentinel unchanged
+## cleanup: empty identity state and remove protected secrets
+PASS: round 2: protected secrets removed and identity state emptied
+## restart: prepare the layout again
+run_root=/tmp/m5bmatrix mode=755 uid=0
+protected=/tmp/m5bmatrix/protected mode=0700 uid=0
+config=/tmp/m5bmatrix/config mode=0750 uid=0 gid=986
+owned=/tmp/m5bmatrix/tmp,/tmp/m5bmatrix/credentials,/tmp/m5bmatrix/dsh-home uid=995 gid=986
+PASS: round 2: restart re-created the protected layout with root ownership
+## credential scope: probe authorized, controlled private repository denied
+probe_allowed=Bouyer12/m5a-beta-adf10ad9 exit=0 (dry-run, no ref updated)
+private_denied=Bouyer12/m5a-epsilon-adf10ad9 exit=128
+scope_validated=probe-only
+
+########## final checks ##########
+PASS: host sentinel content and metadata are unchanged after both rounds
+PASS: the identity still cannot write the protected directory
+PASS: the identity cannot read the shared m5b credentials
+PASS: the identity cannot write the shared gh configuration
+
+verdict=PASS rounds=2

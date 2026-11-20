@@ -100,5 +100,6 @@ M6-C 服务和检查进程的身份见 [运行手册](./M6-C-RUNBOOK.md)。旧 `
   token、seeded 会话 token 和 `state.env`，`config/`（root:matrix 0750）放 `instances.json`，
   其余临时状态由 `m5bmatrix` 0700 拥有。`down` 删 token，`up` 清空 Bridge 凭据。
 - **前置检查**：`node scripts/m5b/matrix/precheck.mjs [--online]`；`stack.sh up` 在宿主写边界或
-  凭据不满足时拒绝启动。旧授权收敛、共享凭据轮换、专用凭据创建是所有者动作，命令见
-  `docs/evidence/m5b/matrix/HARNESS-ISOLATION.md` §4。
+  凭据不满足时拒绝启动。旧授权收敛与专用探测 SSH key 已于 2026-11-20 执行；专用 gh token
+  与共享凭据轮换仍是所有者动作。现场状态、命令与两轮演练见
+  `docs/evidence/m5b/matrix/ISOLATED-ENV-2026-11-20.md`。

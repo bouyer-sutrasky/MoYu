@@ -254,6 +254,12 @@ export function prepareDir(
   }
   if (!stat) {
     mkdirSync(target, { mode, recursive: false });
+    // A fresh directory is created by the caller (root). Hand it to the identity
+    // that owns this partition before verifying it, so a first run on a clean
+    // host behaves like a rerun on an existing layout.
+    if (uid !== process.getuid() || (gid !== undefined && gid !== process.getgid())) {
+      chownSync(target, uid, gid ?? -1);
+    }
   } else {
     if (stat.isSymbolicLink()) fail(`directory ${target} is a symbolic link`);
     if (!stat.isDirectory()) fail(`directory ${target} is not a directory`);

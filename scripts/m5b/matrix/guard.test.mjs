@@ -75,6 +75,21 @@ test('prepareLayout makes a root-owned run directory with a private protected ar
   rmSync(run, { recursive: true, force: true });
 });
 
+test('a fresh directory is handed to its identity owner before verification', () => {
+  // The adoption path needs root; on a normal developer/CI account the fixture
+  // identity is the current user and the directory is already owned correctly.
+  if (uid !== 0) return;
+  const run = sandbox();
+  prepareRunRoot(run, { uid: 0, adoptUids: [0] });
+  const target = join(run, 'identity-owned');
+  const created = prepareDir(run, target, { uid: 4242, gid: 4343, mode: 0o700 });
+  assert.equal(created.uid, 4242);
+  assert.equal(lstatSync(target).uid, 4242);
+  assert.equal(lstatSync(target).gid, 4343);
+  assert.equal(modeOf(target), 0o700);
+  rmSync(run, { recursive: true, force: true });
+});
+
 test('a rerun keeps the protected files at 0600 and reads the same value', () => {
   const run = sandbox();
   const layout = prepareLayout(run, identity, {});
