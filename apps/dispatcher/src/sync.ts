@@ -13,7 +13,9 @@ import { endedState, stateFromSnapshot, TASK_COLUMNS, taskSummary, type TaskRow 
 import { pauseEvidenceProblem, pauseEvidenceProven } from './pause-evidence';
 import {
   acquireExecutionLeaseOn,
+  recordIgnoredEvidenceFailureOn,
   settleIgnoredAdmissionOn,
+  verifyIgnoredGenerationOn,
   type IgnoredAdmissionSettlement,
 } from './leases';
 
@@ -807,6 +809,95 @@ function routedTicket(
   return null;
 }
 
+/** One delivered message's execution generation evidence. */
+interface IgnoredDeliveryRow {
+  messageId: string;
+  leaseId: string | null;
+  fencingToken: string | null;
+}
+
+type IgnoredDeliveryEvidence =
+  | {
+      complete: true;
+      leaseId: string;
+      fencingToken: string;
+      rows: IgnoredDeliveryRow[];
+    }
+  | {
+      complete: false;
+      detail: string;
+      rows: IgnoredDeliveryRow[];
+      missingMessageIds: string[];
+    };
+
+/**
+ * Reads the delivery evidence for every message the ignored receipt names.
+ *
+ * The rows are keyed by `message_id`, so their database order cannot change the
+ * result. Every named message must have the row; every row must carry both a
+ * lease id and a fencing token; and all rows must name one generation. Anything
+ * less is incomplete evidence, not a generation that can be settled.
+ */
+async function ignoredDeliveryEvidence(
+  client: pg.PoolClient,
+  conversationId: string,
+  messageIds: string[],
+): Promise<IgnoredDeliveryEvidence> {
+  const expected = [...new Set(messageIds)];
+  const result = await client.query<IgnoredDeliveryRow>(
+    `select d.message_id as "messageId", d.runtime_lease_id as "leaseId",
+            d.fencing_token::text as "fencingToken"
+       from deliveries d
+       join messages m on m.id = d.message_id
+      where m.conversation_id = $1 and m.id = any($2::uuid[])`,
+    [conversationId, expected],
+  );
+  const byMessage = new Map(result.rows.map((row) => [row.messageId, row]));
+  const missingMessageIds = expected.filter((messageId) => !byMessage.has(messageId));
+  const rows = expected.flatMap((messageId) => byMessage.get(messageId) ?? []);
+  if (missingMessageIds.length > 0) {
+    return {
+      complete: false,
+      detail: `the ignored receipt names ${missingMessageIds.length} message(s) without a delivery`,
+      rows,
+      missingMessageIds,
+    };
+  }
+  const incomplete = rows.filter((row) => !row.leaseId || !row.fencingToken);
+  if (incomplete.length > 0) {
+    return {
+      complete: false,
+      detail: `the delivery evidence for ${incomplete.length} message(s) lacks a lease id or fencing token`,
+      rows,
+      missingMessageIds: [],
+    };
+  }
+  const leaseIds = new Set(rows.map((row) => row.leaseId));
+  const fencingTokens = new Set(rows.map((row) => row.fencingToken));
+  if (leaseIds.size !== 1) {
+    return {
+      complete: false,
+      detail: 'the named deliveries belong to more than one execution lease',
+      rows,
+      missingMessageIds: [],
+    };
+  }
+  if (fencingTokens.size !== 1) {
+    return {
+      complete: false,
+      detail: 'the named deliveries on one lease disagree about the fencing token',
+      rows,
+      missingMessageIds: [],
+    };
+  }
+  return {
+    complete: true,
+    leaseId: [...leaseIds][0]!,
+    fencingToken: [...fencingTokens][0]!,
+    rows,
+  };
+}
+
 /**
  * Persists the decision that closed a pending admission. A `routed` decision
  * means the runtime attached the message to another Ticket; the platform
@@ -850,43 +941,74 @@ async function applyIgnoredDecision(
   const primary = reasons.find((reason) => reason.code === 'routed') ?? reasons[0];
   const targetTicketId = routedTicket(reasons);
   // The receipt names the messages it ignored, so their deliveries carry the
-  // execution generation it can settle. A task already bound to a newer
-  // generation is a late receipt: closing it or releasing its lease would end
-  // an admission this decision never saw.
-  let ignoredGeneration: { leaseId: string; fencingToken: string | null } | null = null;
+  // execution generation it can settle. Confirm every named delivery first,
+  // then lock the task and lease and compare the complete evidence with the
+  // current generation. Incomplete or conflicting evidence keeps the task,
+  // reservation and lease untouched and records why.
+  let ignoredGeneration: { leaseId: string; fencingToken: string } | null = null;
   if (task.runtimeLeaseId) {
-    const deliveries = await client.query<{
-      leaseId: string | null;
-      fencingToken: string | null;
-    }>(
-      `select d.runtime_lease_id as "leaseId", d.fencing_token::text as "fencingToken"
-         from deliveries d
-         join messages m on m.id = d.message_id
-        where m.conversation_id = $1 and m.id = any($2::uuid[])`,
-      [targetId, messageIds],
-    );
-    const generations = new Map<string, string | null>();
-    for (const row of deliveries.rows) {
-      if (row.leaseId) generations.set(row.leaseId, row.fencingToken);
-    }
-    if (generations.size === 0 || generations.size > 1 || !generations.has(task.runtimeLeaseId)) {
-      traceBranch(event.id, 'return-stale-generation');
-      logger.info(
+    const evidence = await ignoredDeliveryEvidence(client, targetId, messageIds);
+    if (!evidence.complete) {
+      await recordIgnoredEvidenceFailureOn(client, repository.id, {
+        taskId: task.id,
+        decisionId,
+        leaseId: task.runtimeLeaseId,
+        fencingToken: null,
+        reason: evidence.detail,
+        messageIds,
+        missingMessageIds: evidence.missingMessageIds,
+        evidence: evidence.rows,
+      });
+      traceBranch(event.id, 'return-incomplete-delivery-evidence');
+      logger.warn(
         {
-          event: 'bridge.decision_ignored_stale',
+          event: 'bridge.decision_ignored_evidence_rejected',
           decisionId,
           taskId: task.id,
           conversationId: targetId,
           taskLeaseId: task.runtimeLeaseId,
-          ignoredLeaseIds: [...generations.keys()],
+          detail: evidence.detail,
+          missingMessageIds: evidence.missingMessageIds,
         },
-        'left the admission open: the ignored receipt names another or an unknown execution generation',
+        'left the admission open: the ignored receipt lacks complete delivery evidence',
+      );
+      return;
+    }
+    const verified = await verifyIgnoredGenerationOn(client, repository.id, {
+      taskId: task.id,
+      leaseId: evidence.leaseId,
+      fencingToken: evidence.fencingToken,
+    });
+    if (!verified.verified) {
+      await recordIgnoredEvidenceFailureOn(client, repository.id, {
+        taskId: task.id,
+        decisionId,
+        leaseId: task.runtimeLeaseId,
+        fencingToken: evidence.fencingToken,
+        reason: verified.detail,
+        messageIds,
+        missingMessageIds: [],
+        evidence: evidence.rows,
+      });
+      traceBranch(event.id, 'return-unverified-generation');
+      logger.warn(
+        {
+          event: 'bridge.decision_ignored_evidence_rejected',
+          decisionId,
+          taskId: task.id,
+          conversationId: targetId,
+          taskLeaseId: task.runtimeLeaseId,
+          deliveryLeaseId: evidence.leaseId,
+          deliveryFencingToken: evidence.fencingToken,
+          detail: verified.detail,
+        },
+        'left the admission open: the delivery evidence does not match the current generation',
       );
       return;
     }
     ignoredGeneration = {
-      leaseId: task.runtimeLeaseId,
-      fencingToken: generations.get(task.runtimeLeaseId) ?? null,
+      leaseId: evidence.leaseId,
+      fencingToken: evidence.fencingToken,
     };
   }
   const decision: Record<string, unknown> = {
@@ -950,6 +1072,7 @@ async function applyIgnoredDecision(
         set state = 'not_accepted', version = version + 1,
             decision = $4::jsonb, updated_at = now()
       where t.id = $1 and t.repository_id = $2 and t.state = 'pending_admission'
+        and t.runtime_lease_id is not distinct from $5::uuid
         and not exists (
           select 1 from messages m
            where m.conversation_id = t.conversation_id
@@ -968,7 +1091,13 @@ async function applyIgnoredDecision(
              and not (m.id = any($3::uuid[]))
              and d.state in ('pending', 'delivering')
         )`,
-    [task.id, repository.id, messageIds, JSON.stringify(decision)],
+    [
+      task.id,
+      repository.id,
+      messageIds,
+      JSON.stringify(decision),
+      ignoredGeneration?.leaseId ?? null,
+    ],
   );
   if ((updated.rowCount ?? 0) === 0) return;
   // The ignored admission never became a runtime Ticket. Its execution

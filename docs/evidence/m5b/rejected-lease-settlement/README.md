@@ -9,7 +9,8 @@
 
 ## 改动摘要
 
-- `decision.ignored` 从回执点名的消息找到 `deliveries.runtime_lease_id` / `fencing_token`，与任务当前 `runtime_lease_id` 锁定比对；迟到回执命名旧代次时，不关闭新代次任务、不释放新代次租约。
+- `decision.ignored` 按回执点名的每条消息逐条读取投递，要求投递存在且 `runtime_lease_id` / `fencing_token` 均非空并指向同一代次；随后锁定任务与租约，与当前代次比对。迟到回执命名旧代次时，不关闭新代次任务、不释放新代次租约。
+- 投递缺失、租约或 token 为空、同租约 token 冲突、顺序置换或与锁定租约不一致时，保留任务、预留和租约，写 `ignored_evidence_rejected` 事件与结构化日志说明原因。
 - 关闭 admission 与结清在同一事务：仅当无 runtime Ticket、无 `claimed` 预留、无在途投递、无排队命令、没有其它任务绑定该代次时，才把 `reserved` 预留置 `abandoned`、租约置 `released`（写 `stop_proof.kind=admission_ignored` 与释放事件）、清空任务绑定。
 - 任一证据表明可能已执行时，任务仍投影为 `not_accepted`，但保留租约并写 `recovery_state=blocked`、`waiting_for=execution_stop_proof` 和可读原因。
 - 普通拒绝与 `routed` 共用同一套代次校验；`#82` 的 routed 决策、目标链接和中文通知路径保持不变。
@@ -29,13 +30,25 @@ $ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
 
 原始输出：[`red-baseline.txt`](./red-baseline.txt)。
 
+P2 审查（逐条校验投递证据）修复前，使用 head `f04f18a` 的
+`apps/dispatcher/src/{leases,sync}.ts`，带入本次新增的逐条证据用例：
+
+```bash
+$ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
+    pnpm --filter @moyu/dispatcher exec vitest run \
+    test/integration/decision-lease.integration.test.ts
+# exit 1；6 failed / 9 passed
+```
+
+原始输出：[`p2-red-baseline.txt`](./p2-red-baseline.txt)。
+
 修后：
 
 ```bash
 $ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
     pnpm --filter @moyu/dispatcher exec vitest run \
     test/integration/decision-lease.integration.test.ts
-# exit 0；11 passed
+# exit 0；15 passed
 
 $ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
     pnpm --filter @moyu/dispatcher exec vitest run \
@@ -47,16 +60,16 @@ $ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
 # exit 0
 # db 17 files / 54 tests
 # api 18 files / 142 tests
-# dispatcher 19 files passed + 1 skipped；109 passed + 1 skipped
+# dispatcher 19 files passed + 1 skipped；113 passed + 1 skipped
 # supervisor 1 file / 4 tests
 
 $ pnpm check
 # exit 0（lint、format、typecheck、unit tests、script tests）
 
 $ pnpm build
-# exit 0；dispatcher dist/main.js 277.74 KB
+# exit 0；dispatcher dist/main.js 282.53 KB
 $ sha256sum apps/dispatcher/dist/main.js
-5bb7d6b4e5ce750749d31598ca1bd18a639c4b7984895ecdf538e4e070c08269
+0f67b57bc0df570470f4b0b1760f661b2e356c8940d42db7c39e92591e5ff9bf
 ```
 
 原始输出：[`green-decision-lease.txt`](./green-decision-lease.txt)、
@@ -65,9 +78,10 @@ $ sha256sum apps/dispatcher/dist/main.js
 回归覆盖：
 
 - 未开工代次：预留 `abandoned`、租约 `released`、任务绑定清空、释放事件一次；同仓下一任务取得更大的 fencing token 并真正可启动。
+- 逐条投递证据：回执点名的每条消息都必须有投递，且租约 ID 与 fencing token 均非空、彼此一致；随后持锁比对任务绑定和租约行。部分消息缺投递、空 token、同租约 token 冲突、顺序置换以及投递 fence 与锁定租约行不一致时，均保留任务、预留和租约，并写 `ignored_evidence_rejected` 事件与结构化日志。
 - `routed`：同一结清逻辑，`decision.outcome=routed`、目标 Ticket/任务/会话与 `routingState=pending` 保留。
-- 迟到回执：旧代次消息不关闭新代次任务，不释放新租约。
-- 已有 runtime Ticket、已 `claimed` 预留、排队命令、在途投递、投递 fence 与任务绑定不一致：保留代次并记录具体原因。
+- 迟到回执：旧代次消息不关闭新代次任务，不释放新租约，并记录代次不一致原因。
+- 已有 runtime Ticket、已 `claimed` 预留、排队命令、在途投递：保留代次并记录具体原因。
 - 两个 dispatcher 并发应用同一回执：只释放一次、只产生一个释放事件、预留只置一次 `abandoned`。
 - 历史 `not_accepted` 行：无 runtime Ticket 时结清；有 runtime Ticket 时保留并阻塞。
 

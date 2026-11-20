@@ -61,9 +61,9 @@ interface Fixture {
   binding: RepositoryBinding;
 }
 
-function ignoredEvent(
+function ignoredEventForMessages(
   conversationId: string,
-  messageId: string,
+  messageIds: string[],
   id: string,
   reason?: Array<{ code: string; values?: Record<string, unknown> }>,
 ): BridgeEvent {
@@ -74,15 +74,24 @@ function ignoredEvent(
     at: '2026-11-20T00:00:00.000Z',
     data: {
       decisionId: `decision-${id}`,
-      triggerIds: [`workspace:${messageId}`],
+      triggerIds: messageIds.map((messageId) => `workspace:${messageId}`),
       conversationId,
-      messageId,
-      messageIds: [messageId],
+      messageId: messageIds[0],
+      messageIds,
       threadKey: `workspace:${conversationId}`,
       reason: reason ?? [{ code: 'said', values: { text: 'not ticket work' } }],
       at: '2026-11-20T00:00:00.000Z',
     },
   };
+}
+
+function ignoredEvent(
+  conversationId: string,
+  messageId: string,
+  id: string,
+  reason?: Array<{ code: string; values?: Record<string, unknown> }>,
+): BridgeEvent {
+  return ignoredEventForMessages(conversationId, [messageId], id, reason);
 }
 
 describe('ignored admission settles its execution generation on real PostgreSQL', () => {
@@ -178,21 +187,30 @@ describe('ignored admission settles its execution generation on real PostgreSQL'
     return account.lease;
   }
 
-  async function bindDelivery(
+  async function bindDeliveryEvidence(
     messageId: string,
-    lease: ExecutionLease,
+    leaseId: string | null,
+    fencingToken: string | null,
     state: 'pending' | 'delivering' | 'delivered' = 'delivered',
   ): Promise<void> {
     await testDatabase.pool.query(
       `insert into deliveries
          (message_id, state, delivered_at, handed_to_worker_at, runtime_lease_id, fencing_token)
-       values ($1, $2, now(), now(), $3, $4)
+       values ($1, $2, now(), now(), $3, $4::bigint)
        on conflict (message_id) do update
          set state = excluded.state, runtime_lease_id = excluded.runtime_lease_id,
              fencing_token = excluded.fencing_token, delivered_at = excluded.delivered_at,
              handed_to_worker_at = excluded.handed_to_worker_at`,
-      [messageId, state, lease.id, lease.fencingToken],
+      [messageId, state, leaseId, fencingToken],
     );
+  }
+
+  async function bindDelivery(
+    messageId: string,
+    lease: ExecutionLease,
+    state: 'pending' | 'delivering' | 'delivered' = 'delivered',
+  ): Promise<void> {
+    await bindDeliveryEvidence(messageId, lease.id, lease.fencingToken, state);
   }
 
   async function reserve(
@@ -245,6 +263,24 @@ describe('ignored admission settles its execution generation on real PostgreSQL'
     return result.rows[0]?.count ?? 0;
   }
 
+  async function evidenceFailureDetails(leaseId: string): Promise<Record<string, unknown>[]> {
+    const result = await testDatabase.pool.query<{ detail: Record<string, unknown> }>(
+      `select detail from runtime_lease_events
+        where lease_id = $1 and type = 'ignored_evidence_rejected'
+        order by created_at`,
+      [leaseId],
+    );
+    return result.rows.map((row) => row.detail);
+  }
+
+  async function reservationState(leaseId: string): Promise<string | null> {
+    const result = await testDatabase.pool.query<{ state: string }>(
+      `select state from execution_reservations where lease_id = $1`,
+      [leaseId],
+    );
+    return result.rows[0]?.state ?? null;
+  }
+
   it('settles the unstarted generation and frees the repository slot for the next task', async () => {
     const fixture = await seedRepository();
     const conversationId = await seedConversation(fixture);
@@ -284,6 +320,135 @@ describe('ignored admission settles its execution generation on real PostgreSQL'
     expect(next.refused).toBeNull();
     expect(next.lease?.id).not.toBe(lease.id);
     expect(Number(next.lease?.fencingToken)).toBeGreaterThan(Number(lease.fencingToken));
+  }, 30_000);
+
+  it('keeps the task, reservation and lease when one named message has no delivery', async () => {
+    const fixture = await seedRepository();
+    const conversationId = await seedConversation(fixture);
+    const taskId = await seedTask(fixture, conversationId);
+    const first = await seedMessage(conversationId, 'has a delivery');
+    const missing = await seedMessage(conversationId, 'has no delivery row');
+    const lease = await acquireLease(fixture, taskId);
+    await bindDelivery(first, lease);
+    await reserve(fixture, taskId, lease, 'reserved');
+    // The receipt names the messages in the opposite order of the deliveries.
+    bridge.events.push(
+      ignoredEventForMessages(conversationId, [missing, first], `missing:${taskId}`),
+    );
+
+    await syncOnce(testDatabase.pool, fixture.binding, client, logger);
+
+    expect(await readTask(taskId)).toMatchObject({
+      state: 'pending_admission',
+      runtimeLeaseId: lease.id,
+    });
+    expect(await readLease(lease.id)).toMatchObject({ state: 'active', recoveryState: 'none' });
+    expect(await reservationState(lease.id)).toBe('reserved');
+    expect(await releaseEventCount(lease.id)).toBe(0);
+    const failures = await evidenceFailureDetails(lease.id);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({
+      missingMessageIds: [missing],
+      reason: expect.stringContaining('without a delivery'),
+    });
+  }, 30_000);
+
+  it('keeps the task, reservation and lease when a named delivery has no fencing token', async () => {
+    const fixture = await seedRepository();
+    const conversationId = await seedConversation(fixture);
+    const taskId = await seedTask(fixture, conversationId);
+    const messageId = await seedMessage(conversationId, 'delivery without a fence');
+    const lease = await acquireLease(fixture, taskId);
+    await bindDeliveryEvidence(messageId, lease.id, null);
+    await reserve(fixture, taskId, lease, 'reserved');
+    bridge.events.push(ignoredEvent(conversationId, messageId, `empty-token:${taskId}`));
+
+    await syncOnce(testDatabase.pool, fixture.binding, client, logger);
+
+    expect(await readTask(taskId)).toMatchObject({
+      state: 'pending_admission',
+      runtimeLeaseId: lease.id,
+    });
+    expect(await readLease(lease.id)).toMatchObject({ state: 'active', recoveryState: 'none' });
+    expect(await reservationState(lease.id)).toBe('reserved');
+    expect(await releaseEventCount(lease.id)).toBe(0);
+    const failures = await evidenceFailureDetails(lease.id);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({
+      reason: expect.stringContaining('lacks a lease id or fencing token'),
+      evidence: [{ messageId, leaseId: lease.id, fencingToken: null }],
+    });
+  }, 30_000);
+
+  it('keeps the admission when deliveries on the same lease disagree about the fence', async () => {
+    const fixture = await seedRepository();
+    const conversationId = await seedConversation(fixture);
+    const taskId = await seedTask(fixture, conversationId);
+    const first = await seedMessage(conversationId, 'first conflicting delivery');
+    const second = await seedMessage(conversationId, 'second conflicting delivery');
+    const lease = await acquireLease(fixture, taskId);
+    const otherToken = String(Number(lease.fencingToken) + 1);
+    await bindDeliveryEvidence(first, lease.id, lease.fencingToken);
+    await bindDeliveryEvidence(second, lease.id, otherToken);
+    await reserve(fixture, taskId, lease, 'reserved');
+    bridge.events.push(
+      ignoredEventForMessages(conversationId, [first, second], `conflict:${taskId}`),
+    );
+
+    await syncOnce(testDatabase.pool, fixture.binding, client, logger);
+
+    expect(await readTask(taskId)).toMatchObject({
+      state: 'pending_admission',
+      runtimeLeaseId: lease.id,
+    });
+    expect(await readLease(lease.id)).toMatchObject({ state: 'active', recoveryState: 'none' });
+    expect(await reservationState(lease.id)).toBe('reserved');
+    expect(await releaseEventCount(lease.id)).toBe(0);
+    const failures = await evidenceFailureDetails(lease.id);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({
+      reason: expect.stringContaining('disagree about the fencing token'),
+      evidence: [
+        { messageId: first, leaseId: lease.id, fencingToken: lease.fencingToken },
+        { messageId: second, leaseId: lease.id, fencingToken: otherToken },
+      ],
+    });
+  }, 30_000);
+
+  it('reaches the same refusal when the same conflicting evidence arrives in another order', async () => {
+    const fixture = await seedRepository();
+    const conversationId = await seedConversation(fixture);
+    const taskId = await seedTask(fixture, conversationId);
+    const first = await seedMessage(conversationId, 'first permuted delivery');
+    const second = await seedMessage(conversationId, 'second permuted delivery');
+    const lease = await acquireLease(fixture, taskId);
+    const otherToken = String(Number(lease.fencingToken) + 1);
+    // Insert and name the rows in the reverse order of the previous case.
+    await bindDeliveryEvidence(second, lease.id, otherToken);
+    await bindDeliveryEvidence(first, lease.id, lease.fencingToken);
+    await reserve(fixture, taskId, lease, 'reserved');
+    bridge.events.push(
+      ignoredEventForMessages(conversationId, [second, first], `permuted:${taskId}`),
+    );
+
+    await syncOnce(testDatabase.pool, fixture.binding, client, logger);
+
+    expect(await readTask(taskId)).toMatchObject({
+      state: 'pending_admission',
+      runtimeLeaseId: lease.id,
+    });
+    expect(await readLease(lease.id)).toMatchObject({ state: 'active', recoveryState: 'none' });
+    expect(await reservationState(lease.id)).toBe('reserved');
+    expect(await releaseEventCount(lease.id)).toBe(0);
+    const failures = await evidenceFailureDetails(lease.id);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({
+      reason: expect.stringContaining('disagree about the fencing token'),
+      evidence: [
+        { messageId: second, leaseId: lease.id, fencingToken: otherToken },
+        { messageId: first, leaseId: lease.id, fencingToken: lease.fencingToken },
+      ],
+    });
   }, 30_000);
 
   it('applies the same settlement to a routed decision and keeps its handoff target', async () => {
@@ -355,6 +520,11 @@ describe('ignored admission settles its execution generation on real PostgreSQL'
     });
     expect(await readLease(currentLease.id)).toMatchObject({ state: 'active' });
     expect(await releaseEventCount(currentLease.id)).toBe(0);
+    const failures = await evidenceFailureDetails(currentLease.id);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({
+      reason: expect.stringContaining('different execution generation'),
+    });
   }, 30_000);
 
   it('keeps the generation and records why when a runtime ticket may have executed', async () => {
@@ -451,28 +621,30 @@ describe('ignored admission settles its execution generation on real PostgreSQL'
     expect(await releaseEventCount(lease.id)).toBe(0);
   }, 30_000);
 
-  it('keeps the generation when the delivery fence disagrees with the task binding', async () => {
+  it('keeps the admission when the delivery fence disagrees with the locked lease row', async () => {
     const fixture = await seedRepository();
     const conversationId = await seedConversation(fixture);
     const taskId = await seedTask(fixture, conversationId);
     const messageId = await seedMessage(conversationId, 'mismatched fence probe');
     const lease = await acquireLease(fixture, taskId);
-    await testDatabase.pool.query(
-      `insert into deliveries (message_id, state, runtime_lease_id, fencing_token)
-       values ($1, 'delivered', $2, $3)`,
-      [messageId, lease.id, Number(lease.fencingToken) + 1],
-    );
+    await bindDeliveryEvidence(messageId, lease.id, String(Number(lease.fencingToken) + 1));
+    await reserve(fixture, taskId, lease, 'reserved');
     bridge.events.push(ignoredEvent(conversationId, messageId, `fence:${taskId}`));
 
     await syncOnce(testDatabase.pool, fixture.binding, client, logger);
 
-    expect(await readLease(lease.id)).toMatchObject({
-      state: 'active',
-      recoveryState: 'blocked',
-      recoveryReason: expect.stringContaining('fencing generation'),
+    expect(await readTask(taskId)).toMatchObject({
+      state: 'pending_admission',
+      runtimeLeaseId: lease.id,
     });
-    expect(await readTask(taskId)).toMatchObject({ runtimeLeaseId: lease.id });
+    expect(await readLease(lease.id)).toMatchObject({ state: 'active', recoveryState: 'none' });
+    expect(await reservationState(lease.id)).toBe('reserved');
     expect(await releaseEventCount(lease.id)).toBe(0);
+    const failures = await evidenceFailureDetails(lease.id);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({
+      reason: expect.stringContaining('does not match the delivery evidence'),
+    });
   }, 30_000);
 
   it('settles once when two dispatchers apply the same ignored receipt together', async () => {

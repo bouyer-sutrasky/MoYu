@@ -1,0 +1,179 @@
+.                                        | [WARN] Unsupported engine: wanted: {"node":"24.22.2"} (current: {"node":"v22.23.3","pnpm":"11.7.0"})
+
+ RUN  v3.2.7 /root/src/rejected-lease-settle-7baf8c04617e/apps/dispatcher
+
+ ❯ test/integration/decision-lease.integration.test.ts (15 tests | 6 failed) 7197ms
+   ✓ ignored admission settles its execution generation on real PostgreSQL > settles the unstarted generation and frees the repository slot for the next task  539ms
+   × ignored admission settles its execution generation on real PostgreSQL > keeps the task, reservation and lease when one named message has no delivery 475ms
+     → expected { state: 'not_accepted', …(2) } to match object { state: 'pending_admission', …(1) }
+(2 matching properties omitted from actual)
+   × ignored admission settles its execution generation on real PostgreSQL > keeps the task, reservation and lease when a named delivery has no fencing token 500ms
+     → expected { state: 'not_accepted', …(2) } to match object { state: 'pending_admission', …(1) }
+(2 matching properties omitted from actual)
+   × ignored admission settles its execution generation on real PostgreSQL > keeps the admission when deliveries on the same lease disagree about the fence 496ms
+     → expected { state: 'not_accepted', …(2) } to match object { state: 'pending_admission', …(1) }
+(1 matching property omitted from actual)
+   × ignored admission settles its execution generation on real PostgreSQL > reaches the same refusal when the same conflicting evidence arrives in another order 478ms
+     → expected { state: 'not_accepted', …(2) } to match object { state: 'pending_admission', …(1) }
+(1 matching property omitted from actual)
+   ✓ ignored admission settles its execution generation on real PostgreSQL > applies the same settlement to a routed decision and keeps its handoff target  480ms
+   × ignored admission settles its execution generation on real PostgreSQL > leaves the new generation alone when a late ignored receipt names the old one 463ms
+     → expected [] to have a length of 1 but got +0
+   ✓ ignored admission settles its execution generation on real PostgreSQL > keeps the generation and records why when a runtime ticket may have executed  482ms
+   ✓ ignored admission settles its execution generation on real PostgreSQL > keeps the generation when a worker already claimed the reservation  456ms
+   ✓ ignored admission settles its execution generation on real PostgreSQL > keeps the generation while a command is still queued on it  472ms
+   ✓ ignored admission settles its execution generation on real PostgreSQL > leaves the admission and generation open while another delivery is in flight  434ms
+   × ignored admission settles its execution generation on real PostgreSQL > keeps the admission when the delivery fence disagrees with the locked lease row 459ms
+     → expected { state: 'not_accepted', …(2) } to match object { state: 'pending_admission', …(1) }
+(1 matching property omitted from actual)
+   ✓ ignored admission settles its execution generation on real PostgreSQL > settles once when two dispatchers apply the same ignored receipt together  504ms
+   ✓ ignored admission settles its execution generation on real PostgreSQL > settles a historical not_accepted admission that never created a runtime ticket  485ms
+   ✓ ignored admission settles its execution generation on real PostgreSQL > keeps a historical admission whose runtime ticket may have executed  474ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 6 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/integration/decision-lease.integration.test.ts > ignored admission settles its execution generation on real PostgreSQL > keeps the task, reservation and lease when one named message has no delivery
+AssertionError: expected { state: 'not_accepted', …(2) } to match object { state: 'pending_admission', …(1) }
+(2 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+-   "runtimeLeaseId": "de012f78-f9e4-4dd4-821a-cd8c307b68d4",
+-   "state": "pending_admission",
++   "runtimeLeaseId": null,
++   "state": "not_accepted",
+  }
+
+ ❯ test/integration/decision-lease.integration.test.ts:341:36
+    339|     await syncOnce(testDatabase.pool, fixture.binding, client, logger);
+    340| 
+    341|     expect(await readTask(taskId)).toMatchObject({
+       |                                    ^
+    342|       state: 'pending_admission',
+    343|       runtimeLeaseId: lease.id,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/6]⎯
+
+ FAIL  test/integration/decision-lease.integration.test.ts > ignored admission settles its execution generation on real PostgreSQL > keeps the task, reservation and lease when a named delivery has no fencing token
+AssertionError: expected { state: 'not_accepted', …(2) } to match object { state: 'pending_admission', …(1) }
+(2 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+-   "runtimeLeaseId": "7b222aeb-72c3-48e6-ba0e-97b909ec74a0",
+-   "state": "pending_admission",
++   "runtimeLeaseId": null,
++   "state": "not_accepted",
+  }
+
+ ❯ test/integration/decision-lease.integration.test.ts:368:36
+    366|     await syncOnce(testDatabase.pool, fixture.binding, client, logger);
+    367| 
+    368|     expect(await readTask(taskId)).toMatchObject({
+       |                                    ^
+    369|       state: 'pending_admission',
+    370|       runtimeLeaseId: lease.id,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/6]⎯
+
+ FAIL  test/integration/decision-lease.integration.test.ts > ignored admission settles its execution generation on real PostgreSQL > keeps the admission when deliveries on the same lease disagree about the fence
+AssertionError: expected { state: 'not_accepted', …(2) } to match object { state: 'pending_admission', …(1) }
+(1 matching property omitted from actual)
+
+- Expected
++ Received
+
+  {
+    "runtimeLeaseId": "b47e9496-972f-4c51-b6ff-58e2e18c80c4",
+-   "state": "pending_admission",
++   "state": "not_accepted",
+  }
+
+ ❯ test/integration/decision-lease.integration.test.ts:400:36
+    398|     await syncOnce(testDatabase.pool, fixture.binding, client, logger);
+    399| 
+    400|     expect(await readTask(taskId)).toMatchObject({
+       |                                    ^
+    401|       state: 'pending_admission',
+    402|       runtimeLeaseId: lease.id,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/6]⎯
+
+ FAIL  test/integration/decision-lease.integration.test.ts > ignored admission settles its execution generation on real PostgreSQL > reaches the same refusal when the same conflicting evidence arrives in another order
+AssertionError: expected { state: 'not_accepted', …(2) } to match object { state: 'pending_admission', …(1) }
+(1 matching property omitted from actual)
+
+- Expected
++ Received
+
+  {
+    "runtimeLeaseId": "771a3a66-b14f-407d-8884-dedb3459ceed",
+-   "state": "pending_admission",
++   "state": "not_accepted",
+  }
+
+ ❯ test/integration/decision-lease.integration.test.ts:436:36
+    434|     await syncOnce(testDatabase.pool, fixture.binding, client, logger);
+    435| 
+    436|     expect(await readTask(taskId)).toMatchObject({
+       |                                    ^
+    437|       state: 'pending_admission',
+    438|       runtimeLeaseId: lease.id,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/6]⎯
+
+ FAIL  test/integration/decision-lease.integration.test.ts > ignored admission settles its execution generation on real PostgreSQL > leaves the new generation alone when a late ignored receipt names the old one
+AssertionError: expected [] to have a length of 1 but got +0
+
+- Expected
++ Received
+
+- 1
++ 0
+
+ ❯ test/integration/decision-lease.integration.test.ts:524:22
+    522|     expect(await releaseEventCount(currentLease.id)).toBe(0);
+    523|     const failures = await evidenceFailureDetails(currentLease.id);
+    524|     expect(failures).toHaveLength(1);
+       |                      ^
+    525|     expect(failures[0]).toMatchObject({
+    526|       reason: expect.stringContaining('different execution generation'…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/6]⎯
+
+ FAIL  test/integration/decision-lease.integration.test.ts > ignored admission settles its execution generation on real PostgreSQL > keeps the admission when the delivery fence disagrees with the locked lease row
+AssertionError: expected { state: 'not_accepted', …(2) } to match object { state: 'pending_admission', …(1) }
+(1 matching property omitted from actual)
+
+- Expected
++ Received
+
+  {
+    "runtimeLeaseId": "81875d5f-db2e-4f02-af27-a3b85b5df542",
+-   "state": "pending_admission",
++   "state": "not_accepted",
+  }
+
+ ❯ test/integration/decision-lease.integration.test.ts:636:36
+    634|     await syncOnce(testDatabase.pool, fixture.binding, client, logger);
+    635| 
+    636|     expect(await readTask(taskId)).toMatchObject({
+       |                                    ^
+    637|       state: 'pending_admission',
+    638|       runtimeLeaseId: lease.id,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/6]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  6 failed | 9 passed (15)
+   Start at  18:37:48
+   Duration  8.65s (transform 415ms, setup 0ms, collect 1.19s, tests 7.20s, environment 0ms, prepare 76ms)
+
+undefined
+/root/src/rejected-lease-settle-7baf8c04617e/apps/dispatcher:
+[ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL] Command failed with exit code 1: vitest run test/integration/decision-lease.integration.test.ts

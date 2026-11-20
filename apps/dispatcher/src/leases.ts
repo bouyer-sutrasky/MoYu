@@ -481,8 +481,8 @@ export interface IgnoredAdmissionGeneration {
   decisionId: string;
   messageIds: string[];
   leaseId: string;
-  /** The delivery's fencing token; the lease row decides when it is absent. */
-  fencingToken: string | null;
+  /** Every named delivery must carry this exact fencing token. */
+  fencingToken: string;
   reason: string;
 }
 
@@ -540,10 +540,7 @@ export async function settleIgnoredAdmissionOn(
   if (!lease || lease.state !== 'active') {
     return { settled: false, detail: 'the execution lease is no longer active' };
   }
-  if (
-    generation.fencingToken !== null &&
-    String(lease.fencing_token) !== String(generation.fencingToken)
-  ) {
+  if (String(lease.fencing_token) !== generation.fencingToken) {
     // The task binding and the delivered fencing token disagree. Nothing proves
     // which generation the ignored message belongs to, so keep the slot and
     // make the contradiction visible instead of guessing.
@@ -638,6 +635,99 @@ export async function settleIgnoredAdmissionOn(
     detail: { reason: generation.reason, proof },
   });
   return { settled: true, detail: 'settled the generation that never executed' };
+}
+
+/**
+ * Locks the task and lease and proves that a fully collected ignored-delivery
+ * generation is still the task's current one. The caller must already have
+ * confirmed that every message the receipt names has a delivery whose lease id
+ * and fencing token are present and equal. Nothing is changed here: a mismatch
+ * leaves the task, its reservation and its lease untouched for the audit path.
+ */
+export async function verifyIgnoredGenerationOn(
+  client: pg.PoolClient,
+  repositoryId: string,
+  input: { taskId: string; leaseId: string; fencingToken: string },
+): Promise<{ verified: boolean; detail: string }> {
+  const task = await client.query<{
+    state: string;
+    runtime_lease_id: string | null;
+  }>(
+    `select state, runtime_lease_id from task_links
+      where id = $1 and repository_id = $2 for update`,
+    [input.taskId, repositoryId],
+  );
+  const taskRow = task.rows[0];
+  if (!taskRow) return { verified: false, detail: 'the platform task no longer exists' };
+  if (taskRow.state !== 'pending_admission') {
+    return {
+      verified: false,
+      detail: `the task is ${taskRow.state}, not a pending admission`,
+    };
+  }
+  if (taskRow.runtime_lease_id !== input.leaseId) {
+    return {
+      verified: false,
+      detail: 'the task is bound to a different execution generation',
+    };
+  }
+  const lease = await client.query<{ state: string; fencing_token: string }>(
+    `select state, fencing_token::text as "fencing_token" from runtime_leases
+      where id = $1 and repository_id = $2 for update`,
+    [input.leaseId, repositoryId],
+  );
+  const leaseRow = lease.rows[0];
+  if (!leaseRow) return { verified: false, detail: 'the execution lease no longer exists' };
+  if (leaseRow.state !== 'active') {
+    return { verified: false, detail: `the execution lease is ${leaseRow.state}` };
+  }
+  if (leaseRow.fencing_token !== input.fencingToken) {
+    return {
+      verified: false,
+      detail: `the lease fencing token ${leaseRow.fencing_token} does not match the delivery evidence ${input.fencingToken}`,
+    };
+  }
+  return { verified: true, detail: 'the delivery evidence matches the task current generation' };
+}
+
+/**
+ * Persists why an ignored receipt could not be traced to one complete,
+ * consistent current generation. The task, reservation and lease are left in
+ * place; this ledger row is the durable reason an operator or a later recovery
+ * pass can inspect.
+ */
+export async function recordIgnoredEvidenceFailureOn(
+  client: pg.PoolClient,
+  repositoryId: string,
+  input: {
+    taskId: string;
+    decisionId: string;
+    leaseId: string | null;
+    fencingToken: string | null;
+    reason: string;
+    messageIds: string[];
+    missingMessageIds: string[];
+    evidence: Array<{
+      messageId: string;
+      leaseId: string | null;
+      fencingToken: string | null;
+    }>;
+  },
+): Promise<void> {
+  await appendLeaseEvent(client, {
+    leaseId: input.leaseId,
+    repositoryId,
+    fencingToken: input.fencingToken,
+    type: 'ignored_evidence_rejected',
+    detail: {
+      reason: input.reason,
+      taskId: input.taskId,
+      decisionId: input.decisionId,
+      messageIds: input.messageIds,
+      missingMessageIds: input.missingMessageIds,
+      evidence: input.evidence,
+    },
+  });
 }
 
 /** Keeps a generation occupied and records the concrete reason in its history. */
