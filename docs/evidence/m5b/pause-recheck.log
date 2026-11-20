@@ -6,7 +6,7 @@
 ## 1. 结论
 
 - 平台与上游补丁已实现「停止未证明 → 保留 `blocked` 占位 → 对原暂停操作重新核对 → 原子结清并释放该代次租约 → 允许一次 resume」。
-- 单元与集成层面全部通过；补丁 `0031-pause-recheck.patch` 顺序应用、类型检查、构建与 54 个定向运行时用例均通过。
+- 单元与集成层面全部通过；补丁 `0032-pause-recheck.patch` 顺序应用、类型检查、构建与 54 个定向运行时用例均通过。
 - **Web 与强制超时现场已跑通**（§7、§8）：真实隔离栈、真实 Bridge、真实租约与 worker Session；强制超时路径
   经「占位 → 再次核对 → 原子结清 → 一次 resume → 重复 resume 拒绝」11 项断言全部通过。
 - **独立 GitHub 身份入口仍未跑**：所有者签发的专用探测 token 属于 `Bouyer12`，与 agent 自身账号相同；上游
@@ -18,9 +18,9 @@
 | 项 | 值 |
 | --- | --- |
 | 基线 | `b6c2efab08e2703cc8e974dda7ff872db3122612` |
-| 上游固定 commit | `6337fc823ce20251c8de8085948165c81aaa701e`（补丁 0001–0031） |
-| 补丁 | `integrations/superagent/patches/0031-pause-recheck.patch` = `f10687b454ff4c27b6bd1c0bf3d5b728c6fda94dd777e4e0972d47b308539b92`（739 行，含测试专用 launch 延迟） |
-| runtime 制品 | `lib/index.js` = `5181f370dfff7a14aabddc7218fdf6442c2c154f15230c3d59b8586e5a36263e` |
+| 上游固定 commit | `6337fc823ce20251c8de8085948165c81aaa701e`（补丁 0001–0032） |
+| 补丁 | `integrations/superagent/patches/0032-pause-recheck.patch` = `f10687b454ff4c27b6bd1c0bf3d5b728c6fda94dd777e4e0972d47b308539b92`（739 行，含测试专用 launch 延迟；#103 合流后由 0031 顺延为 0032） |
+| runtime 制品（组合 0001–0032） | `lib/index.js` = `ff46314942f216139632ba97aac82a6bbbcd78fd6a3abf6686cbc24c293f711a` |
 | dispatcher 制品 | `apps/dispatcher/dist/main.js` = `46d6c4d8a9951362b5f1e775cb72dd5c4ac637276664eb17e80053365279cf38` |
 | API 制品 | `apps/api/dist/server.js` = `0328c27c99f3540aacda29771d6038d0c81a5083d774b15a65c13ba5dd34e685` |
 | supervisor 制品 | `apps/supervisor/dist/main.js` = `17e8bf0360d7d6a9683f7359929505b077e9725566ddbc50655e6acdf0e05186` |
@@ -30,7 +30,8 @@
 | UI 修前截图 | `docs/evidence/m5b/pause-recheck-before.png` = `234e7ec32367e03542c1563100f3096aadda5b1bfbec11d36a7a60c94446fb04` |
 | UI 修后截图 | `docs/evidence/m5b/pause-recheck-after.png` = `9ddaa7b5916fb90e3e6e8ff9c5cf05078eb272b8c76dbf12f41cc41c55467626` |
 
-runtime 制品由 `pause-recovery-final` 构建：pristine `6337fc8` 顺序应用 0001–0031，`tsdown` exit 0。§8 的强制超时
+runtime 制品由 `build-patched.sh` 构建：pristine `6337fc8` 顺序应用 0001–0032（含 #103 的 `0031-host-restart-stop-proof`），
+`tsdown` exit 0；组合构建树上 54 个定向运行时用例全部通过。§8 的强制超时
 现场使用了同一制品里的测试专用 launch 延迟接缝；生产不设置它。制品未部署到生产 3082，生产库与共享 55432 未触碰。
 
 ## 3. 修前（红）
@@ -51,7 +52,7 @@ cd /root/src/upstream/pause-recovery-base        # 0001–0030
 ## 4. 修后（绿）
 
 ```bash
-cd /root/src/upstream/pause-recovery-final         # 0001–0031
+cd /root/src/upstream/pause-recovery-final2        # 0001–0032
 ./node_modules/.bin/tsc --noEmit                    # exit 0
 ./node_modules/.bin/vitest run tests/pause.spec.ts tests/pause-start.spec.ts tests/bridge-control.spec.ts
 # exit 0；3 files / 54 tests passed
@@ -79,7 +80,7 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm test:integ
 第一次整链运行时 `@moyu/db` 出现一次 `terminating connection due to administrator command`（57P01），当时 54 个用例
 全过，仅 teardown 报错；单跑 `@moyu/db test:integration` 与整链重跑都 exit 0。与旧 PR #55 记录的同一瞬时现象一致。
 
-上游完整测试（补丁 0001–0031 的构建树）：
+上游完整测试（补丁 0001–0032 的构建树）：
 
 ```bash
 cd /root/src/upstream/pause-recovery-final
@@ -95,7 +96,7 @@ env -u GIT_CONFIG_GLOBAL ./node_modules/.bin/vitest run tests/runtime.spec.ts te
 
 ### 测试专用强制超时入口
 
-`item4` 的现场强制超时需要一个 1 ms 的停止上限。补丁 0031 在 runtime 里加了 `MOYU_TEST_HOOKS=1` +
+`item4` 的现场强制超时需要一个 1 ms 的停止上限。补丁 0032 在 runtime 里加了 `MOYU_TEST_HOOKS=1` +
 `MOYU_TEST_PAUSE_LAUNCH_MS` 的测试接缝；本轮又把它从 supervisor 的实例环境文件传给 runtime：
 
 - `apps/supervisor/src/provision.ts` 的 `instanceEnvironment` 只在 supervisor 自身带
@@ -121,7 +122,7 @@ PATH=/opt/moyu-node24/bin:$PATH pnpm --filter @moyu/supervisor exec vitest run t
 
 ```bash
 cd /root/src/upstream/pause-recovery-final
-for p in integrations/superagent/patches/*.patch; do git apply "$p"; done   # 0001–0031 全部 apply
+for p in integrations/superagent/patches/*.patch; do git apply "$p"; done   # 0001–0032 全部 apply
 ./node_modules/.bin/tsdown
 # exit 0；lib/index.js sha256 dfe5288b…
 ```
@@ -249,6 +250,10 @@ script_artifact=e2dbc3a0b87cf302d9a499371215d60fd2fe4eff1416d3ad1326535ee2eee059
 这次现场还暴露并修复了一个平台竞态：非终态的暂停 intent 事件可能晚于失败的暂停操作落库，把 `blocked`
 占位改回 `stopping` 并覆盖 `nextStep`。修复在 `applyPausedEvent` 的投影里（SQL 条件更新 + 非终态前提），
 `operations.integration.test.ts` 新增回归用例，39 个用例通过。
+
+现场运行对应的分支 head 是 `fec3bf0` / `4387456`（平台与 runtime `5181f3`）；之后自动合并
+`main`（#103）并把本补丁顺延为 0032，生成 head `5637654`。合并后的组合构建（0001–0032，`ff463149`）通过 54 个
+定向运行时用例，CI 在该 head 上 2/2 通过；行为代码未因合并改变。
 
 ## 9. 现场依赖与剩余动作
 
