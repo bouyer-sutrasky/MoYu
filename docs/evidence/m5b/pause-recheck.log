@@ -250,38 +250,28 @@ script_artifact=e2dbc3a0b87cf302d9a499371215d60fd2fe4eff1416d3ad1326535ee2eee059
 占位改回 `stopping` 并覆盖 `nextStep`。修复在 `applyPausedEvent` 的投影里（SQL 条件更新 + 非终态前提），
 `operations.integration.test.ts` 新增回归用例，39 个用例通过。
 
-## 9. 现场依赖与待验项
+## 9. 现场依赖与剩余动作
 
-依赖状态（2026-11-20 21:00 复核）：
+依赖状态（2026-11-20 复核）：
 
-- `#92` 的隔离环境已合流（PR #100，2026-11-20T11:31:09Z）；所有者随后配置了专用探测 gh token。
-  `node scripts/m5b/matrix/precheck.mjs` 现场结果 `verdict=clean`、exit 0；SSH/gh 配置都只在 root 受限目录，
-  `stack.sh up` 的凭据门禁可放行。
-- `#94` 的 cgroup/进程归属修复已合流（PR #102，2026-11-20T12:38:06Z），停止证据联验不再被分支阻塞。
-- 旧 PR #55 仍未合并；其文档内容（无 assignment 证据、`launch` 字段、`lingeringPids` 删除）已并入本轮 §2.3。
+- `#92` 的隔离环境已合流（PR #100，2026-11-20T11:31:09Z）；专用探测凭据门禁 `precheck.mjs --gate --online` 通过。
+- `#94` 的 cgroup/进程归属修复已合流（PR #102，2026-11-20T12:38:06Z）。现场强制超时的 runtime 证据包含其 cgroup；
+  本轮没有对 #94 的 cgroup 归属再做独立断言，按已合流的联验路径记录。
+- 旧 PR #55 仍未合并；其文档内容已并入本轮 §2.3。
 
-隔离栈是**串行共享**资源（固定 3403/3404 端口与 `/tmp/m5bmatrix`）。本单恢复时另一个工单的现场回归正在使用
-它；本单的 Web/强制超时现场已排入队列，拿到窗口后自动执行：
+现场结果：Web（§7）10/10、强制超时→核对→恢复（§8）11/11，均 exit 0。剩余唯一一项是**独立 GitHub 身份入口**：
 
-```bash
-# 无测试钩子的栈：启动前/后暂停、证据、恢复、重复 resume
-scripts/m5b/matrix/item4-pause-recheck.sh web
-# 以 MOYU_TEST_HOOKS=1 MOYU_TEST_PAUSE_LAUNCH_MS=1 启动的栈：强制超时→核对→恢复
-M5B_MATRIX_FORCE_LAUNCH_TIMEOUT=1 scripts/m5b/matrix/item4-pause-recheck.sh forced
-```
-
-独立 GitHub 身份仍有一个**所有者动作**：已配置的探测 token 属于 `Bouyer12`（`gh api user` 返回 Bouyer12），
-与 agent 自身账号相同。上游 GitHub Source 用 `sameName` 过滤 agent 自己的评论，因此这个 token 发出的
-`@Bouyer12` 不会形成入口事件。要跑 GitHub 现场，需要另一个 GitHub 身份（例如所有者本人）在探测仓的一个
-issue/PR 上发一条 @ agent 的提及；脚本会校验 `M5B_MATRIX_PROBE_LOGIN` 与 agent login 不同。
+- 所有者配置的探测 token 属于 `Bouyer12`（`gh api user` 返回 Bouyer12），与 agent 自身账号相同；
+- 上游 GitHub Source 用 `sameName` 过滤 agent 自己的评论，所以这个 token 发出的 `@Bouyer12` 不会形成入口事件；
+- 需要一个非 agent 的 GitHub 身份（例如所有者本人）在探测仓 `Bouyer12/m5a-beta-adf10ad9` 的一个 issue/PR 上发一条
+  @ agent 的提及，并告知 issue/PR 编号。脚本会校验 `M5B_MATRIX_PROBE_LOGIN` 与 agent login 不同：
 
 ```bash
-M5B_MATRIX_PROBE_GH_CONFIG_DIR=/root/.config/m5bmatrix/gh \
+M5B_MATRIX_PROBE_GH_CONFIG_DIR=<independent-identity-gh-config> \
 M5B_MATRIX_PROBE_LOGIN=<independent-login> \
 M5B_MATRIX_REPOSITORY=Bouyer12/m5a-beta-adf10ad9 \
 M5B_MATRIX_GITHUB_ISSUE=<number> \
   scripts/m5b/matrix/item4-pause-recheck.sh github
 ```
 
-未验证项直到实际跑完前保持：现场 Web/GitHub 双入口、真实 worker/租约/退出码/脱敏日志的现场快照、
-与 #94 的 cgroup 停止证据联验。本单不会在只跑完本地检查时宣称现场验收通过。
+在这一项跑完前，本单不宣称 Web + GitHub 双入口验收完成；PR 保持 draft，供所有者先审阅代码与两份现场日志。
