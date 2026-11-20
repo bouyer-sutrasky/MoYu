@@ -76,6 +76,20 @@ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm test:integ
 第一次整链运行时 `@moyu/db` 出现一次 `terminating connection due to administrator command`（57P01），当时 54 个用例
 全过，仅 teardown 报错；单跑 `@moyu/db test:integration` 与整链重跑都 exit 0。与旧 PR #55 记录的同一瞬时现象一致。
 
+上游完整测试（补丁 0001–0031 的构建树）：
+
+```bash
+cd /root/src/upstream/pause-recovery-final
+./node_modules/.bin/vitest run
+# 1340 tests：1337 passed / 3 failed
+# 两个 runtime.spec 失败是 worker shell 的 GIT_CONFIG_GLOBAL 污染（AGENTS.md §4 记录的运行环境问题），
+# 一个 sources.spec 是已知的可选 Feishu 失败。
+env -u GIT_CONFIG_GLOBAL ./node_modules/.bin/vitest run tests/runtime.spec.ts tests/sources.spec.ts
+# 163 tests：162 passed / 1 failed（仅已知 Feishu sources 用例）
+```
+
+用干净环境重跑后没有本轮改动引入的失败。
+
 新增/修改的平台集成断言：
 
 - `operations.integration.test.ts`：核对成功后同一事务把任务置 `stopped` 并释放原租约；证据五项绑定一致；绑定到
