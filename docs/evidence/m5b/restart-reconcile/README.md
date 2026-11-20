@@ -18,8 +18,10 @@
 
 | 文件 | 内容 |
 | --- | --- |
-| `isolated-red.log` | 修前（`apps/dispatcher/src` 为基线，只加测试）同一命令：exit 1，3 文件失败，5 failed / 4 passed |
-| `isolated-green.log` | 修后同命令：exit 0，3 文件通过，9 passed |
+| `isolated-red.log` | 首轮修前（`apps/dispatcher/src` 为基线，只加测试）同一命令：exit 1，3 文件失败，5 failed / 4 passed |
+| `isolated-green.log` | 首轮修后同命令：exit 0，3 文件通过，9 passed |
+| `isolated-interleave-red.log` | 并发旧快照返修前（代码为 `0c97a7f`，测试为本轮新增/更新）：exit 1，5 failed / 7 passed |
+| `isolated-interleave-green.log` | 返修后同命令：exit 0，3 文件通过，12 passed |
 | `full-checks.log` | 修后 `pnpm check` 与 `pnpm test:integration` 的套件汇总行与命令，两者 exit 0 |
 | `artifacts.txt` | 完整 SHA、构建制品与哈希、测试计数、未验证项 |
 
@@ -34,10 +36,12 @@ pnpm --filter @moyu/dispatcher exec vitest run \
   test/integration/recovery-review-idempotent.integration.test.ts
 ```
 
-- 修前：exit 1。关键失败 `expected 'assignment-after-restart' to be 'assignment-before-restart'`：
+- 首轮修前：exit 1。关键失败 `expected 'assignment-after-restart' to be 'assignment-before-restart'`：
   预留行没有跟随运行时在同一租约下重发的 Assignment；已 claim 的预留行不再进入恢复路径。
-- 修后：exit 0。新增的权威快照采纳、无状态事件重发、并发/重放只接续一次、被替换回合晚到
+- 首轮修后：exit 0。新增的权威快照采纳、无状态事件重发、并发/重放只接续一次、被替换回合晚到
   事件不投影全部通过。
+- 返修（P2 并发旧快照）：修前 5 failed / 7 passed；修后 12 passed。锁内 expected assignment、
+  冲突重读、拒绝已记为被替代的目标、重读仍不一致时保留现状均有真实 PG 用例。
 
 ## 现场待验（本目录未包含）
 

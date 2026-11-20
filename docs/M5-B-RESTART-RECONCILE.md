@@ -64,12 +64,17 @@ fencing token** 下重发一个新的 Assignment。
 
 - 入参新增可选的 `authoritative: AuthoritativeRuntimeAssignment`，字段是权威记录里的
   `ticketId`、`assignmentId`、`leaseId`、`fencingToken`、`state`、`sourceCursor`、
-  `sourceEventId`、`observedAt`。
+  `sourceEventId`、`observedAt`；同时必须带 `expectedAssignmentId`，即调用方读取该记录时
+  预留行的 Assignment。
 - 锁顺序与 `reserveExecution` 一致：先租约行，后预留行（`for update`），与并发 claim 不形成环。
 - 先校验租约仍是该仓库 `active` 且 token 相同、预留行的 `ticket_id`/`lease_id`/`fencing_token`
   与入参一致。
-- 仅当 `authoritative` 与本代次逐项相等、运行时状态为 `queued`/`running`、预留行为
-  `reserved`/`claimed`、且 Assignment 确实不同，才在**同一事务**内：
+- 锁内先比对 `expectedAssignmentId`：如果预留行已经被另一次恢复改走，直接返回
+  `conflict: 'reservation_moved'`，不写入。随后若目标 Assignment 已在台账里作为
+  `fromAssignmentId` 出现过（`assignment_superseded`），返回
+  `conflict: 'target_superseded'`，同样不写入——这是“拒绝已记录为被替代的 assignment”。
+- 仅当 `authoritative` 与本代次逐项相等、`expectedAssignmentId` 仍是锁内旧值、运行时状态为
+  `queued`/`running`、预留行为 `reserved`/`claimed`、且 Assignment 确实不同，才在**同一事务**内：
   1. `update execution_reservations set assignment_id = …`（只改这一列，保留全部既有键）；
   2. 追加 `runtime_lease_events(type='assignment_superseded')`，`detail` 记录
      旧值 `fromAssignmentId`、新值 `toAssignmentId`、`requestKey`、`reservationState`、
@@ -81,9 +86,13 @@ fencing token** 下重发一个新的 Assignment。
 
 `apps/dispatcher/src/sync.ts`
 
-- 每轮先读 Bridge `GET /bridge/v1/tickets/:id`（文档定义的权威快照），再在事务里交给
-  `claimExecution`，由它锁定并复核 Ticket、租约、token 和记录字段。快照读取在事务前完成，
-  HTTP 不占数据库锁；事务内的锁和逐项比较保证提交时仍是同一代次。
+- 每轮先读 Bridge `GET /bridge/v1/tickets/:id`（文档定义的权威快照），把“读记录时预留行的
+  Assignment”作为 `expectedAssignmentId` 一并交给事务里的 `claimExecution`，由它锁定并复核
+  Ticket、租约、token 和记录字段。快照读取在事务前完成，HTTP 不占数据库锁；事务内的
+  `expectedAssignmentId` 比较保证提交时预留行仍是该快照对应的旧值。
+- 冲突时在**同一轮**重读预留行与权威快照后再试一次：旧快照（A2）若在更新的采纳（A1→A3）
+  之后才拿到锁，会得到 `reservation_moved`；恢复据此重读 A3，第二次比较命中当前回合。连续
+  两次冲突说明仍在并发变化，保留现状留给下一 tick，不猜测。
 - 查询同时覆盖 `reserved` 与 `claimed` 的预留行：`claimed` 只在租约仍 `active` 时纳入，覆盖
   「回合已 claim、重启后状态不变地重发」这一旧实现看不见的分支。
 - 已 `claimed` 且已指向活回合的行不再 claim；仅当有旧恢复证据时清除证据。
@@ -118,7 +127,11 @@ fencing token** 下重发一个新的 Assignment。
    `stale_assignment`，任务仍 `running`、预留仍指新回合、台账仍一条。
 3. **非活代次不采纳**：另一个 lease 的事件与快照都不能迁移；事件记 `stale_generation`，
    快照记 `snapshot_mismatch`，预留与台账不变。
-4. **开放 PR 的 `awaiting_review` 跨重启**：重启对账保留状态与 `pr_url/pr_number`，维护释放
+4. **快照在飞行中变旧**：恢复读到旧快照 A2 的同时，另一条路径已把预留采纳到 A3；旧快照
+   返回后必须 `reservation_moved`、重读权威记录，最终预留保持 A3，台账只有 A1→A3，
+   不出现 A3→A2 的倒退。若重读仍返回旧记录 A2，平台无法排序（Assignment 无运行时时间戳），
+   必须保留 A3 留给下一 tick，不能反向采纳；下一轮用与预留一致的记录收口。
+5. **开放 PR 的 `awaiting_review` 跨重启**：重启对账保留状态与 `pr_url/pr_number`，维护释放
    租约且不启动 worker；PR 关闭后转 `closed_unmerged`，仍不启动。
 
 `apps/dispatcher/test/integration/reservations.integration.test.ts`（真实库、直接调用）：
@@ -127,7 +140,11 @@ fencing token** 下重发一个新的 Assignment。
   或缺少权威记录时全部拒绝，预留不动。
 - 迁移只改 Assignment，预留行其余键与状态保持；台账旧值/新值/来源游标/观察时间正确。
 - 重放同一权威记录：`supersededFrom: null`，不新增台账。
-- 两个并发恢复读取同一权威记录：租约锁串行化，只有一个迁移一次，最终一条台账。
+- 两个并发恢复读取同一权威记录：租约锁串行化；先到者采纳一次，后到者因
+  `expectedAssignmentId` 已过期得到 `reservation_moved`，最终一条台账。
+- 倒退保护：A1→A2→A3 之后，晚到的 A2 快照分别以 `expectedAssignmentId=A3` 和
+  `expectedAssignmentId=A2` 到达，得到 `target_superseded` 与 `reservation_moved`；
+  预留保持 A3，台账顺序仍为 A1→A2、A2→A3。
 
 `recovery-review-idempotent.integration.test.ts` 由旧的「重复 snapshot_mismatch 幂等」改为
 「重复权威采纳幂等」：首轮采纳 `assignment-reissued` 并 claim，次轮版本与证据不变、台账不增。
@@ -138,10 +155,12 @@ fencing token** 下重发一个新的 Assignment。
 
 | 状态 | 命令 | 退出码 | 结果 |
 | --- | --- | --- | --- |
-| 修前（红） | 见 [`isolated-red.log`](evidence/m5b/restart-reconcile/isolated-red.log) | 1 | 3 文件失败，5 failed / 4 passed |
-| 修后（绿） | 见 [`isolated-green.log`](evidence/m5b/restart-reconcile/isolated-green.log) | 0 | 3 文件通过，9 passed |
+| 修前（红，首轮实现） | 见 [`isolated-red.log`](evidence/m5b/restart-reconcile/isolated-red.log) | 1 | 3 文件失败，5 failed / 4 passed |
+| 修后（绿，首轮实现） | 见 [`isolated-green.log`](evidence/m5b/restart-reconcile/isolated-green.log) | 0 | 3 文件通过，9 passed |
+| 修前（红，并发旧快照返修） | 见 [`isolated-interleave-red.log`](evidence/m5b/restart-reconcile/isolated-interleave-red.log) | 1 | 5 failed / 7 passed |
+| 修后（绿，并发旧快照返修） | 见 [`isolated-interleave-green.log`](evidence/m5b/restart-reconcile/isolated-interleave-green.log) | 0 | 3 文件通过，12 passed |
 | 全量静态+单测 | `pnpm check` | 0 | lint/format/8 项目 typecheck；unit 通过 |
-| 全量集成 | `pnpm test:integration` | 0 | db 54、api 142、dispatcher 105/1 skipped、supervisor 4 |
+| 全量集成 | `pnpm test:integration` | 0 | db 54、api 142、dispatcher 108/1 skipped、supervisor 4 |
 
 修前第一条失败：`expected 'assignment-after-restart' to be 'assignment-before-restart'`
 （预留行没有跟随运行时重发的回合）。
@@ -225,3 +244,5 @@ bash scripts/m5b/matrix/item5-awaiting-review.sh
 4. 多仓库同时重启、`discussing` 回合的宿主重启。
 5. 台账的 `sourceEventId` 只在该任务已有 Bridge 事件时存在；无事件的重发只有
    `source: bridge_snapshot` + `sourceCursor`，这是权威记录的来源位置，不冒充事件。
+6. 冲突重读最多一次：连续冲突时保留现状、等下一 tick；极端持续并发下会多延迟一个事件
+   同步周期，但不会倒退或重复迁移。

@@ -1,23 +1,27 @@
 # 重启对账制品与检查（Issue #95）
 
-记录时间：2026-11-20T06:38Z 左右（Asia/Shanghai 14:38）。
+记录时间：2026-11-20T07:07Z 左右（Asia/Shanghai 15:07）。
 
 ## 完整 SHA
 
 - 基线 `origin/main`：`b6c2efab08e2703cc8e974dda7ff872db3122612`
-- 实现提交：`0c97a7f43c9148d5d88715138c506c0826b55a37`
+- 首轮实现提交：`0c97a7f43c9148d5d88715138c506c0826b55a37`
   `fix(dispatcher): adopt the Assignment a host restart re-issues (#95)`
-- 工作树：实现提交后仅剩本证据/文档变更；无未提交的源码改动。
+- 本轮返修提交（锁内 expected assignment、冲突重读、拒绝倒退）：
+  `34536cd76b35bd2fd5daf2594aa5fc26304d9c92`
+  `fix(dispatcher): reject a stale snapshot that would roll back the Assignment (#95)`
 - 分支：`agent/restart-reconcile-retry-cdeeef5a10fd`
+- 工作树：实现提交后只剩本证据/文档变更；无未提交的源码改动。
 
 ## 实际运行制品
 
 ```text
-e1f703d400d20a3ba38c24e83590fd182ce5c26330b3cadf5d56b7171c1997b8  apps/dispatcher/dist/main.js
+e86f598df933d95cfb97c7fb4d1c5baa17484d9a68f83c04c47e4f64eb663133  apps/dispatcher/dist/main.js
 ```
 
 - 构建：`PATH=/opt/moyu-node24/bin:$PATH pnpm --filter @moyu/dispatcher build`，exit 0。
-- 构建目标 node24；`dist/` 被 `.gitignore` 忽略，哈希对应实现提交的工作树。
+- 构建目标 node24；`dist/` 被 `.gitignore` 忽略，哈希对应本轮返修的工作树。
+- 首轮制品哈希为 `e1f703d4…`，仅作历史对照；以本轮为准。
 - 无上游补丁变更，无运行时/Bridge 制品变更，因此没有 `lib/index.js` 新哈希。
 - 运行时版本：Node v24.22.2、pnpm 11.7.0；PostgreSQL 16.15（隔离 `127.0.0.1:55432`）。
 
@@ -25,10 +29,12 @@ e1f703d400d20a3ba38c24e83590fd182ce5c26330b3cadf5d56b7171c1997b8  apps/dispatche
 
 | 命令 | 退出码 | 结果 |
 | --- | --- | --- |
-| 修前隔离用例（3 文件，见 `isolated-red.log`） | 1 | 5 failed / 4 passed |
-| 修后同一命令（见 `isolated-green.log`） | 0 | 9 passed |
-| `pnpm check` | 0 | eslint 0 error（仓库既有 1 warning）、prettier 通过、8 个项目 typecheck 通过；unit：contracts 26、runtime-client 13、dispatcher 7、api 24、supervisor 130；`node --test` 21 |
-| `pnpm test:integration`（真实 PostgreSQL 16） | 0 | db 54、api 142、dispatcher 105 passed / 1 skipped、supervisor 4 |
+| 首轮修前隔离用例（3 文件，见 `isolated-red.log`） | 1 | 5 failed / 4 passed |
+| 首轮修后同一命令（见 `isolated-green.log`） | 0 | 9 passed |
+| 返修前并发旧快照用例（见 `isolated-interleave-red.log`） | 1 | 5 failed / 7 passed |
+| 返修后同一命令（见 `isolated-interleave-green.log`） | 0 | 3 文件 / 12 passed |
+| `pnpm check` | 0 | eslint 0 error（仓库既有 1 warning）、prettier、8 个项目 typecheck；unit：contracts 26、runtime-client 13、dispatcher 7、api 24、supervisor 130、`node --test` 21 |
+| `pnpm test:integration`（真实 PostgreSQL 16） | 0 | db 54、api 142、dispatcher 108 passed / 1 skipped、supervisor 4 |
 | `pnpm --filter @moyu/dispatcher build` | 0 | 见上方制品哈希 |
 
 测试命令均带 `TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres`；日志不含
@@ -40,18 +46,22 @@ token、私钥或真实绑定码。
   - 无状态事件的重发：权威快照采纳、既有键保留、台账一次、重放不增、后续输入只投一次、游标推进；
   - 新旧回合交错：被替换回合晚到的 `state_changed` 只记 `stale_assignment`，不回写状态/预留；
   - 非活代次不采纳（事件 `stale_generation`、快照 `snapshot_mismatch`）；
+  - 快照在飞行中变旧：旧快照晚到只触发 `reservation_moved` 与重读，预留保持最新，台账无倒退；
+  - 重读仍是旧记录：保留现状留给下一 tick，不按无法排序的旧 Assignment 反向写入；
   - `awaiting_review` 跨重启保留 PR、不启动、PR 关闭后结票。
-- `apps/dispatcher/test/integration/reservations.integration.test.ts`（新增 2 例）
+- `apps/dispatcher/test/integration/reservations.integration.test.ts`（新增 3 例）
   - 只有逐项匹配的权威记录才迁移；任一字段不匹配拒绝且不动预留；
-  - 迁移只改 Assignment、台账记录旧值/新值/来源；重放与并发只接续一次。
+  - 迁移只改 Assignment、台账记录旧值/新值/来源；重放与并发只接续一次；
+  - A1→A2→A3 后晚到的 A2 分别以 `reservation_moved` / `target_superseded` 拒绝，预留保持 A3。
 - `apps/dispatcher/test/integration/recovery-review-idempotent.integration.test.ts`（更新）
   - 由「重复 snapshot_mismatch 幂等」改为「重复权威采纳幂等」。
 
 ## 数据库变更与回退
 
 - 无 schema 迁移、无新表/列/索引；最后迁移仍为 `0024`。
-- 数据修复发生在运行时事务中：`execution_reservations.assignment_id` 只在权威记录逐项匹配时
-  更新，旧值写入 `runtime_lease_events.detail`。没有可执行的回滚/重迁脚本，因为没有迁移。
+- 数据修复发生在运行时事务中：`execution_reservations.assignment_id` 只在权威记录逐项匹配
+  且锁内旧值未被并发改走时更新，旧值写入 `runtime_lease_events.detail`。没有可执行的回滚/
+  重迁脚本，因为没有迁移。
 - 回退代码为 revert 实现提交；已采纳的行继续指向当时的活回合，旧值仍在台账，不会被改回已
   结束的回合。
 

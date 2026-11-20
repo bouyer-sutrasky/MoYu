@@ -1,4 +1,4 @@
-# 全量检查摘要（修后）
+# 全量检查摘要（本轮返修后）
 # 命令与退出码：
 #   PATH=/opt/moyu-node24/bin:$PATH pnpm check            # exit 0
 #   PATH=/opt/moyu-node24/bin:$PATH \
@@ -28,6 +28,6 @@ $ pnpm --filter @moyu/db test:integration && pnpm --filter @moyu/api test:integr
  Test Files  18 passed (18)
       Tests  142 passed (142)
  Test Files  20 passed | 1 skipped (21)
-      Tests  105 passed | 1 skipped (106)
+      Tests  108 passed | 1 skipped (109)
  Test Files  1 passed (1)
       Tests  4 passed (4)
