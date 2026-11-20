@@ -11,13 +11,16 @@ import {
   CGROUP_ROOT,
   cgroupBoundary,
   cgroupEmpty,
+  cgroupEmptyAt,
   cgroupPids,
   cgroupTree,
+  cgroupTreeAt,
   childPids,
   collectOwnership,
   descendants,
   ensureCgroup,
   movePidToCgroup,
+  openCgroupObject,
   ownedByRoot,
   portOwners,
   removeCgroup,
@@ -548,6 +551,58 @@ describe('cgroup cold start and restart ownership', () => {
     expect(result.boundary).toBe('missing');
     // Nothing of the generation is alive, so the row must not stay wedged.
     expect(collectOwnership(child.pid, stored).unknown).toBe(false);
+  });
+
+  it('reads and proves through the opened object when the path is replaced before the read', async () => {
+    const cgroup = createCgroup(`race-${process.pid}-${Date.now()}`);
+    if (!cgroup) return;
+    const holding = createCgroup(`race-holding-${process.pid}-${Date.now()}`);
+    if (!holding) return;
+    const foreign = spawnDetached('sleep', ['30']);
+    try {
+      if (!foreign.pid) throw new Error('no pid');
+      const oldInode = statSync(cgroup).ino;
+      // Verify the object, then replace the path before any member/empty read.
+      const opened = openCgroupObject(cgroup, oldInode);
+      expect(opened.state).toBe('ok');
+      expect(opened.fd).not.toBeNull();
+      expect(movePidToCgroup(holding, foreign.pid)).toBe(true);
+      removeCgroup(cgroup);
+      mkdirSync(cgroup, { recursive: true });
+      expect(statSync(cgroup).ino).not.toBe(oldInode);
+      expect(movePidToCgroup(cgroup, foreign.pid)).toBe(true);
+      try {
+        // The descriptor still names the generation's object. Once that object
+        // was removed its pseudo-files are gone, so the read fails closed; it
+        // never falls through to the same-name new object's live foreign pid.
+        const tree = cgroupTreeAt(opened.fd as number);
+        expect(tree.pids).not.toContain(foreign.pid);
+        expect(cgroupEmptyAt(opened.fd as number).ok).toBe(false);
+        expect(pidAlive(foreign.pid)).toBe(true);
+      } finally {
+        opened.close();
+      }
+      // A fresh check sees the replacement and keeps the slot instead of
+      // releasing capacity on the foreign object's state.
+      expect(openCgroupObject(cgroup, oldInode).state).toBe('replaced');
+      const dead = 4000006;
+      const result = await stopProcessTree(dead, 1000, {
+        rootPid: dead,
+        pgid: dead,
+        cgroup,
+        cgroupInode: oldInode,
+        members: [{ pid: dead, startTime: '0', pgid: dead, sid: dead, command: 'dead' }],
+      });
+      expect(result.stopped).toBe(false);
+      expect(result.unknown).toBe(true);
+      expect(result.boundary).toBe('replaced');
+      expect(pidAlive(foreign.pid)).toBe(true);
+    } finally {
+      if (foreign.pid && pidAlive(foreign.pid)) process.kill(foreign.pid, 'SIGKILL');
+      writeFileSync(join(cgroup, 'cgroup.kill'), '1');
+      removeCgroup(cgroup);
+      removeCgroup(holding);
+    }
   });
 
   it('identifies the process that listens on a port and whether it is managed', async () => {

@@ -146,6 +146,9 @@
   成员；`stopProcessTree` 不再按路径二次遍历（同名目录重建后那会把新对象的成员加入停止
   集合），信号只发给经 PID+starttime 校验的成员；空树证明也只对记录的那个对象成立。
   路径被同名新对象替换时，新对象的存活进程不受影响，旧代次按 `unknown` 保留槽位。
+  实现上用 `open` + `fstat` 校验 inode 后持有目录 fd，成员扫描与空树证明都经
+  `/proc/self/fd/<fd>` 读取：检查通过后、读取之前发生同名替换也不会串到新对象；
+  `settleDeadRuntime` 同样在同一个 fd 上校验并证明为空。
 - **边界证明**：停止只在“可读且递归为空”或“边界对象已不存在且本代次无存活成员”时
   返回 `stopped`；不可读仍按未知归属保守占用容量。残留风险（接管前逃逸的后代）通过
   `unknown` 与日志 `supervisor.stop_proven_with_residual` 保留，不再永久 veto 空树。
@@ -160,7 +163,7 @@
 
 | 命令 | 结果 |
 | --- | --- |
-| `pnpm check` | exit 0；lint/format/typecheck 通过，supervisor 单元测试 144/144 |
+| `pnpm check` | exit 0；lint/format/typecheck 通过，supervisor 单元测试 145/145 |
 | `pnpm build` | exit 0；`apps/supervisor/dist/main.js` sha256 `b0087042de7e5490e1262ea6d91a035c511a0121d48b101286384f8b699e0ea2` |
 | `TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm test:integration` | exit 0；db/api 通过，dispatcher 100 passed / 1 skipped，supervisor 4 passed |
 | `bash scripts/m5b/cgroup-lifecycle-probe.sh`（基线） | exit 1，22 项 FAIL |
@@ -182,6 +185,7 @@
 | supervisor 重启 | `test/lifecycle.test.ts` 的 restart reconcile 用例；探针 `restart.*` 判定 |
 | 同名目录重建（inode 变化） | 探针 `restart_replacement_detected`；`test/lifecycle.test.ts`「re-binds when the same cgroup path was recreated…」 |
 | 同名新目录有存活进程 | 探针 `replaced_live_*`；`test/process.test.ts`「never touches a same-name new cgroup object holding a live foreign process」；`test/lifecycle.test.ts`「keeps the slot when a recreated cgroup still holds a live foreign process」 |
+| 校验与读取之间发生替换 | `test/process.test.ts`「reads and proves through the opened object when the path is replaced before the read」：fd 读取旧对象、陌生进程存活、`stopped=false`/`unknown=true` 保留槽位 |
 | 陌生进程占端口 | `test/lifecycle.test.ts`「stops its own leftover listener but never signals a foreign process…」 |
 | 清理后下一代启动 | 探针 `gen2`：gen1 停止、cgroup 移除、端口释放后 gen2 仍能建根/计量/绑定 |
 | 休眠唤醒、完整 wake→online→sleep | 未跑：依赖 #92 的隔离运行环境与专用 gh token；不是本 PR 可自证的部分 |

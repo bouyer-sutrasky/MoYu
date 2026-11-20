@@ -18,12 +18,13 @@ import {
   CGROUP_LAUNCHER,
   CGROUP_ROOT,
   cgroupBoundary,
-  cgroupEmpty,
+  cgroupEmptyAt,
   collectOwnership,
   ensureCgroup,
   movePidToCgroup,
   cgroupOomKilled,
   ownedByRoot,
+  openCgroupObject,
   portOwners,
   processInCgroup,
   removeCgroup,
@@ -436,16 +437,21 @@ export class InstanceManager {
     // keeps the reservation.
     if (snapshot.members.length > 0 || snapshot.unknownMembers.length > 0) return false;
     const stored = storedOwnership(row);
-    const boundary = cgroupBoundary(stored.cgroup);
-    if (boundary.state === 'unreadable') return false;
-    if (boundary.state === 'ok') {
-      // A replaced or unrecorded object says nothing about this generation; the
-      // slot stays occupied instead of releasing on a same-name new object.
-      if (typeof stored.cgroupInode !== 'number' || stored.cgroupInode !== boundary.inode) {
-        return false;
+    // Verify the object and prove it empty through the same descriptor: a
+    // replacement between the inode check and the read must not release the slot.
+    const opened = openCgroupObject(
+      stored.cgroup,
+      typeof stored.cgroupInode === 'number' ? stored.cgroupInode : null,
+    );
+    try {
+      if (opened.state === 'unreadable') return false;
+      if (opened.state === 'replaced' || opened.state === 'unverified') return false;
+      if (opened.state === 'ok') {
+        const state = cgroupEmptyAt(opened.fd as number);
+        if (!state.ok || !state.empty) return false;
       }
-      const state = cgroupEmpty(boundary.path);
-      if (!state.ok || !state.empty) return false;
+    } finally {
+      opened.close();
     }
     const wasStopping = row.state === 'stopping';
     await this.store.updateInstance(row.repositoryId, {

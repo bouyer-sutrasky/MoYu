@@ -1,8 +1,12 @@
 import { createConnection } from 'node:net';
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   readlinkSync,
@@ -296,6 +300,141 @@ export function cgroupBoundary(path: string | null | undefined): CgroupBoundary 
     return { state: 'unreadable', path, inode };
   }
   return { state: 'ok', path, inode };
+}
+
+/** State of one cgroup directory object, including the two generation-mismatch cases. */
+export type CgroupObjectState = CgroupBoundaryState | 'replaced' | 'unverified';
+
+/**
+ * A cgroup directory held open by file descriptor. The inode was verified after
+ * the open, and every read goes through the fd (`/proc/self/fd/<fd>`), so a
+ * same-name replacement after verification cannot redirect the read.
+ */
+export interface OpenedCgroup {
+  state: CgroupObjectState;
+  path: string;
+  inode: number | null;
+  /** Only set when `state === 'ok'`; the caller owns it and must close it. */
+  fd: number | null;
+  close(): void;
+}
+
+const CGROUP_DIR_FLAGS = constants.O_RDONLY | constants.O_DIRECTORY;
+
+/**
+ * Opens the saved cgroup path and proves it is still the object created for the
+ * recorded generation. The returned descriptor pins that object: reads must use
+ * it instead of the reusable path, otherwise a replacement between the inode
+ * check and the read could mix the new object's members into this generation.
+ */
+export function openCgroupObject(
+  path: string | null | undefined,
+  recordedInode: number | null,
+): OpenedCgroup {
+  const none = { path: path ?? '', inode: null, fd: null, close: () => undefined };
+  if (!path) return { ...none, state: 'missing' };
+  let fd: number;
+  try {
+    fd = openSync(path, CGROUP_DIR_FLAGS);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return {
+      ...none,
+      state: code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : 'unreadable',
+    };
+  }
+  let inode: number;
+  try {
+    inode = fstatSync(fd).ino;
+  } catch {
+    closeSync(fd);
+    return { ...none, state: 'unreadable' };
+  }
+  const close = () => {
+    try {
+      closeSync(fd);
+    } catch {
+      // Already closed.
+    }
+  };
+  if (recordedInode === null) {
+    close();
+    return { path, inode, fd: null, state: 'unverified', close: () => undefined };
+  }
+  if (inode !== recordedInode) {
+    close();
+    return { path, inode, fd: null, state: 'replaced', close: () => undefined };
+  }
+  return { state: 'ok', path, inode, fd, close };
+}
+
+function readCgroupAt(fd: number, name: string): string | null {
+  try {
+    return readFileSync(`/proc/self/fd/${fd}/${name}`, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Scans the already-opened cgroup object. Child directories are opened through
+ * the parent fd as well, so the whole walk stays inside the verified object.
+ */
+export function cgroupTreeAt(rootFd: number): {
+  ok: boolean;
+  pids: number[];
+  populated: boolean;
+} {
+  const pids: number[] = [];
+  const stack = [rootFd];
+  let ok = true;
+  let populated = false;
+  while (stack.length > 0) {
+    const dirFd = stack.pop() as number;
+    const raw = readCgroupAt(dirFd, 'cgroup.procs');
+    if (raw == null) ok = false;
+    else {
+      for (const value of raw.split(/\s+/)) {
+        const pid = Number(value);
+        if (Number.isInteger(pid) && pid > 1) pids.push(pid);
+      }
+    }
+    const events = readCgroupAt(dirFd, 'cgroup.events');
+    if (events == null) ok = false;
+    else if (/^populated\s+1$/m.test(events)) populated = true;
+    let entries: Array<{ name: string; isDirectory(): boolean }> = [];
+    try {
+      entries = readdirSync(`/proc/self/fd/${dirFd}`, { withFileTypes: true });
+    } catch {
+      entries = [];
+      ok = false;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      try {
+        stack.push(openSync(`/proc/self/fd/${dirFd}/${entry.name}`, CGROUP_DIR_FLAGS));
+      } catch {
+        // The child was removed or is not a cgroup directory.
+      }
+    }
+    if (dirFd !== rootFd) {
+      try {
+        closeSync(dirFd);
+      } catch {
+        // Already closed.
+      }
+    }
+  }
+  const unique = [...new Set(pids)];
+  // `populated` covers nested descendants; an unreadable member is not empty.
+  if (populated && unique.length === 0) ok = false;
+  return { ok, pids: unique, populated };
+}
+
+/** Empty-tree proof through the opened, inode-verified object. */
+export function cgroupEmptyAt(fd: number): { ok: boolean; empty: boolean } {
+  const tree = cgroupTreeAt(fd);
+  return { ok: tree.ok, empty: tree.ok && !tree.populated && tree.pids.length === 0 };
 }
 
 function cgroupSetupFailure(root: string, step: CgroupStep, error: string): CgroupSetup {
@@ -647,17 +786,19 @@ export function collectOwnership(
 
   const unknownMembers: ProcessIdentity[] = [];
   const cgroup = stored?.cgroup ?? null;
-  const boundary = cgroupBoundary(cgroup);
   const recordedInode = typeof stored?.cgroupInode === 'number' ? stored.cgroupInode : null;
-  // A cgroup path is reusable: only the recorded inode proves the path still
-  // names the object created for this generation. Without that proof its
-  // members are never captured (and therefore never signalled or used as an
-  // empty-tree proof); the boundary instead stays unknown ownership.
-  const boundaryReplaced =
-    boundary.state === 'ok' && recordedInode !== null && boundary.inode !== recordedInode;
-  const cgroupVerified =
-    boundary.state === 'ok' && recordedInode !== null && boundary.inode === recordedInode;
-  const tree = cgroupVerified ? cgroupTree(boundary.path) : null;
+  // A cgroup path is reusable: open it once, verify the recorded inode on that
+  // descriptor, then read members through the descriptor. A same-name replacement
+  // between the check and the read can no longer redirect the collection.
+  const opened = openCgroupObject(cgroup, recordedInode);
+  let tree: { ok: boolean; pids: number[]; populated: boolean } | null = null;
+  try {
+    if (opened.state === 'ok' && opened.fd !== null) tree = cgroupTreeAt(opened.fd);
+  } finally {
+    opened.close();
+  }
+  const cgroupVerified = opened.state === 'ok';
+  const boundaryReplaced = opened.state === 'replaced';
   // A readable tree is required: a partially unreadable subtree could hide a
   // member that a stop would then wrongly call gone.
   const cgroupReadable = cgroupVerified && tree?.ok === true;
@@ -731,10 +872,9 @@ export function collectOwnership(
   // this generation is still alive: a removed boundary around dead processes is
   // history that can be proven empty, not ownership that must block forever.
   const dissolvedWithLiveProcesses =
-    cgroup !== null && boundary.state === 'missing' && (root !== null || liveMembers.length > 0);
+    cgroup !== null && opened.state === 'missing' && (root !== null || liveMembers.length > 0);
   const boundaryUnknown =
-    boundary.state === 'unreadable' ||
-    (cgroup !== null && boundary.state === 'ok' && !cgroupReadable);
+    opened.state === 'unreadable' || (cgroup !== null && opened.state === 'ok' && !cgroupReadable);
   return {
     rootPid: root?.pid ?? null,
     pgid,
@@ -742,6 +882,7 @@ export function collectOwnership(
     unknown:
       boundaryUnknown ||
       boundaryReplaced ||
+      opened.state === 'unverified' ||
       dissolvedWithLiveProcesses ||
       stored?.adoptedUnproven === true ||
       liveUnknown.length > 0 ||
@@ -751,8 +892,15 @@ export function collectOwnership(
         !!savedRoot &&
         typeof savedRoot.sid === 'number'),
     unknownMembers: liveUnknown,
-    cgroup: cgroup === null ? 'none' : cgroupReadable ? 'ok' : boundary.state,
-    cgroupInode: boundary.inode,
+    cgroup:
+      cgroup === null
+        ? 'none'
+        : cgroupReadable
+          ? 'ok'
+          : opened.state === 'replaced' || opened.state === 'unverified'
+            ? 'ok'
+            : opened.state,
+    cgroupInode: opened.inode,
     cgroupVerified,
     cgroupReplaced: boundaryReplaced,
   };
@@ -884,17 +1032,21 @@ export async function stopProcessTree(
   } => {
     const cgroup = stored?.cgroup ?? null;
     if (!cgroup) return { proven: false, boundary: 'none' };
-    const boundary = cgroupBoundary(cgroup);
-    if (boundary.state === 'missing') return { proven: true, boundary: 'missing' };
-    if (boundary.state === 'unreadable') return { proven: false, boundary: 'unreadable' };
-    // The empty-tree proof is only about the object this generation created.
-    // A missing or mismatched recorded inode leaves the old generation unknown:
-    // the current object's members are foreign and never prove anything.
     const recordedInode = typeof stored?.cgroupInode === 'number' ? stored.cgroupInode : null;
-    if (recordedInode === null) return { proven: false, boundary: 'unverified' };
-    if (boundary.inode !== recordedInode) return { proven: false, boundary: 'replaced' };
-    const tree = cgroupEmpty(cgroup);
-    return { proven: tree.ok && tree.empty, boundary: 'ok' };
+    // Open and verify once, then prove emptiness through that same descriptor.
+    // A replacement after the check cannot make a foreign object's empty tree
+    // count as this generation's proof.
+    const opened = openCgroupObject(cgroup, recordedInode);
+    try {
+      if (opened.state === 'missing') return { proven: true, boundary: 'missing' };
+      if (opened.state === 'unreadable') return { proven: false, boundary: 'unreadable' };
+      if (opened.state === 'unverified') return { proven: false, boundary: 'unverified' };
+      if (opened.state === 'replaced') return { proven: false, boundary: 'replaced' };
+      const tree = cgroupEmptyAt(opened.fd as number);
+      return { proven: tree.ok && tree.empty, boundary: 'ok' };
+    } finally {
+      opened.close();
+    }
   };
   const refresh = () => {
     const snapshot = collectOwnership(rootPid, {
