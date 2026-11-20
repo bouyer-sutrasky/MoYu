@@ -11,7 +11,11 @@ import { appendEventSql } from './events-sql';
 import { sendRoutedNotice } from './routed-notices';
 import { endedState, stateFromSnapshot, TASK_COLUMNS, taskSummary, type TaskRow } from './tasks';
 import { pauseEvidenceProblem, pauseEvidenceProven } from './pause-evidence';
-import { acquireExecutionLeaseOn } from './leases';
+import {
+  acquireExecutionLeaseOn,
+  settleIgnoredAdmissionOn,
+  type IgnoredAdmissionSettlement,
+} from './leases';
 
 /** Last projection branch per Bridge event, for lifecycle diagnostics/tests. */
 export const projectionBranches = new Map<string, string>();
@@ -845,6 +849,46 @@ async function applyIgnoredDecision(
   const reasons = decisionReasons(data.reason);
   const primary = reasons.find((reason) => reason.code === 'routed') ?? reasons[0];
   const targetTicketId = routedTicket(reasons);
+  // The receipt names the messages it ignored, so their deliveries carry the
+  // execution generation it can settle. A task already bound to a newer
+  // generation is a late receipt: closing it or releasing its lease would end
+  // an admission this decision never saw.
+  let ignoredGeneration: { leaseId: string; fencingToken: string | null } | null = null;
+  if (task.runtimeLeaseId) {
+    const deliveries = await client.query<{
+      leaseId: string | null;
+      fencingToken: string | null;
+    }>(
+      `select d.runtime_lease_id as "leaseId", d.fencing_token::text as "fencingToken"
+         from deliveries d
+         join messages m on m.id = d.message_id
+        where m.conversation_id = $1 and m.id = any($2::uuid[])`,
+      [targetId, messageIds],
+    );
+    const generations = new Map<string, string | null>();
+    for (const row of deliveries.rows) {
+      if (row.leaseId) generations.set(row.leaseId, row.fencingToken);
+    }
+    if (generations.size === 0 || generations.size > 1 || !generations.has(task.runtimeLeaseId)) {
+      traceBranch(event.id, 'return-stale-generation');
+      logger.info(
+        {
+          event: 'bridge.decision_ignored_stale',
+          decisionId,
+          taskId: task.id,
+          conversationId: targetId,
+          taskLeaseId: task.runtimeLeaseId,
+          ignoredLeaseIds: [...generations.keys()],
+        },
+        'left the admission open: the ignored receipt names another or an unknown execution generation',
+      );
+      return;
+    }
+    ignoredGeneration = {
+      leaseId: task.runtimeLeaseId,
+      fencingToken: generations.get(task.runtimeLeaseId) ?? null,
+    };
+  }
   const decision: Record<string, unknown> = {
     kind: 'ignore',
     decisionId,
@@ -903,7 +947,7 @@ async function applyIgnoredDecision(
   // ignore would strand that delivery forever.
   const updated = await client.query(
     `update task_links t
-        set state = 'not_accepted', version = version + 1, runtime_lease_id = null,
+        set state = 'not_accepted', version = version + 1,
             decision = $4::jsonb, updated_at = now()
       where t.id = $1 and t.repository_id = $2 and t.state = 'pending_admission'
         and not exists (
@@ -927,18 +971,35 @@ async function applyIgnoredDecision(
     [task.id, repository.id, messageIds, JSON.stringify(decision)],
   );
   if ((updated.rowCount ?? 0) === 0) return;
-  // The ignored admission never became a runtime Ticket. Its execution lease
-  // must not keep the repository's single execution slot forever; release only
-  // the exact task holder, leaving unrelated active leases untouched. A routed
-  // handoff then takes its own lease for the target Ticket.
-  const released = await client.query<{ id: string }>(
-    `update runtime_leases
-        set state = 'released', released_at = now(), heartbeat_at = now(),
-            waiting_for = null, recovery_reason = 'ignored_decision'
-      where repository_id = $1 and holder_id = $2 and state = 'active'
-      returning id`,
-    [repository.id, `task:${task.id}`],
-  );
+  // The ignored admission never became a runtime Ticket. Its execution
+  // generation must not keep the repository's single execution slot forever.
+  // Settle only the generation the ignored messages were delivered under and
+  // only when no runtime evidence says it may still run; otherwise keep the
+  // slot occupied with the concrete reason. A routed handoff then takes its own
+  // lease for the target Ticket.
+  let settlement: IgnoredAdmissionSettlement | null = null;
+  if (ignoredGeneration) {
+    settlement = await settleIgnoredAdmissionOn(client, repository.id, {
+      taskId: task.id,
+      decisionId,
+      messageIds,
+      leaseId: ignoredGeneration.leaseId,
+      fencingToken: ignoredGeneration.fencingToken,
+      reason: 'the runtime ignored this admission; no Ticket or Assignment was created',
+    });
+    if (!settlement.settled) {
+      logger.warn(
+        {
+          event: 'bridge.decision_ignored_lease_held',
+          decisionId,
+          taskId: task.id,
+          leaseId: ignoredGeneration.leaseId,
+          detail: settlement.detail,
+        },
+        'kept the ignored admission execution generation until its evidence is resolved',
+      );
+    }
+  }
   const next = await taskByConversation(client, targetId, repository.id);
   if (next) {
     await emit(client, repository, event, 'task.state_changed', targetId, next.id, {
@@ -953,11 +1014,13 @@ async function applyIgnoredDecision(
       conversationId: targetId,
       messageId,
       routedTo: targetTicketId,
-      releasedLeaseId: released.rows[0]?.id ?? null,
+      leaseId: ignoredGeneration?.leaseId ?? null,
+      leaseSettled: settlement?.settled ?? null,
+      leaseDetail: settlement?.detail ?? null,
     },
-    targetTicketId
-      ? 'closed the pending admission and recorded a routed handoff target'
-      : 'closed the pending admission named by the ignored decision',
+    settlement?.settled
+      ? 'closed the ignored admission and settled its unstarted execution generation'
+      : 'closed the ignored admission; its execution generation stays occupied unless released',
   );
 }
 
@@ -1326,55 +1389,88 @@ async function applyImportedEvent(
 }
 
 /**
- * Releases active leases whose holder task reached a terminal ignored state
- * before an older dispatcher had a chance to release them. The holder id is the
- * only durable link when the task row has already cleared runtime_lease_id.
+ * Settles active leases still held by a task an older dispatcher marked
+ * `not_accepted`. The old path cleared the task binding and released the lease
+ * without checking whether the ignored generation could have executed; this
+ * recovery applies the same evidence rules as a live ignored decision. A
+ * generation whose ignored admission has a runtime Ticket, a claimed
+ * reservation, an in-flight delivery, a queued command or another bound task
+ * stays active and records why.
  */
 export async function recoverIgnoredLeases(
   pool: pg.Pool,
   repositoryId: string,
   logger: DispatcherLogger,
 ): Promise<number> {
-  const client = await pool.connect();
-  try {
-    await client.query('begin');
-    const released = await client.query<{ id: string; task_id: string }>(
-      `update runtime_leases l
-          set state = 'released', released_at = now(), heartbeat_at = now(),
-              waiting_for = null, recovery_reason = 'ignored_decision_recovery'
-         from task_links t
-        where l.repository_id = $1
-          and l.state = 'active'
-          and l.holder_id = 'task:' || t.id::text
-          and t.state = 'not_accepted'
-        returning l.id, t.id as task_id`,
-      [repositoryId],
-    );
-    if (released.rows.length > 0) {
-      await client.query(
-        `update task_links set runtime_lease_id = null
-          where id = any($1::uuid[])`,
-        [released.rows.map((row) => row.task_id)],
-      );
-    }
-    await client.query('commit');
-    if (released.rows.length > 0) {
-      logger.info(
+  const candidates = await pool.query<{
+    taskId: string;
+    leaseId: string;
+    fencingToken: string;
+  }>(
+    `select t.id as "taskId", l.id as "leaseId", l.fencing_token::text as "fencingToken"
+       from task_links t
+       join runtime_leases l on l.id = t.runtime_lease_id
+      where t.repository_id = $1 and l.repository_id = $1
+        and l.state = 'active' and t.state = 'not_accepted'
+      order by l.expires_at
+      limit 50`,
+    [repositoryId],
+  );
+  let settled = 0;
+  for (const row of candidates.rows) {
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      const result = await settleIgnoredAdmissionOn(client, repositoryId, {
+        taskId: row.taskId,
+        decisionId: 'dispatcher_startup_recovery',
+        messageIds: [],
+        leaseId: row.leaseId,
+        fencingToken: row.fencingToken,
+        reason:
+          'an older dispatcher left this unaccepted admission holding its execution generation',
+      });
+      await client.query('commit');
+      if (result.settled) {
+        settled += 1;
+        logger.info(
+          {
+            event: 'dispatcher.ignored_lease_recovered',
+            repositoryId,
+            taskId: row.taskId,
+            leaseId: row.leaseId,
+          },
+          'settled an execution generation left behind by an older ignored admission',
+        );
+      } else {
+        logger.warn(
+          {
+            event: 'dispatcher.ignored_lease_held',
+            repositoryId,
+            taskId: row.taskId,
+            leaseId: row.leaseId,
+            detail: result.detail,
+          },
+          'kept an older ignored admission generation until its evidence is resolved',
+        );
+      }
+    } catch (error) {
+      await client.query('rollback').catch(() => undefined);
+      logger.warn(
         {
-          event: 'dispatcher.ignored_lease_recovered',
+          event: 'dispatcher.ignored_lease_recovery_failed',
           repositoryId,
-          leaseIds: released.rows.map((row) => row.id),
+          taskId: row.taskId,
+          leaseId: row.leaseId,
+          error: error instanceof Error ? error.message : String(error),
         },
-        'released execution leases held by ignored admissions',
+        'kept an older ignored admission generation after a recovery error',
       );
+    } finally {
+      client.release();
     }
-    return released.rows.length;
-  } catch (error) {
-    await client.query('rollback').catch(() => undefined);
-    throw error;
-  } finally {
-    client.release();
   }
+  return settled;
 }
 
 export async function applyEvent(

@@ -1,0 +1,22 @@
+.                                        | [WARN] Unsupported engine: wanted: {"node":"24.22.2"} (current: {"node":"v22.23.3","pnpm":"11.7.0"})
+
+ RUN  v3.2.7 /root/src/rejected-lease-settle-7baf8c04617e/apps/dispatcher
+
+ ✓ test/integration/decision-lease.integration.test.ts (11 tests) 5138ms
+   ✓ ignored admission settles its execution generation on real PostgreSQL > settles the unstarted generation and frees the repository slot for the next task  512ms
+   ✓ ignored admission settles its execution generation on real PostgreSQL > applies the same settlement to a routed decision and keeps its handoff target  483ms
+   ✓ ignored admission settles its execution generation on real PostgreSQL > leaves the new generation alone when a late ignored receipt names the old one  471ms
+   ✓ ignored admission settles its execution generation on real PostgreSQL > keeps the generation and records why when a runtime ticket may have executed  448ms
+   ✓ ignored admission settles its execution generation on real PostgreSQL > keeps the generation when a worker already claimed the reservation  437ms
+   ✓ ignored admission settles its execution generation on real PostgreSQL > keeps the generation while a command is still queued on it  477ms
+   ✓ ignored admission settles its execution generation on real PostgreSQL > leaves the admission and generation open while another delivery is in flight  445ms
+   ✓ ignored admission settles its execution generation on real PostgreSQL > keeps the generation when the delivery fence disagrees with the task binding  471ms
+   ✓ ignored admission settles its execution generation on real PostgreSQL > settles once when two dispatchers apply the same ignored receipt together  498ms
+   ✓ ignored admission settles its execution generation on real PostgreSQL > settles a historical not_accepted admission that never created a runtime ticket  466ms
+   ✓ ignored admission settles its execution generation on real PostgreSQL > keeps a historical admission whose runtime ticket may have executed  429ms
+
+ Test Files  1 passed (1)
+      Tests  11 passed (11)
+   Start at  14:46:27
+   Duration  6.54s (transform 422ms, setup 0ms, collect 1.13s, tests 5.14s, environment 0ms, prepare 75ms)
+
