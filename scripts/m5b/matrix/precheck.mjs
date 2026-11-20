@@ -51,6 +51,7 @@ import {
   classifyValidationWrite,
   classifyWrite,
   invalidRefFor,
+  resolveControlRepository,
 } from './gh-probe.mjs';
 import {
   HOST_READ_ONLY_PATHS,
@@ -95,7 +96,12 @@ const probeRepositories = [
     .filter(Boolean)
     .map((pair) => pair.split(':')[0]),
 ];
-const forbiddenRepository = 'bouyer-sutrasky/MoYu';
+const controlResolution = resolveControlRepository({
+  flag: option('control-repository', undefined),
+  env: process.env.M5B_MATRIX_CONTROL_REPOSITORY,
+  probeRepositories,
+});
+const controlRepository = controlResolution.repository ?? null;
 const credentialEnvNames = ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN'];
 
 const checks = [];
@@ -506,6 +512,12 @@ function scopeProbes(identity) {
     record('scope', 'online-probes', 'INCOMPLETE', 'identity does not exist');
     return;
   }
+  if (!controlRepository) {
+    // A missing or invalid negative control must fail the gate immediately,
+    // not run the positive probes and not skip the negative control.
+    record('scope', 'control-repository', 'FAIL', controlResolution.error);
+    return;
+  }
   const sshInstalled =
     existsSync(sshKey) &&
     existsSync(join(matrixHome, '.ssh', 'probe_deploy')) &&
@@ -552,20 +564,20 @@ function scopeProbes(identity) {
     }
   }
 
-  if (sshInstalled) {
-    const forbiddenGit = gitWriteProbe(forbiddenRepository);
+  if (sshInstalled && controlRepository) {
+    const forbiddenGit = gitWriteProbe(controlRepository);
     record(
       'scope',
-      `git-push-dry-run:${forbiddenRepository} (must be denied)`,
+      `git-push-dry-run:${controlRepository} (must be denied)`,
       scopeStatus(forbiddenGit.kind, true),
       `${forbiddenGit.kind} — ${forbiddenGit.detail}`,
     );
   }
-  if (ghConfigured) {
+  if (ghConfigured && controlRepository) {
     const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    recordGhProbe(forbiddenRepository, 'refs', ghRefsWriteProbe(forbiddenRepository, nonce), true);
-    recordGhProbe(forbiddenRepository, 'issues', ghIssuesWriteProbe(forbiddenRepository), true);
-    recordGhProbe(forbiddenRepository, 'pulls', ghPullsWriteProbe(forbiddenRepository), true);
+    recordGhProbe(controlRepository, 'refs', ghRefsWriteProbe(controlRepository, nonce), true);
+    recordGhProbe(controlRepository, 'issues', ghIssuesWriteProbe(controlRepository), true);
+    recordGhProbe(controlRepository, 'pulls', ghPullsWriteProbe(controlRepository), true);
   }
 }
 
@@ -658,6 +670,7 @@ const summary = {
   sshKey,
   ghConfigDir,
   probeRepositories,
+  controlRepository,
   checks,
   findings,
   incomplete,
@@ -675,7 +688,7 @@ if (json) {
   console.log(`gh_config=${ghConfigDir}`);
   console.log(`run_root=${layout.run}`);
   console.log(`probe_repositories=${probeRepositories.join(',')}`);
-  console.log(`forbidden_repository=${forbiddenRepository}`);
+  console.log(`control_repository=${controlRepository ?? 'invalid'}`);
   console.log('');
   let section = '';
   for (const entry of checks) {

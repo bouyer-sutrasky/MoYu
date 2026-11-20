@@ -168,8 +168,9 @@ PASS: host sentinel content and metadata are unchanged after both rounds
 
 ## 5. 授权缺项（逐条）
 
-1. **专用 gh token（必须由所有者签发）**。GitHub 不提供用现有 PAT 程序化创建用户
-   fine-grained token 的 API；本轮的部署 key 只覆盖 git 传输，`gh` 的 PR/Issue API 仍缺凭据。
+1. **专用 gh token（已由所有者于 2026-11-20 配置，见 §9）**。GitHub 不提供用现有 PAT
+   程序化创建用户 fine-grained token 的 API；本轮先以部署 key 覆盖 git 传输。所有者随后
+   配置了仅限探测仓的专用 token，正式 precheck 已 clean。
    需要：为 `Bouyer12/m5a-beta-adf10ad9` 创建仅限该仓、Contents/Issues/Pull requests 读写的
    fine-grained token，然后：
    ```bash
@@ -250,3 +251,67 @@ pulls_write={"kind":"allowed","http":422}   pulls_effects={"ok":true,"detail":"p
 PASS、gh refs/issues/pulls 三项 INCOMPLETE。专用 gh token 仍未配置，因此“允许探测仓 /
 拒绝受控私有仓”的专用 token 现场证据继续**待验**；未用共享凭据替代，也未把逻辑演练当成
 作用域证据。
+
+## 9. 返修：可配置受控私有对照仓与正式入口复跑（P2）
+
+**问题**：正式在线预检把对照仓写死为公开的 `bouyer-sutrasky/MoYu`。专用凭据可读公开仓，
+于是预检在 MoYu 上回读 PR 列表并超时（`pulls=timeout` / `read-pulls-before`），
+`verdict=incomplete`，`stack.sh up` 的 gate 无法放行。复现输出在
+`isolated-env/precheck-online-p4-before.txt`。
+
+**修复**：
+
+- 新增可配置对照仓 `M5B_MATRIX_CONTROL_REPOSITORY`（默认
+  `Bouyer12/m5a-epsilon-adf10ad9`，受控私有仓）；`precheck` 同时接受
+  `--control-repository`。`stack.sh` 的 scope gate 显式把同一值传给预检。
+- 解析顺序 flag → env → 默认值；校验非空、`owner/name` 形状，且不得等于任一探测仓。
+  缺失/非法/与探测仓相同会立即 `FAIL` 并退出 1（fail closed），不会跳过负向探测。
+- 回归：`resolveControlRepository` 单测覆盖 flag/env/默认、空值、非法形状、与探测仓相同。
+
+**正式入口复跑**（最终代码，专用凭据已由所有者配置）：
+
+```bash
+node scripts/m5b/matrix/precheck.mjs --online
+# verdict=clean, exit 0
+
+bash scripts/m5b/matrix/stack.sh up
+# gate 通过；slice/PG/provider/supervisor/API/dispatcher 全部 active
+# bridge healthz {"ok":true}，API /healthz 200
+# 见 isolated-env/stack-up-p4.txt
+
+bash scripts/m5b/matrix/stack.sh down
+# exit 0；端口释放、protected 秘密删除；slice 另行停止
+```
+
+专用凭据现场结果（脱敏，`isolated-env/precheck-online-p4-clean.txt`）：
+
+```text
+git-push-dry-run:Bouyer12/m5a-beta-adf10ad9                 allowed
+gh-refs-write / gh-issues-write / gh-pulls-write            allowed (422)
+gh-refs/issues/pulls-side-effects                           refs=11 issues=2 pull requests=12
+git-push-dry-run:Bouyer12/m5a-epsilon-adf10ad9 (denied)     Repository not found
+gh-refs/issues/pulls-write:...epsilon... (denied)           HTTP 404
+verdict=clean
+```
+
+**fail closed 复跑**：把对照仓设成探测仓本身：
+
+```bash
+M5B_MATRIX_CONTROL_REPOSITORY=Bouyer12/m5a-beta-adf10ad9 bash scripts/m5b/matrix/stack.sh up
+# FAIL: the probe credential scope gate did not pass; exit 1; 0 个单元启动
+```
+
+见 `isolated-env/stack-up-failclosed.txt`。最终代码再次从正式入口复跑的结果在
+`isolated-env/stack-up-final.txt`（UP_EXIT=0、bridge `{"ok":true}`、DOWN_EXIT=0）。
+
+**正式入口另外发现并修复的两个现场阻塞**：
+
+1. 矩阵 supervisor 默认端口 4491 现在是生产 M6-C supervisor 的监听端口；改为默认 4591
+   （仍可由 `M5B_MATRIX_SUP_PORT` 覆盖）。
+2. supervisor 为每个 runtime home 准备 GitHub CLI 配置时需要 `GITHUB_CONFIG_DIR`；
+   `stack.sh` 原来只传了 `M5B_MATRIX_GH_CONFIG_DIR`，导致 prepare 报
+   “The GitHub CLI configuration is missing at /tmp/m5bmatrix/.config/gh-agent”。
+   现在 supervisor 单元同时收到 `GITHUB_CONFIG_DIR=<专用 gh 配置>`。
+
+**授权状态更新**：第 5 节第 1 项（专用 gh token）已由所有者配置，正式 precheck 已 clean；
+共享凭据轮换与多探测仓 key 仍是所有者动作。

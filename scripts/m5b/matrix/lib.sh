@@ -33,10 +33,17 @@ export M5B_MATRIX_BUDGET_MB=${M5B_MATRIX_BUDGET_MB:-8192}
 export M5B_MATRIX_HIGH_MB=${M5B_MATRIX_HIGH_MB:-6144}
 export M5B_MATRIX_PG_PORT=${M5B_MATRIX_PG_PORT:-55433}
 export M5B_MATRIX_API_PORT=${M5B_MATRIX_API_PORT:-4510}
-export M5B_MATRIX_SUP_PORT=${M5B_MATRIX_SUP_PORT:-4491}
+# 4491 is now the production M6-C supervisor; the isolated matrix must not share
+# it. 4591 is free on this host and stays configurable.
+export M5B_MATRIX_SUP_PORT=${M5B_MATRIX_SUP_PORT:-4591}
 export M5B_MATRIX_PROVIDER_PORT=${M5B_MATRIX_PROVIDER_PORT:-3851}
 export M5B_MATRIX_DB=${M5B_MATRIX_DB:-m5b_matrix}
 export M5B_MATRIX_REPOSITORY=${M5B_MATRIX_REPOSITORY:-Bouyer12/m5a-beta-adf10ad9}
+# Negative control for the online precheck: a controlled PRIVATE repository the
+# dedicated probe credentials must not reach. The startup gate passes this same
+# value, so a missing/invalid/writable control fails the run instead of skipping
+# the negative probe. It must differ from every probe repository.
+export M5B_MATRIX_CONTROL_REPOSITORY=${M5B_MATRIX_CONTROL_REPOSITORY:-Bouyer12/m5a-epsilon-adf10ad9}
 export M5B_MATRIX_PROFILE=${M5B_MATRIX_PROFILE:-m5b}
 # The matrix gets its own harness home. The shared m5b profile is only a
 # read-only source: the staged copy lives under the run root and carries the

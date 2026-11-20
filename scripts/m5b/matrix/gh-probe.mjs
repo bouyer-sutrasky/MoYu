@@ -117,3 +117,38 @@ export function assertNoSideEffects(before, after) {
         detail: [...(refs.ok ? [] : [refs.detail]), ...(pulls.ok ? [] : [pulls.detail])].join('; '),
       };
 }
+
+export const DEFAULT_CONTROL_REPOSITORY = 'Bouyer12/m5a-epsilon-adf10ad9';
+
+/**
+ * Resolves the controlled private repository used as the negative control.
+ *
+ * The control repository must be configurable (flag, then environment, then the
+ * private default) and must never be one of the probe repositories: if the
+ * dedicated credential could write the control repository, the isolation check
+ * would be meaningless. An invalid value is a hard configuration error so the
+ * startup gate refuses to run instead of silently skipping the negative probe.
+ */
+export function resolveControlRepository({
+  flag,
+  env,
+  probeRepositories = [],
+  fallback = DEFAULT_CONTROL_REPOSITORY,
+} = {}) {
+  const repository = String(flag ?? env ?? fallback ?? '').trim();
+  if (!repository) {
+    return {
+      error:
+        'a controlled private control repository is required (--control-repository or M5B_MATRIX_CONTROL_REPOSITORY)',
+    };
+  }
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
+    return { error: `invalid control repository: ${repository}` };
+  }
+  if (probeRepositories.includes(repository)) {
+    return {
+      error: `the control repository must differ from every probe repository: ${repository}`,
+    };
+  }
+  return { repository };
+}

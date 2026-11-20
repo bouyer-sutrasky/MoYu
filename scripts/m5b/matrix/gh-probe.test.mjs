@@ -10,8 +10,10 @@ import {
   classifyValidationWrite,
   classifyWrite,
   httpStatus,
+  DEFAULT_CONTROL_REPOSITORY,
   invalidRefFor,
   refNonce,
+  resolveControlRepository,
 } from './gh-probe.mjs';
 
 function result(overrides = {}) {
@@ -182,4 +184,36 @@ test('collection assertion detects added issues and pull requests', () => {
   const addedPull = assertListUnchanged(['1'], ['1', '2'], 'pull request');
   assert.equal(addedPull.ok, false);
   assert.match(addedPull.detail, /pull request count changed/);
+});
+
+test('the negative control repository is configurable and cannot be a probe repo', () => {
+  const probes = ['Bouyer12/m5a-beta-adf10ad9'];
+  assert.equal(DEFAULT_CONTROL_REPOSITORY, 'Bouyer12/m5a-epsilon-adf10ad9');
+  assert.deepEqual(
+    resolveControlRepository({
+      flag: 'Bouyer12/control-a',
+      env: 'Bouyer12/control-b',
+      probeRepositories: probes,
+    }),
+    { repository: 'Bouyer12/control-a' },
+  );
+  assert.deepEqual(
+    resolveControlRepository({ env: 'Bouyer12/control-b', probeRepositories: probes }),
+    { repository: 'Bouyer12/control-b' },
+  );
+  assert.deepEqual(resolveControlRepository({ probeRepositories: probes }), {
+    repository: DEFAULT_CONTROL_REPOSITORY,
+  });
+  assert.match(
+    resolveControlRepository({ flag: '', env: '', probeRepositories: probes }).error,
+    /required/,
+  );
+  assert.match(
+    resolveControlRepository({ flag: 'not a repository', probeRepositories: probes }).error,
+    /invalid control repository/,
+  );
+  assert.match(
+    resolveControlRepository({ flag: probes[0], probeRepositories: probes }).error,
+    /must differ from every probe repository/,
+  );
 });

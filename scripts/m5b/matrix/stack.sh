@@ -71,6 +71,7 @@ scope_gate() {
   note "verifying probe-only credential scope before starting the stack"
   m5b_run node "$HERE/precheck.mjs" --gate --online --user "$M5B_MATRIX_USER" \
     --run "$RUN" --ssh-key "$M5B_MATRIX_SSH_KEY" --gh-config "$M5B_MATRIX_GH_CONFIG_DIR" \
+    --control-repository "$M5B_MATRIX_CONTROL_REPOSITORY" \
     || fail "the probe credential scope gate did not pass"
 }
 
@@ -411,6 +412,7 @@ start_supervisor() {
     --setenv=INSTANCE_MEMORY_HIGH_MB="${M5B_MATRIX_INSTANCE_HIGH_MB:-2560}" \
     --setenv=GITHUB_CLI="$M5B_MATRIX_GH_CLI" \
     --setenv=M5B_MATRIX_GH_CONFIG_DIR="$M5B_MATRIX_GH_CONFIG_DIR" \
+    --setenv=GITHUB_CONFIG_DIR="$M5B_MATRIX_GH_CONFIG_DIR" \
     --setenv=M5B_MATRIX_GH_HOME="$M5B_MATRIX_GH_HOME" \
     --setenv=EXECUTOR_MODEL=local-test/local-test \
     --working-directory="$M5B_MATRIX_ROOT" \
