@@ -1,0 +1,13 @@
+# implemented artifacts (built from the working tree)
+recorded=2026-11-20T14:10:26+08:00
+baseline=b6c2efab08e2703cc8e974dda7ff872db3122612
+branch=agent/isolated-env-credentials-2aefc61b10b2
+
+240d7903151ed7ea7d6ad2af63cb9464a2ec188132bc863177335c7d7320c84b  apps/api/dist/server.js  389816 bytes
+e3305beb16bf443a8d742cd1640ce73280349183c34c0be585d4a3889ab1fe0d  apps/dispatcher/dist/main.js  276751 bytes
+9b48fda69201c878a9c957d7eaf429248fc2add156f546f8cc76a3fcc0edca07  apps/supervisor/dist/main.js  409702 bytes
+index-hH63T1LY.js
+index-hH63T1LY.js.map
+index-lTRgT1YK.css
+721b122ca5cee610ecda13bda0b63159fab38a0463884fcb440eeb77d6a94a9b  apps/web/dist/assets/index-hH63T1LY.js  680685 bytes
+6dceaa9ce6a05b5d605a20d6efc4d3b5612e0a62472d46635a1f78416c858ca8  apps/web/dist/assets/index-lTRgT1YK.css  136834 bytes

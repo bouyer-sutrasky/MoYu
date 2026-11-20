@@ -236,3 +236,37 @@ node 进程，主 3082 服务随之中断。未修改生产数据、Nginx、3082
 - 真实 cgroup 测试：sleep 移入专属 cgroup 时 refused(`populated`)，SIGKILL/空后 proven；
   覆盖 missing、generation mismatch。supervisor 35 通过。
 - 尚未接入 dispatcher 的 launch/delivery 消费和旧入口封存；这是下一步集成缺口。
+
+### 现场验收环境隔离（M5B-D02F07F-HARNESS-ISOLATION，2026-11-08）
+
+基线 `main@d02f07f`；Issue #36。只读预检 + 代码/夹具修复，详见
+`docs/evidence/m5b/matrix/HARNESS-ISOLATION.md`。
+
+- 新增 `scripts/m5b/matrix/guard.mjs`：宿主写权限审计（父目录可写也算）、运行根/受保护目录
+  owner+mode 校验、原子且拒绝符号链接的特权文件写入、凭据来源与作用域校验；CLI 供脚本与测试共用。
+- `stack.sh`/`lib.sh`：root 拥有运行根；`protected/`（root 0700）与 `config/`（root:matrix 0750）
+  和临时状态分区；seeded token、supervisor token 不再落在测试身份可写的目录；`up` 前审计，
+  不通过即失败；`down` 删除 token、每次 `up` 清空 Bridge 凭据。
+- `prepare-nonroot.sh`：只授予读/遍历；不再复制宿主 agent key（含改名副本检测）、不再共享
+  `/root/.config/gh-agent`；`--check/--apply/--revoke` 分别用于预检、安装专用凭据和由所有者收敛旧授权。
+- `apps/supervisor/src/provision.ts`：`ensurePrivateDir` 拒绝符号链接并要求属主匹配，
+  `writePrivate` 用 `wx` 临时文件 + `rename` 原子写入并拒绝链接目标。
+- 回归：`node --test scripts/m5b/matrix/guard.test.mjs` 19/19；`@moyu/supervisor` 43/43
+  （含新增 5 个 private-write 用例），覆盖重跑、恶意路径替换、宿主 sentinel 不变。
+- 只读预检结论：`m5bmatrix` 当前仍能写 `/root/.dsh-m5`、`/root/.config/gh-agent` 并读取共享 token；
+  `/home/m5bmatrix/.ssh/sa_agent2` 是宿主 agent key 的副本；专用探测凭据缺失；旧布局把
+  `supervisor-token`/`seed.env` 放在测试身份拥有的运行根下，并留下 56 个 Bridge 凭据文件。
+- **未执行**：宿主授权收敛、共享凭据轮换、专用凭据创建（所有者动作，见隔离文档 §4）。
+  因此现场矩阵复跑仍被阻断；本单不重跑七项，也不把旧 harness 的日志当作新证据。
+
+#### 隔离修复第二轮（M5B-PR49-ISOLATION-8B7E07C，2026-11-15）
+
+- 复核指出 root 在低权身份拥有的 `.ssh`/stage/tmp 内写入或 chmod。新增 `lowpriv.mjs`：写入、删除、
+  chmod 全部以该身份执行（临时文件 + rename，不跟随预置链接）；SSH 材料、profile 复制、control/tmp
+  分区与清理全部改走该边界。
+- `precheck.mjs` 统一执行入口，区分拒权/缺凭据/执行失败/超时；写授权用 `git push --dry-run` 与
+  422 校验型 PR 创建探测（无副作用）；拒绝改名复制的共享 token 与 `GH_TOKEN`/`GITHUB_TOKEN` 覆盖；
+  `stack.sh up` 起单元前跑该 gate。
+- `prepare-nonroot.sh --check` 不再 chmod；`stack.sh` 启动失败调用 `lifecycle.mjs` 清理单元/实例
+  cgroup/token/凭据并回读，残留显式失败；`M5B_MATRIX_INJECT_FAILURE` 提供注入点。
+- 红→绿、脱敏原始输出与单测见 `docs/evidence/m5b/matrix/HARNESS-ISOLATION.md` §7。
