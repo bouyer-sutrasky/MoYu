@@ -1,0 +1,59 @@
+== stopping matrix units
+  stop m5bmatrix-pg.service
+  stop m5bmatrix-provider.service
+  stop m5bmatrix-supervisor.service
+  stop m5bmatrix-dispatcher.service
+  stop m5bmatrix-api.service
+  slice m5bmatrix.slice removed
+  removed run secrets from /tmp/m5bmatrix/protected
+== verifying the isolated run layout
+run_root=/tmp/m5bmatrix mode=755 uid=0
+protected=/tmp/m5bmatrix/protected mode=0700 uid=0
+config=/tmp/m5bmatrix/config mode=0750 uid=0 gid=986
+owned=/tmp/m5bmatrix/tmp,/tmp/m5bmatrix/credentials,/tmp/m5bmatrix/dsh-home uid=995 gid=986
+path /root mode=0710
+path /root/.ssh mode=0700
+path /root/.dsh mode=0755
+path /root/.dsh-m5 mode=0700
+path /root/.config mode=0710
+path /root/.config/gh-agent mode=0700
+path /root/.local mode=0710
+path /root/.local/bin mode=0750
+path /root/src mode=0710
+path /root/src/upstream mode=0710
+path /opt/moyu-node24 mode=0750
+path /etc mode=0755
+host_boundary=clean
+ssh_key=/root/.config/m5bmatrix/probe_ssh_key sha256=20cc90eab9cb5448 mode=600
+gh_config=/root/.config/m5bmatrix/gh hosts=/root/.config/m5bmatrix/gh/hosts.yml token=present
+credentials=dedicated
+== cleaning temporary state from the previous run
+cleaned=/tmp/m5bmatrix/tmp entries=0
+cleaned=/tmp/m5bmatrix/credentials entries=0
+cleaned=/tmp/m5bmatrix/instance-env entries=0
+cleaned=/tmp/m5bmatrix/instance-logs entries=0
+cleaned=/tmp/m5bmatrix/worktrees entries=0
+cleaned=/tmp/m5bmatrix/dsh-home entries=0
+== verifying probe-only credential scope before starting the stack
+$ node /root/src/isolated-env-credentials-2aefc61b10b2/scripts/m5b/matrix/precheck.mjs --gate --online --user m5bmatrix --run /tmp/m5bmatrix --ssh-key /root/.config/m5bmatrix/probe_ssh_key --gh-config /root/.config/m5bmatrix/gh --control-repository Bouyer12/m5a-beta-adf10ad9
+# M5-B matrix isolation precheck
+recorded=2026-11-20T10:43:40.838Z
+host=lavm-flnape7bgu user=m5bmatrix mode=gate
+matrix_home=/home/m5bmatrix
+ssh_key=/root/.config/m5bmatrix/probe_ssh_key
+gh_config=/root/.config/m5bmatrix/gh
+run_root=/tmp/m5bmatrix
+probe_repositories=Bouyer12/m5a-beta-adf10ad9
+control_repository=invalid
+
+## identity
+  PASS       m5bmatrix — uid=995 gid=986 groups=986
+## credentials
+  PASS       ssh-key:/root/.config/m5bmatrix/probe_ssh_key — sha256=20cc90eab9cb5448 mode=600
+  PASS       gh-config:/root/.config/m5bmatrix/gh — token=present sha256=3e3e2e27b33865b3 (value not printed)
+## scope
+  FAIL       control-repository — the control repository must differ from every probe repository: Bouyer12/m5a-beta-adf10ad9
+
+verdict=violated
+  - scope/control-repository: the control repository must differ from every probe repository: Bouyer12/m5a-beta-adf10ad9
+FAIL: the probe credential scope gate did not pass
