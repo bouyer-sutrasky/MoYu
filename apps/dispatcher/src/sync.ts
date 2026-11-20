@@ -744,7 +744,7 @@ async function applyPausedEvent(
   // settled placeholder, whatever order the two transactions commit in.
   const updated = await client.query(
     `update task_links
-        set state = case when $2 = 'stopping' and state in ('blocked', 'stopped') then state else $2 end,
+        set state = (case when $2 = 'stopping' and state in ('blocked', 'stopped') then state::text else $2::text end)::task_state,
             stopped_at = case when $2 = 'stopping' and state in ('blocked', 'stopped') then stopped_at else $3::timestamptz end,
             stop_evidence = case when $2 = 'stopping' and state in ('blocked', 'stopped') then stop_evidence else $4::jsonb end,
             last_event_seq = greatest(coalesce(last_event_seq, 0), $5),
