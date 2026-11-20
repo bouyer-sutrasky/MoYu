@@ -10,6 +10,9 @@
 --     "0014 applied" while this rollback deletes the table and ledger row;
 --   * exactly one ledger row carries the pinned 0014 hash (missing, drifted or
 --     duplicated history is refused);
+--   * no ledger row has a NULL created_at. Drizzle's ledger allows it, and the
+--     migrator's ORDER BY created_at DESC puts NULL first, so a NULL row would
+--     silently become "the latest" while the counts below skip it;
 --   * 0014 is uniquely the latest applied migration in migrator order. The
 --     migrator orders ledger rows by created_at, not by id, so a later
 --     migration is refused even when its ledger id is lower.
@@ -25,6 +28,7 @@ DO $$
 DECLARE
   expected constant text := '46344e9ba62e570e08f2797c21eaef6aaf194191378fa4860cee28444a01c1d3';
   present integer;
+  missing_timestamps integer;
   applied_at bigint;
   later integer;
   latest integer;
@@ -36,12 +40,19 @@ BEGIN
     RAISE EXCEPTION '0014 rollback refused: expected exactly one applied 0014 migration matching the pinned hash, found %', present;
   END IF;
 
+  -- The migrator sorts by created_at DESC, so PostgreSQL would put a NULL row
+  -- first and see it as the latest migration. The > and = comparisons below
+  -- never match NULL, so refuse the abnormal order explicitly.
+  SELECT count(*) INTO missing_timestamps
+    FROM drizzle.__drizzle_migrations
+   WHERE created_at IS NULL;
+  IF missing_timestamps <> 0 THEN
+    RAISE EXCEPTION '0014 rollback refused: % ledger row(s) have no created_at, so the migrator''s latest order is undefined; repair the ledger first', missing_timestamps;
+  END IF;
+
   SELECT created_at INTO applied_at
     FROM drizzle.__drizzle_migrations
    WHERE hash = expected;
-  IF applied_at IS NULL THEN
-    RAISE EXCEPTION '0014 rollback refused: the applied 0014 ledger row has no created_at';
-  END IF;
 
   -- The migrator decides "already applied" by created_at, so that is the order
   -- this guard must use. A row with a greater created_at would make the

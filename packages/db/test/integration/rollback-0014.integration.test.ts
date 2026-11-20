@@ -147,6 +147,37 @@ describe('0014 rollback script on real PostgreSQL', () => {
     expect(before).toMatchObject({ table: 'execution_reservations', ledgerMatching: 1 });
   }, 30_000);
 
+  it('refuses a ledger row without created_at instead of guessing its order', async () => {
+    const database = await createTestDatabase();
+    databases.push(database);
+    // Drizzle's ledger allows created_at to be NULL, and PostgreSQL sorts NULL
+    // first under ORDER BY created_at DESC, so the migrator would see this row
+    // as the latest one. The guard must refuse instead of counting only
+    // non-NULL timestamps.
+    await database.pool.query(
+      "insert into drizzle.__drizzle_migrations (hash, created_at) values ('null-created-at-fixture', null)",
+    );
+    const before = await snapshot(database);
+    expect(before).toMatchObject({ table: 'execution_reservations', ledgerMatching: 1 });
+
+    await expect(runDown(database)).rejects.toThrow(/ledger row\(s\) have no created_at/);
+    expect(await snapshot(database)).toEqual(before);
+  }, 30_000);
+
+  it('refuses when the applied 0014 ledger row has no created_at', async () => {
+    const database = await createTestDatabase();
+    databases.push(database);
+    await database.pool.query(
+      'update drizzle.__drizzle_migrations set created_at = null where hash = $1',
+      [hash],
+    );
+    const before = await snapshot(database);
+    expect(before).toMatchObject({ table: 'execution_reservations', ledgerMatching: 1 });
+
+    await expect(runDown(database)).rejects.toThrow(/ledger row\(s\) have no created_at/);
+    expect(await snapshot(database)).toEqual(before);
+  }, 30_000);
+
   it('refuses a drifted 0014 ledger hash without dropping the table', async () => {
     const database = await createTestDatabase();
     databases.push(database);
