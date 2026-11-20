@@ -1,26 +1,31 @@
-# 说明：修复后（本分支 head 见 head=）的输出，命令与场景与 before 文件完全相同。
-# 退出码 0 = 全部判定通过；非 root 的两段由同一个脚本用 esbuild bundle + setpriv 复跑。
+# 说明：修复后的输出，被测代码提交 f9538a1fcad0f23cfd1c727abc57b453c4828212
+# （证据文件本身只新增日志，不改代码）。2026-11-20 与 before 文件使用同一份脚本、
+# 同一台宿主、同一组场景重新采集。
+# 结论：0 项 FAIL（29 项 pass），退出码 0；非 root bundle sha256
+#       effa9f1707aa833198f7f68307dbf06215c67de925d820b6b5d2b03696609faf。
+# 同一代码树构建的 apps/supervisor/dist/main.js sha256
+#       5af9878304cfaa0684cc20e827419344952c8fd22ad35fc866ea746334682f9b。
 # M5-B cgroup 冷启动与重启归属探针
-recorded=2026-11-08T14:39:14+08:00
-head=723cca9465f647f63f90ef0e59112b71aa999f0c
+recorded=2026-11-20T14:31:14+08:00
+head=f9538a1fcad0f23cfd1c727abc57b453c4828212
 node=v24.22.2
 kernel=6.8.0-53-generic user=root(0)
 cgroup_mount=cgroup2 type=cgroup2fs
-self_cgroup=/user.slice/user-0.slice/user@0.service/app.slice/dsh-subprocess-2146551-44451e9497b4.scope
+self_cgroup=/user.slice/user-0.slice/user@0.service/app.slice/dsh-subprocess-3334187-05895627805d.scope
 
-blank_parent=/moyu-cprobe-2859306
-blank_parent.controllers=cpuset cpu io memory pids 
+blank_parent=/moyu-cprobe-29834
+blank_parent.controllers=cpuset cpu io memory hugetlb pids rdma misc 
 blank_parent.subtree_control=[]
 blank_parent.procs=[]
 
 ### 空白委托目录冷启动（MOYU_CGROUP_ROOT 不存在）
-$ MOYU_CGROUP_ROOT=/sys/fs/cgroup/moyu-cprobe-2859306/instances /root/src/cgroup-lifecycle-919809486b16/apps/supervisor/node_modules/.bin/tsx scripts/m5b/cgroup-lifecycle-probe.ts full
-## 1. 空白委托目录冷启动（MOYU_CGROUP_ROOT=/sys/fs/cgroup/moyu-cprobe-2859306/instances）
+$ MOYU_CGROUP_ROOT=/sys/fs/cgroup/moyu-cprobe-29834/instances /root/src/cgroup-instance-lifecycle-f9febd112eb1/apps/supervisor/node_modules/.bin/tsx scripts/m5b/cgroup-lifecycle-probe.ts full
+## 1. 空白委托目录冷启动（MOYU_CGROUP_ROOT=/sys/fs/cgroup/moyu-cprobe-29834/instances）
 parent.exists_before=true
-parent.controllers_before=cpuset cpu io memory pids
+parent.controllers_before=cpuset cpu io memory hugetlb pids rdma misc
 parent.subtree_control_before=
 root.exists_before=false
-setup={"ok":true,"root":"/sys/fs/cgroup/moyu-cprobe-2859306/instances","path":"/sys/fs/cgroup/moyu-cprobe-2859306/instances/probe-2859350-1794119955077","inode":870862,"controllers":["memory","pids"],"step":null,"error":null}
+setup={"ok":true,"root":"/sys/fs/cgroup/moyu-cprobe-29834/instances","path":"/sys/fs/cgroup/moyu-cprobe-29834/instances/probe-29884-1795156274952","inode":1766198,"controllers":["memory","pids"],"step":null,"error":null}
 root.created=true
 parent.subtree_control_after=memory pids
 verdict cold_start_ok=pass root created and instance bound
@@ -31,73 +36,74 @@ instance.limit_applied={"ok":true,"error":null}
 verdict cold_start_applies_limit=pass memory.max/high written
 sibling.controllers=["memory","pids"]
 verdict cold_start_hands_controllers_down=pass a later sibling cgroup under the created root is metered too
-## gen1（/sys/fs/cgroup/moyu-cprobe-2859306/instances/probe-2859350-1794119955077）
-gen1.launched={"pid":2859357,"started":true}
-gen1.identity={"pid":2859357,"startTime":"240992821","cgroup":"/sys/fs/cgroup/moyu-cprobe-2859306/instances/probe-2859350-1794119955077","cgroupInode":870862,"boundary":{"state":"ok","path":"/sys/fs/cgroup/moyu-cprobe-2859306/instances/probe-2859350-1794119955077","inode":870862}}
-gen1.members=["2859357:240992821","2859358:240992822","2859359:240992822","2859360:240992822"]
+## gen1（/sys/fs/cgroup/moyu-cprobe-29834/instances/probe-29884-1795156274952）
+gen1.launched={"pid":29894,"started":true}
+gen1.identity={"pid":29894,"startTime":"344624808","cgroup":"/sys/fs/cgroup/moyu-cprobe-29834/instances/probe-29884-1795156274952","cgroupInode":1766198,"boundary":{"state":"ok","path":"/sys/fs/cgroup/moyu-cprobe-29834/instances/probe-29884-1795156274952","inode":1766198}}
+gen1.members=["29894:344624808","29895:344624810","29896:344624810","29897:344624810"]
 gen1.unknown=false
-gen1.memory_current=442368
-verdict gen1_binds_descendants=pass descendants inside the instance cgroup: [2859358 2859359 2859360]
+gen1.memory_current=454656
+verdict gen1_binds_descendants=pass descendants inside the instance cgroup: [29895 29896 29897]
 verdict gen1_metered=pass memory.current > 0
-verdict gen1_inode_matches=pass recorded inode 870862 vs boundary 870862
-gen1.port_owners=[{"pid":2859361,"cgroup":"/sys/fs/cgroup/moyu-cprobe-2859306/instances/probe-2859350-1794119955077"}]
-verdict gen1_port_owner_identified=pass port 35023 owner resolved from /proc (expected pid 2859361)
-verdict gen1_port_owner_is_managed=pass port 35023 owner is inside the boundary
+verdict gen1_inode_matches=pass recorded inode 1766198 vs boundary 1766198
+gen1.port_owners=[{"pid":29905,"cgroup":"/sys/fs/cgroup/moyu-cprobe-29834/instances/probe-29884-1795156274952"}]
+verdict gen1_port_owner_identified=pass port 38249 owner resolved from /proc (expected pid 29905)
+verdict gen1_port_owner_is_managed=pass port 38249 owner is inside the boundary
 verdict gen1_foreign_owner_not_managed=pass a listener outside the root is never treated as ours
 gen1.stop={"stopped":true,"unknown":false,"boundary":"ok","remaining":0}
 gen1.remaining_alive=[]
 gen1.after_stop={"pids":[],"tree":{"ok":false,"empty":false},"removed":true}
 verdict gen1_recursive_empty=pass the instance cgroup was removed after the last member exited
-verdict gen1_port_released=pass port 35023 is free after the stop
+verdict gen1_port_released=pass port 38249 is free after the stop
 gen1.after_stop_ownership={"unknown":false,"cgroup":"missing"}
 verdict gen1_not_wedged=pass a dissolved boundary with no live member is not "unknown ownership" that blocks capacity
-gen2.setup={"ok":true,"root":"/sys/fs/cgroup/moyu-cprobe-2859306/instances","path":"/sys/fs/cgroup/moyu-cprobe-2859306/instances/gen2-2859350-1794119955369","inode":870946,"controllers":["memory","pids"],"step":null,"error":null}
-## gen2（/sys/fs/cgroup/moyu-cprobe-2859306/instances/gen2-2859350-1794119955369）
-gen2.launched={"pid":2859368,"started":true}
-gen2.identity={"pid":2859368,"startTime":"240992850","cgroup":"/sys/fs/cgroup/moyu-cprobe-2859306/instances/gen2-2859350-1794119955369","cgroupInode":870946,"boundary":{"state":"ok","path":"/sys/fs/cgroup/moyu-cprobe-2859306/instances/gen2-2859350-1794119955369","inode":870946}}
-gen2.members=["2859368:240992850","2859369:240992851","2859370:240992851","2859371:240992851"]
+gen2.setup={"ok":true,"root":"/sys/fs/cgroup/moyu-cprobe-29834/instances","path":"/sys/fs/cgroup/moyu-cprobe-29834/instances/gen2-29884-1795156275302","inode":1766350,"controllers":["memory","pids"],"step":null,"error":null}
+## gen2（/sys/fs/cgroup/moyu-cprobe-29834/instances/gen2-29884-1795156275302）
+gen2.launched={"pid":29916,"started":true}
+gen2.identity={"pid":29916,"startTime":"344624843","cgroup":"/sys/fs/cgroup/moyu-cprobe-29834/instances/gen2-29884-1795156275302","cgroupInode":1766350,"boundary":{"state":"ok","path":"/sys/fs/cgroup/moyu-cprobe-29834/instances/gen2-29884-1795156275302","inode":1766350}}
+gen2.members=["29916:344624843","29917:344624844","29919:344624844","29920:344624844"]
 gen2.unknown=false
-gen2.memory_current=655360
-verdict gen2_binds_descendants=pass descendants inside the instance cgroup: [2859369 2859370 2859371]
+gen2.memory_current=446464
+verdict gen2_binds_descendants=pass descendants inside the instance cgroup: [29917 29919 29920]
 verdict gen2_metered=pass memory.current > 0
-verdict gen2_inode_matches=pass recorded inode 870946 vs boundary 870946
-gen2.port_owners=[{"pid":2859372,"cgroup":"/sys/fs/cgroup/moyu-cprobe-2859306/instances/gen2-2859350-1794119955369"}]
-verdict gen2_port_owner_identified=pass port 43953 owner resolved from /proc (expected pid 2859372)
-verdict gen2_port_owner_is_managed=pass port 43953 owner is inside the boundary
+verdict gen2_inode_matches=pass recorded inode 1766350 vs boundary 1766350
+gen2.port_owners=[{"pid":29921,"cgroup":"/sys/fs/cgroup/moyu-cprobe-29834/instances/gen2-29884-1795156275302"}]
+verdict gen2_port_owner_identified=pass port 36013 owner resolved from /proc (expected pid 29921)
+verdict gen2_port_owner_is_managed=pass port 36013 owner is inside the boundary
 verdict gen2_foreign_owner_not_managed=pass a listener outside the root is never treated as ours
 gen2.stop={"stopped":true,"unknown":false,"boundary":"ok","remaining":0}
 gen2.remaining_alive=[]
 gen2.after_stop={"pids":[],"tree":{"ok":false,"empty":false},"removed":true}
 verdict gen2_recursive_empty=pass the instance cgroup was removed after the last member exited
-verdict gen2_port_released=pass port 43953 is free after the stop
+verdict gen2_port_released=pass port 36013 is free after the stop
 gen2.after_stop_ownership={"unknown":false,"cgroup":"missing"}
 verdict gen2_not_wedged=pass a dissolved boundary with no live member is not "unknown ownership" that blocks capacity
 ## 4. 重启后的边界核对（对象仍在 / 路径被复用）
-restart.recorded_inode=870988
-restart.boundary={"state":"ok","path":"/sys/fs/cgroup/moyu-cprobe-2859306/instances/restart-2859350-1794119955683","inode":870988}
+restart.recorded_inode=1766392
+restart.boundary={"state":"ok","path":"/sys/fs/cgroup/moyu-cprobe-29834/instances/restart-29884-1795156275620","inode":1766392}
 verdict restart_inode_matches=pass a restart that finds the same inode keeps the boundary proven
-restart.replacement_inode=871030
+restart.replacement_inode=1766434
 restart.replaced_ownership={"unknown":true,"cgroup":"ok"}
 verdict restart_replacement_detected=pass a different inode at the same path is unknown ownership, never the old boundary
 ## 判定：全部通过
 exit=0
 
+nonroot_bundle_sha256=effa9f1707aa833198f7f68307dbf06215c67de925d820b6b5d2b03696609faf
 ### 权限不足场景 (a)：目录由 root 所有，换身份后无法建根
-$ setpriv --reuid=65534 --regid=65534 --clear-groups MOYU_CGROUP_ROOT=/sys/fs/cgroup/moyu-cprobe-2859306-nonroot/instances /usr/bin/node probe.mjs nonroot
+$ setpriv --reuid=65534 --regid=65534 --clear-groups MOYU_CGROUP_ROOT=/sys/fs/cgroup/moyu-cprobe-29834-nonroot/instances /usr/bin/node probe.mjs nonroot
 ## 权限不足场景（非 root + 未委托目录）
 nonroot.uid=65534
-nonroot.setup={"ok":false,"root":"/sys/fs/cgroup/moyu-cprobe-2859306-nonroot/instances","path":null,"inode":null,"controllers":[],"step":"root","error":"cannot create the cgroup root /sys/fs/cgroup/moyu-cprobe-2859306-nonroot/instances: EACCES: permission denied, mkdir '/sys/fs/cgroup/moyu-cprobe-2859306-nonroot/instances'"}
+nonroot.setup={"ok":false,"root":"/sys/fs/cgroup/moyu-cprobe-29834-nonroot/instances","path":null,"inode":null,"controllers":[],"step":"root","error":"cannot create the cgroup root /sys/fs/cgroup/moyu-cprobe-29834-nonroot/instances: EACCES: permission denied, mkdir '/sys/fs/cgroup/moyu-cprobe-29834-nonroot/instances'"}
 verdict nonroot_no_unmetered_instance=pass no instance path is handed back, so nothing can be started outside the boundary
-verdict nonroot_actionable_reason=pass a failing step and the OS error are reported for /sys/fs/cgroup/moyu-cprobe-2859306-nonroot/instances (got step=root)
+verdict nonroot_actionable_reason=pass a failing step and the OS error are reported for /sys/fs/cgroup/moyu-cprobe-29834-nonroot/instances (got step=root)
 ## 判定：全部通过
 exit=0
 
 ### 权限不足场景 (b)：委托目录可写，但上一层未交出 memory/pids
-$ setpriv --reuid=65534 --regid=65534 --clear-groups MOYU_CGROUP_ROOT=/sys/fs/cgroup/moyu-cprobe-2859306-delegated/instances /usr/bin/node probe.mjs nonroot
+$ setpriv --reuid=65534 --regid=65534 --clear-groups MOYU_CGROUP_ROOT=/sys/fs/cgroup/moyu-cprobe-29834-delegated/instances /usr/bin/node probe.mjs nonroot
 ## 权限不足场景（非 root + 未委托目录）
 nonroot.uid=65534
-nonroot.setup={"ok":false,"root":"/sys/fs/cgroup/moyu-cprobe-2859306-delegated/instances","path":null,"inode":null,"controllers":[],"step":"controllers","error":"cannot enable memory+pids in /sys/fs/cgroup/moyu-cprobe-2859306-delegated/cgroup.subtree_control: EACCES: permission denied, open '/sys/fs/cgroup/moyu-cprobe-2859306-delegated/cgroup.subtree_control'; a delegated level that still has its own processes cannot hand controllers down (use systemd DelegateSubgroup= so the supervisor does not sit in the delegated cgroup)"}
+nonroot.setup={"ok":false,"root":"/sys/fs/cgroup/moyu-cprobe-29834-delegated/instances","path":null,"inode":null,"controllers":[],"step":"controllers","error":"cannot enable memory+pids in /sys/fs/cgroup/moyu-cprobe-29834-delegated/cgroup.subtree_control: EACCES: permission denied, open '/sys/fs/cgroup/moyu-cprobe-29834-delegated/cgroup.subtree_control'; a delegated level that still has its own processes cannot hand controllers down (use systemd DelegateSubgroup= so the supervisor does not sit in the delegated cgroup)"}
 verdict nonroot_no_unmetered_instance=pass no instance path is handed back, so nothing can be started outside the boundary
-verdict nonroot_actionable_reason=pass a failing step and the OS error are reported for /sys/fs/cgroup/moyu-cprobe-2859306-delegated/instances (got step=controllers)
+verdict nonroot_actionable_reason=pass a failing step and the OS error are reported for /sys/fs/cgroup/moyu-cprobe-29834-delegated/instances (got step=controllers)
 ## 判定：全部通过
 exit=0
