@@ -1,0 +1,8 @@
+== stopping matrix units
+  stop m5bmatrix-pg.service
+  stop m5bmatrix-provider.service
+  stop m5bmatrix-supervisor.service
+  stop m5bmatrix-dispatcher.service
+  stop m5bmatrix-api.service
+  note: /sys/fs/cgroup/m5bmatrix.slice still exists (held by a remaining member)
+  removed run secrets from /tmp/m5bmatrix/protected

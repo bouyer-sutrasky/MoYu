@@ -1,0 +1,73 @@
+# full db integration on d64c4efa3a4b93654081d412c681129293178609 2026-11-20T07:05:21Z
+$ vitest run test/integration
+
+ RUN  v3.2.7 /root/src/rollback-guard-0014-802b3250b91b/packages/db
+
+ ✓ test/integration/rollback.integration.test.ts (5 tests) 3691ms
+   ✓ 0004 rollback script on real PostgreSQL > rolls back with the correct hash, keeps business data and re-applies the constraints  983ms
+   ✓ 0004 rollback script on real PostgreSQL > rejects a wrong hash and keeps the schema, migration history and data  711ms
+   ✓ 0004 rollback script on real PostgreSQL > rejects a missing hash and keeps the schema and migration history  633ms
+   ✓ 0004 rollback script on real PostgreSQL > rejects a hash whose migration record is no longer the latest applied row  621ms
+   ✓ 0004 rollback script on real PostgreSQL > rolls back all DDL when a later statement in the same transaction fails  732ms
+ ✓ test/integration/rollback-0019.integration.test.ts (6 tests) 5007ms
+   ✓ 0019 rollback script on real PostgreSQL > pins the deployed 0019 forward hash and restores the old global index  1044ms
+   ✓ 0019 rollback script on real PostgreSQL > refuses when the 0019 ledger row is absent and leaves schema and data untouched  747ms
+   ✓ 0019 rollback script on real PostgreSQL > refuses duplicate 0019 ledger rows and leaves schema and data untouched  763ms
+   ✓ 0019 rollback script on real PostgreSQL > refuses to roll back underneath a later migration and keeps the 0019 index  744ms
+   ✓ 0019 rollback script on real PostgreSQL > refuses a cross-repository duplicate that the old global index cannot represent  985ms
+   ✓ 0019 rollback script on real PostgreSQL > refuses a drifted index definition instead of guessing at the replacement  717ms
+ ✓ test/integration/rollback-0008.integration.test.ts (3 tests) 2483ms
+   ✓ 0008 rollback script on real PostgreSQL > deletes exactly the 0008 ledger row and restores immediate FKs, then re-applies deferred FKs  849ms
+   ✓ 0008 rollback script on real PostgreSQL > moves a reply graph between conversations after re-apply, proving deferred checking  462ms
+   ✓ 0008 rollback script on real PostgreSQL > refuses wrong, missing and non-latest hashes without changing schema or ledger  1169ms
+ ✓ test/integration/rollback-0014.integration.test.ts (12 tests) 7787ms
+   ✓ 0014 rollback script on real PostgreSQL > refuses to roll back underneath later applied migrations  977ms
+   ✓ 0014 rollback script on real PostgreSQL > refuses a ledger row without created_at instead of guessing its order  758ms
+   ✓ 0014 rollback script on real PostgreSQL > refuses when the applied 0014 ledger row has no created_at  711ms
+   ✓ 0014 rollback script on real PostgreSQL > refuses a drifted 0014 ledger hash without dropping the table  786ms
+   ✓ 0014 rollback script on real PostgreSQL > refuses a missing 0014 ledger row without dropping the table  672ms
+   ✓ 0014 rollback script on real PostgreSQL > refuses a duplicated 0014 ledger row without dropping the table  569ms
+   ✓ 0014 rollback script on real PostgreSQL > refuses when 0014 is not applied at all  589ms
+   ✓ 0014 rollback script on real PostgreSQL > rolls the whole transaction back when a later statement fails  628ms
+   ✓ 0014 rollback script on real PostgreSQL > rolls back legally, refuses a second rollback and re-applies cleanly  784ms
+   ✓ 0014 rollback script on real PostgreSQL > waits for the migration ledger lock before refusing  649ms
+   ✓ 0014 rollback script on real PostgreSQL > makes migrateDatabase wait for the same ledger lock  636ms
+ ✓ test/integration/rollback-0018.integration.test.ts (3 tests) 2332ms
+   ✓ 0018 rollback script on real PostgreSQL > drops the audit table and the column, refuses a second rollback, and re-applies cleanly  809ms
+   ✓ 0018 rollback script on real PostgreSQL > refuses to roll back underneath a later migration and keeps the new schema  724ms
+   ✓ 0018 rollback script on real PostgreSQL > upgrades an existing database without rewriting repository rows and enforces the shape check  793ms
+ ✓ test/integration/rollback-0005.integration.test.ts (3 tests) 1746ms
+   ✓ 0005 rollback script on real PostgreSQL > rolls back M4 DDL with the correct hash, keeps business rows, and re-applies the migration  677ms
+   ✓ 0005 rollback script on real PostgreSQL > rejects a wrong hash without changing the schema or data  479ms
+   ✓ 0005 rollback script on real PostgreSQL > rejects a missing hash and keeps the M4 schema  585ms
+ ✓ test/integration/rollback-0009.integration.test.ts (2 tests) 1893ms
+   ✓ 0009 rollback script on real PostgreSQL > drops repository_preferences and the keyset index, then re-applies both  835ms
+   ✓ 0009 rollback script on real PostgreSQL > refuses wrong, missing and non-latest hashes without changing schema or ledger  1054ms
+ ✓ test/integration/rollback-0015.integration.test.ts (2 tests) 1471ms
+   ✓ 0015 rollback script on real PostgreSQL > refuses a second rollback instead of silently deleting nothing  794ms
+   ✓ 0015 rollback script on real PostgreSQL > re-applies the attachment link and rejects an unknown message id  671ms
+ ✓ test/integration/rollback-0017.integration.test.ts (2 tests) 1412ms
+   ✓ 0017 rollback script on real PostgreSQL > drops the cleanup audit tables, refuses a second rollback, and re-applies cleanly  688ms
+   ✓ 0017 rollback script on real PostgreSQL > refuses to roll back underneath a later migration and keeps the tables  719ms
+ ✓ test/integration/rollback-0006.integration.test.ts (2 tests) 1215ms
+   ✓ 0006 rollback script on real PostgreSQL > drops the durable duplicate queue and re-applies it  692ms
+   ✓ 0006 rollback script on real PostgreSQL > rejects a missing or wrong hash and keeps the table  519ms
+ ✓ test/integration/rollback-0016.integration.test.ts (2 tests) 1307ms
+   ✓ 0016 rollback script on real PostgreSQL > drops revoked_at, refuses a second rollback, and re-applies cleanly  751ms
+   ✓ 0016 rollback script on real PostgreSQL > refuses to roll back underneath a later migration and leaves the column in place  542ms
+ ✓ test/integration/integrity.integration.test.ts (9 tests) 1399ms
+ ✓ test/integration/rollback-0021.integration.test.ts (1 test) 649ms
+   ✓ 0021 rollback script on real PostgreSQL > drops only the decision and PR-order projections and can be re-applied  645ms
+ ✓ test/integration/rollback-0013.integration.test.ts (1 test) 794ms
+   ✓ 0013 rollback script on real PostgreSQL > removes the lease/resource schema and re-applies it  791ms
+ ✓ test/integration/migrations.integration.test.ts (6 tests) 697ms
+ ✓ test/integration/rollback-0012.integration.test.ts (1 test) 773ms
+   ✓ 0012 rollback script on real PostgreSQL > removes the allocation indexes and re-applies them  770ms
+ ✓ test/integration/messages.integration.test.ts (4 tests) 627ms
+
+ Test Files  17 passed (17)
+      Tests  64 passed (64)
+   Start at  15:05:22
+   Duration  18.26s (transform 675ms, setup 0ms, collect 14.58s, tests 35.28s, environment 4ms, prepare 1.48s)
+
+db_integration_exit=0

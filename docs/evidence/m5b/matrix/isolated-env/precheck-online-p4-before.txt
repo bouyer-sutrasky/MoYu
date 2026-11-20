@@ -1,0 +1,63 @@
+# M5-B matrix isolation precheck
+recorded=2026-11-20T10:30:23.784Z
+host=lavm-flnape7bgu user=m5bmatrix mode=online
+matrix_home=/home/m5bmatrix
+ssh_key=/root/.config/m5bmatrix/probe_ssh_key
+gh_config=/root/.config/m5bmatrix/gh
+run_root=/tmp/m5bmatrix
+probe_repositories=Bouyer12/m5a-beta-adf10ad9
+forbidden_repository=bouyer-sutrasky/MoYu
+
+## identity
+  PASS       m5bmatrix — uid=995 gid=986 groups=986
+## host-boundary
+  PASS       /root — owner=0 mode=0710 computed=not-writable observed=not-writable
+  PASS       /root/.ssh — owner=0 mode=0700 computed=not-writable observed=not-writable
+  PASS       /root/.dsh — owner=0 mode=0755 computed=not-writable observed=not-writable
+  PASS       /root/.dsh-m5 — owner=0 mode=0700 computed=not-writable observed=not-writable
+  PASS       /root/.config — owner=0 mode=0710 computed=not-writable observed=not-writable
+  PASS       /root/.config/gh-agent — owner=0 mode=0700 computed=not-writable observed=not-writable
+  PASS       /root/.local — owner=0 mode=0710 computed=not-writable observed=not-writable
+  PASS       /root/.local/bin — owner=0 mode=0750 computed=not-writable observed=not-writable
+  PASS       /root/src — owner=0 mode=0710 computed=not-writable observed=not-writable
+  PASS       /root/src/upstream — owner=0 mode=0710 computed=not-writable observed=not-writable
+  PASS       /opt/moyu-node24 — owner=0 mode=0750 computed=not-writable observed=not-writable
+  PASS       /etc — owner=0 mode=0755 computed=not-writable observed=not-writable
+  PASS       /root/.ssh/sa_agent — mode=0600 computed=not-readable observed=not-readable
+  PASS       /root/.ssh/sa_agent2 — mode=0600 computed=not-readable observed=not-readable
+  PASS       /root/.ssh/id_ed25519 — mode=missing computed=not-readable observed=not-probed
+  PASS       /root/.config/gh-agent/hosts.yml — mode=0600 computed=not-readable observed=not-readable
+  PASS       /root/.dsh/.credentials.yaml — mode=0600 computed=not-readable observed=not-readable
+  PASS       /root/.dsh-m5/.credentials.yaml — mode=0600 computed=not-readable observed=not-readable
+  PASS       /root/.dsh-m5/instances.json — mode=0600 computed=not-readable observed=not-readable
+## credentials
+  PASS       ssh-key:/root/.config/m5bmatrix/probe_ssh_key — sha256=20cc90eab9cb5448 mode=600
+  PASS       gh-config:/root/.config/m5bmatrix/gh — token=present sha256=3e3e2e27b33865b3 (value not printed)
+## scope
+  PASS       git-push-dry-run:Bouyer12/m5a-beta-adf10ad9 — allowed — To ssh://ssh.github.com:443/Bouyer12/m5a-beta-adf10ad9.git
+  PASS       gh-refs-write:Bouyer12/m5a-beta-adf10ad9 — allowed (stage=write http=422) — gh: refs/heads/__m5b_scope_probe__1795170629854a3mepa..__ is not a valid ref name. (HTTP 422)
+  PASS       gh-refs-side-effects:Bouyer12/m5a-beta-adf10ad9 — refs=11 pull requests=12
+  PASS       gh-issues-write:Bouyer12/m5a-beta-adf10ad9 — allowed (stage=write http=422) — gh: Invalid request.
+  PASS       gh-issues-side-effects:Bouyer12/m5a-beta-adf10ad9 — issues=2
+  PASS       gh-pulls-write:Bouyer12/m5a-beta-adf10ad9 — allowed (stage=write http=422) — gh: Invalid request.
+  PASS       gh-pulls-side-effects:Bouyer12/m5a-beta-adf10ad9 — pull requests=12
+  PASS       git-push-dry-run:bouyer-sutrasky/MoYu (must be denied) — denied — ERROR: Permission to bouyer-sutrasky/MoYu.git denied to deploy key
+  INCOMPLETE gh-refs-write:bouyer-sutrasky/MoYu (must be denied) — failed (stage=read-side-effects-before) — pulls=timeout refs=allowed
+  SKIP       gh-refs-side-effects:bouyer-sutrasky/MoYu (must be denied) — read denied; no write was attempted
+  PASS       gh-issues-write:bouyer-sutrasky/MoYu (must be denied) — denied (stage=write http=403) — gh: Resource not accessible by personal access token (HTTP 403)
+  PASS       gh-issues-side-effects:bouyer-sutrasky/MoYu (must be denied) — issues=44
+  INCOMPLETE gh-pulls-write:bouyer-sutrasky/MoYu (must be denied) — failed (stage=read-pulls-before) — cannot list pull requests
+  SKIP       gh-pulls-side-effects:bouyer-sutrasky/MoYu (must be denied) — read denied; no write was attempted
+## run-layout
+  PASS       /tmp/m5bmatrix — owner=0 mode=0755
+  PASS       protected — owner=0 mode=0700
+  PASS       config — owner=0 mode=0750
+  PASS       legacy-secret:supervisor-token — absent
+  PASS       legacy-secret:seed.env — absent
+  PASS       legacy-secret:state.env — absent
+  PASS       bridge-credentials — none
+  PASS       dsh-home — owner=995 mode=0700
+
+verdict=incomplete
+  - scope/gh-refs-write:bouyer-sutrasky/MoYu (must be denied): failed (stage=read-side-effects-before) — pulls=timeout refs=allowed
+  - scope/gh-pulls-write:bouyer-sutrasky/MoYu (must be denied): failed (stage=read-pulls-before) — cannot list pull requests

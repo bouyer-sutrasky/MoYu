@@ -1,0 +1,82 @@
+# matrix non-root identity
+recorded=2026-11-20T14:05:13+08:00
+host=lavm-flnape7bgu
+mode=apply
+
+uid=995(m5bmatrix) gid=986(m5bmatrix) groups=986(m5bmatrix)
+primary_group=m5bmatrix
+supplementary_groups=m5bmatrix
+uid=995 gid=986
+
+## read/traverse grants (before -> after)
+  /root                                                      owner=root         group=m5bmatrix  mode=710
+  -> /root                                                   group=m5bmatrix mode=710
+  /root/src                                                  owner=root         group=m5bmatrix  mode=710
+  -> /root/src                                               group=m5bmatrix mode=710
+  /root/src/isolated-env-credentials-2aefc61b10b2            owner=root         group=root       mode=755
+  -> /root/src/isolated-env-credentials-2aefc61b10b2         group=m5bmatrix dirs=g+rX files=g+r (recursive)
+  /root/src/upstream                                         owner=root         group=m5bmatrix  mode=710
+  -> /root/src/upstream                                      group=m5bmatrix mode=710
+  /root/src/upstream/m5b-admission-build21                   owner=root         group=m5bmatrix  mode=750
+  -> /root/src/upstream/m5b-admission-build21                group=m5bmatrix dirs=g+rX files=g+r (recursive)
+  /root/.local                                               owner=root         group=m5bmatrix  mode=710
+  -> /root/.local                                            group=m5bmatrix mode=710
+  /root/.local/bin                                           owner=root         group=m5bmatrix  mode=750
+  -> /root/.local/bin                                        group=m5bmatrix mode=750
+  /root/.config                                              owner=root         group=m5bmatrix  mode=710
+  -> /root/.config                                           group=m5bmatrix mode=710
+  /opt/moyu-node24                                           owner=root         group=m5bmatrix  mode=750
+  -> /opt/moyu-node24                                        group=m5bmatrix dirs=g+rx files=g+r (recursive)
+
+## removing the shared credential copy
+
+## dedicated probe credentials
+  /root/.config/m5bmatrix/probe_ssh_key                      owner=root         group=root       mode=600
+wrote=/home/m5bmatrix/.ssh/probe_deploy bytes=411 mode=600
+wrote=/home/m5bmatrix/.ssh/config bytes=246 mode=600
+wrote=/home/m5bmatrix/.ssh/known_hosts bytes=858 mode=600
+  ssh_material=/home/m5bmatrix/.ssh owner=m5bmatrix:m5bmatrix mode=700
+  known_hosts entries: 3
+  gh_credential=missing path=/root/.config/m5bmatrix/gh/hosts.yml
+  owner_action: create a fine-grained token limited to the probe repository and
+                its Contents/Issues/Pull requests permissions, sign it in with
+                GH_CONFIG_DIR=/root/.config/m5bmatrix/gh gh auth login --with-token,
+                then chgrp m5bmatrix /root/.config/m5bmatrix/gh && chmod 0750 ... && chmod 0640 hosts.yml
+
+## what the identity can actually do, checked as that user
+  DENY test -r /root/src/isolated-env-credentials-2aefc61b10b2/apps/dispatcher/dist/main.js
+  ok   test -r /root/src/upstream/m5b-admission-build21/package.json
+  ok   test -r /root/.local/bin/gh-agent
+  DENY test -r /root/.config/m5bmatrix/gh/hosts.yml
+  ok   test -x /root/src/isolated-env-credentials-2aefc61b10b2/scripts/m5b/matrix/gh-m5b.sh
+  ok   /usr/bin/node --version
+  ok   ssh git@ssh.github.com:443 authenticated (Hi Bouyer12/m5a-beta-adf10ad9! You've successfully authenticated, but GitHub does not provide shell access.)
+
+## host configuration boundary (read-only audit)
+path /root mode=0710
+path /root/.ssh mode=0700
+path /root/.dsh mode=0755
+path /root/.dsh-m5 mode=0700
+path /root/.config mode=0710
+path /root/.config/gh-agent mode=0700
+path /root/.local mode=0710
+path /root/.local/bin mode=0750
+path /root/src mode=0710
+path /root/src/upstream mode=0710
+path /opt/moyu-node24 mode=0750
+path /etc mode=0755
+host_boundary=clean
+
+## credentials boundary (dedicated, probe-only)
+guard: FAIL: the matrix gh config does not exist: /root/.config/m5bmatrix/gh
+
+## the dispatcher artifact the units will execute
+  path=/root/src/isolated-env-credentials-2aefc61b10b2/apps/dispatcher/dist/main.js
+sha256sum: /root/src/isolated-env-credentials-2aefc61b10b2/apps/dispatcher/dist/main.js: No such file or directory
+  sha256=
+stat: cannot statx '/root/src/isolated-env-credentials-2aefc61b10b2/apps/dispatcher/dist/main.js': No such file or directory
+  bytes=
+
+verdict: every service unit of the matrix stack runs as m5bmatrix:m5bmatrix (uid 995).
+host_write_boundary=clean
+dedicated_credentials=incomplete

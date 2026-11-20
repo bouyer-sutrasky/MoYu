@@ -1,0 +1,23 @@
+# matrix non-root identity
+recorded=2026-11-20T14:05:07+08:00
+host=lavm-flnape7bgu
+mode=revoke
+
+uid=995(m5bmatrix) gid=986(m5bmatrix) groups=986(m5bmatrix)
+primary_group=m5bmatrix
+supplementary_groups=m5bmatrix
+uid=995 gid=986
+
+## narrowing the write grants an earlier harness created (owner action)
+  /root/.dsh-m5                                              owner=root         group=m5bmatrix  mode=770
+  -> /root/.dsh-m5                                           owner=root group=root dirs=0700 files=0600
+  /root/.config/gh-agent                                     owner=root         group=m5bmatrix  mode=770
+  -> /root/.config/gh-agent                                  owner=root group=root dirs=0700 files=0600
+
+  /home/m5bmatrix/.ssh/sa_agent2                             owner=m5bmatrix    group=m5bmatrix  mode=600
+  fingerprint_before_removal=ed932d092f57096b
+removed=1
+  -> removed; the matrix identity no longer holds the host agent key
+
+revoked; host configuration is back to 0700/0600 for m5bmatrix
+re-run: scripts/m5b/matrix/prepare-nonroot.sh --apply

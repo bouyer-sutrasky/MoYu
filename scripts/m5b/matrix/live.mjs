@@ -20,7 +20,9 @@ import pg from 'pg';
 const { Client } = pg;
 
 function loadState() {
-  const file = process.env.M5B_MATRIX_STATE ?? '/tmp/m5bmatrix/state.env';
+  const file =
+    process.env.M5B_MATRIX_STATE ??
+    `${process.env.M5B_MATRIX_RUN ?? '/tmp/m5bmatrix'}/protected/state.env`;
   const values = {};
   try {
     for (const line of readFileSync(file, 'utf8').split('\n')) {
