@@ -161,7 +161,15 @@ PY
 }
 
 worker_sessions() {
-  ls -d "$SESSIONS"/*/worker-"$1" 2>/dev/null | wc -l
+  # The merged supervisor gives each profile its own harness home; older layouts kept sessions under DSH_HOME/sessions.
+  {
+    find "$M5B_MATRIX_DSH_HOME/homes/${M5B_MATRIX_PROFILE:-m5b}/sessions" -maxdepth 3 -type d -name "worker-$1" 2>/dev/null
+    find "$M5B_MATRIX_DSH_HOME/sessions" -maxdepth 3 -type d -name "worker-$1" 2>/dev/null
+  } | wc -l
+}
+
+assignment_of() {
+  runtime_ticket "$1" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("assignmentId") or "")'
 }
 
 wait_state() {
@@ -184,14 +192,17 @@ wait_ticket() {
   return 1
 }
 
+# Sets NEW_TASK_ID in this shell: a command substitution would put the failure
+# counter and the task list in a subshell and could report PASS after a FAIL.
+NEW_TASK_ID=''
 new_task() {
-  local label=$1 out task
+  local label=$1 out
   out=$($LIVE new-task --text "item4 $label" --client-request-id "item4-${label}-$(date +%s%N)") || true
-  task=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("taskId", ""))' 2>/dev/null || true)
-  [[ -n $task ]] || { fail "new task ($label) did not return a task id: $out"; return 1; }
-  CREATED_TASKS+=("$task")
-  wait_ticket "$task" 120 || { fail "new task ($label) never got a runtime ticket"; return 1; }
-  printf '%s' "$task"
+  NEW_TASK_ID=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("taskId", ""))' 2>/dev/null || true)
+  [[ -n $NEW_TASK_ID ]] || { fail "new task ($label) did not return a task id: $out"; return 1; }
+  CREATED_TASKS+=("$NEW_TASK_ID")
+  wait_ticket "$NEW_TASK_ID" 120 || { fail "new task ($label) never got a runtime ticket"; return 1; }
+  return 0
 }
 
 # Bounded pause: the dispatcher may not have recorded the ticket yet, which is a stale version and not a product answer.
@@ -213,7 +224,8 @@ resume_command() {
 phase_before_start() {
   say "## web: pause before the worker starts"
   local task ticket state evidence
-  task=$(new_task before) || return
+  new_task before || return
+  task=$NEW_TASK_ID
   # 票刚创建就暂停：launch 可能还在队列或 prepare 中，属于「启动前/启动中」。
   pause_command "$task" || { fail "pause was refused for $task"; return; }
   wait_state "$task" stopped 120 || { fail "task $task did not reach stopped (state=$(task_state "$task"))"; return; }
@@ -225,21 +237,27 @@ phase_before_start() {
   contains "before: evidence launch recorded" '"launch"' "$evidence"
   local op; op=$(task_field "$task" operationId)
   eq "before: evidence names the pause operation" 1 "$([[ -n $op ]] && echo 1 || echo 0)"
-  say "  worker_sessions=$(worker_sessions "$ticket") lease=$(task_lease "$task")"
+  local before_assignment after_assignment
+  before_assignment=$(assignment_of "$ticket")
+  say "  paused_assignment=${before_assignment:-none} worker_sessions=$(worker_sessions "$ticket") lease=$(task_lease "$task")"
   # 继续：只创建一代新 Assignment，重复 resume 不再生效。
-  local before_assignments after_assignments
-  before_assignments=$(runtime_ticket "$ticket" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["assignments"]))')
   resume_command "$task" || { fail "resume was refused for $task"; return; }
   wait_state "$task" queued 60 || wait_state "$task" running 60 || { fail "resume did not queue $task"; return; }
-  after_assignments=$(runtime_ticket "$ticket" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["assignments"]))')
-  eq "before: one resume creates one Assignment" $((before_assignments + 1)) "$after_assignments"
+  after_assignment=$(assignment_of "$ticket")
+  say "  resumed_assignment=${after_assignment:-none}"
+  eq "before: resume creates a new Assignment" 1 "$([[ -n $after_assignment && $after_assignment != "$before_assignment" ]] && echo 1 || echo 0)"
   if resume_command "$task"; then fail "a second resume was accepted for a task that is no longer stopped"; else pass "a second resume is refused"; fi
+  # 仓库只有一代执行名额：下一阶段开始前把这次 resume 的 worker 再停下来。
+  pause_command "$task" || { fail "before: the resumed worker could not be paused again"; return; }
+  wait_state "$task" stopped 120 || { fail "before: the resumed worker did not stop again (state=$(task_state "$task"))"; return; }
+  pass "before: resumed worker stopped again, execution slot released"
 }
 
 phase_after_start() {
   say "## web: pause after the worker is running"
   local task ticket
-  task=$(new_task after) || return
+  new_task after || return
+  task=$NEW_TASK_ID
   if ! $LIVE wait --task "$task" --state running --timeout 180000 >/dev/null 2>&1; then
     fail "task $task never reached running before the after-start pause"
     return
@@ -268,7 +286,8 @@ phase_forced_timeout() {
   fi
   local task='' attempt found=0
   for attempt in $(seq 1 6); do
-    task=$(new_task "timeout-$attempt") || return
+    new_task "timeout-$attempt" || return
+    task=$NEW_TASK_ID
     pause_command "$task" || { fail "forced: pause refused on attempt $attempt"; return; }
     if wait_state "$task" blocked 60; then found=1; break; fi
     # The shortened bound is a race: a stop that still landed in time is not the branch under test.
@@ -294,11 +313,12 @@ phase_forced_timeout() {
   eq "forced: task released the generation" '' "$(task_lease "$task")"
   eq "forced: lease released" released "$(lease_state "$lease")"
   local before after
-  before=$(runtime_ticket "$ticket" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["assignments"]))')
+  before=$(assignment_of "$ticket")
   resume_command "$task" || { fail "forced: resume after the stop proof was refused"; return; }
   wait_state "$task" queued 60 || wait_state "$task" running 60 || { fail "forced: resume did not start the original task"; return; }
-  after=$(runtime_ticket "$ticket" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["assignments"]))')
-  eq "forced: resume starts the original task once" $((before + 1)) "$after"
+  after=$(assignment_of "$ticket")
+  say "  recheck_paused_assignment=${before:-none} resumed_assignment=${after:-none}"
+  eq "forced: resume starts the original task once" 1 "$([[ -n $after && $after != "$before" ]] && echo 1 || echo 0)"
   if resume_command "$task"; then fail "forced: repeated resume was accepted"; else pass "forced: repeated resume is refused"; fi
 }
 
@@ -346,10 +366,10 @@ phase_github() {
 }
 
 case "$PHASE" in
-  web) phase_before_start; phase_after_start ;;
+  web) phase_after_start; phase_before_start ;;
   forced) phase_forced_timeout ;;
   github) phase_github ;;
-  all) phase_before_start; phase_after_start; phase_forced_timeout; phase_github ;;
+  all) phase_after_start; phase_before_start; phase_forced_timeout; phase_github ;;
   *) echo "usage: $0 [web|forced|github|all]" >&2; exit 2 ;;
 esac
 
