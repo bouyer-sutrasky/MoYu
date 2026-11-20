@@ -1,0 +1,54 @@
+# M5-B matrix isolation precheck
+recorded=2026-11-20T06:56:03.967Z
+host=lavm-flnape7bgu user=m5bmatrix mode=online
+matrix_home=/home/m5bmatrix
+ssh_key=/root/.config/m5bmatrix/probe_ssh_key
+gh_config=/root/.config/m5bmatrix/gh
+run_root=/tmp/m5bmatrix
+probe_repositories=Bouyer12/m5a-beta-adf10ad9
+forbidden_repository=bouyer-sutrasky/MoYu
+
+## identity
+  PASS       m5bmatrix — uid=995 gid=986 groups=986
+## host-boundary
+  PASS       /root — owner=0 mode=0710 computed=not-writable observed=not-writable
+  PASS       /root/.ssh — owner=0 mode=0700 computed=not-writable observed=not-writable
+  PASS       /root/.dsh — owner=0 mode=0755 computed=not-writable observed=not-writable
+  PASS       /root/.dsh-m5 — owner=0 mode=0700 computed=not-writable observed=not-writable
+  PASS       /root/.config — owner=0 mode=0710 computed=not-writable observed=not-writable
+  PASS       /root/.config/gh-agent — owner=0 mode=0700 computed=not-writable observed=not-writable
+  PASS       /root/.local — owner=0 mode=0710 computed=not-writable observed=not-writable
+  PASS       /root/.local/bin — owner=0 mode=0750 computed=not-writable observed=not-writable
+  PASS       /root/src — owner=0 mode=0710 computed=not-writable observed=not-writable
+  PASS       /root/src/upstream — owner=0 mode=0710 computed=not-writable observed=not-writable
+  PASS       /opt/moyu-node24 — owner=0 mode=0750 computed=not-writable observed=not-writable
+  PASS       /etc — owner=0 mode=0755 computed=not-writable observed=not-writable
+  PASS       /root/.ssh/sa_agent — mode=0600 computed=not-readable observed=not-readable
+  PASS       /root/.ssh/sa_agent2 — mode=0600 computed=not-readable observed=not-readable
+  PASS       /root/.ssh/id_ed25519 — mode=missing computed=not-readable observed=not-probed
+  PASS       /root/.config/gh-agent/hosts.yml — mode=0600 computed=not-readable observed=not-readable
+  PASS       /root/.dsh/.credentials.yaml — mode=0600 computed=not-readable observed=not-readable
+  PASS       /root/.dsh-m5/.credentials.yaml — mode=0600 computed=not-readable observed=not-readable
+  PASS       /root/.dsh-m5/instances.json — mode=0600 computed=not-readable observed=not-readable
+## credentials
+  PASS       ssh-key:/root/.config/m5bmatrix/probe_ssh_key — sha256=20cc90eab9cb5448 mode=600
+  INCOMPLETE gh-config:/root/.config/m5bmatrix/gh — the matrix gh config does not exist: /root/.config/m5bmatrix/gh
+## scope
+  INCOMPLETE gh-scope — the dedicated gh configuration is missing: /root/.config/m5bmatrix/gh (shared credentials are never used)
+  PASS       git-push-dry-run:Bouyer12/m5a-beta-adf10ad9 — allowed — To ssh://ssh.github.com:443/Bouyer12/m5a-beta-adf10ad9.git
+  INCOMPLETE gh-write-probe:Bouyer12/m5a-beta-adf10ad9 — no dedicated gh credential
+  PASS       git-push-dry-run:bouyer-sutrasky/MoYu (must be denied) — denied — ERROR: Permission to bouyer-sutrasky/MoYu.git denied to deploy key
+## run-layout
+  PASS       /tmp/m5bmatrix — owner=0 mode=0755
+  PASS       protected — owner=0 mode=0700
+  PASS       config — owner=0 mode=0750
+  PASS       legacy-secret:supervisor-token — absent
+  PASS       legacy-secret:seed.env — absent
+  PASS       legacy-secret:state.env — absent
+  PASS       bridge-credentials — none
+  PASS       dsh-home — owner=995 mode=0700
+
+verdict=incomplete
+  - credentials/gh-config:/root/.config/m5bmatrix/gh: the matrix gh config does not exist: /root/.config/m5bmatrix/gh
+  - scope/gh-scope: the dedicated gh configuration is missing: /root/.config/m5bmatrix/gh (shared credentials are never used)
+  - scope/gh-write-probe:Bouyer12/m5a-beta-adf10ad9: no dedicated gh credential
