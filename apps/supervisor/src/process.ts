@@ -1001,7 +1001,7 @@ function signalPid(pid: number, signal: NodeJS.Signals): void {
   }
 }
 
-export type CgroupCleanupState = 'removed' | 'skipped' | 'failed' | 'not-needed';
+export type CgroupCleanupState = 'removed' | 'retained' | 'skipped' | 'failed' | 'not-needed';
 
 export interface CgroupCleanup {
   state: CgroupCleanupState;
@@ -1017,6 +1017,7 @@ export interface CgroupCleanup {
 export function cleanupVerifiedCgroup(
   cgroup: string | null | undefined,
   recordedInode: number | null,
+  options?: { afterVerify?: () => void },
 ): CgroupCleanup {
   if (!cgroup) return { state: 'not-needed', detail: 'no cgroup was recorded' };
   const opened = openCgroupObject(cgroup, recordedInode);
@@ -1032,42 +1033,22 @@ export function cleanupVerifiedCgroup(
     }
     const empty = cgroupEmptyAt(opened.fd as number);
     if (!empty.ok) {
-      return { state: 'skipped', detail: 'the verified boundary cannot be read before removal' };
+      return { state: 'skipped', detail: 'the verified boundary cannot be read' };
     }
     if (!empty.empty) {
       return { state: 'skipped', detail: 'the verified boundary is no longer empty' };
     }
-    // Re-open the same identity immediately before removal and keep the
-    // descriptor open while the path is removed, so the decision is tied to the
-    // object that was just proven empty.
-    const confirmed = openCgroupObject(cgroup, recordedInode);
-    try {
-      if (confirmed.state !== 'ok') {
-        return {
-          state: 'skipped',
-          detail: `the boundary became ${confirmed.state} before removal`,
-        };
-      }
-      try {
-        rmdirSync(cgroup);
-        return { state: 'removed', detail: null };
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code === 'ENOENT') return { state: 'removed', detail: 'the object was already gone' };
-        if (code === 'ENOTEMPTY') {
-          return {
-            state: 'skipped',
-            detail: 'nested cgroups remain; left for a later verified cleanup',
-          };
-        }
-        return {
-          state: 'failed',
-          detail: `removal failed: ${error instanceof Error ? error.message : String(error)}`,
-        };
-      }
-    } finally {
-      confirmed.close();
-    }
+    // cgroupfs has no fd-relative rmdir: rmdir(2) only accepts a path, so any
+    // path-based removal could hit a same-name replacement after this check.
+    // Identity therefore cannot be guaranteed across a removal; retain the
+    // verified empty directory and record the reason instead of risking the new
+    // object. Capacity and ports are already released from the original proof.
+    options?.afterVerify?.();
+    return {
+      state: 'retained',
+      detail:
+        'retained: cgroupfs has no fd-relative removal, so the verified empty directory is kept',
+    };
   } finally {
     opened.close();
   }

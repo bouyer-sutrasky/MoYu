@@ -642,6 +642,41 @@ describe('cgroup cold start and restart ownership', () => {
     }
   });
 
+  it('retains the directory when the path is replaced after the final verification', async () => {
+    const cgroup = createCgroup(`cleanup-after-${process.pid}-${Date.now()}`);
+    if (!cgroup) return;
+    const holding = createCgroup(`cleanup-after-holding-${process.pid}-${Date.now()}`);
+    if (!holding) return;
+    const foreign = spawnDetached('sleep', ['30']);
+    try {
+      if (!foreign.pid) throw new Error('no pid');
+      const foreignPid = foreign.pid;
+      const oldInode = statSync(cgroup).ino;
+      expect(movePidToCgroup(holding, foreignPid)).toBe(true);
+      // Replace the path after the last verification but before cleanup would
+      // have acted. Cleanup must retain the old directory and never touch the
+      // same-name new object or its live process.
+      const cleaned = cleanupVerifiedCgroup(cgroup, oldInode, {
+        afterVerify: () => {
+          removeCgroup(cgroup);
+          mkdirSync(cgroup, { recursive: true });
+          movePidToCgroup(cgroup, foreignPid);
+        },
+      });
+      const newInode = statSync(cgroup).ino;
+      expect(cleaned.state).toBe('retained');
+      expect(cleaned.detail).toContain('fd-relative');
+      expect(newInode).not.toBe(oldInode);
+      expect(pidAlive(foreign.pid)).toBe(true);
+      expect(cgroupPids(cgroup)).toContain(foreign.pid);
+    } finally {
+      if (foreign.pid && pidAlive(foreign.pid)) process.kill(foreign.pid, 'SIGKILL');
+      writeFileSync(join(cgroup, 'cgroup.kill'), '1');
+      removeCgroup(cgroup);
+      removeCgroup(holding);
+    }
+  });
+
   it('identifies the process that listens on a port and whether it is managed', async () => {
     const server: Server = createServer();
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));

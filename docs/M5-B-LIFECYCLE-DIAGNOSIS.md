@@ -149,11 +149,13 @@
   实现上用 `open` + `fstat` 校验 inode 后持有目录 fd，成员扫描与空树证明都经
   `/proc/self/fd/<fd>` 读取：检查通过后、读取之前发生同名替换也不会串到新对象；
   `settleDeadRuntime` 同样在同一个 fd 上校验并证明为空。
-- **清理绑定原代次对象**：空树证明后，`cleanupVerifiedCgroup` 再次 open+fstat 校验 inode 并确认
-  仍为空，只对同一个对象执行删除；路径已被同名新对象替换、不可读或不再为空时跳过清理，
-  在 `StopProcessResult.cleanup`/`cleanupDetail` 与日志 `supervisor.cgroup_cleanup` 中单独
-  记录状态和原因，停止结论仍只依据原代次的空树证据。cgroupfs 没有 fd-relative rmdir，
-  因此以紧邻删除前的再次校验绑定；这一点作为残余限制记录。
+- **清理绑定原代次对象**：空树证明后，`cleanupVerifiedCgroup` 再次 open+fstat 校验 inode 并
+  确认仍为空；由于 cgroupfs 没有 fd-relative rmdir（`rmdir(2)` 只接受路径），最后一次校验
+  与按路径删除之间无法消除同名替换窗口，因此**不再按路径删除**：保留已验证的空目录，
+  在 `StopProcessResult.cleanup`/`cleanupDetail` 与日志 `supervisor.cgroup_cleanup` 中记录
+  `retained` 及原因。容量与端口已按原代次空树证据释放，停止结论不依赖清理结果；被同名
+  新对象替换、不可读或不再为空时记录 `skipped`，新对象保持原样。空目录不影响后续实例
+  （每代次使用独立 profile/timestamp 名称）。
 - **边界证明**：停止只在“可读且递归为空”或“边界对象已不存在且本代次无存活成员”时
   返回 `stopped`；不可读仍按未知归属保守占用容量。残留风险（接管前逃逸的后代）通过
   `unknown` 与日志 `supervisor.stop_proven_with_residual` 保留，不再永久 veto 空树。
@@ -168,8 +170,8 @@
 
 | 命令 | 结果 |
 | --- | --- |
-| `pnpm check` | exit 0；lint/format/typecheck 通过，supervisor 单元测试 146/146 |
-| `pnpm build` | exit 0；`apps/supervisor/dist/main.js` sha256 `bfcdf5411fda6486853bd5ecdf7c1804266198e0c134c1c10aa9f5b72776e25f` |
+| `pnpm check` | exit 0；lint/format/typecheck 通过，supervisor 单元测试 147/147 |
+| `pnpm build` | exit 0；`apps/supervisor/dist/main.js` sha256 `a2522eee5fe62ef1954e6bd10ace03a38d9b5960fab6de0ede64261cb2df55dd` |
 | `TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm test:integration` | exit 0；db/api 通过，dispatcher 100 passed / 1 skipped，supervisor 4 passed |
 | `bash scripts/m5b/cgroup-lifecycle-probe.sh`（基线） | exit 1，22 项 FAIL |
 | `bash scripts/m5b/cgroup-lifecycle-probe.sh`（修复后） | exit 0，0 项 FAIL（32 项 pass） |
@@ -192,6 +194,7 @@
 | 同名新目录有存活进程 | 探针 `replaced_live_*`；`test/process.test.ts`「never touches a same-name new cgroup object holding a live foreign process」；`test/lifecycle.test.ts`「keeps the slot when a recreated cgroup still holds a live foreign process」 |
 | 校验与读取之间发生替换 | `test/process.test.ts`「reads and proves through the opened object when the path is replaced before the read」：fd 读取旧对象、陌生进程存活、`stopped=false`/`unknown=true` 保留槽位 |
 | 空树验证后、清理前目录被替换 | `test/process.test.ts`「skips cleanup when the path is replaced after the empty proof」：`cleanup=skipped`（原因 `replaced`）、新对象 inode 与陌生进程保持原样 |
+| 最后一次校验之后目录被替换 | `test/process.test.ts`「retains the directory when the path is replaced after the final verification」：`cleanup=retained`、不执行任何按路径删除，新对象 inode 与陌生进程保持原样 |
 | 陌生进程占端口 | `test/lifecycle.test.ts`「stops its own leftover listener but never signals a foreign process…」 |
 | 清理后下一代启动 | 探针 `gen2`：gen1 停止、cgroup 移除、端口释放后 gen2 仍能建根/计量/绑定 |
 | 休眠唤醒、完整 wake→online→sleep | 未跑：依赖 #92 的隔离运行环境与专用 gh token；不是本 PR 可自证的部分 |

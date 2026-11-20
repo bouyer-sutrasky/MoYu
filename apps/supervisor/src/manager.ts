@@ -2220,15 +2220,18 @@ export class InstanceManager {
         },
         'the verified instance cgroup was not removed; the stop verdict is unchanged',
       );
-    } else if (result.cleanup === 'removed') {
+    } else if (result.cleanup === 'removed' || result.cleanup === 'retained') {
       this.logger.debug(
         {
           event: 'supervisor.cgroup_cleanup',
           repositoryId: instance.repositoryId,
           cgroup: stored.cgroup,
           cleanup: result.cleanup,
+          detail: result.cleanupDetail,
         },
-        'removed the verified empty instance cgroup',
+        result.cleanup === 'retained'
+          ? 'retained the verified empty instance cgroup'
+          : 'removed the verified empty instance cgroup',
       );
     }
     // Both listeners must be gone: the panel port is what the next start
