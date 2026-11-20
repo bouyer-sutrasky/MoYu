@@ -24,6 +24,10 @@ interface FakeBridge {
   triggerCalls: BridgeTriggerInput[];
   startCalls: { ticketId: string; admission: unknown }[];
   snapshot: Record<string, unknown>;
+  /** Runs before a ticket snapshot is returned, for in-flight interleavings. */
+  onTicket?: (call: number) => Promise<void> | void;
+  /** Overrides the snapshot per ticket call; undefined falls back to `snapshot`. */
+  ticketResponder?: (call: number) => Record<string, unknown> | undefined;
   close: () => Promise<void>;
 }
 
@@ -49,6 +53,9 @@ async function startFakeBridge(): Promise<FakeBridge> {
     triggerCalls: [] as BridgeTriggerInput[],
     startCalls: [] as { ticketId: string; admission: unknown }[],
     snapshot: {} as Record<string, unknown>,
+    ticketCalls: 0,
+    onTicket: undefined as FakeBridge['onTicket'],
+    ticketResponder: undefined as FakeBridge['ticketResponder'],
   };
   const server: Server = createServer(async (request, response) => {
     const send = (status: number, value: unknown) => {
@@ -103,7 +110,9 @@ async function startFakeBridge(): Promise<FakeBridge> {
     }
     const ticketMatch = /^\/bridge\/v1\/tickets\/([^/]+)$/.exec(url.pathname);
     if (request.method === 'GET' && ticketMatch) {
-      send(200, state.snapshot);
+      state.ticketCalls += 1;
+      await state.onTicket?.(state.ticketCalls);
+      send(200, state.ticketResponder?.(state.ticketCalls) ?? state.snapshot);
       return;
     }
     const startMatch = /^\/bridge\/v1\/tickets\/([^/]+)\/start$/.exec(url.pathname);
@@ -139,6 +148,18 @@ async function startFakeBridge(): Promise<FakeBridge> {
     },
     set snapshot(value: Record<string, unknown>) {
       state.snapshot = value;
+    },
+    get onTicket() {
+      return state.onTicket;
+    },
+    set onTicket(value: FakeBridge['onTicket']) {
+      state.onTicket = value;
+    },
+    get ticketResponder() {
+      return state.ticketResponder;
+    },
+    set ticketResponder(value: FakeBridge['ticketResponder']) {
+      state.ticketResponder = value;
     },
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
@@ -538,6 +559,203 @@ describe('restart reconciliation on real PostgreSQL', () => {
       [leaseId],
     );
     expect(stillNone.rowCount).toBe(0);
+  }, 60_000);
+
+  it('keeps the newest Assignment when a stale snapshot lands after a newer adoption', async () => {
+    const repositoryId = await newRepository('inflight');
+    const binding = bindingFor(repositoryId, 'inflight');
+    const conversationId = await newConversation(repositoryId, 'in-flight snapshot');
+    const task = await db.pool.query<{ id: string }>(
+      `insert into task_links (conversation_id, repository_id, upstream_ticket_id, state, base_branch, model_id)
+       values ($1, $2, $3, 'running', 'main', 'commandcode/deepseek/deepseek-v4.1-flash') returning id`,
+      [conversationId, repositoryId, TICKET],
+    );
+    const taskId = task.rows[0]!.id;
+    const lease = await acquireExecutionLease(db.pool, repositoryId, { taskId }, 3_600_000);
+    const leaseId = lease.lease!.id;
+    const fencingToken = lease.lease!.fencingToken;
+    const first = 'assignment-inflight-1';
+    const older = 'assignment-inflight-2';
+    const newest = 'assignment-inflight-3';
+    await reserveExecution(db.pool, {
+      repositoryId,
+      requestKey: `admit:${taskId}`,
+      taskId,
+      ticketId: TICKET,
+      assignmentId: first,
+      leaseId,
+      fencingToken,
+    });
+    await claimExecution(db.pool, {
+      repositoryId,
+      requestKey: `admit:${taskId}`,
+      taskId,
+      ticketId: TICKET,
+      assignmentId: first,
+      leaseId,
+      fencingToken,
+    });
+    const staleSnapshot = snapshotFor(binding, older, 'queued', leaseId, fencingToken);
+    const freshSnapshot = snapshotFor(binding, newest, 'queued', leaseId, fencingToken);
+    let ticketCalls = 0;
+    // While the recovery pass is returning the stale record, another pass adopts
+    // the newer one. The stale pass must notice, re-read, and not write a
+    // backward entry. The counter is local: the fake Bridge sees other tests too.
+    bridge.onTicket = async () => {
+      ticketCalls += 1;
+      if (ticketCalls !== 1) return;
+      const interleaved = await claimExecution(db.pool, {
+        repositoryId,
+        requestKey: `admit:${taskId}`,
+        taskId,
+        ticketId: TICKET,
+        assignmentId: newest,
+        leaseId,
+        fencingToken,
+        expectedAssignmentId: first,
+        authoritative: {
+          ticketId: TICKET,
+          assignmentId: newest,
+          leaseId,
+          fencingToken,
+          state: 'queued',
+          sourceCursor: '0',
+        },
+      });
+      expect(interleaved.supersededFrom).toBe(first);
+    };
+    bridge.ticketResponder = () => (ticketCalls === 1 ? staleSnapshot : freshSnapshot);
+
+    try {
+      await syncOnce(db.pool, binding, client, logger);
+    } finally {
+      bridge.onTicket = undefined;
+      bridge.ticketResponder = undefined;
+    }
+
+    expect(ticketCalls).toBe(2);
+    const reservation = await db.pool.query<{ assignment_id: string; state: string }>(
+      `select assignment_id, state from execution_reservations
+        where repository_id = $1 and request_key = $2`,
+      [repositoryId, `admit:${taskId}`],
+    );
+    expect(reservation.rows[0]).toMatchObject({ assignment_id: newest, state: 'claimed' });
+    const ledger = await db.pool.query<{ detail: Record<string, unknown> }>(
+      `select detail from runtime_lease_events
+        where lease_id = $1 and type = 'assignment_superseded'
+        order by created_at, id`,
+      [leaseId],
+    );
+    expect(ledger.rows.map((row) => row.detail)).toEqual([
+      expect.objectContaining({
+        fromAssignmentId: first,
+        toAssignmentId: newest,
+        source: 'bridge_snapshot',
+      }),
+    ]);
+    expect(ledger.rows.some((row) => row.detail.toAssignmentId === older)).toBe(false);
+  }, 60_000);
+
+  it('never adopts backwards when the re-read record is still the stale one', async () => {
+    const repositoryId = await newRepository('inflight-stale');
+    const binding = bindingFor(repositoryId, 'inflight-stale');
+    const conversationId = await newConversation(repositoryId, 'stale re-read');
+    const task = await db.pool.query<{ id: string }>(
+      `insert into task_links (conversation_id, repository_id, upstream_ticket_id, state, base_branch, model_id)
+       values ($1, $2, $3, 'running', 'main', 'commandcode/deepseek/deepseek-v4.1-flash') returning id`,
+      [conversationId, repositoryId, TICKET],
+    );
+    const taskId = task.rows[0]!.id;
+    const lease = await acquireExecutionLease(db.pool, repositoryId, { taskId }, 3_600_000);
+    const leaseId = lease.lease!.id;
+    const fencingToken = lease.lease!.fencingToken;
+    const first = 'assignment-stale-read-1';
+    const stale = 'assignment-stale-read-2';
+    const newest = 'assignment-stale-read-3';
+    await reserveExecution(db.pool, {
+      repositoryId,
+      requestKey: `admit:${taskId}`,
+      taskId,
+      ticketId: TICKET,
+      assignmentId: first,
+      leaseId,
+      fencingToken,
+    });
+    await claimExecution(db.pool, {
+      repositoryId,
+      requestKey: `admit:${taskId}`,
+      taskId,
+      ticketId: TICKET,
+      assignmentId: first,
+      leaseId,
+      fencingToken,
+    });
+    const staleSnapshot = snapshotFor(binding, stale, 'queued', leaseId, fencingToken);
+    let ticketCalls = 0;
+    bridge.onTicket = async () => {
+      ticketCalls += 1;
+      if (ticketCalls !== 1) return;
+      const interleaved = await claimExecution(db.pool, {
+        repositoryId,
+        requestKey: `admit:${taskId}`,
+        taskId,
+        ticketId: TICKET,
+        assignmentId: newest,
+        leaseId,
+        fencingToken,
+        expectedAssignmentId: first,
+        authoritative: {
+          ticketId: TICKET,
+          assignmentId: newest,
+          leaseId,
+          fencingToken,
+          state: 'queued',
+          sourceCursor: '0',
+        },
+      });
+      expect(interleaved.supersededFrom).toBe(first);
+    };
+    // Even the re-read still returns the old record. Without a per-Assignment
+    // timestamp the platform cannot order it against the newer adoption, so it
+    // must keep the reservation and leave the record for the next pass.
+    bridge.ticketResponder = () => staleSnapshot;
+    try {
+      await syncOnce(db.pool, binding, client, logger);
+    } finally {
+      bridge.onTicket = undefined;
+      bridge.ticketResponder = undefined;
+    }
+
+    expect(ticketCalls).toBe(2);
+    const reservation = await db.pool.query<{ assignment_id: string; state: string }>(
+      `select assignment_id, state from execution_reservations
+        where repository_id = $1 and request_key = $2`,
+      [repositoryId, `admit:${taskId}`],
+    );
+    expect(reservation.rows[0]).toMatchObject({ assignment_id: newest, state: 'claimed' });
+    const ledger = await db.pool.query<{ detail: Record<string, unknown> }>(
+      `select detail from runtime_lease_events
+        where lease_id = $1 and type = 'assignment_superseded'
+        order by created_at, id`,
+      [leaseId],
+    );
+    expect(ledger.rows).toHaveLength(1);
+    expect(ledger.rows[0]!.detail).toMatchObject({
+      fromAssignmentId: first,
+      toAssignmentId: newest,
+    });
+
+    // The next pass reloads the current reservation and adopts only a record
+    // that agrees with it; the stale record is never written.
+    bridge.ticketResponder = undefined;
+    bridge.snapshot = snapshotFor(binding, newest, 'queued', leaseId, fencingToken);
+    await syncOnce(db.pool, binding, client, logger);
+    const after = await db.pool.query<{ assignment_id: string }>(
+      `select assignment_id from execution_reservations
+        where repository_id = $1 and request_key = $2`,
+      [repositoryId, `admit:${taskId}`],
+    );
+    expect(after.rows[0]!.assignment_id).toBe(newest);
   }, 60_000);
 
   it('neither starts work nor drops the PR of an awaiting_review ticket across a restart, and ends it when the PR closes', async () => {

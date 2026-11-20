@@ -1531,136 +1531,205 @@ export async function recoverReservedTasks(
   const sourceCursor = cursorRow.rows[0]?.cursor ?? '0';
   for (const row of rows.rows) {
     if (!row.upstream_ticket_id) continue;
-    let snapshot: Awaited<ReturnType<RuntimeBridgeClient['ticket']>>;
-    try {
-      snapshot = await bridge.ticket(row.upstream_ticket_id);
-    } catch (error) {
-      logger.warn(
-        {
-          event: 'admission.recovery_unavailable',
-          taskId: row.id,
-          error: bridgeErrorMessage(error),
-        },
-        'could not read the authoritative Bridge snapshot; keeping the reservation',
-      );
-      continue;
-    }
-    const repositoryName = snapshot.base?.repository;
-    const liveAssignment = snapshot.assignmentId;
-    if (
-      snapshot.ticketId !== row.upstream_ticket_id ||
-      !liveAssignment ||
-      snapshot.admission?.leaseId !== row.lease_id ||
-      String(snapshot.admission?.fencingToken) !== String(row.fencing_token) ||
-      // GitHub-imported tickets have no frozen workspace spec, so the snapshot
-      // base (and repository) is null; the connection already binds the repo.
-      (repositoryName !== undefined &&
-        repositoryName !== null &&
-        repositoryName !== repository.fullName) ||
-      (snapshot.state !== 'queued' && snapshot.state !== 'running')
-    ) {
-      await pool.query(
-        `update task_links
-            set stop_evidence = coalesce(stop_evidence, '{}'::jsonb) || $2::jsonb,
-                version = version + 1, updated_at = now()
-          where id = $1 and state in ('queued', 'running')
-            and coalesce(stop_evidence->>'admissionRecovery', '') is distinct from 'snapshot_mismatch'`,
-        [row.id, JSON.stringify({ admissionRecovery: 'snapshot_mismatch' })],
-      );
-      continue;
-    }
-    // A claimed reservation on the live Assignment needs no second claim; the
-    // snapshot only has to be consulted again for a re-issued turn. Evidence of
-    // an earlier mismatch is cleared here, but only when it was recorded.
-    if (row.reservationState === 'claimed' && row.assignment_id === liveAssignment) {
-      await pool.query(
-        `update task_links
-            set stop_evidence = stop_evidence - 'admissionRecovery' - 'admissionRecoveryError',
-                version = version + 1, updated_at = now()
-          where id = $1
-            and (stop_evidence ? 'admissionRecovery' or stop_evidence ? 'admissionRecoveryError')`,
-        [row.id],
-      );
-      continue;
-    }
-    let sourceEventId: string | null = null;
-    if (row.assignment_id !== liveAssignment) {
-      const latest = await pool.query<{ source_event_id: string | null }>(
-        `select source_event_id from events
-          where task_id = $1 and source = 'bridge'
-          order by seq desc limit 1`,
-        [row.id],
-      );
-      sourceEventId = latest.rows[0]?.source_event_id ?? null;
-    }
-    try {
-      const claimed = await claimExecution(pool, {
-        repositoryId: repository.id,
-        requestKey: row.requestKey,
-        taskId: row.id,
-        ticketId: row.upstream_ticket_id,
-        assignmentId: liveAssignment,
-        leaseId: row.lease_id,
-        fencingToken: String(row.fencing_token),
-        authoritative: {
-          ticketId: snapshot.ticketId,
-          assignmentId: liveAssignment,
-          leaseId: row.lease_id,
-          fencingToken: String(row.fencing_token),
-          state: snapshot.state,
-          sourceEventId,
-          sourceCursor,
-          observedAt: new Date().toISOString(),
-        },
-      });
-      if (claimed.supersededFrom) {
-        logger.info(
-          {
-            event: 'admission.assignment_adopted',
-            taskId: row.id,
-            leaseId: row.lease_id,
-            fromAssignmentId: claimed.supersededFrom,
-            toAssignmentId: liveAssignment,
-          },
-          'adopted the Assignment the runtime re-issued under the current lease',
-        );
-      }
-      if (!claimed.claimed && row.reservationState === 'reserved') {
+    // The snapshot below is read before the reservation lock. Remember the
+    // Assignment observed with that read, so a pass whose snapshot turns stale
+    // cannot overwrite a newer adoption that committed in between.
+    let expectedAssignmentId = row.assignment_id;
+    let expectedState = row.reservationState;
+    let settled = false;
+    let reReadAfterConflict = false;
+    for (let attempt = 0; attempt < 2 && !settled; attempt += 1) {
+      let snapshot: Awaited<ReturnType<RuntimeBridgeClient['ticket']>>;
+      try {
+        snapshot = await bridge.ticket(row.upstream_ticket_id);
+      } catch (error) {
         logger.warn(
-          { event: 'admission.recovery_not_claimable', taskId: row.id },
-          'snapshot matched but the reservation was already claimed',
+          {
+            event: 'admission.recovery_unavailable',
+            taskId: row.id,
+            error: bridgeErrorMessage(error),
+          },
+          'could not read the authoritative Bridge snapshot; keeping the reservation',
         );
-      } else {
+        settled = true;
+        break;
+      }
+      const repositoryName = snapshot.base?.repository;
+      const liveAssignment = snapshot.assignmentId;
+      if (
+        snapshot.ticketId !== row.upstream_ticket_id ||
+        !liveAssignment ||
+        snapshot.admission?.leaseId !== row.lease_id ||
+        String(snapshot.admission?.fencingToken) !== String(row.fencing_token) ||
+        // GitHub-imported tickets have no frozen workspace spec, so the snapshot
+        // base (and repository) is null; the connection already binds the repo.
+        (repositoryName !== undefined &&
+          repositoryName !== null &&
+          repositoryName !== repository.fullName) ||
+        (snapshot.state !== 'queued' && snapshot.state !== 'running')
+      ) {
+        await pool.query(
+          `update task_links
+              set stop_evidence = coalesce(stop_evidence, '{}'::jsonb) || $2::jsonb,
+                  version = version + 1, updated_at = now()
+            where id = $1 and state in ('queued', 'running')
+              and coalesce(stop_evidence->>'admissionRecovery', '') is distinct from 'snapshot_mismatch'`,
+          [row.id, JSON.stringify({ admissionRecovery: 'snapshot_mismatch' })],
+        );
+        settled = true;
+        break;
+      }
+      // A claimed reservation on the live Assignment needs no second claim; the
+      // snapshot only has to be consulted again for a re-issued turn. Evidence of
+      // an earlier mismatch is cleared here, but only when it was recorded.
+      if (expectedState === 'claimed' && expectedAssignmentId === liveAssignment) {
         await pool.query(
           `update task_links
               set stop_evidence = stop_evidence - 'admissionRecovery' - 'admissionRecoveryError',
                   version = version + 1, updated_at = now()
-            where id = $1 and state in ('queued', 'running')`,
+            where id = $1
+              and (stop_evidence ? 'admissionRecovery' or stop_evidence ? 'admissionRecoveryError')`,
           [row.id],
         );
+        settled = true;
+        break;
       }
-    } catch (error) {
-      await pool.query(
-        `update task_links
-            set stop_evidence = coalesce(stop_evidence, '{}'::jsonb) || $2::jsonb,
-                version = version + 1, updated_at = now()
-          where id = $1 and state in ('queued', 'running')
-            and (
-              coalesce(stop_evidence->>'admissionRecovery', '') is distinct from 'generation_mismatch'
-              or coalesce(stop_evidence->>'admissionRecoveryError', '') is distinct from $3
-            )`,
-        [
-          row.id,
-          JSON.stringify({
-            admissionRecovery: 'generation_mismatch',
-            admissionRecoveryError: bridgeErrorMessage(error),
-          }),
-          bridgeErrorMessage(error),
-        ],
-      );
+      // After a conflict the reservation was reloaded under its lock. A re-read
+      // that still names a different Assignment than that reload cannot be
+      // ordered by the platform (an Assignment has no runtime timestamp), so it
+      // is left for the next pass instead of being adopted backwards.
+      if (reReadAfterConflict && liveAssignment !== expectedAssignmentId) {
+        logger.warn(
+          {
+            event: 'admission.recovery_conflict_stale',
+            taskId: row.id,
+            expectedAssignmentId,
+            liveAssignment,
+          },
+          'the re-read authoritative record still disagrees with the reservation; leaving it for the next pass',
+        );
+        settled = true;
+        break;
+      }
+      let sourceEventId: string | null = null;
+      if (expectedAssignmentId !== liveAssignment) {
+        const latest = await pool.query<{ source_event_id: string | null }>(
+          `select source_event_id from events
+            where task_id = $1 and source = 'bridge'
+            order by seq desc limit 1`,
+          [row.id],
+        );
+        sourceEventId = latest.rows[0]?.source_event_id ?? null;
+      }
+      try {
+        const claimed = await claimExecution(pool, {
+          repositoryId: repository.id,
+          requestKey: row.requestKey,
+          taskId: row.id,
+          ticketId: row.upstream_ticket_id,
+          assignmentId: liveAssignment,
+          leaseId: row.lease_id,
+          fencingToken: String(row.fencing_token),
+          expectedAssignmentId,
+          authoritative: {
+            ticketId: snapshot.ticketId,
+            assignmentId: liveAssignment,
+            leaseId: row.lease_id,
+            fencingToken: String(row.fencing_token),
+            state: snapshot.state,
+            sourceEventId,
+            sourceCursor,
+            observedAt: new Date().toISOString(),
+          },
+        });
+        if (claimed.conflict) {
+          // Another pass adopted a newer turn while this snapshot was in flight.
+          // Re-read both the reservation and the authoritative record; a second
+          // conflict leaves the row for the next tick instead of guessing.
+          const fresh = await pool.query<{ assignment_id: string; state: string }>(
+            `select assignment_id, state from execution_reservations
+              where repository_id = $1 and request_key = $2`,
+            [repository.id, row.requestKey],
+          );
+          if (!fresh.rows[0]) {
+            settled = true;
+            break;
+          }
+          expectedAssignmentId = fresh.rows[0].assignment_id;
+          expectedState = fresh.rows[0].state;
+          reReadAfterConflict = true;
+          logger.warn(
+            {
+              event: 'admission.recovery_conflict',
+              taskId: row.id,
+              conflict: claimed.conflict,
+              attempt: attempt + 1,
+            },
+            'the reservation moved while the authoritative record was in flight; re-reading it',
+          );
+          continue;
+        }
+        if (claimed.supersededFrom) {
+          logger.info(
+            {
+              event: 'admission.assignment_adopted',
+              taskId: row.id,
+              leaseId: row.lease_id,
+              fromAssignmentId: claimed.supersededFrom,
+              toAssignmentId: liveAssignment,
+            },
+            'adopted the Assignment the runtime re-issued under the current lease',
+          );
+        }
+        if (!claimed.claimed && expectedState === 'reserved') {
+          logger.warn(
+            { event: 'admission.recovery_not_claimable', taskId: row.id },
+            'snapshot matched but the reservation was already claimed',
+          );
+        } else {
+          await pool.query(
+            `update task_links
+                set stop_evidence = stop_evidence - 'admissionRecovery' - 'admissionRecoveryError',
+                    version = version + 1, updated_at = now()
+              where id = $1 and state in ('queued', 'running')`,
+            [row.id],
+          );
+        }
+        settled = true;
+      } catch (error) {
+        await pool.query(
+          `update task_links
+              set stop_evidence = coalesce(stop_evidence, '{}'::jsonb) || $2::jsonb,
+                  version = version + 1, updated_at = now()
+            where id = $1 and state in ('queued', 'running')
+              and (
+                coalesce(stop_evidence->>'admissionRecovery', '') is distinct from 'generation_mismatch'
+                or coalesce(stop_evidence->>'admissionRecoveryError', '') is distinct from $3
+              )`,
+          [
+            row.id,
+            JSON.stringify({
+              admissionRecovery: 'generation_mismatch',
+              admissionRecoveryError: bridgeErrorMessage(error),
+            }),
+            bridgeErrorMessage(error),
+          ],
+        );
+        logger.warn(
+          {
+            event: 'admission.recovery_refused',
+            taskId: row.id,
+            error: bridgeErrorMessage(error),
+          },
+          'kept the reservation because the current generation did not match',
+        );
+        settled = true;
+      }
+    }
+    if (!settled) {
       logger.warn(
-        { event: 'admission.recovery_refused', taskId: row.id, error: bridgeErrorMessage(error) },
-        'kept the reservation because the current generation did not match',
+        { event: 'admission.recovery_conflict_unresolved', taskId: row.id },
+        'the reservation kept moving during recovery; leaving it for the next pass',
       );
     }
   }
