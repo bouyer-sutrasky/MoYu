@@ -42,7 +42,16 @@ import { hostname, tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-import { assertNoSideEffects, classifyRead, classifyWrite, invalidRefFor } from './gh-probe.mjs';
+import {
+  ISSUES_VALIDATION_MESSAGE,
+  PULLS_VALIDATION_MESSAGE,
+  assertListUnchanged,
+  assertNoSideEffects,
+  classifyRead,
+  classifyValidationWrite,
+  classifyWrite,
+  invalidRefFor,
+} from './gh-probe.mjs';
 import {
   HOST_READ_ONLY_PATHS,
   HOST_SECRET_PATHS,
@@ -308,16 +317,7 @@ function ghReadLines(repository, path, jq) {
   return { kind: 'allowed', lines: (result.stdout ?? '').split('\n').filter(Boolean) };
 }
 
-/**
- * Proves write authorization without changing remote state.
- *
- * `POST /git/refs` with a `..` ref name is rejected with 422 before anything is
- * created. The function also reads the ref/PR lists immediately before and after
- * and asserts that nothing carrying the probe nonce appeared. It never falls back
- * to a shared credential: the caller only invokes it when the dedicated gh config
- * exists.
- */
-function ghWriteProbe(repository, nonce) {
+function ghReadRepository(repository) {
   const view = ghApi(repository, [`repos/${repository}`, '--jq', '.default_branch']);
   const viewClass = classifyRead(view);
   if (viewClass.kind !== 'allowed') {
@@ -327,9 +327,23 @@ function ghWriteProbe(repository, nonce) {
       detail: firstLine(view.stderr || view.stdout),
     };
   }
-  const branch = (view.stdout ?? '').trim() || 'main';
+  return { kind: 'allowed', branch: (view.stdout ?? '').trim() || 'main' };
+}
+
+/**
+ * Proves write authorization without changing remote state.
+ *
+ * `POST /git/refs` with a `..` ref name is rejected with 422 before anything is
+ * created. The function also reads the ref/PR lists immediately before and after
+ * and asserts that nothing carrying the probe nonce appeared. It never falls back
+ * to a shared credential: the caller only invokes it when the dedicated gh config
+ * exists.
+ */
+function ghRefsWriteProbe(repository, nonce) {
+  const view = ghReadRepository(repository);
+  if (view.kind !== 'allowed') return view;
   const ref = ghApi(repository, [
-    `repos/${repository}/git/ref/heads/${branch}`,
+    `repos/${repository}/git/ref/heads/${view.branch}`,
     '--jq',
     '.object.sha',
   ]);
@@ -352,13 +366,12 @@ function ghWriteProbe(repository, nonce) {
     };
   }
 
-  const refName = invalidRefFor(nonce);
   const probe = ghApi(repository, [
     '-X',
     'POST',
     `repos/${repository}/git/refs`,
     '-f',
-    `ref=${refName}`,
+    `ref=${invalidRefFor(nonce)}`,
     '-f',
     `sha=${sha}`,
   ]);
@@ -382,11 +395,106 @@ function ghWriteProbe(repository, nonce) {
   };
 }
 
+/**
+ * Issues write probe: omit the required title so GitHub returns exactly
+ * `"title" wasn't supplied.` after checking authorization. No issue is created.
+ */
+function ghIssuesWriteProbe(repository) {
+  const view = ghReadRepository(repository);
+  if (view.kind !== 'allowed') return view;
+  const before = ghReadLines(
+    repository,
+    '/issues?state=all&per_page=100',
+    '.[] | select(.pull_request == null) | .number',
+  );
+  if (before.kind !== 'allowed') {
+    return { kind: 'failed', stage: 'read-issues-before', detail: 'cannot list issues' };
+  }
+  const probe = ghApi(repository, [
+    '-X',
+    'POST',
+    `repos/${repository}/issues`,
+    '-f',
+    'body=m5b isolation scope probe',
+  ]);
+  const writeClass = classifyValidationWrite(probe, ISSUES_VALIDATION_MESSAGE);
+  const after = ghReadLines(
+    repository,
+    '/issues?state=all&per_page=100',
+    '.[] | select(.pull_request == null) | .number',
+  );
+  const effects =
+    after.kind === 'allowed'
+      ? assertListUnchanged(before.lines, after.lines, 'issue')
+      : { ok: false, detail: 'side-effect read-back failed' };
+  return {
+    kind: writeClass.kind,
+    stage: 'write',
+    http: writeClass.http,
+    detail: writeClass.detail ?? redact(firstLine(probe.stderr || probe.stdout)).slice(0, 140),
+    effects,
+  };
+}
+
+/**
+ * Pull-request write probe: omit head and base so GitHub returns exactly
+ * `"base", "head" weren't supplied.` after checking authorization. No PR is
+ * created and no branch is touched.
+ */
+function ghPullsWriteProbe(repository) {
+  const view = ghReadRepository(repository);
+  if (view.kind !== 'allowed') return view;
+  const before = ghReadLines(repository, '/pulls?state=all&per_page=100', '.[].number');
+  if (before.kind !== 'allowed') {
+    return { kind: 'failed', stage: 'read-pulls-before', detail: 'cannot list pull requests' };
+  }
+  const probe = ghApi(repository, [
+    '-X',
+    'POST',
+    `repos/${repository}/pulls`,
+    '-f',
+    'body=m5b isolation scope probe',
+  ]);
+  const writeClass = classifyValidationWrite(probe, PULLS_VALIDATION_MESSAGE);
+  const after = ghReadLines(repository, '/pulls?state=all&per_page=100', '.[].number');
+  const effects =
+    after.kind === 'allowed'
+      ? assertListUnchanged(before.lines, after.lines, 'pull request')
+      : { ok: false, detail: 'side-effect read-back failed' };
+  return {
+    kind: writeClass.kind,
+    stage: 'write',
+    http: writeClass.http,
+    detail: writeClass.detail ?? redact(firstLine(probe.stderr || probe.stdout)).slice(0, 140),
+    effects,
+  };
+}
+
 function scopeStatus(kind, mustBeDenied = false) {
   if (mustBeDenied) return kind === 'denied' ? 'PASS' : kind === 'allowed' ? 'FAIL' : 'INCOMPLETE';
   if (kind === 'allowed') return 'PASS';
   if (kind === 'denied' || kind === 'unexpected-success') return 'FAIL';
   return 'INCOMPLETE';
+}
+
+function recordGhProbe(repository, name, probe, mustBeDenied) {
+  const suffix = mustBeDenied ? ' (must be denied)' : '';
+  record(
+    'scope',
+    `gh-${name}-write:${repository}${suffix}`,
+    scopeStatus(probe.kind, mustBeDenied),
+    `${probe.kind} (stage=${probe.stage}${probe.http ? ` http=${probe.http}` : ''}) — ${probe.detail}`,
+  );
+  record(
+    'scope',
+    `gh-${name}-side-effects:${repository}${suffix}`,
+    probe.effects ? (probe.effects.ok ? 'PASS' : 'FAIL') : mustBeDenied ? 'SKIP' : 'INCOMPLETE',
+    probe.effects
+      ? probe.effects.detail
+      : mustBeDenied
+        ? 'read denied; no write was attempted'
+        : 'side-effect read-back unavailable',
+  );
 }
 
 function scopeProbes(identity) {
@@ -429,21 +537,18 @@ function scopeProbes(identity) {
     }
     if (ghConfigured) {
       const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const gh = ghWriteProbe(repository, nonce);
-      record(
-        'scope',
-        `gh-write-probe:${repository}`,
-        scopeStatus(gh.kind),
-        `${gh.kind} (stage=${gh.stage}${gh.http ? ` http=${gh.http}` : ''}) — ${gh.detail}`,
-      );
-      record(
-        'scope',
-        `gh-side-effects:${repository}`,
-        gh.effects ? (gh.effects.ok ? 'PASS' : 'FAIL') : 'INCOMPLETE',
-        gh.effects ? gh.effects.detail : 'side-effect read-back unavailable',
-      );
+      recordGhProbe(repository, 'refs', ghRefsWriteProbe(repository, nonce), false);
+      recordGhProbe(repository, 'issues', ghIssuesWriteProbe(repository), false);
+      recordGhProbe(repository, 'pulls', ghPullsWriteProbe(repository), false);
     } else {
-      record('scope', `gh-write-probe:${repository}`, 'INCOMPLETE', 'no dedicated gh credential');
+      for (const name of ['refs', 'issues', 'pulls']) {
+        record(
+          'scope',
+          `gh-${name}-write:${repository}`,
+          'INCOMPLETE',
+          'no dedicated gh credential',
+        );
+      }
     }
   }
 
@@ -458,19 +563,9 @@ function scopeProbes(identity) {
   }
   if (ghConfigured) {
     const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const forbiddenGh = ghWriteProbe(forbiddenRepository, nonce);
-    record(
-      'scope',
-      `gh-write-probe:${forbiddenRepository} (must be denied)`,
-      scopeStatus(forbiddenGh.kind, true),
-      `${forbiddenGh.kind} (stage=${forbiddenGh.stage}${forbiddenGh.http ? ` http=${forbiddenGh.http}` : ''}) — ${forbiddenGh.detail}`,
-    );
-    record(
-      'scope',
-      `gh-side-effects:${forbiddenRepository} (must be denied)`,
-      forbiddenGh.effects ? (forbiddenGh.effects.ok ? 'PASS' : 'FAIL') : 'SKIP',
-      forbiddenGh.effects ? forbiddenGh.effects.detail : 'read denied; no write was attempted',
-    );
+    recordGhProbe(forbiddenRepository, 'refs', ghRefsWriteProbe(forbiddenRepository, nonce), true);
+    recordGhProbe(forbiddenRepository, 'issues', ghIssuesWriteProbe(forbiddenRepository), true);
+    recordGhProbe(forbiddenRepository, 'pulls', ghPullsWriteProbe(forbiddenRepository), true);
   }
 }
 

@@ -221,3 +221,32 @@ effects { ok: true, detail: 'refs=11 pulls=12' }
 `--online` 现场输出见 `isolated-env/precheck-online-p2.txt`：探测仓 git 允许 PASS、MoYu 拒绝
 PASS、gh 两项 INCOMPLETE。专用 gh token 仍未配置，因此 `precheck --online` 的专用 token
 现场证据继续标为**待验**，未用共享凭据回退。
+
+## 8. 返修：Issues / Pull requests 写权限分别核验（P2）
+
+非法 ref 只覆盖 Git refs 写入端点。矩阵还使用 Issue 与 PR 操作，因此把写权限核验拆成三个
+互不相同的端点，全部保持无副作用：
+
+| 端点 | 非法请求 | 授权时的精确响应 | 副作用断言 |
+| --- | --- | --- | --- |
+| `POST /git/refs` | ref 含 `..` | 422 `is not a valid ref name` | refs/heads 与 pulls 前后不变 |
+| `POST /issues` | 缺 `title` | 422 `"title" wasn't supplied.` | issue 数前后不变 |
+| `POST /pulls` | 缺 `head`/`base` | 422 `"base", "head" weren't supplied.` | PR 数前后不变 |
+
+分类规则：只有上表端点的精确 422 消息才记为 `allowed`；其他 422 一律 `failed`，401/403/404
+为 `denied`，认证缺失/超时/执行错误分开记录，状态码 0 记为 `unexpected-success` 并 FAIL。
+每个端点探测前后读取对应集合，断言数量不变（`gh-<endpoint>-side-effects:<repo>`）；被拒绝的
+私有仓读取即被拒绝，不发起写请求。
+
+真实 API 逻辑演练（受信身份 root 配置，仅逻辑，不是专用 token 证据）：
+
+```text
+refs_write={"kind":"allowed","http":422}   refs_effects={"ok":true,"detail":"refs=11 pull requests=12"}
+issues_write={"kind":"allowed","http":422}  issues_effects={"ok":true,"detail":"issues=2"}
+pulls_write={"kind":"allowed","http":422}   pulls_effects={"ok":true,"detail":"pull requests=12"}
+```
+
+`--online` 现场输出见 `isolated-env/precheck-online-p3.txt`：探测仓 git PASS、MoYu denied
+PASS、gh refs/issues/pulls 三项 INCOMPLETE。专用 gh token 仍未配置，因此“允许探测仓 /
+拒绝受控私有仓”的专用 token 现场证据继续**待验**；未用共享凭据替代，也未把逻辑演练当成
+作用域证据。

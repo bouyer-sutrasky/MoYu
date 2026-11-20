@@ -2,8 +2,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  ISSUES_VALIDATION_MESSAGE,
+  PULLS_VALIDATION_MESSAGE,
+  assertListUnchanged,
   assertNoSideEffects,
   classifyRead,
+  classifyValidationWrite,
   classifyWrite,
   httpStatus,
   invalidRefFor,
@@ -84,7 +88,7 @@ test('no-side-effect assertion detects refs, pull requests and count changes', (
   const before = { refs: ['refs/heads/main'], pulls: ['agent/a'] };
   assert.deepEqual(assertNoSideEffects(before, before), {
     ok: true,
-    detail: 'refs=1 pulls=1',
+    detail: 'refs=1 pull requests=1',
   });
 
   const newRef = assertNoSideEffects(before, {
@@ -106,5 +110,76 @@ test('no-side-effect assertion detects refs, pull requests and count changes', (
     pulls: [...before.pulls, 'agent/b'],
   });
   assert.equal(countChange.ok, false);
-  assert.match(countChange.detail, /pull count changed/);
+  assert.match(countChange.detail, /pull request count changed/);
+});
+
+const issuesMessage = result({
+  stdout: '{"message":"Invalid request.\n\n"title" wasn\'t supplied.","status":"422"}',
+  stderr: 'gh: Invalid request.\n\n"title" wasn\'t supplied. (HTTP 422)',
+});
+
+const pullsMessage = result({
+  stdout: '{"message":"Invalid request.\n\n"base", "head" weren\'t supplied.","status":"422"}',
+  stderr: 'gh: Invalid request.\n\n"base", "head" weren\'t supplied. (HTTP 422)',
+});
+
+test('issues probe requires the exact missing-title validation', () => {
+  assert.equal(classifyValidationWrite(issuesMessage, ISSUES_VALIDATION_MESSAGE).kind, 'allowed');
+  assert.equal(
+    classifyValidationWrite(
+      result({ stderr: 'gh: Validation Failed (HTTP 422)' }),
+      ISSUES_VALIDATION_MESSAGE,
+    ).kind,
+    'failed',
+  );
+  assert.equal(
+    classifyValidationWrite(
+      result({ stderr: 'gh: Resource not accessible (HTTP 403)' }),
+      ISSUES_VALIDATION_MESSAGE,
+    ).kind,
+    'denied',
+  );
+  assert.equal(
+    classifyValidationWrite(result({ timedOut: true }), ISSUES_VALIDATION_MESSAGE).kind,
+    'timeout',
+  );
+  assert.equal(
+    classifyValidationWrite(result({ status: 0 }), ISSUES_VALIDATION_MESSAGE).kind,
+    'unexpected-success',
+  );
+});
+
+test('pull-request probe requires the exact missing head/base validation', () => {
+  assert.equal(classifyValidationWrite(pullsMessage, PULLS_VALIDATION_MESSAGE).kind, 'allowed');
+  assert.equal(
+    classifyValidationWrite(
+      result({ stderr: 'gh: Validation Failed (HTTP 422)' }),
+      PULLS_VALIDATION_MESSAGE,
+    ).kind,
+    'failed',
+  );
+  assert.equal(
+    classifyValidationWrite(
+      result({ stderr: 'gh: Not Found (HTTP 404)' }),
+      PULLS_VALIDATION_MESSAGE,
+    ).kind,
+    'denied',
+  );
+  assert.equal(
+    classifyValidationWrite(result({ status: 0 }), PULLS_VALIDATION_MESSAGE).kind,
+    'unexpected-success',
+  );
+});
+
+test('collection assertion detects added issues and pull requests', () => {
+  assert.deepEqual(assertListUnchanged(['1', '2'], ['1', '2'], 'issue'), {
+    ok: true,
+    detail: 'issues=2',
+  });
+  const added = assertListUnchanged(['1', '2'], ['1', '2', '3'], 'issue');
+  assert.equal(added.ok, false);
+  assert.match(added.detail, /issue count changed/);
+  const addedPull = assertListUnchanged(['1'], ['1', '2'], 'pull request');
+  assert.equal(addedPull.ok, false);
+  assert.match(addedPull.detail, /pull request count changed/);
 });

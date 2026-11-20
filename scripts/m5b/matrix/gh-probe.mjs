@@ -1,22 +1,29 @@
 /**
- * Side-effect-free GitHub write-authorization probe for the M5-B matrix precheck.
+ * Side-effect-free GitHub write-authorization probes for the M5-B matrix precheck.
  *
  * A write can only be proven with an endpoint that requires write permission.
- * The probe posts to `POST /repos/{owner}/{repo}/git/refs` with a ref name that
- * git can never accept (`..` is forbidden in a ref name). GitHub validates the
- * request before creating anything:
+ * Each probe posts a request that GitHub must reject with a *specific* validation
+ * error before creating anything:
  *
- *   - an authorized credential gets HTTP 422 "is not a valid ref name" and no
- *     ref or pull request is created;
- *   - a credential without write access gets HTTP 401/403/404 before validation.
+ *   - Git refs: `POST /repos/{owner}/{repo}/git/refs` with a ref name containing
+ *     `..`, which git can never accept (`is not a valid ref name`);
+ *   - Issues: `POST /repos/{owner}/{repo}/issues` without a title
+ *     (`"title" wasn't supplied`);
+ *   - Pull requests: `POST /repos/{owner}/{repo}/pulls` without head/base
+ *     (`"base", "head" weren't supplied`).
  *
- * The classifier therefore only treats the exact validation message as
- * "allowed"; any other 422 or generic failure stays a failure. Callers assert
- * separately that the repository's refs and pull requests did not gain an entry
- * carrying the probe nonce.
+ * An authorized credential gets HTTP 422 with exactly that message; a credential
+ * without the scope gets 401/403/404 before validation. Only the endpoint's exact
+ * validation message counts as "allowed"; every other 422 stays a failure. A
+ * zero exit would mean something was created and is reported as
+ * `unexpected-success`. Callers additionally read the corresponding collection
+ * before and after and assert that nothing was added.
  */
 
 export const INVALID_REF_MESSAGE = /is not a valid ref name/i;
+export const ISSUES_VALIDATION_MESSAGE = /"title" wasn't supplied|title.*wasn't supplied/i;
+export const PULLS_VALIDATION_MESSAGE =
+  /"base",\s*"head" weren't supplied|"head" wasn't supplied|"base" wasn't supplied/i;
 export const AUTH_MISSING_MESSAGE =
   /gh auth login|not logged in|no oauth token|authentication required|To get started with GitHub CLI/i;
 
@@ -62,40 +69,51 @@ export function classifyRead(result) {
 }
 
 /**
- * Classifies the invalid-ref write. A zero exit would mean the ref was created,
- * which must never happen for this name; it is reported as `unexpected-success`
- * so the caller can fail the run instead of treating it as authorization.
+ * Classifies a write whose invalid payload must produce one exact validation
+ * message. A generic 422 is a failure, never authorization.
  */
-export function classifyWrite(result) {
+export function classifyValidationWrite(result, allowedMessage) {
   const early = baseKind(result);
   if (early) return { kind: early, http: null };
   const status = httpStatus(result);
   const text = `${result?.stdout ?? ''}\n${result?.stderr ?? ''}`;
   if (result?.status === 0) return { kind: 'unexpected-success', http: status };
-  if (status === 422 && INVALID_REF_MESSAGE.test(text)) return { kind: 'allowed', http: status };
-  if (status === 422)
-    return { kind: 'failed', http: status, detail: '422 without the ref-name marker' };
+  if (status === 422 && allowedMessage.test(text)) return { kind: 'allowed', http: status };
+  if (status === 422) {
+    return { kind: 'failed', http: status, detail: '422 without the expected validation marker' };
+  }
   return { kind: failureKind(result), http: status };
 }
 
+/** Git-refs probe classification (kept as the named endpoint classifier). */
+export function classifyWrite(result) {
+  return classifyValidationWrite(result, INVALID_REF_MESSAGE);
+}
+
 /**
- * Compares the refs and pull requests observed before and after the probe.
- * `refs` is the list of ref names; `pulls` the list of pull-request numbers.
+ * Compares one collection before and after a probe. `items` are strings (ref
+ * names, issue numbers, pull-request numbers); the probe nonce must not appear
+ * and the count must not change.
  */
-export function assertNoSideEffects(before, after) {
+export function assertListUnchanged(before, after, label) {
   const problems = [];
-  if (after.refs.some(refNonce)) problems.push('a ref with the probe nonce exists');
-  const pullHead = (pull) => (typeof pull === 'string' ? pull : (pull?.head?.ref ?? ''));
-  if (after.pulls.some((pull) => refNonce(pullHead(pull)))) {
-    problems.push('a pull request with the probe nonce exists');
-  }
-  if (after.refs.length !== before.refs.length) {
-    problems.push(`ref count changed ${before.refs.length}->${after.refs.length}`);
-  }
-  if (after.pulls.length !== before.pulls.length) {
-    problems.push(`pull count changed ${before.pulls.length}->${after.pulls.length}`);
+  if (after.some((item) => refNonce(item))) problems.push(`a ${label} with the probe nonce exists`);
+  if (after.length !== before.length) {
+    problems.push(`${label} count changed ${before.length}->${after.length}`);
   }
   return problems.length === 0
-    ? { ok: true, detail: `refs=${after.refs.length} pulls=${after.pulls.length}` }
+    ? { ok: true, detail: `${label}s=${after.length}` }
     : { ok: false, detail: problems.join('; ') };
+}
+
+/** Ref probe: refs and pull requests must both stay unchanged. */
+export function assertNoSideEffects(before, after) {
+  const refs = assertListUnchanged(before.refs, after.refs, 'ref');
+  const pulls = assertListUnchanged(before.pulls, after.pulls, 'pull request');
+  return refs.ok && pulls.ok
+    ? { ok: true, detail: `${refs.detail} ${pulls.detail}` }
+    : {
+        ok: false,
+        detail: [...(refs.ok ? [] : [refs.detail]), ...(pulls.ok ? [] : [pulls.detail])].join('; '),
+      };
 }

@@ -1,11 +1,13 @@
-# gh write-probe classifier exercised against the real GitHub API
+# gh write-probe classifiers exercised against the real GitHub API
 # NOTE: this run used the trusted identity's root gh config only to exercise the
-# classifier and the no-side-effect assertion. It is NOT the dedicated-token
+# classifiers and the no-side-effect assertions. It is NOT the dedicated-token
 # scope evidence, which stays pending until the owner issues that token.
-recorded=2026-11-20T06:55:00Z
+recorded=2026-11-20T07:47:00Z
 repo=Bouyer12/m5a-beta-adf10ad9
-read_repo { kind: 'allowed', http: null } main
-head_sha_len 40
-ref refs/heads/__m5b_scope_probe__live1795157640710..__
-write { kind: 'allowed', http: 422 }
-effects { ok: true, detail: 'refs=11 pulls=12' }
+read={"kind":"allowed","http":null}
+refs_write={"kind":"allowed","http":422}
+refs_effects={"ok":true,"detail":"refs=11 pull requests=12"}
+issues_write={"kind":"allowed","http":422}
+issues_effects={"ok":true,"detail":"issues=2"}
+pulls_write={"kind":"allowed","http":422}
+pulls_effects={"ok":true,"detail":"pull requests=12"}
