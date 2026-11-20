@@ -18,7 +18,7 @@ import {
   pauseRecheckBindingProblem,
   pauseRecheckRequested,
 } from './pause-evidence';
-import { acquireExecutionLeaseOn } from './leases';
+import { acquireExecutionLeaseOn, releaseTaskLeaseOn } from './leases';
 
 /** Last projection branch per Bridge event, for lifecycle diagnostics/tests. */
 export const projectionBranches = new Map<string, string>();
@@ -775,6 +775,15 @@ async function applyPausedEvent(
         operationId,
       ],
     );
+  }
+  // A proven stop event is a terminal settlement too: release the generation in
+  // this same transaction, so a resume issued right after "stopped" never queues
+  // behind a lease that only the later operation poll would free.
+  if (proven) {
+    await releaseTaskLeaseOn(client, repository.id, task.id, 'proven pause event', {
+      expectedLeaseId: task.runtimeLeaseId ?? undefined,
+      proof: evidence,
+    });
   }
   const next = await taskByTicket(client, ticketId, repository.id);
   if (next) {

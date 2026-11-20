@@ -157,7 +157,7 @@ down() {
   fi
   # Wait for the loopback ports to be released before the next start.
   for _ in $(seq 1 40); do
-    ss -ltn 2>/dev/null | grep -qE '127\.0\.0\.1:(3403|3404) ' || break
+    ss -ltn 2>/dev/null | grep -qE '127\.0\.0\.1:(3503|3504) ' || break
     sleep 0.25
   done
   # A leftover unit keeps the slice alive; stop the slice only after its members.
@@ -332,7 +332,7 @@ write_instances_config() {
   # can no longer prove its descendants, which leaves the instance serving but
   # unverified and admission waiting on `runtime`.
   local extra=${M5B_MATRIX_EXTRA_REPOS:-}
-  local entries="    { \"repository\": \"$M5B_MATRIX_REPOSITORY\", \"profile\": \"$M5B_MATRIX_PROFILE\", \"dshPort\": 3404, \"bridgePort\": 3403 }"
+  local entries="    { \"repository\": \"$M5B_MATRIX_REPOSITORY\", \"profile\": \"$M5B_MATRIX_PROFILE\", \"dshPort\": 3504, \"bridgePort\": 3503 }"
   local pair repo bridge index=0 profile
   if [[ -n $extra ]]; then
     local IFS=','
@@ -364,7 +364,7 @@ JSON
 
 stage_dsh_home() {
   local staged=${1:-$M5B_MATRIX_PROFILE}
-  local port=${2:-3404}
+  local port=${2:-3504}
   note "staging the runtime profile $staged (webserver port $port) into a matrix-owned harness home"
   stage_profile_tree "$staged" "$port" "$M5B_MATRIX_PROFILE_SOURCE" "$M5B_MATRIX_UPSTREAM_BUILD" \
     "$M5B_MATRIX_STAGE" "$M5B_MATRIX_DSH_HOME" "$M5B_MATRIX_USER" "$M5B_MATRIX_GROUP" \
@@ -415,8 +415,8 @@ start_supervisor() {
     --setenv=GITHUB_CONFIG_DIR="$M5B_MATRIX_GH_CONFIG_DIR" \
     --setenv=M5B_MATRIX_GH_HOME="$M5B_MATRIX_GH_HOME" \
     --setenv=EXECUTOR_MODEL=local-test/local-test \
-    ${M5B_MATRIX_TEST_HOOKS:+--setenv=MOYU_TEST_HOOKS=1} \
-    ${M5B_MATRIX_TEST_HOOKS:+--setenv=MOYU_TEST_PAUSE_LAUNCH_MS=${M5B_MATRIX_TEST_PAUSE_LAUNCH_MS:-1}} \
+    $([[ ${M5B_MATRIX_TEST_HOOKS:-0} == 1 ]] && printf '%s' '--setenv=MOYU_TEST_HOOKS=1') \
+    $([[ ${M5B_MATRIX_TEST_HOOKS:-0} == 1 ]] && printf '%s' "--setenv=MOYU_TEST_PAUSE_LAUNCH_MS=${M5B_MATRIX_TEST_PAUSE_LAUNCH_MS:-1}") \
     --working-directory="$M5B_MATRIX_ROOT" \
     /usr/bin/node apps/supervisor/dist/main.js >/dev/null \
     || fail "could not start the supervisor"
@@ -468,7 +468,7 @@ start_runtime() {
   # probe can be a reset window. Require three consecutive answers instead.
   local streak=0 health=''
   for _ in $(seq 1 240); do
-    health=$(curl -fsS -m 2 "http://127.0.0.1:3403/healthz" 2>/dev/null || true)
+    health=$(curl -fsS -m 2 "http://127.0.0.1:3503/healthz" 2>/dev/null || true)
     if [[ $health == *'"ok":true'* ]]; then
       streak=$(( streak + 1 ))
       (( streak >= 3 )) && break
