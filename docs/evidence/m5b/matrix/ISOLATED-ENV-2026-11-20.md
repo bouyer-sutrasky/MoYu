@@ -191,3 +191,33 @@ PASS: host sentinel content and metadata are unchanged after both rounds
 ```text
 （见 docs/evidence/m5b/matrix/isolated-env/artifacts.txt）
 ```
+
+## 7. 返修：无副作用的 gh 写权限探测（P2）
+
+返修前 `precheck.mjs` 用固定假分支 `POST /pulls`：若该分支恰好存在且满足条件，预检可能真的
+创建 PR；`42x`/`invalid` 的宽泛匹配也会把其他失败当成“写权限通过”。
+
+现改为 `POST /repos/<repo>/git/refs`，ref 名包含 `..`（git 永远不接受），并附加 nonce：
+
+- 仅当 **HTTP 422 且消息为 `is not a valid ref name`** 才记为 `allowed`；其他 422 记为
+  `failed`，401/403/404 记为 `denied`，认证缺失记为 `missing`，超时/执行错误/其他失败分开记录；
+- 状态码 0（意外创建）记为 `unexpected-success` 并判 FAIL，绝不当作授权通过；
+- 探测前后分别读取 `refs/heads` 与 `pulls?state=all` 的 head ref，断言 nonce 未出现且数量不变
+  （`gh-side-effects:<repo>`）；被拒绝的私有仓读取即被拒绝，不发起写请求，标为 SKIP；
+- 单元测试 `scripts/m5b/matrix/gh-probe.test.mjs` 6 例，覆盖 allowed/denied/missing/timeout/
+  exec-error/其他 422/意外成功/副作用断言。
+
+用真实 API 演练了分类器和副作用断言（仅逻辑演练，使用受信身份的 root 配置，不是专用 token
+作用域证据）：
+
+```text
+write { kind: 'allowed', http: 422 }
+effects { ok: true, detail: 'refs=11 pulls=12' }
+```
+
+另外修正了 deploy key 被拒绝时的文本分类：`ERROR: Permission to <repo>.git denied to deploy key`
+此前落入 `failed`，现在归为 `denied`，因此 MoYu 的负向 git 探测显示 PASS 而不是 INCOMPLETE。
+
+`--online` 现场输出见 `isolated-env/precheck-online-p2.txt`：探测仓 git 允许 PASS、MoYu 拒绝
+PASS、gh 两项 INCOMPLETE。专用 gh token 仍未配置，因此 `precheck --online` 的专用 token
+现场证据继续标为**待验**，未用共享凭据回退。

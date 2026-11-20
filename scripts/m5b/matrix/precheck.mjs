@@ -12,12 +12,15 @@
  *     is stale privileged state left from an earlier layout?
  *
  * Scope probes do not change remote state: the SSH key is checked with
- * `git push --dry-run` (no refs are updated), and the gh token with a GitHub
- * write endpoint armed with an invalid body (missing head branch), which the
- * server rejects with 422 without creating anything if the token is allowed,
- * and with 403/404 if it is not. The result therefore distinguishes "allowed",
- * "denied", "missing credential", "execution error" and "timeout" instead of
- * treating every non-zero exit as a denial.
+ * `git push --dry-run` (no refs are updated), and the gh token with a write
+ * request whose ref name (`..`) can never be valid. An authorized token gets a
+ * 422 "is not a valid ref name" validation response and GitHub creates nothing;
+ * an unauthorized one gets 401/403/404 before validation. Only that exact
+ * validation message counts as authorization, and the precheck additionally
+ * asserts that no ref or pull request carrying the probe nonce appeared. The
+ * result distinguishes "allowed", "denied", "missing credential",
+ * "execution error", "timeout" and "other failure" instead of treating every
+ * non-zero exit as a denial.
  *
  * `--gate` runs only the credential/scope gate that `stack.sh up` calls before
  * starting a unit. The script never writes host configuration and never prints
@@ -39,6 +42,7 @@ import { hostname, tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
+import { assertNoSideEffects, classifyRead, classifyWrite, invalidRefFor } from './gh-probe.mjs';
 import {
   HOST_READ_ONLY_PATHS,
   HOST_SECRET_PATHS,
@@ -140,7 +144,7 @@ function classify(result) {
   if (result.status === 0) return 'allowed';
   const text = `${result.stdout}\n${result.stderr}`;
   if (
-    /Permission denied|could not read Username|Authentication failed|Repository not found|not found|HTTP 40[13]|Resource not accessible|must have push|gh auth login/i.test(
+    /Permission denied|Permission to .* denied|denied to deploy key|could not read Username|Authentication failed|Repository not found|not found|HTTP 40[13]|Resource not accessible|must have push|gh auth login/i.test(
       text,
     )
   ) {
@@ -287,37 +291,102 @@ function gitWriteProbe(repository) {
   }
 }
 
-function ghWriteProbe(repository) {
-  const base = ['env', `HOME=${matrixHome}`, `GH_CONFIG_DIR=${ghConfigDir}`, 'gh', 'api'];
-  const view = runAsMatrix([...base, `repos/${repository}`, '--jq', '.default_branch']);
-  const viewKind = classify(view);
-  if (viewKind !== 'allowed') {
-    return { kind: viewKind, detail: firstLine(view.stderr || view.stdout) };
+function ghApi(repository, args) {
+  return runAsMatrix([
+    'env',
+    `HOME=${matrixHome}`,
+    `GH_CONFIG_DIR=${ghConfigDir}`,
+    'gh',
+    'api',
+    ...args,
+  ]);
+}
+
+function ghReadLines(repository, path, jq) {
+  const result = ghApi(repository, [`repos/${repository}${path}`, '--jq', jq]);
+  if (result.status !== 0) return { kind: classifyRead(result).kind, lines: [] };
+  return { kind: 'allowed', lines: (result.stdout ?? '').split('\n').filter(Boolean) };
+}
+
+/**
+ * Proves write authorization without changing remote state.
+ *
+ * `POST /git/refs` with a `..` ref name is rejected with 422 before anything is
+ * created. The function also reads the ref/PR lists immediately before and after
+ * and asserts that nothing carrying the probe nonce appeared. It never falls back
+ * to a shared credential: the caller only invokes it when the dedicated gh config
+ * exists.
+ */
+function ghWriteProbe(repository, nonce) {
+  const view = ghApi(repository, [`repos/${repository}`, '--jq', '.default_branch']);
+  const viewClass = classifyRead(view);
+  if (viewClass.kind !== 'allowed') {
+    return {
+      kind: viewClass.kind,
+      stage: 'read-repo',
+      detail: firstLine(view.stderr || view.stdout),
+    };
   }
   const branch = (view.stdout ?? '').trim() || 'main';
-  // Deliberately invalid head branch: an authorized token gets a validation
-  // (422) response and no pull request is created; an unauthorized one gets
-  // 403/404. This is the only way to prove write authorization without state.
-  const probe = runAsMatrix([
-    ...base,
+  const ref = ghApi(repository, [
+    `repos/${repository}/git/ref/heads/${branch}`,
+    '--jq',
+    '.object.sha',
+  ]);
+  const refClass = classifyRead(ref);
+  if (refClass.kind !== 'allowed') {
+    return { kind: refClass.kind, stage: 'read-head', detail: firstLine(ref.stderr || ref.stdout) };
+  }
+  const sha = (ref.stdout ?? '').trim();
+  if (!/^[0-9a-f]{7,64}$/i.test(sha)) {
+    return { kind: 'failed', stage: 'read-head', detail: 'the default branch head is not a SHA' };
+  }
+
+  const pullsBefore = ghReadLines(repository, '/pulls?state=all&per_page=100', '.[].head.ref');
+  const refsBefore = ghReadLines(repository, '/git/refs/heads', '.[].ref');
+  if (pullsBefore.kind !== 'allowed' || refsBefore.kind !== 'allowed') {
+    return {
+      kind: 'failed',
+      stage: 'read-side-effects-before',
+      detail: `pulls=${pullsBefore.kind} refs=${refsBefore.kind}`,
+    };
+  }
+
+  const refName = invalidRefFor(nonce);
+  const probe = ghApi(repository, [
     '-X',
     'POST',
-    `repos/${repository}/pulls`,
+    `repos/${repository}/git/refs`,
     '-f',
-    'title=m5b-isolation-scope-probe',
+    `ref=${refName}`,
     '-f',
-    'head=__m5b_scope_probe_missing_branch__',
-    '-f',
-    `base=${branch}`,
+    `sha=${sha}`,
   ]);
-  if (probe.status === 0) {
-    return { kind: 'created', detail: 'the write probe unexpectedly succeeded' };
+  const writeClass = classifyWrite(probe);
+
+  const pullsAfter = ghReadLines(repository, '/pulls?state=all&per_page=100', '.[].head.ref');
+  const refsAfter = ghReadLines(repository, '/git/refs/heads', '.[].ref');
+  let effects = { ok: false, detail: 'side-effect read-back failed' };
+  if (pullsAfter.kind === 'allowed' && refsAfter.kind === 'allowed') {
+    effects = assertNoSideEffects(
+      { refs: refsBefore.lines, pulls: pullsBefore.lines },
+      { refs: refsAfter.lines, pulls: pullsAfter.lines },
+    );
   }
-  const text = `${probe.stdout}\n${probe.stderr}`;
-  if (/HTTP 42[0-9]|Validation Failed|no commits between|invalid/i.test(text)) {
-    return { kind: 'allowed', detail: 'write authorization confirmed by a validation response' };
-  }
-  return { kind: classify(probe), detail: firstLine(text) };
+  return {
+    kind: writeClass.kind,
+    stage: 'write',
+    http: writeClass.http,
+    detail: writeClass.detail ?? redact(firstLine(probe.stderr || probe.stdout)).slice(0, 140),
+    effects,
+  };
+}
+
+function scopeStatus(kind, mustBeDenied = false) {
+  if (mustBeDenied) return kind === 'denied' ? 'PASS' : kind === 'allowed' ? 'FAIL' : 'INCOMPLETE';
+  if (kind === 'allowed') return 'PASS';
+  if (kind === 'denied' || kind === 'unexpected-success') return 'FAIL';
+  return 'INCOMPLETE';
 }
 
 function scopeProbes(identity) {
@@ -334,49 +403,75 @@ function scopeProbes(identity) {
     existsSync(join(matrixHome, '.ssh', 'probe_deploy')) &&
     existsSync(join(matrixHome, '.ssh', 'config'));
   const ghConfigured = existsSync(join(ghConfigDir, 'hosts.yml'));
-  if (!sshInstalled || !ghConfigured) {
+  if (!sshInstalled) {
+    record('scope', 'ssh-scope', 'INCOMPLETE', 'the dedicated probe key is not installed');
+  }
+  if (!ghConfigured) {
     record(
       'scope',
-      'online-probes',
+      'gh-scope',
       'INCOMPLETE',
-      `dedicated probe credentials are incomplete (ssh_installed=${sshInstalled}, gh_config=${ghConfigured}); refusing to probe with shared credentials`,
+      `the dedicated gh configuration is missing: ${ghConfigDir} (shared credentials are never used)`,
     );
-    return;
   }
+
   for (const repository of probeRepositories) {
-    const git = gitWriteProbe(repository);
+    if (sshInstalled) {
+      const git = gitWriteProbe(repository);
+      record(
+        'scope',
+        `git-push-dry-run:${repository}`,
+        git.kind === 'allowed' ? 'PASS' : git.kind === 'denied' ? 'FAIL' : 'INCOMPLETE',
+        `${git.kind} — ${git.detail}`,
+      );
+    } else {
+      record('scope', `git-push-dry-run:${repository}`, 'INCOMPLETE', 'no dedicated key');
+    }
+    if (ghConfigured) {
+      const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const gh = ghWriteProbe(repository, nonce);
+      record(
+        'scope',
+        `gh-write-probe:${repository}`,
+        scopeStatus(gh.kind),
+        `${gh.kind} (stage=${gh.stage}${gh.http ? ` http=${gh.http}` : ''}) — ${gh.detail}`,
+      );
+      record(
+        'scope',
+        `gh-side-effects:${repository}`,
+        gh.effects ? (gh.effects.ok ? 'PASS' : 'FAIL') : 'INCOMPLETE',
+        gh.effects ? gh.effects.detail : 'side-effect read-back unavailable',
+      );
+    } else {
+      record('scope', `gh-write-probe:${repository}`, 'INCOMPLETE', 'no dedicated gh credential');
+    }
+  }
+
+  if (sshInstalled) {
+    const forbiddenGit = gitWriteProbe(forbiddenRepository);
     record(
       'scope',
-      `git-push-dry-run:${repository}`,
-      git.kind === 'allowed' ? 'PASS' : git.kind === 'denied' ? 'FAIL' : 'INCOMPLETE',
-      `${git.kind} — ${git.detail}`,
-    );
-    const gh = ghWriteProbe(repository);
-    record(
-      'scope',
-      `gh-write-probe:${repository}`,
-      gh.kind === 'allowed' ? 'PASS' : gh.kind === 'denied' ? 'FAIL' : 'INCOMPLETE',
-      `${gh.kind} — ${gh.detail}`,
+      `git-push-dry-run:${forbiddenRepository} (must be denied)`,
+      scopeStatus(forbiddenGit.kind, true),
+      `${forbiddenGit.kind} — ${forbiddenGit.detail}`,
     );
   }
-  const forbiddenGit = gitWriteProbe(forbiddenRepository);
-  record(
-    'scope',
-    `git-push-dry-run:${forbiddenRepository} (must be denied)`,
-    forbiddenGit.kind === 'denied'
-      ? 'PASS'
-      : forbiddenGit.kind === 'allowed'
-        ? 'FAIL'
-        : 'INCOMPLETE',
-    `${forbiddenGit.kind} — ${forbiddenGit.detail}`,
-  );
-  const forbiddenGh = ghWriteProbe(forbiddenRepository);
-  record(
-    'scope',
-    `gh-write-probe:${forbiddenRepository} (must be denied)`,
-    forbiddenGh.kind === 'denied' ? 'PASS' : forbiddenGh.kind === 'allowed' ? 'FAIL' : 'INCOMPLETE',
-    `${forbiddenGh.kind} — ${forbiddenGh.detail}`,
-  );
+  if (ghConfigured) {
+    const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const forbiddenGh = ghWriteProbe(forbiddenRepository, nonce);
+    record(
+      'scope',
+      `gh-write-probe:${forbiddenRepository} (must be denied)`,
+      scopeStatus(forbiddenGh.kind, true),
+      `${forbiddenGh.kind} (stage=${forbiddenGh.stage}${forbiddenGh.http ? ` http=${forbiddenGh.http}` : ''}) — ${forbiddenGh.detail}`,
+    );
+    record(
+      'scope',
+      `gh-side-effects:${forbiddenRepository} (must be denied)`,
+      forbiddenGh.effects ? (forbiddenGh.effects.ok ? 'PASS' : 'FAIL') : 'SKIP',
+      forbiddenGh.effects ? forbiddenGh.effects.detail : 'read denied; no write was attempted',
+    );
+  }
 }
 
 function layoutAudit(identity) {
