@@ -107,3 +107,13 @@ $ sha256sum apps/dispatcher/dist/main.js
 - 代码回退：revert 本 PR 的提交，重新部署上一版 dispatcher 产物。
 - 数据回退：无 schema 迁移；已结清的租约为 `released`、预留为 `abandoned`，恢复旧版本不会自动复用这些代次，需按既有租约恢复流程处理。
 - 运行中服务：本 PR 未改部署单元、端口或 systemd 配置。
+
+## 对齐 main 后的隔离现场（2026-11-24 UTC）
+
+- 基线 `main@24de84534557f04f5ad4576279b7a317b5e78f21`，现场代码 `16f80ec475f1e700a70445718ec4afb29810bdf3`。
+- `pnpm check`、`pnpm build` 均退出 0。GitHub Actions [45312500347](https://github.com/bouyer-sutrasky/MoYu/actions/runs/45312500347) 的 check 与真实 PostgreSQL integration 均通过。
+- dispatcher SHA-256 `772e3e37b4bc42302f6d1ba821e84b9b9ae2d3a1cf8b53da07d750d035ba9b1a`。先用默认 runtime `64ce5c5aeb6d0671a195ee5aad66c941a641c29919f1a7603fe64cd0b288df6f` 验拒绝与重放。返修阶段改用包含 0029 报告归属字段的制品 `f37ecf5ebc2411057c5b0de92adde33bc95ad9b408346c6e5ffc164ffcf52f23`。旧制品缺少 `report.assignmentId`，只交接与更新 PR，正确保留了通知。
+- 用 `scripts/m5b/matrix/stack.sh up` 启动 #92 隔离栈。在线门禁报告 `host_boundary=clean` 和 `verdict=clean`，包括专用探测凭据和私有负对照仓库。场景通过 `live.mjs new-task` 从真实 API 进入，loopback provider 依次调用 runtime 的 `orchestrator_route` 的 `ignore`、`accept` 和 `attach`，Bridge 生成实际回执，dispatcher 正常消费。
+- 普通拒绝任务 `da99e0ee-aad1-4d8e-b6dc-6ac2c83d86d2` 为 `not_accepted`；旧租约 `21c129ec-5ebe-4fd6-9dc3-29e1977e3b3f` 在 TTL 前以 `admission_ignored` 释放。后续任务 `44839cd1-4994-47f3-a23f-5d8fc6a116d3` 在旧 TTL 前取得更高 fence 的租约 `bd6e3560-74ca-4a63-8d56-877300ed0752` 并进入 `running`。
+- 在隔离 PostgreSQL 将 `runtime_cursors.cursor` 退到真实 `decision.ignored` 的前一条，让 dispatcher 重读 Bridge。游标追上原位置后，旧租约仍为 released、只有一条 released 事件，新租约仍为 active，代次和 TTL 断言保持通过。
+- 真实返修源会话 `86ce224f-56c5-4231-824a-5ba7609b1863` 交接到 Ticket `f984f699eab58672c53aa597dc072173`。worker 通过真实 Git push 更新同一张 [测试 PR #19](https://github.com/Bouyer12/m5a-beta-adf10ad9/pull/19)，head 从 `c001961879c35b43600ddfdde8a750e982331a35` 更新为 `016bfaf713f932eef91e256476e2de442daa1e7a`。目标保持 `awaiting_review`，源任务的 routingState 为 `handed_off`。按源会话查询包含「已转交的返修已完成」和「PR #19」的出站消息，第一次和后续轮询均为 1 条。
