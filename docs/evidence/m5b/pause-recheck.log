@@ -9,9 +9,7 @@
 - 单元与集成层面全部通过；补丁 `0032-pause-recheck.patch` 顺序应用、类型检查、构建与 54 个定向运行时用例均通过。
 - **Web 与强制超时现场已跑通**（§7、§8）：真实隔离栈、真实 Bridge、真实租约与 worker Session；强制超时路径
   经「占位 → 再次核对 → 原子结清 → 一次 resume → 重复 resume 拒绝」11 项断言全部通过。
-- **独立 GitHub 身份入口仍未跑**：所有者签发的专用探测 token 属于 `Bouyer12`，与 agent 自身账号相同；上游
-  Source 的 `sameName` 会过滤自己的评论，形成不了入口事件。需要一个非 agent 的人工身份发一条 @ 提及（§9）。
-  在此之前本单不宣称双入口验收完成，也不应据此合并。
+- **独立 GitHub 身份入口已补验**：在隔离栈用仓库评论轮询重读 `sutrasky` 的真实提及，验证接单、暂停与恢复（§9）。
 
 ## 2. 制品与哈希
 
@@ -255,28 +253,22 @@ script_artifact=e2dbc3a0b87cf302d9a499371215d60fd2fe4eff1416d3ad1326535ee2eee059
 `main`（#103）并把本补丁顺延为 0032，生成 head `5637654`。合并后的组合构建（0001–0032，`ff463149`）通过 54 个
 定向运行时用例，CI 在该 head 上 2/2 通过；行为代码未因合并改变。
 
-## 9. 现场依赖与剩余动作
+## 9. 独立 GitHub 身份入口补验（2026-11-24 UTC）
 
-依赖状态（2026-11-20 复核）：
+基线 PR head 为 `d13f25e058407cf4e2bba8cb1b6623e9debdf995`。使用 #92 的隔离栈，端口 3503/3504、数据库端口 55436。专用探测凭据的 GitHub 通知接口返回 HTTP 403。用隔离实例面板启用 GitHub 仓库评论轮询，将评论游标设到 2026-11-20T15:39:08Z。下一轮从 GitHub 读取 [sutrasky 原始提及](https://github.com/Bouyer12/m5a-beta-adf10ad9/pull/14#issuecomment-7043675954)，由真实 Source、Bridge 和 dispatcher 接单。游标调整仅用于重读既有评论。
 
-- `#92` 的隔离环境已合流（PR #100，2026-11-20T11:31:09Z）；专用探测凭据门禁 `precheck.mjs --gate --online` 通过。
-- `#94` 的 cgroup/进程归属修复已合流（PR #102，2026-11-20T12:38:06Z）。现场强制超时的 runtime 证据包含其 cgroup；
-  本轮没有对 #94 的 cgroup 归属再做独立断言，按已合流的联验路径记录。
-- 旧 PR #55 仍未合并；其文档内容已并入本轮 §2.3。
-
-现场结果：Web（§7）10/10、强制超时→核对→恢复（§8）11/11，均 exit 0。剩余唯一一项是**独立 GitHub 身份入口**：
-
-- 所有者配置的探测 token 属于 `Bouyer12`（`gh api user` 返回 Bouyer12），与 agent 自身账号相同；
-- 上游 GitHub Source 用 `sameName` 过滤 agent 自己的评论，所以这个 token 发出的 `@Bouyer12` 不会形成入口事件；
-- 需要一个非 agent 的 GitHub 身份（例如所有者本人）在探测仓 `Bouyer12/m5a-beta-adf10ad9` 的一个 issue/PR 上发一条
-  @ agent 的提及，并告知 issue/PR 编号。脚本会校验 `M5B_MATRIX_PROBE_LOGIN` 与 agent login 不同：
-
-```bash
-M5B_MATRIX_PROBE_GH_CONFIG_DIR=<independent-identity-gh-config> \
-M5B_MATRIX_PROBE_LOGIN=<independent-login> \
-M5B_MATRIX_REPOSITORY=Bouyer12/m5a-beta-adf10ad9 \
-M5B_MATRIX_GITHUB_ISSUE=<number> \
-  scripts/m5b/matrix/item4-pause-recheck.sh github
+```
+GitHub 评论 ID                  7043675954
+平台任务                         eea7aea5-2a5c-45f7-83c5-1eeb9aa0430c
+runtime Ticket                   0fe37489bf5c9f99d837643d8e1445c0
+接单后                           running
+live.mjs pause                   exit 0 → stopped
+停止证据                         stopped_at、launch 和 operationId 均存在
+live.mjs resume                  exit 0 → running
+live.mjs pause（清理）            exit 0
+runtime SHA-256                  ff46314942f216139632ba97aac82a6bbbcd78fd6a3abf6686cbc24c293f711a
+dispatcher SHA-256               003078fb475304f5b1805d54278c437f6fad283ab992ed6eba506824fc1ca4e4
+API SHA-256                      0328c27c99f3540aacda29771d6038d0c81a5083d774b15a65c13ba5dd34e685
 ```
 
-在这一项跑完前，本单不宣称 Web + GitHub 双入口验收完成；PR 保持 draft，供所有者先审阅代码与两份现场日志。
+此前现场 Web 10/10、强制超时→核对→恢复 11/11。此次 GitHub 入口覆盖真实独立账号评论、接单与暂停/恢复。验收使用仓库评论轮询；通知接口仍返回 403。临时写权限邀请已撤回，`sutrasky` 权限为原有的 read。
