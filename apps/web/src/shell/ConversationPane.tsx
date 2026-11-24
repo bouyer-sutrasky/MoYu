@@ -296,7 +296,10 @@ export function ConversationPane({
     taskState === 'waiting_input' ||
     taskState === 'awaiting_review';
   const canResume = taskState === 'stopped';
-  const canRetry = taskState === 'failed' || taskState === 'blocked';
+  // A stop whose proof timed out keeps its blocked placeholder and says how to check it again; retry is not an exit while the
+  // runtime still holds the paused worker and its lease.
+  const canRecheckStop = taskState === 'blocked' && task?.stopEvidence?.nextStep === 'recheck-stop';
+  const canRetry = (taskState === 'failed' || taskState === 'blocked') && !canRecheckStop;
   const actionDisabled = taskCommandBusy || !!pendingOperation;
   const [newTaskFromTaskOpen, setNewTaskFromTaskOpen] = useState(false);
   const canStartFromTask = task?.state === 'completed' || task?.state === 'closed_unmerged';
@@ -397,6 +400,24 @@ export function ConversationPane({
               {decisionSummary.detail ? <p>{decisionSummary.detail}</p> : null}
             </div>
           ) : null}
+          {canRecheckStop ? (
+            <div
+              className={styles.taskDecisionNotice}
+              data-tone="deferred"
+              data-testid="pause-recheck-notice"
+            >
+              <div className={styles.taskDecisionHeadline}>
+                <strong>停止状态尚未确认</strong>
+              </div>
+              <p>
+                {typeof task?.stopEvidence?.problem === 'string' && task.stopEvidence.problem
+                  ? `${task.stopEvidence.problem}。`
+                  : ''}
+                重新核对会要求运行时确认 worker
+                与后台任务已停止；确认后任务才能继续，未确认时保持受阻。
+              </p>
+            </div>
+          ) : null}
         </div>
         <div className={styles.conversationActions}>
           {canStart ? (
@@ -418,6 +439,17 @@ export function ConversationPane({
               onClick={() => onTaskCommand('stop')}
             >
               停止
+            </button>
+          ) : null}
+          {canRecheckStop ? (
+            <button
+              type="button"
+              className={styles.primaryButton}
+              disabled={actionDisabled}
+              onClick={() => onTaskCommand('stop')}
+              title="重新核对原暂停操作：确认 worker 与后台任务已停止后才允许继续"
+            >
+              重新核对停止
             </button>
           ) : null}
           {canResume ? (

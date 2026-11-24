@@ -379,14 +379,90 @@ export async function releaseExecutionLease(
 }
 
 /**
- * Releases the lease currently bound to a task. The task row and lease row are
- * locked together, and an expected lease id prevents a maintenance pass from
- * releasing a newer generation acquired while it was deciding.
+ * Releases the lease currently bound to a task inside the caller's transaction.
+ * The task row and lease row are locked together, and an expected lease id
+ * prevents a maintenance pass from releasing a newer generation acquired while
+ * it was deciding.
  *
  * Waiting/review/ended states are confirmed safe; `stopped` needs a timestamp.
  * `blocked`/`stopping` need an explicit stop proof, otherwise the slot stays
- * occupied.
+ * occupied. The caller owns begin/commit/rollback.
  */
+export async function releaseTaskLeaseOn(
+  client: pg.PoolClient,
+  repositoryId: string,
+  taskId: string,
+  reason: string,
+  options: {
+    expectedLeaseId?: string;
+    proof?: Record<string, unknown>;
+    allowUnproven?: boolean;
+  } = {},
+): Promise<boolean> {
+  const task = await client.query<{
+    runtime_lease_id: string | null;
+    state: string;
+    stopped_at: Date | null;
+  }>(`select runtime_lease_id, state, stopped_at from task_links where id = $1 for update`, [
+    taskId,
+  ]);
+  const row = task.rows[0];
+  if (!row?.runtime_lease_id) {
+    return false;
+  }
+  if (options.expectedLeaseId && row.runtime_lease_id !== options.expectedLeaseId) {
+    // A newer generation is already bound; never release it on behalf of the
+    // operation/maintenance pass that was looking at the old one.
+    return false;
+  }
+  const safe =
+    options.proof !== undefined ||
+    options.allowUnproven === true ||
+    ['waiting_input', 'awaiting_review', 'completed', 'closed_unmerged', 'not_accepted'].includes(
+      row.state,
+    ) ||
+    (row.state === 'stopped' && row.stopped_at !== null);
+  if (!safe) {
+    return false;
+  }
+  const leaseResult = await client.query<LeaseRow>(
+    `select ${LEASE_COLUMNS} from runtime_leases where id = $1 for update`,
+    [row.runtime_lease_id],
+  );
+  const lease = leaseResult.rows[0];
+  if (!lease || lease.state !== 'active') {
+    await client.query(
+      `update task_links set runtime_lease_id = null
+        where id = $1 and runtime_lease_id = $2`,
+      [taskId, row.runtime_lease_id],
+    );
+    return false;
+  }
+  await client.query(
+    `update runtime_leases
+        set state = 'released', released_at = now(), heartbeat_at = now(),
+            stop_proof = case when $2::jsonb = '{}'::jsonb then stop_proof else $2::jsonb end,
+            stop_proven_at = case when $2::jsonb = '{}'::jsonb then stop_proven_at else now() end,
+            recovery_state = 'none', waiting_for = null, last_error = null
+      where id = $1`,
+    [lease.id, JSON.stringify(options.proof ?? {})],
+  );
+  await client.query(
+    `update task_links set runtime_lease_id = null
+      where id = $1 and runtime_lease_id = $2`,
+    [taskId, lease.id],
+  );
+  await appendLeaseEvent(client, {
+    leaseId: lease.id,
+    repositoryId,
+    fencingToken: String(lease.fencing_token),
+    type: 'released',
+    detail: { reason, ...(options.proof ? { proof: options.proof } : {}) },
+  });
+  return true;
+}
+
+/** Releases the lease currently bound to a task in its own transaction. */
 export async function releaseTaskLease(
   pool: pg.Pool,
   repositoryId: string,
@@ -401,72 +477,9 @@ export async function releaseTaskLease(
   const client = await pool.connect();
   try {
     await client.query('begin');
-    const task = await client.query<{
-      runtime_lease_id: string | null;
-      state: string;
-      stopped_at: Date | null;
-    }>(`select runtime_lease_id, state, stopped_at from task_links where id = $1 for update`, [
-      taskId,
-    ]);
-    const row = task.rows[0];
-    if (!row?.runtime_lease_id) {
-      await client.query('commit');
-      return false;
-    }
-    if (options.expectedLeaseId && row.runtime_lease_id !== options.expectedLeaseId) {
-      // A newer generation is already bound; never release it on behalf of the
-      // operation/maintenance pass that was looking at the old one.
-      await client.query('commit');
-      return false;
-    }
-    const safe =
-      options.proof !== undefined ||
-      options.allowUnproven === true ||
-      ['waiting_input', 'awaiting_review', 'completed', 'closed_unmerged', 'not_accepted'].includes(
-        row.state,
-      ) ||
-      (row.state === 'stopped' && row.stopped_at !== null);
-    if (!safe) {
-      await client.query('commit');
-      return false;
-    }
-    const leaseResult = await client.query<LeaseRow>(
-      `select ${LEASE_COLUMNS} from runtime_leases where id = $1 for update`,
-      [row.runtime_lease_id],
-    );
-    const lease = leaseResult.rows[0];
-    if (!lease || lease.state !== 'active') {
-      await client.query(
-        `update task_links set runtime_lease_id = null
-          where id = $1 and runtime_lease_id = $2`,
-        [taskId, row.runtime_lease_id],
-      );
-      await client.query('commit');
-      return false;
-    }
-    await client.query(
-      `update runtime_leases
-          set state = 'released', released_at = now(), heartbeat_at = now(),
-              stop_proof = case when $2::jsonb = '{}'::jsonb then stop_proof else $2::jsonb end,
-              stop_proven_at = case when $2::jsonb = '{}'::jsonb then stop_proven_at else now() end,
-              recovery_state = 'none', waiting_for = null, last_error = null
-        where id = $1`,
-      [lease.id, JSON.stringify(options.proof ?? {})],
-    );
-    await client.query(
-      `update task_links set runtime_lease_id = null
-        where id = $1 and runtime_lease_id = $2`,
-      [taskId, lease.id],
-    );
-    await appendLeaseEvent(client, {
-      leaseId: lease.id,
-      repositoryId,
-      fencingToken: String(lease.fencing_token),
-      type: 'released',
-      detail: { reason, ...(options.proof ? { proof: options.proof } : {}) },
-    });
+    const released = await releaseTaskLeaseOn(client, repositoryId, taskId, reason, options);
     await client.query('commit');
-    return true;
+    return released;
   } catch (error) {
     await client.query('rollback').catch(() => undefined);
     throw error;

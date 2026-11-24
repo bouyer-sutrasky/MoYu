@@ -11,10 +11,18 @@ import {
   receiptIsCurrentOn,
   reconcileLeases,
   releaseTaskLease,
+  releaseTaskLeaseOn,
   requireLeaseStopProof,
   type ExecutionLease,
 } from './leases';
-import { pauseEvidenceProblem, pauseEvidenceProven } from './pause-evidence';
+import {
+  PAUSE_RECHECK_NEXT_STEP,
+  pauseEvidenceProblem,
+  pauseEvidenceProven,
+  pauseRecheckBindingFromEvidence,
+  pauseRecheckBindingProblem,
+  pauseRecheckRequested,
+} from './pause-evidence';
 import type { DispatcherLogger } from './logger';
 import type { RepositoryBinding } from './runtime';
 import { bridgeErrorMessage, isRetryableBridgeError } from './runtime';
@@ -224,10 +232,23 @@ async function applyOperationResult(
         // keep the operation evidence; the pause stays unproven and is not shown as stopped
       }
     }
+    // A stop check answers for the pause that is blocked, so its evidence must
+    // name this ticket, the original pause operation and the lease generation the
+    // check was admitted under. A mismatch is not a stop and must not settle it.
+    const recheck = operation.kind === 'pause' && pauseRecheckRequested(task.stopEvidence);
+    let pauseProven = pauseEvidenceProven(evidence);
+    let bindingProblem: string | undefined;
+    if (recheck && pauseProven) {
+      const expected = pauseRecheckBindingFromEvidence(task.stopEvidence);
+      bindingProblem = expected
+        ? pauseRecheckBindingProblem(evidence, expected)
+        : 'The platform did not record which stop check and lease generation this answer belongs to';
+      if (bindingProblem) pauseProven = false;
+    }
     // A pause is only proven with a stop timestamp, no loaded worker or an idle
     // one, and an empty job/subagent set. `absent` means the runtime restarted and
     // the worker Session is not loaded, so nothing of it can still run.
-    const pauseProven = pauseEvidenceProven(evidence);
+    const pauseProblem = bindingProblem ?? pauseEvidenceProblem(evidence);
     const succeeded =
       bridgeOperation.state === 'succeeded' && (operation.kind !== 'pause' || pauseProven);
     let nextState: string | null = null;
@@ -237,7 +258,7 @@ async function applyOperationResult(
     let clearStop = false;
 
     if (succeeded && operation.kind === 'pause') {
-      if (task.state === 'stopping') {
+      if (task.state === 'stopping' || task.state === 'blocked') {
         nextState = 'stopped';
         const stopped =
           typeof evidence.stoppedAt === 'string' ? new Date(evidence.stoppedAt) : null;
@@ -256,12 +277,37 @@ async function applyOperationResult(
         nextState = 'queued';
       }
     } else if (!succeeded && operation.kind === 'pause') {
-      // A stop that could not be proven is not shown as stopped.
-      if (task.state === 'stopping') {
+      // A stop that could not be proven is not shown as stopped. It keeps the
+      // blocked placeholder and says what the next check needs.
+      if (task.state === 'stopping' || task.state === 'blocked') {
         nextState = 'blocked';
         storeEvidence = true;
       }
     }
+    const attemptedPause = String(operation.bridgeOperationId ?? operation.id);
+    const recordedPauseOperation = recheck
+      ? String(task.stopEvidence.pauseOperationId ?? '')
+      : attemptedPause;
+    const recordedLease = String(
+      task.stopEvidence.leaseId ?? operation.runtimeLeaseId ?? task.runtimeLeaseId ?? '',
+    );
+    const recordedFencingToken = String(
+      task.stopEvidence.fencingToken ?? operation.fencingToken ?? '',
+    );
+    const unprovenEvidence = {
+      ...evidence,
+      problem: pauseProblem,
+      ...(bindingProblem ? { bindingProblem } : {}),
+      ...(bridgeOperation.error ? { error: bridgeOperation.error } : {}),
+      nextStep: bindingProblem ? 'owner-review' : PAUSE_RECHECK_NEXT_STEP,
+      ...(recordedPauseOperation ? { pauseOperationId: recordedPauseOperation } : {}),
+      ...(recordedLease ? { leaseId: recordedLease } : {}),
+      ...(recordedFencingToken ? { fencingToken: recordedFencingToken } : {}),
+      ...(recheck && task.stopEvidence.recheckOperationId
+        ? { recheckOperationId: task.stopEvidence.recheckOperationId }
+        : {}),
+      ...(recheck && task.upstreamTicketId ? { recheckTicketId: task.upstreamTicketId } : {}),
+    };
 
     let updated = task;
     if (
@@ -290,9 +336,7 @@ async function applyOperationResult(
           stoppedAt !== undefined,
           stoppedAt ?? null,
           clearStop,
-          JSON.stringify(
-            pauseProven ? evidence : { ...evidence, problem: pauseEvidenceProblem(evidence) },
-          ),
+          JSON.stringify(pauseProven ? evidence : unprovenEvidence),
           executionMode,
           storeEvidence,
         ],
@@ -311,12 +355,29 @@ async function applyOperationResult(
       await appendTaskEvent(client, repository, updated, `operation:${operation.id}`);
     }
 
+    // A proven stop settles the task, its evidence and its lease generation in
+    // one transaction: no reader can see a stopped task whose generation is
+    // still occupied, and a crash cannot leave the two disagreeing.
+    let releasedInTransaction = false;
+    if (operation.kind === 'pause' && succeeded && pauseProven) {
+      releasedInTransaction = await releaseTaskLeaseOn(
+        client,
+        repository.id,
+        task.id,
+        `operation ${operation.kind} settled safely as stopped`,
+        {
+          ...(operation.runtimeLeaseId ? { expectedLeaseId: operation.runtimeLeaseId } : {}),
+          proof: evidence,
+        },
+      );
+    }
     await storeOperationEvidence(client, operation.id, succeeded ? 'succeeded' : 'failed', {
       bridgeOperationId: bridgeOperation.operationId,
-      evidence,
+      evidence: bindingProblem ? { ...evidence, bindingProblem } : evidence,
       error: succeeded
         ? null
-        : (bridgeOperation.error ??
+        : (bindingProblem ??
+          bridgeOperation.error ??
           (operation.kind === 'pause'
             ? 'The runtime did not prove the worker and its background work stopped'
             : 'The runtime operation failed')),
@@ -325,7 +386,7 @@ async function applyOperationResult(
     const safeToRelease =
       (operation.kind === 'pause' && succeeded && pauseProven) ||
       ['completed', 'closed_unmerged', 'not_accepted'].includes(updated.state);
-    if (safeToRelease) {
+    if (safeToRelease && !releasedInTransaction) {
       await releaseTaskLease(
         pool,
         repository.id,
@@ -380,20 +441,57 @@ async function failOperation(
   try {
     await client.query('begin');
     const task = await taskById(client, operation.taskId, true);
+    const recheckPause =
+      task !== null &&
+      operation.kind === 'pause' &&
+      task.state === 'blocked' &&
+      pauseRecheckRequested(task.stopEvidence);
     if (
       task &&
-      ((operation.kind === 'pause' && task.state === 'stopping') ||
+      ((operation.kind === 'pause' && (task.state === 'stopping' || recheckPause)) ||
         (operation.kind === 'resume' && task.state === 'stopped'))
     ) {
       // A resume the runtime cannot satisfy is blocked; a closed PR is terminal for
       // this task and is shown as closed_unmerged without auto-reopening.
       const state =
         operation.kind === 'resume' && code === 'prClosedUnmerged' ? 'closed_unmerged' : 'blocked';
+      // A stop that cannot be proven keeps its placeholder and the next action. A
+      // refused stop check keeps the binding it was sent with, so the owner can
+      // still see which pause and generation the runtime refused.
+      const unrecoverableCheck =
+        code !== undefined &&
+        [
+          'admissionStale',
+          'pauseOperationMismatch',
+          'notPaused',
+          'ticketEnded',
+          'runtime_admission_unsupported',
+        ].includes(code);
+      const evidence =
+        operation.kind === 'pause'
+          ? recheckPause
+            ? {
+                ...(task.stopEvidence ?? {}),
+                error,
+                problem: error,
+                ...(code ? { code } : {}),
+                nextStep: unrecoverableCheck ? 'owner-review' : PAUSE_RECHECK_NEXT_STEP,
+              }
+            : {
+                error,
+                ...(code ? { code } : {}),
+                problem: error,
+                nextStep: PAUSE_RECHECK_NEXT_STEP,
+                pauseOperationId: operation.bridgeOperationId ?? operation.id,
+                ...(operation.runtimeLeaseId ? { leaseId: operation.runtimeLeaseId } : {}),
+                ...(operation.fencingToken ? { fencingToken: operation.fencingToken } : {}),
+              }
+          : { error, ...(code ? { code } : {}) };
       const updated = await client.query<TaskRow>(
         `update task_links set state = $3, stop_evidence = $2::jsonb,
                 version = version + 1, updated_at = now()
           where id = $1 returning ${TASK_COLUMNS.replaceAll('t.', 'task_links.')}`,
-        [task.id, JSON.stringify({ error, ...(code ? { code } : {}) }), state],
+        [task.id, JSON.stringify(evidence), state],
       );
       const next = updated.rows[0];
       if (next) {
@@ -441,17 +539,26 @@ async function applySnapshot(
     await client.query('begin');
     const task = await taskById(client, taskId);
     const paused = snapshot.paused;
-    const proven = pauseEvidenceProven(
-      paused?.stoppedAt ? { ...paused.evidence, stoppedAt: paused.stoppedAt } : undefined,
-    );
-    const problem =
-      paused?.stoppedAt && !proven
-        ? pauseEvidenceProblem({ ...paused.evidence, stoppedAt: paused.stoppedAt })
-        : undefined;
+    const recheck = pauseRecheckRequested(task?.stopEvidence);
+    const observation = paused?.stoppedAt
+      ? { ...paused.evidence, stoppedAt: paused.stoppedAt }
+      : undefined;
+    let proven = pauseEvidenceProven(observation);
+    let bindingProblem: string | undefined;
+    if (proven && recheck && task) {
+      const expected = pauseRecheckBindingFromEvidence(task.stopEvidence);
+      bindingProblem = expected
+        ? pauseRecheckBindingProblem(observation, expected)
+        : 'The platform did not record which stop check and lease generation this answer belongs to';
+      if (bindingProblem) proven = false;
+    }
+    const problem = proven ? undefined : (bindingProblem ?? pauseEvidenceProblem(observation));
     // The snapshot path is the same stop-evidence boundary as the event, poll and
     // restart paths: a timestamp without an idle worker/no jobs/no subagents is not stopped.
-    const effectiveState = state === 'stopped' && !proven ? 'blocked' : state;
-    if (!task || task.state === effectiveState) {
+    // A blocked stop check keeps its placeholder while the snapshot still cannot prove the stop.
+    const effectiveState =
+      recheck && !proven ? 'blocked' : state === 'stopped' && !proven ? 'blocked' : state;
+    if (!task || (task.state === effectiveState && !recheck)) {
       await client.query('commit');
       return;
     }
@@ -468,7 +575,28 @@ async function applySnapshot(
         JSON.stringify(
           proven
             ? (paused?.evidence ?? {})
-            : { ...paused?.evidence, ...(problem ? { problem } : {}) },
+            : {
+                ...paused?.evidence,
+                ...(problem ? { problem } : {}),
+                ...(bindingProblem ? { bindingProblem } : {}),
+                nextStep: bindingProblem ? 'owner-review' : PAUSE_RECHECK_NEXT_STEP,
+                ...((recheck ? task.stopEvidence.pauseOperationId : paused?.operationId)
+                  ? {
+                      pauseOperationId: String(
+                        recheck ? task.stopEvidence.pauseOperationId : (paused?.operationId ?? ''),
+                      ),
+                    }
+                  : {}),
+                ...(recheck && task.stopEvidence.recheckOperationId
+                  ? { recheckOperationId: task.stopEvidence.recheckOperationId }
+                  : {}),
+                ...(recheck && task.stopEvidence.leaseId
+                  ? { leaseId: task.stopEvidence.leaseId }
+                  : {}),
+                ...(recheck && task.stopEvidence.fencingToken
+                  ? { fencingToken: task.stopEvidence.fencingToken }
+                  : {}),
+              },
         ),
         snapshot.mode === 'discuss' ? 'discuss' : 'execute',
       ],
@@ -486,6 +614,65 @@ async function applySnapshot(
   }
 }
 
+/**
+ * Keeps a blocked stop placeholder when the stop check cannot be sent or its
+ * answer cannot be applied. The task stays blocked, its evidence names the next
+ * action, and the operation records the concrete reason; nothing is released.
+ */
+async function markPauseRecheckProblem(
+  pool: pg.Pool,
+  repository: RepositoryBinding,
+  taskId: string,
+  operation: ClaimedOperation,
+  message: string,
+  nextStep: string,
+  logger: DispatcherLogger,
+): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const task = await taskById(client, taskId, true);
+    if (task) {
+      const evidence = {
+        ...(task.stopEvidence ?? {}),
+        nextStep,
+        problem: message,
+        recheckError: message,
+        recheckOperationId: operation.bridgeOperationId ?? operation.id,
+      };
+      const updated = await client.query<TaskRow>(
+        `update task_links
+            set stop_evidence = $2::jsonb, version = version + 1, updated_at = now()
+          where id = $1
+          returning ${TASK_COLUMNS.replaceAll('t.', 'task_links.')}`,
+        [taskId, JSON.stringify(evidence)],
+      );
+      const next = updated.rows[0];
+      if (next) await appendTaskEvent(client, repository, next, `operation:${operation.id}`);
+    }
+    await storeOperationEvidence(client, operation.id, 'failed', {
+      error: message,
+      evidence: { recheck: true, nextStep },
+    });
+    await client.query('commit');
+    logger.warn(
+      {
+        event: 'operation.pause_recheck_problem',
+        operationId: operation.id,
+        taskId,
+        message,
+        nextStep,
+      },
+      'a failed stop check could not be sent; the blocked placeholder is kept',
+    );
+  } catch (error) {
+    await client.query('rollback').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function sendOperation(
   pool: pg.Pool,
   config: DispatcherConfig,
@@ -495,6 +682,7 @@ async function sendOperation(
   task: TaskRow,
   logger: DispatcherLogger,
   admissionSupported = true,
+  pauseRecheckSupported = false,
 ): Promise<void> {
   if (!task.upstreamTicketId) {
     await failOperation(pool, repository, operation, 'The runtime has not accepted this task');
@@ -529,27 +717,135 @@ async function sendOperation(
       return;
     }
     if (operation.kind === 'pause') {
-      // A pause does not acquire a new generation; it records the generation
-      // it observed so a late/unproven result can be fenced and reconciled.
-      const bound = await pool.query<{ id: string; fencing_token: string }>(
-        `select l.id, l.fencing_token
-           from task_links t join runtime_leases l on l.id = t.runtime_lease_id
-          where t.id = $1 and l.state = 'active'
-            and (l.expires_at is null or l.expires_at > now())`,
-        [task.id],
-      );
-      const observed = bound.rows[0];
-      if (observed) {
+      // A blocked task whose stop was not proven asks the runtime to check the
+      // original pause again. The request is admitted under the lease generation
+      // the original pause observed, and that binding is recorded on the task
+      // before the request so an event can be verified as well as a poll.
+      if (task.state === 'blocked' && pauseRecheckRequested(task.stopEvidence)) {
+        if (!pauseRecheckSupported) {
+          await markPauseRecheckProblem(
+            pool,
+            repository,
+            operation.taskId,
+            operation,
+            'The runtime does not support checking a failed stop again; upgrade it before this task can recover',
+            'runtime-upgrade',
+            logger,
+          );
+          return;
+        }
+        const recorded = task.stopEvidence.pauseOperationId;
+        const prior = await pool.query<{
+          id: string;
+          bridge_operation_id: string | null;
+          runtime_lease_id: string | null;
+          fencing_token: string | null;
+        }>(
+          `select id, bridge_operation_id, runtime_lease_id, fencing_token
+             from task_operations
+            where task_id = $1 and kind = 'pause' and (id::text = $2 or bridge_operation_id = $2)
+            order by created_at
+            limit 1`,
+          [task.id, typeof recorded === 'string' ? recorded : ''],
+        );
+        const priorRow = prior.rows[0];
+        if (!priorRow) {
+          await markPauseRecheckProblem(
+            pool,
+            repository,
+            operation.taskId,
+            operation,
+            'The pause operation to check is no longer recorded, so its lease generation cannot be bound',
+            'owner-review',
+            logger,
+          );
+          return;
+        }
+        const leaseId = priorRow.runtime_lease_id ?? '';
+        const fencingToken = priorRow.fencing_token ?? '';
+        const current = await pool.query<{ id: string; fencing_token: string }>(
+          `select l.id, l.fencing_token
+             from task_links t join runtime_leases l on l.id = t.runtime_lease_id
+            where t.id = $1 and l.state = 'active'`,
+          [task.id],
+        );
+        const currentLease = current.rows[0];
+        if (
+          !leaseId ||
+          !currentLease ||
+          currentLease.id !== leaseId ||
+          String(currentLease.fencing_token) !== String(fencingToken)
+        ) {
+          await markPauseRecheckProblem(
+            pool,
+            repository,
+            operation.taskId,
+            operation,
+            'The execution generation changed after the failed stop; a stop proof for the old generation cannot be applied',
+            'owner-review',
+            logger,
+          );
+          return;
+        }
+        const pauseOperationId = priorRow.bridge_operation_id ?? priorRow.id;
+        await pool.query(
+          `update task_links
+              set stop_evidence = coalesce(stop_evidence, '{}'::jsonb) || $2::jsonb,
+                  version = version + 1, updated_at = now()
+            where id = $1`,
+          [
+            task.id,
+            JSON.stringify({
+              nextStep: PAUSE_RECHECK_NEXT_STEP,
+              pauseOperationId,
+              recheckOperationId: operation.id,
+              recheckTicketId: ticketId,
+              leaseId,
+              fencingToken,
+              recheckRequestedAt: new Date().toISOString(),
+            }),
+          ],
+        );
         await pool.query(
           `update task_operations
               set runtime_lease_id = $2, fencing_token = $3, updated_at = now()
             where id = $1`,
-          [operation.id, observed.id, observed.fencing_token],
+          [operation.id, leaseId, fencingToken],
         );
-        operation.runtimeLeaseId = observed.id;
-        operation.fencingToken = observed.fencing_token;
+        operation.runtimeLeaseId = leaseId;
+        operation.fencingToken = fencingToken;
+        accepted = await bridge.pause(ticketId, {
+          operationId: operation.id,
+          reason: 'owner stop check',
+          pauseOperationId,
+          admission: { leaseId, fencingToken },
+        });
+      } else {
+        // A pause does not acquire a new generation; it records the generation
+        // it observed so a late/unproven result can be fenced and reconciled.
+        const bound = await pool.query<{ id: string; fencing_token: string }>(
+          `select l.id, l.fencing_token
+             from task_links t join runtime_leases l on l.id = t.runtime_lease_id
+            where t.id = $1 and l.state = 'active'
+              and (l.expires_at is null or l.expires_at > now())`,
+          [task.id],
+        );
+        const observed = bound.rows[0];
+        if (observed) {
+          await pool.query(
+            `update task_operations
+                set runtime_lease_id = $2, fencing_token = $3, updated_at = now()
+              where id = $1`,
+            [operation.id, observed.id, observed.fencing_token],
+          );
+          operation.runtimeLeaseId = observed.id;
+          operation.fencingToken = observed.fencing_token;
+        }
+        accepted = await bridge.pause(ticketId, {
+          operationId: operation.id,
+          reason: 'owner stop',
+        });
       }
-      accepted = await bridge.pause(ticketId, { operationId: operation.id, reason: 'owner stop' });
     } else {
       if (operation.kind === 'start' && !planRevision) {
         await failWithLease('No approved plan revision is recorded');
@@ -751,6 +1047,7 @@ export async function operationsOnce(
   bridge: RuntimeBridgeClient,
   logger: DispatcherLogger,
   admissionSupported = true,
+  pauseRecheckSupported = false,
 ): Promise<boolean> {
   if (await pollOperations(pool, repository, bridge, logger)) {
     return true;
@@ -773,6 +1070,7 @@ export async function operationsOnce(
     task,
     logger,
     admissionSupported,
+    pauseRecheckSupported,
   );
   return true;
 }
