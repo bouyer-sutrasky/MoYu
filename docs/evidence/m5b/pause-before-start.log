@@ -9,7 +9,7 @@ Issue #34。基线 `main` = `d02f07f1483e0c85a13c1dfe24d03d855a72d0a1`。
 | 相位 | 修复前（runtime `64ce5c5a…`） | 修复后（runtime `fbe3684e…`） |
 | --- | --- | --- |
 | c1 pause 在 start 之前（票 `queued`、`worker_sessions=0`） | 票卡 `stopping`，`paused.stoppedAt` 恒 `null`，平台 `blocked`，`resume` 被拒，租约一直 `active` | `stoppedAt` 落地，平台 `stopped`，租约 `released`，`resume` 接受并真的起了一个 worker |
-| c2 pause 在 start 进行中（票刚建、`worker_sessions=0`） | 同上（同一次失败） | `stoppedAt` 在 355 ms 内落地，`launch: aborted`，租约 `released`，`resume` 接受 |
+| c2 pause 在 start 进行中（票刚建、`worker_sessions=0`） | 同上（同一次失败） | `stoppedAt` 在 355 ms 内落地（§8.2 重打的那次 47 ms），`launch: aborted`，租约 `released`，`resume` 接受 |
 | c3 pause 在 start 完成之后（`running`、`worker_sessions=1`） | 通过 | 通过（未回退） |
 
 修复前 runtime 的失败原文（`bridge/operations.jsonl`，暂停 operation 直接 `failed`）：
@@ -28,7 +28,7 @@ Issue #34。基线 `main` = `d02f07f1483e0c85a13c1dfe24d03d855a72d0a1`。
 | --- | --- |
 | 平台 API / dispatcher | 未改动；dispatcher `apps/dispatcher/dist/main.js` = `0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6` |
 | runtime 修复前 | `/root/src/upstream/m5b-admission-build21`，`lib/index.js` = `64ce5c5aeb6d0671a195ee5aad66c941a641c29919f1a7603fe64cd0b288df6f` |
-| runtime 修复后 | `/root/src/upstream/pause-start-build1`，`lib/index.js` = `fbe3684edde59f7c41c88e2b4dbd4aebb7c19a66f87b27ac099a540e3edfd0cd` |
+| runtime 修复后 | `/root/src/upstream/pause-start-build1`，`lib/index.js` = `fbe3684edde59f7c41c88e2b4dbd4aebb7c19a66f87b27ac099a540e3edfd0cd`（同内容又重建于 `/root/src/upstream/pause-doc-launch-build1`，见 §6） |
 
 两个 runtime 都用同一套有序补丁从固定上游 `6337fc823ce20251c8de8085948165c81aaa701e` 构建，唯一差异是 `0024`。
 
@@ -143,12 +143,25 @@ AssertionError: expected { …(16) } to match object { agentStatus: 'absent', �
 exit=1
 ```
 
-退出码：1。判定：4 条红、1 条绿。红的原因就是缺陷本身，断言直接说出它：
+退出码：1。判定：4 条红、1 条绿。这 4 条红**不是同一类证据**，逐条说清它证明什么、不证明什么：
 
-- `expected 'The worker did not stop cleanly: agent absent, 0 job(s), 0 subagent(s) and 3 process(es) remain' to be undefined`
-  —— 与现场 `bridge/operations.jsonl` 的失败原文逐字一致；
-- `expected undefined to deeply equal Any<String>` —— 有界时间内 `paused.stoppedAt` 根本没出现（Web 与 GitHub 两条）；
-- 证据用例缺 `launch: 'aborted'`。
+- `does not let another process of the same harness fail a clean stop` —— 这条直接证明缺陷：断言拿到的就是
+  `The worker did not stop cleanly: agent idle, 0 job(s), 0 subagent(s) and 1 process(es) remain`，与 §7 现场
+  `bridge/operations.jsonl` 的失败原文同一形状（现场是 `3 process(es) remain`，见 §0）。共享进程树里别人的子进程
+  能把一次干净的暂停判成失败，这就是现场票卡 `stopping` 的原因。
+- Web 那条（`lands for a Web ticket whose launch is still preparing, instead of leaving it stopping`）先在
+  `timed out waiting for the prepare signal to abort`（用例第 110 行）失败：修复前的暂停从不等、也不结束仍在
+  prepare 的启动。要注意的是，同一用例里排在它前面的 `stoppedAt`/`stopped` 三行断言在修复前的 fixture 下本来就是绿的
+  —— 那个 fixture 没有别的进程在跑，共享进程树为空，所以那三行自己并不构成「有界落地」的反证；这条用例的红只证明
+  「启动没被结束」。
+- GitHub 那条（`lands for a GitHub ticket held in pending_admission with no Assignment at all`）红在
+  `expected undefined to deeply equal Any<String>`：修复前 `Tickets.pause` 在没有 Assignment 时根本不调用
+  Executor，`paused.stoppedAt` 永远不出现。
+- 证据那条红在 `toMatchObject` 里缺 `launch: 'aborted'`：修复前没有启动这个概念，证据里也就没有它。
+
+所以真正证明「有界落地」的红是 §7 的现场记录（修复前 c1/c2 `paused.stoppedAt` 恒 `null`、平台 `blocked`、
+`resume` 被拒、租约一直 `active`）与上面那条「共享进程树残留」用例（现场是 3 个进程，用例里是 1 个）；
+Web 那条红只证明启动没有被结束。
 
 唯一的绿是 `is accepted, because nothing ran and the launch prepares the workspace`：它走 domain `resumeTicket`，
 不经过 Bridge 的工作目录闸门，所以修复前也绿；Bridge 闸门的红见 §4。
@@ -282,8 +295,60 @@ exit=1
 ```
 
 1322 通过、1 失败。唯一失败是 `tests/sources.spec.ts > feishu event consumer > takes in the event lines…`，
-**在未改动的基线上同样失败**（`git stash push` 掉全部改动后单跑该用例仍红），是
-`integrations/superagent/README.md` 里记录的既有 Feishu 用例失败，与本次改动无关。
+**在未改动的基线上同样失败**，是 `integrations/superagent/README.md` 里记录的既有 Feishu 用例失败，与本次改动无关。
+
+基线那一跑不是结论，是下面这次实跑 —— 同一工作树，把全部改动（含未跟踪的新测试）`git stash` 掉，再单跑该文件：
+
+```bash
+$ cd /root/src/upstream/pause-start-work
+$ git stash push --include-untracked -m pause-start-0024-baseline
+$ git status --porcelain          # 空行都没有，确认已是未改动的基线
+$ env -i HOME=/root/src/upstream/m0-home PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    COREPACK_HOME=/root/src/upstream/.corepack CI=1 corepack pnpm@11.7.0 vitest run tests/sources.spec.ts
+```
+
+```text
+ RUN  v4.1.8 /root/src/upstream/pause-start-work
+
+(node:2879091) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ❯ tests/sources.spec.ts (72 tests | 1 failed) 5384ms
+     ✓ registers its kind without a bot, and names on its health what setup still needs 62ms
+     … （同一文件另外 70 条通过的用例行，都在这次输出里，逐条略去）
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/sources.spec.ts > feishu event consumer > takes in the event lines it reads, records each chat as direct or not, and reports a malformed line without stopping
+AssertionError: expected { state: 'ready', …(2) } to match object { state: 'error', …(1) }
+(1 matching property omitted from actual)
+
+- Expected
++ Received
+
+  {
+-   "detail": StringContaining "JSON",
+-   "state": "error",
++   "detail": "Listening for bot events",
++   "state": "ready",
+  }
+
+ ❯ tests/sources.spec.ts:1107:27
+    1105|     expect(['om_1', 'om_2'].map(id => store.triggers.get(feishuTrigger…
+    1106|     expect(store.get(KV.feishu.chats)).toEqual({ oc_group: false, oc_d…
+    1107|     expect(health.feishu).toMatchObject({ state: 'error', detail: expe…
+       |                           ^
+    1108|     controller.abort(); await running; store.close()
+    1109|   }, 20_000)
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 71 passed (72)
+   Start at  15:16:25
+   Duration  6.57s (transform 765ms, setup 0ms, import 1.03s, tests 5.38s, environment 0ms)
+```
+
+退出码：1。判定：未改动的基线上就是同一条用例失败、同样的 `state: 'ready'` 与 `detail: 'Listening for bot events'`，
+所以 §5 全量套件里那唯一一条红不是本次改动造成的。`git stash pop` 已把改动原样恢复（`git status --porcelain`
+与 stash 前逐行相同）。
 
 ## 6. runtime 制品构建（有序补丁 0001–0024 从固定上游重建）
 
@@ -309,6 +374,37 @@ exit=0
 ```
 
 退出码：0（`git apply --check` 顺序应用、`pnpm typecheck`、`pnpm build` 全过）。
+
+只改了文档、测试注释与证据之后又重建过一次（同一条命令、同一固定上游，输出到新目录），制品不变：
+
+```bash
+$ integrations/superagent/build-patched.sh \
+    /root/src/upstream/superagent-tar/dsh-superagent-prototype-6337fc823ce2 \
+    /root/src/upstream/pause-doc-launch-build1
+```
+
+```text
+==> pinned source verified: dsh-superagent@0.1.0 (6337fc823ce20251c8de8085948165c81aaa701e)
+==> applying 24 patches in order
+    git apply --check 0001-workspace-source.patch
+    …
+    git apply --check 0024-pause-before-start.patch
+✔ Build complete in 3142ms
+==> publishing the built package to new directory /root/src/upstream/pause-doc-launch-build1
+==> done
+lib files: 15
+d428e669805ea1dfb6a4900bddbffe3cafb8f06a0b1eb139266c2b2f6b94b021  /root/src/upstream/pause-doc-launch-build1/package.json
+c91fab94d3a27c7068b5f5391907fb4d69342112ad50f987fdfed9985c2c7905  /root/src/upstream/pause-doc-launch-build1/cordis.patch.yml
+fbe3684edde59f7c41c88e2b4dbd4aebb7c19a66f87b27ac099a540e3edfd0cd  /root/src/upstream/pause-doc-launch-build1/lib/index.js
+8d3ec8c2956977cc8158ea974f4ce7201667bd057994e6f217c276609c4aa90d  /root/src/upstream/pause-doc-launch-build1/lib/workspace-watch.js
+```
+
+退出码：0。判定：`lib/index.js` 仍是 `fbe3684e…`，`package.json` 与 `cordis.patch.yml` 也与上一份逐字相同 ——
+这两次改动（`docs/007-architecture.md` 的空行、`tests/pause-start.spec.ts` 的 docblock）不进构建产物。
+
+补丁最后又刷新过两处 `index` 行（`docs/007-architecture.md` 与 `tests/pause-start.spec.ts` 的 blob 前后像，`git apply`
+不看它们，但让补丁自洽），再用同一条命令建到 `/root/src/upstream/pause-doc-launch-build2`：`lib/index.js` 仍是
+`fbe3684e…`，`package.json` 与 `cordis.patch.yml` 也仍是上面那两个 hash，退出码 0。
 
 ## 7. 现场：修复前（隔离栈 + `m5b-admission-build21`）
 
@@ -407,56 +503,67 @@ runtime 侧同一次暂停的 operation 证据（`bridge/operations.jsonl`，自
 
 ### 8.2 c2 pause 在 start 进行中
 
-平台命令会因 `expectedVersion` 过期返回 409（调度器在票落地时推进了 `version`），这是取证脚本的竞态，不是产品回答；
-下面的脚本对同一条命令做有界重试并把每次结果打出来：
+平台命令会因 `expectedVersion` 过期返回 409（调度器在票落地时推进了 `version`）：这是取证脚本与调度器的竞态，
+不是产品回答。所以 c2 用一个入库的脚本 `scripts/m5b/matrix/item1-pause-start-c2.sh`：它比
+`item1-pause-start.sh` 多做两件取证上的事 —— 对同一条 pause 命令做有界重试并打出每次结果，以及把制品行和
+runtime 自己的 operation 记录量出来打进去。这次第 1 次就被接受；重试仍然保留，因为 2026-11-08T12:22 那次 409
+是真实发生过的（见 git 历史里本文件上一版）。
+
+脚本里的制品行是**量出来的**，不是打印默认值：`runtime_loaded` 读这段栈实际装载的 profile 软链，`runtime_artifact`
+对那个目录的 `lib/index.js` 现算 sha256，`dispatcher_artifact` 对栈实际运行的 `apps/dispatcher/dist/main.js` 现算。
+上一版日志这里打的是 `lib.sh` 的默认 build21 hash，与栈实际装载的包不符，只能靠正文一句话纠正；这一版不需要纠正。
 
 ```bash
-$ M5B_MATRIX_UPSTREAM_BUILD=/root/src/upstream/pause-start-build1 scripts/m5b/matrix/stack.sh up
-$ # 同一 API/Bridge，重试用例化脚本（内容与 item1-pause-start.sh 的 single-phase 体一致，只把 pause 换成有界重试）
-$ bash /tmp/ev/c2-live.sh
+$ export M5B_MATRIX_UPSTREAM_BUILD=/root/src/upstream/pause-doc-launch-build1
+$ scripts/m5b/matrix/stack.sh down && scripts/m5b/matrix/stack.sh up
+$ scripts/m5b/matrix/item1-pause-start-c2.sh
 ```
 
 ```text
 # c2 — pause during the start (real Web entrance, fresh isolated stack)
-recorded=2026-11-08T12:22:10+08:00
-runtime_artifact=64ce5c5aeb6d0671a195ee5aad66c941a641c29919f1a7603fe64cd0b288df6f
-prepare_command=
+recorded=2026-11-08T15:22:48+08:00
+runtime_build=/root/src/upstream/pause-doc-launch-build1
+runtime_loaded=/root/src/upstream/pause-doc-launch-build1
+runtime_artifact=fbe3684edde59f7c41c88e2b4dbd4aebb7c19a66f87b27ac099a540e3edfd0cd
+dispatcher_artifact=0e981c52f02435f3edea91cf51126c245d88c9619c09264ab5856255d5c9e4a6
 
 ==============================================================
 ## phase: c2-during-start (pause as soon as the ticket exists)
-  created_at=2026-11-08T12:22:12+08:00 task=664da976-f819-4bb5-af63-55ce5c436b7e
-  ticket_created_at=2026-11-08T12:22:14+08:00 ticket=57a41db5a15978d2de82ddb9882c99c3
+  created_at=2026-11-08T15:22:49+08:00 task=6226eb57-b5cd-46c8-bcd1-a6c327ed53e4
+  ticket_created_at=2026-11-08T15:22:51+08:00 ticket=6b427be7c332363fd975482544bd6253
   $ pause while state=queued version=1
-  pause attempt 1 rejected: {   "status": 409,   "body": {     "error": {       "code": "conflict",       "message": "Task version changed (expected 2)",       "retryable": false     },   
-  pause accepted on attempt 2
-  paused_at=2026-11-08T12:22:15+08:00
-  [paused] platform_state=stopping version=3 ticket=57a41db5a15978d2de82ddb9882c99c3
-{"assignmentId": "099e2f8e515b589d93274453c6de6e06", "ended": null, "paused": {"stoppedAt": "2026-11-08T04:22:15.582Z"}, "report": null, "runtime_state": "stopped"}
-  [paused] worker_sessions=0 lease_rows=active|task:664da976-f819-4bb5-af63-55ce5c436b7e 
-  [after-8s] platform_state=stopped version=6 ticket=57a41db5a15978d2de82ddb9882c99c3
-{"assignmentId": "099e2f8e515b589d93274453c6de6e06", "ended": null, "paused": {"stoppedAt": "2026-11-08T04:22:15.582Z"}, "report": null, "runtime_state": "stopped"}
-  [after-8s] worker_sessions=0 lease_rows=released|task:664da976-f819-4bb5-af63-55ce5c436b7e 
+  pause accepted on attempt 1
+  paused_at=2026-11-08T15:22:51+08:00
+  [paused] platform_state=stopping version=2 ticket=6b427be7c332363fd975482544bd6253
+{"assignmentId": "33c0358cb65f13593420ae1141d03b35", "ended": null, "paused": {"stoppedAt": null}, "report": null, "runtime_state": "stopping"}
+  [paused] worker_sessions=0 lease_rows=active|task:6226eb57-b5cd-46c8-bcd1-a6c327ed53e4 
+  [after-8s] platform_state=stopped version=6 ticket=6b427be7c332363fd975482544bd6253
+{"assignmentId": "33c0358cb65f13593420ae1141d03b35", "ended": null, "paused": {"stoppedAt": "2026-11-08T07:22:52.328Z"}, "report": null, "runtime_state": "stopped"}
+  [after-8s] worker_sessions=0 lease_rows=released|task:6226eb57-b5cd-46c8-bcd1-a6c327ed53e4 
   $ resume (a real delivery)
-  resumed_at=2026-11-08T12:22:24+08:00
-  [resumed] platform_state=running version=9 ticket=57a41db5a15978d2de82ddb9882c99c3
-{"assignmentId": "b327a3b01fd6217bf58eda136be23059", "ended": null, "paused": null, "report": null, "runtime_state": "running"}
-  [resumed] worker_sessions=1 lease_rows=released|task:664da976-f819-4bb5-af63-55ce5c436b7e active|task:664da976-f819-4bb5-af63-55ce5c436b7e 
-  [settled] platform_state=running version=9 ticket=57a41db5a15978d2de82ddb9882c99c3
-{"assignmentId": "b327a3b01fd6217bf58eda136be23059", "ended": null, "paused": null, "report": null, "runtime_state": "running"}
-  [settled] worker_sessions=1 lease_rows=released|task:664da976-f819-4bb5-af63-55ce5c436b7e active|task:664da976-f819-4bb5-af63-55ce5c436b7e 
-c2_exit=0
+  resumed_at=2026-11-08T15:23:01+08:00
+  [resumed] platform_state=running version=9 ticket=6b427be7c332363fd975482544bd6253
+{"assignmentId": "5947849744cf816f926f9d73d0ffaf67", "ended": null, "paused": null, "report": "progress", "runtime_state": "running"}
+  [resumed] worker_sessions=1 lease_rows=released|task:6226eb57-b5cd-46c8-bcd1-a6c327ed53e4 active|task:6226eb57-b5cd-46c8-bcd1-a6c327ed53e4 
+  [settled] platform_state=running version=9 ticket=6b427be7c332363fd975482544bd6253
+{"assignmentId": "5947849744cf816f926f9d73d0ffaf67", "ended": null, "paused": null, "report": "progress", "runtime_state": "running"}
+  [settled] worker_sessions=1 lease_rows=released|task:6226eb57-b5cd-46c8-bcd1-a6c327ed53e4 active|task:6226eb57-b5cd-46c8-bcd1-a6c327ed53e4 
+
+## the runtime's own record of this pause (bridge/operations.jsonl)
+{"state": "queued"}
+{"evidence": {"agentStatus": "absent", "assignmentId": "33c0358cb65f13593420ae1141d03b35", "cancelledTurn": false, "cgroup": "/m5bmatrix.slice/m5bmatrix-supervisor.service/instances/m5b-1794122556326", "harnessPid": 2884520, "jobsAfter": [], "jobsBefore": [], "launch": "aborted", "operationId": "8bbeedc5-3651-4ada-8865-2f001ce691e7", "processesAfter": [], "processesBefore": [{"command": "sh -c git -c safe.directory=\"*\" clone --no-tags \"ssh://git@ssh.github.com:443/Bouyer12/m5a-beta-adf10ad9.git\" \"$DSH_SUPERAGENT_DIR\" && git -C \"$DSH_SUPERAGENT_D", "pid": 2885052, "ppid": 2884520}, {"command": "git -c safe.directory=* clone --no-tags ssh://git@ssh.github.com:443/Bouyer12/m5a-beta-adf10ad9.git /tmp/m5bmatrix/worktrees/m5b/fix-readme-probe-6b427be7c332", "pid": 2885053, "ppid": 2885052}, {"command": "/usr/bin/ssh -o SendEnv=GIT_PROTOCOL -p 443 git@ssh.github.com git-upload-pack '/Bouyer12/m5a-beta-adf10ad9.git'", "pid": 2885054, "ppid": 2885053}], "sessionId": "worker-6b427be7c332363fd975482544bd6253", "startedAt": "2026-11-08T07:22:52.272Z", "stoppedAt": "2026-11-08T07:22:52.319Z", "subagentsAfter": 0, "ticketId": "6b427be7c332363fd975482544bd6253"}, "state": "succeeded"}
 ```
 
-判定：**通过** —— 暂停在 355 ms 内落地（`paused.stoppedAt = 2026-11-08T04:22:15.582Z`），`worker_sessions=0`
-证明 worker 从未起来，租约 `released`，`resume` 接受（新 assignment、`worker_sessions=1`）。
-runtime operation 证据：
+退出码：0。判定：**通过** ——
 
-```json
-{"state":"succeeded","evidence":{"agentStatus":"absent","jobsAfter":[],"subagentsAfter":0,"launch":"aborted","stoppedAt":"2026-11-08T04:22:15.573Z"}}
-```
-
-说明：该段原始输出的 `runtime_artifact=` 一行打印的是 `lib.sh` 里的默认变量（build21 的 hash），不是本栈实际装载的包；
-本栈实际装载的是 `/root/src/upstream/pause-start-build1`（`lib/index.js` = `fbe3684e…`，`readlink` 已核对）。
+- 暂停在 `PAUSE_LAUNCH_MS`（10 s）内落地：`paused.stoppedAt = 2026-11-08T07:22:52.328Z`，平台 `stopped`，租约
+  `released`，`resume` 接受并真的起了 worker（`worker_sessions=1`）。
+- 落地时启动**确实在飞**：这条操作的 `startedAt` 07:22:52.272Z → `stoppedAt` 07:22:52.319Z（47 ms），
+  `launch: aborted`。`processesBefore` 正是那次 prepare 的三个进程（`sh -c git clone`、`git clone`、
+  `ssh git-upload-pack`），`processesAfter` 为空 —— 它们随暂停一起结束。
+- `agentStatus: absent`、`jobsBefore/After` 为空、`subagentsAfter: 0`：worker 从未被提示，符合「在 start 之前/
+  期间暂停」的语义。
+- 本段同时是 §10 那条取舍的现场证据：这 3 个短命子进程正是旧等待循环会盯住、旧判据会当成残留的对象。
 
 ### 8.3 c3 pause 在 start 完成之后（未回退）
 
@@ -530,14 +637,70 @@ exit=0
 
 退出码：0 与 0（`@moyu/db` 38、`@moyu/api` 66、`@moyu/dispatcher` 80 + 1 skip）。
 
+本单只改文档、补丁里的注释与取证脚本，没有改平台代码；同一套检查又重跑过一遍：
+
+```bash
+$ pnpm check
+```
+
+```text
+$ eslint .
+/…/apps/dispatcher/test/integration/dispatcher.integration.test.ts
+  716:7  warning  Unused eslint-disable directive (no problems were reported from 'no-console')
+
+✖ 1 problem (0 errors, 1 warning)
+
+$ prettier --check "**/*.{ts,tsx,mjs,cjs,json,yml,yaml,css,html}"
+All matched files use Prettier code style!
+packages/contracts test:       Tests  13 passed (13)
+packages/runtime-client test:  Tests  13 passed (13)
+apps/dispatcher test:          Tests  5 passed (5)
+apps/api test:                 Tests  20 passed (20)
+apps/supervisor test:          Tests  38 passed (38)
+ℹ pass 15
+ℹ fail 0
+exit=0
+```
+
+（eslint 那条 warning 是 `main` 上就有的 `apps/dispatcher/test/integration/dispatcher.integration.test.ts:716`
+未使用的 disable 注释，不是本单引入。）
+
+```bash
+$ TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm test:integration
+```
+
+```text
+ Test Files  11 passed (11)
+      Tests  38 passed (38)
+ Test Files  11 passed (11)
+      Tests  66 passed (66)
+ Test Files  16 passed | 1 skipped (17)
+      Tests  80 passed | 1 skipped (81)
+
+exit=0
+```
+
+退出码：0（`@moyu/db` 38、`@moyu/api` 66、`@moyu/dispatcher` 80 + 1 skip）。第一次跑整链时 `@moyu/db` 报过一次
+`Errors 1 error`：`error: terminating connection due to administrator command`（`57P01`），来自
+`packages/db/test/integration/rollback.integration.test.ts` —— 那个文件自己会 `pg_terminate_backend`，当时 38 条用例
+全过；单跑 `@moyu/db test:integration` 立刻复绿（exit 0），再整链重跑也 exit 0，所以判为环境抖动，与本单无关。
+
 ## 10. 未验证
 
 - **GitHub 入口的现场证据**：本单要求 Web / GitHub 入口各一次。GitHub 入口的差别是票先在 `pending_admission`、
   没有 Assignment；仓库里没有能产生「别人 @ agent」的凭据（agent 账号自己的评论被上游 `sameName` 过滤），
   因此没有跑真实现场。该入口由一组 runtime 级回归覆盖（真实 GitHub-source 触发器 → `pending_admission` 票 →
-  Bridge 暂停 → 落地 `stoppedAt`，见 §3 的第二条），但**不是** GitHub 现场端到端。
+  Bridge 暂停 → 落地 `stoppedAt`，见 §3 的第二条），但**不是** GitHub 现场端到端。真实现场只能由所有者用自己的账号
+  制造那条「别人 @ agent」的提及后补一条日志（命令 + 原始输出 + 退出码 + 判定）；这一项在本次工作里仍然空着。
 - 真实现场里的 c1 「票 `queued` 且平台命令被接受」窗口只有几百毫秒；本次 c1/c2 都由 `item1-pause-start.sh` 的
   真实 Web 入口驱动，但没有覆盖「票还没被运行时接受」（`upstream_ticket_id` 为空）的更早窗口 —— 该窗口平台侧直接
   拒绝暂停（`The runtime has not accepted this task yet`），不会有 `stopping`。
-- EPERM 导致的真实 kill 失败、cgroup 级残留仍未在本轮重测；本改动只是把「共享进程树的任一子进程」从判定里去掉，
-  不动 job/subagent 维度。
+- **暂停不再等待、也不再报告「暂停前就存在、由本票自己取消回合留下的短命子进程」**：`0024` 删掉了 `0019` 那条最多
+  20×100 ms 的 pre-pause 进程等待，并把 `lingeringPids` 从证据里删除。这对**每一次**暂停生效，包括本来通过的 c3：
+  c3 的后台 job / subagent 维度没有变，但取消回合后瞬间残留的 `git`/`gh` 子进程不再被等、也不再被报。判定边界因此
+  只剩本票自己的 Session、job、subagent 与这次启动（`launch !== 'timed-out'`）；整棵 harness 进程树只作证据，§3 的
+  「共享进程树」用例就是这条边界。这个取舍改变了每张票的暂停判据，不只是原来失败的那两条。
+- `launch: 'timed-out'` 分支没有测试，也没有平台侧出口：票停在 `stopping` → `blocked`，`resume`、再次「停止」与
+  `retry` 都被拒，租约按 `blocked` 保留；本次不改行为，只在 `docs/M4-EXECUTION-CONTROL.md` §2.3 写明这是设计边界。
+- EPERM 导致的真实 kill 失败、cgroup 级残留仍未在本轮重测：本改动只是把「共享进程树的任一子进程」从判定里去掉，
+  不动 job/subagent 维度，也不新增 cgroup 级残留的判定。
