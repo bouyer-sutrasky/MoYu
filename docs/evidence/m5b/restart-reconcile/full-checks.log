@@ -1,0 +1,33 @@
+# 全量检查摘要（本轮返修后）
+# 命令与退出码：
+#   PATH=/opt/moyu-node24/bin:$PATH pnpm check            # exit 0
+#   PATH=/opt/moyu-node24/bin:$PATH \
+#   TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres \
+#   pnpm test:integration                                  # exit 0
+# 说明：日志只保留套件汇总行；完整原始日志未入库，命令可重跑。
+# 敏感信息：无。
+
+## pnpm check（lint / format:check / typecheck / unit）
+
+packages/contracts test:  Test Files  1 passed (1)
+packages/contracts test:       Tests  26 passed (26)
+packages/runtime-client test:  Test Files  2 passed (2)
+packages/runtime-client test:       Tests  13 passed (13)
+apps/dispatcher test:  Test Files  3 passed (3)
+apps/dispatcher test:       Tests  7 passed (7)
+apps/api test:  Test Files  4 passed (4)
+apps/api test:       Tests  24 passed (24)
+apps/supervisor test:  Test Files  15 passed (15)
+apps/supervisor test:       Tests  130 passed (130)
+
+## pnpm test:integration（真实 PostgreSQL 16）
+
+$ pnpm --filter @moyu/db test:integration && pnpm --filter @moyu/api test:integration && pnpm --filter @moyu/dispatcher test:integration && pnpm --filter @moyu/supervisor test:integration
+ Test Files  17 passed (17)
+      Tests  54 passed (54)
+ Test Files  18 passed (18)
+      Tests  142 passed (142)
+ Test Files  20 passed | 1 skipped (21)
+      Tests  108 passed | 1 skipped (109)
+ Test Files  1 passed (1)
+      Tests  4 passed (4)

@@ -15,8 +15,8 @@ source "$HERE/lib.sh"
 
 STATE=${1:-paused}
 RUN=$M5B_MATRIX_RUN
-REPORT_FILE="$RUN/worker-report.json"
-SUP_TOKEN=$(tr -d '\n' <"$RUN/supervisor-token")
+REPORT_FILE="$M5B_MATRIX_CONTROL/worker-report.json"
+SUP_TOKEN=$(m5b_protected_read supervisor-token)
 LIVE="node $M5B_MATRIX_ROOT/scripts/m5b/matrix/live.mjs"
 
 fail() {
@@ -66,19 +66,19 @@ echo
 case "$STATE" in
   paused)
     # Quiescent: the ticket is stopped, so the restart itself must not emit events.
-    echo 600000 >"$RUN/worker-delay.txt"
+    echo 600000 >"$M5B_MATRIX_CONTROL/worker-delay.txt"
     printf '%s\n' '{"state":"progress","summary":"Working on the lifecycle probe."}' >"$REPORT_FILE"
     ;;
   running)
     # Between steps: the worker's report is `waiting` while its assignment still
     # runs, so the ticket is `running` but the turn is not mid-command.
-    echo 0 >"$RUN/worker-delay.txt"
+    echo 0 >"$M5B_MATRIX_CONTROL/worker-delay.txt"
     printf '%s\n' '{"state":"progress","summary":"Lifecycle probe is running."}' >"$REPORT_FILE"
     ;;
   running-live)
     # Mid-turn: the model request stays in flight, so the host restart interrupts a
     # live turn (no child process) and the recovery path decides what happens.
-    echo 600000 >"$RUN/worker-delay.txt"
+    echo 600000 >"$M5B_MATRIX_CONTROL/worker-delay.txt"
     printf '%s\n' '{"state":"progress","summary":"Lifecycle probe is mid-turn."}' >"$REPORT_FILE"
     ;;
   waiting_input)
@@ -91,14 +91,14 @@ case "$STATE" in
     fail "unknown state ${STATE}"
     ;;
 esac
-# The provider runs as the matrix identity, so it must be able to read the
-# fixtures this script writes.
-chown "$M5B_MATRIX_USER:$M5B_MATRIX_GROUP" "$REPORT_FILE" \
-  "$RUN/worker-delay.txt" "$RUN/worker-sleep.txt" 2>/dev/null || true
-chmod 0640 "$REPORT_FILE" "$RUN/worker-delay.txt" "$RUN/worker-sleep.txt" 2>/dev/null || true
+# Root writes these inputs in the root-owned control directory; the provider
+# (matrix identity) only reads them. No root chown/chmod touches an
+# identity-owned path.
+[[ -d $M5B_MATRIX_CONTROL ]] || fail "missing root-owned control directory $M5B_MATRIX_CONTROL"
+chmod 0644 "$REPORT_FILE" "$M5B_MATRIX_CONTROL/worker-delay.txt" "$M5B_MATRIX_CONTROL/worker-sleep.txt" 2>/dev/null || true
 echo "## worker report fixture"
 cat "$REPORT_FILE"
-echo "turn_delay_ms=$(cat "$RUN/worker-delay.txt")"
+echo "turn_delay_ms=$(cat "$M5B_MATRIX_CONTROL/worker-delay.txt")"
 echo
 
 echo "## create and drive the ticket through the real owner API"
@@ -185,6 +185,27 @@ else
   sleep 3
 fi
 echo "old bridge pid alive after stop: ${alive:-0}"
+if [[ $STATE == running-live ]]; then
+  # The live turn above was interrupted while it waited on the model. The recovered
+  # turn may answer quickly, so the follow-up's event is observable within this run.
+  echo 0 >"$M5B_MATRIX_CONTROL/worker-delay.txt"
+  chmod 0644 "$M5B_MATRIX_CONTROL/worker-delay.txt"
+  echo "recovered_turn_delay_ms=0"
+fi
+echo '$ systemctl stop dispatcher api supervisor (coordinated two-database restart)'
+systemctl stop "${M5B_MATRIX_SLICE%.slice}-dispatcher.service" "${M5B_MATRIX_SLICE%.slice}-api.service" \
+  "${M5B_MATRIX_SLICE%.slice}-supervisor.service"
+echo '$ systemctl restart matrix PostgreSQL'
+systemctl restart "${M5B_MATRIX_SLICE%.slice}-pg.service"
+for _ in $(seq 1 60); do
+  pg_isready -h 127.0.0.1 -p "$M5B_MATRIX_PG_PORT" >/dev/null 2>&1 && break
+  sleep 0.5
+done
+pg_isready -h 127.0.0.1 -p "$M5B_MATRIX_PG_PORT" >/dev/null 2>&1 || fail "matrix PostgreSQL did not come back"
+echo '$ stack.sh services-up (recreate the stopped units over the same database)'
+bash "$M5B_MATRIX_ROOT/scripts/m5b/matrix/stack.sh" services-up
+echo '$ supervisor prepare + wake (fresh runtime process)'
+supervisor_call POST "/control/v1/instances/${M5B_REPOSITORY_ID}/prepare" >/dev/null || true
 echo '$ supervisor wake (fresh runtime process)'
 supervisor_call POST "/control/v1/instances/${M5B_REPOSITORY_ID}/wake" '{"priority":20,"reason":"manual"}' | head -c 300
 echo
@@ -333,3 +354,33 @@ else
   echo "VERDICT: cursor did not advance (${CURSOR_BEFORE} -> ${CURSOR_AFTER_DELIVERY}); the reconciliation chain is NOT proven."
 fi
 
+
+if [[ $STATE == running-live ]]; then
+  echo
+  echo "## append a real platform message through the owner API"
+  CONV=$(task_field conversation_id)
+  DELIVERIES_BEFORE=$(m5b_sql "select count(*) from deliveries where message_id in (select id from messages where conversation_id='$CONV')")
+  CURSOR_BEFORE_MESSAGE=$(cursor_value)
+  $LIVE message --conversation "$CONV" --text "Matrix platform follow-up after the restart." | head -12
+  MESSAGE_DEADLINE=$(( $(date +%s) + 120 ))
+  while (( $(date +%s) < MESSAGE_DEADLINE )); do
+    DELIVERIES_NOW=$(m5b_sql "select count(*) from deliveries where message_id in (select id from messages where conversation_id='$CONV')")
+    CURSOR_NOW=$(cursor_value)
+    (( DELIVERIES_NOW > DELIVERIES_BEFORE && CURSOR_NOW > CURSOR_BEFORE_MESSAGE )) && break
+    sleep 1
+  done
+  echo "platform_deliveries=${DELIVERIES_BEFORE}->${DELIVERIES_NOW:-$DELIVERIES_BEFORE} cursor=${CURSOR_BEFORE_MESSAGE}->$(cursor_value)"
+  m5b_sql "select id, state, coalesce(delivered_at::text,'-'), coalesce(read_at::text,'-') from deliveries where message_id in (select id from messages where conversation_id='$CONV') order by created_at desc limit 2"
+  echo
+
+  echo "## single worker evidence"
+  echo "worker_session_dirs=$(find "$M5B_MATRIX_DSH_HOME/homes/m5b/sessions" -maxdepth 2 -type d -name 'worker-*' | wc -l)"
+  RUNTIME_DB="$M5B_MATRIX_DSH_HOME/homes/m5b/state/m5b/orchestrator.sqlite"
+  /opt/moyu-node24/bin/node --experimental-sqlite -e '
+    const { DatabaseSync } = require("node:sqlite");
+    const db = new DatabaseSync(process.argv[1], { readOnly: true });
+    const rows = db.prepare("select value from ticket").all().map(row => JSON.parse(row.value));
+    const ticket = rows.find(item => item.id === process.argv[2]);
+    console.log(JSON.stringify({ assignments: ticket?.assignments?.map(item => ({ id: item.id, state: item.state, startedAt: item.startedAt ?? null, endedReason: item.endedReason ?? null })) ?? [] }));
+  ' "$RUNTIME_DB" "$ticket"
+fi

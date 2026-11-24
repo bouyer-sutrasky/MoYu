@@ -1,0 +1,162 @@
+# NULL created_at evidence 2026-11-20T07:05:41Z
+head=d64c4efa3a4b93654081d412c681129293178609
+dirty_worktree=0
+down_sha256=9143f76c30e7bb25d08a95c2ea45b902e4ae191f063b5e44f9691898ee1aaa8a
+database_host=postgres://moyu@127.0.0.1:55432 (isolated)
+
+## a NULL row elsewhere in the ledger
+setup_sql=insert into drizzle.__drizzle_migrations (hash, created_at) values ('null-created-at-fixture', null)
+### snapshot before
+           ?column?           
+------------------------------
+ table|execution_reservations
+(1 row)
+
+                                                     ?column?                                                      
+-------------------------------------------------------------------------------------------------------------------
+ fk|execution_reservations_delivery_fk|FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE SET NULL
+ fk|execution_reservations_repository_fk|FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE CASCADE
+ fk|execution_reservations_task_fk|FOREIGN KEY (task_id) REFERENCES task_links(id) ON DELETE SET NULL
+(3 rows)
+
+    ?column?     
+-----------------
+ ledger_total|26
+(1 row)
+
+      ?column?       
+---------------------
+ ledger_0014_count|1
+(1 row)
+
+               ?column?               
+--------------------------------------
+ ledger_0014_created_at|1794002928471
+(1 row)
+
+ ?column? 
+----------
+ 
+(1 row)
+
+### run 0014 down
+ pg_advisory_xact_lock 
+-----------------------
+ 
+(1 row)
+
+psql:packages/db/migrations/rollback/0014_execution_reservations.down.sql:75: ERROR:  0014 rollback refused: 1 ledger row(s) have no created_at, so the migrator's latest order is undefined; repair the ledger first
+CONTEXT:  PL/pgSQL function inline_code_block line 24 at RAISE
+down_exit=3
+### snapshot after
+           ?column?           
+------------------------------
+ table|execution_reservations
+(1 row)
+
+                                                     ?column?                                                      
+-------------------------------------------------------------------------------------------------------------------
+ fk|execution_reservations_delivery_fk|FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE SET NULL
+ fk|execution_reservations_repository_fk|FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE CASCADE
+ fk|execution_reservations_task_fk|FOREIGN KEY (task_id) REFERENCES task_links(id) ON DELETE SET NULL
+(3 rows)
+
+    ?column?     
+-----------------
+ ledger_total|26
+(1 row)
+
+      ?column?       
+---------------------
+ ledger_0014_count|1
+(1 row)
+
+               ?column?               
+--------------------------------------
+ ledger_0014_created_at|1794002928471
+(1 row)
+
+ ?column? 
+----------
+ 
+(1 row)
+
+
+## the applied 0014 ledger row has NULL created_at
+setup_sql=update drizzle.__drizzle_migrations set created_at = null where hash = '46344e9ba62e570e08f2797c21eaef6aaf194191378fa4860cee28444a01c1d3'
+### snapshot before
+           ?column?           
+------------------------------
+ table|execution_reservations
+(1 row)
+
+                                                     ?column?                                                      
+-------------------------------------------------------------------------------------------------------------------
+ fk|execution_reservations_delivery_fk|FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE SET NULL
+ fk|execution_reservations_repository_fk|FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE CASCADE
+ fk|execution_reservations_task_fk|FOREIGN KEY (task_id) REFERENCES task_links(id) ON DELETE SET NULL
+(3 rows)
+
+    ?column?     
+-----------------
+ ledger_total|25
+(1 row)
+
+      ?column?       
+---------------------
+ ledger_0014_count|1
+(1 row)
+
+            ?column?             
+---------------------------------
+ ledger_0014_created_at|<absent>
+(1 row)
+
+ ?column? 
+----------
+ 
+(1 row)
+
+### run 0014 down
+ pg_advisory_xact_lock 
+-----------------------
+ 
+(1 row)
+
+psql:packages/db/migrations/rollback/0014_execution_reservations.down.sql:75: ERROR:  0014 rollback refused: 1 ledger row(s) have no created_at, so the migrator's latest order is undefined; repair the ledger first
+CONTEXT:  PL/pgSQL function inline_code_block line 24 at RAISE
+down_exit=3
+### snapshot after
+           ?column?           
+------------------------------
+ table|execution_reservations
+(1 row)
+
+                                                     ?column?                                                      
+-------------------------------------------------------------------------------------------------------------------
+ fk|execution_reservations_delivery_fk|FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE SET NULL
+ fk|execution_reservations_repository_fk|FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE CASCADE
+ fk|execution_reservations_task_fk|FOREIGN KEY (task_id) REFERENCES task_links(id) ON DELETE SET NULL
+(3 rows)
+
+    ?column?     
+-----------------
+ ledger_total|25
+(1 row)
+
+      ?column?       
+---------------------
+ ledger_0014_count|1
+(1 row)
+
+            ?column?             
+---------------------------------
+ ledger_0014_created_at|<absent>
+(1 row)
+
+ ?column? 
+----------
+ 
+(1 row)
+
+

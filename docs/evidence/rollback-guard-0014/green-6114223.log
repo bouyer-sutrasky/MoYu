@@ -1,0 +1,208 @@
+# post-fix green run 2026-11-20T06:11:03Z
+head=61142238e532e4878d7d754ef71cfbc6a338387c
+dirty_worktree=0
+forward_sha256=46344e9ba62e570e08f2797c21eaef6aaf194191378fa4860cee28444a01c1d3
+down_sha256=ecaefa24ece630778fd6e94e6d0bdc034bc1339106f495ef83be9e21ed24a95a
+database=moyu_guard_0014_green_1795155063
+admin_url=postgres://moyu@127.0.0.1:55432/postgres (isolated)
+
+## migrate
+$ tsx src/cli/migrate.ts
+{"level":"info","service":"moyu-db","event":"migrate.completed","message":"Database migrations applied successfully"}
+migrate_exit=0
+
+## refusal while later migrations are applied
+### snapshot before
+           ?column?           
+------------------------------
+ table|execution_reservations
+(1 row)
+
+                                                     ?column?                                                      
+-------------------------------------------------------------------------------------------------------------------
+ fk|execution_reservations_delivery_fk|FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE SET NULL
+ fk|execution_reservations_repository_fk|FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE CASCADE
+ fk|execution_reservations_task_fk|FOREIGN KEY (task_id) REFERENCES task_links(id) ON DELETE SET NULL
+(3 rows)
+
+    ?column?     
+-----------------
+ ledger_total|25
+(1 row)
+
+      ?column?       
+---------------------
+ ledger_0014_count|1
+(1 row)
+
+               ?column?               
+--------------------------------------
+ ledger_0014_created_at|1794002928471
+(1 row)
+
+                                           ?column?                                           
+----------------------------------------------------------------------------------------------
+ ledger_latest|b52d305a529c2fb69ba8c401062120ee2424c9d9afc10953889aec277bfc397a|1795104810692
+(1 row)
+
+### run 0014 down (plain SQL, no caller hash)
+ pg_advisory_xact_lock 
+-----------------------
+ 
+(1 row)
+
+psql:packages/db/migrations/rollback/0014_execution_reservations.down.sql:64: ERROR:  0014 rollback refused: 10 later migration(s) are already applied; roll them back first
+CONTEXT:  PL/pgSQL function inline_code_block line 30 at RAISE
+down_exit=3
+### snapshot after refusal
+           ?column?           
+------------------------------
+ table|execution_reservations
+(1 row)
+
+                                                     ?column?                                                      
+-------------------------------------------------------------------------------------------------------------------
+ fk|execution_reservations_delivery_fk|FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE SET NULL
+ fk|execution_reservations_repository_fk|FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE CASCADE
+ fk|execution_reservations_task_fk|FOREIGN KEY (task_id) REFERENCES task_links(id) ON DELETE SET NULL
+(3 rows)
+
+    ?column?     
+-----------------
+ ledger_total|25
+(1 row)
+
+      ?column?       
+---------------------
+ ledger_0014_count|1
+(1 row)
+
+               ?column?               
+--------------------------------------
+ ledger_0014_created_at|1794002928471
+(1 row)
+
+                                           ?column?                                           
+----------------------------------------------------------------------------------------------
+ ledger_latest|b52d305a529c2fb69ba8c401062120ee2424c9d9afc10953889aec277bfc397a|1795104810692
+(1 row)
+
+
+## legal rollback: later migrations first, then 0014
+rollback_0024_deletion_operation_id_exit=0
+rollback_0023_fuzzy_pet_avengers_exit=0
+rollback_0022_youthful_loki_exit=0
+rollback_0021_task_decision_routing_exit=0
+rollback_0020_worthless_carmella_unuscione_exit=0
+rollback_0019_event_dedupe_per_repository_exit=0
+rollback_0018_zippy_warhawk_exit=0
+rollback_0017_workable_cardiac_exit=0
+rollback_0016_attachment_revoke_exit=0
+rollback_0015_late_gateway_exit=0
+### snapshot before legal 0014 down
+           ?column?           
+------------------------------
+ table|execution_reservations
+(1 row)
+
+                                                     ?column?                                                      
+-------------------------------------------------------------------------------------------------------------------
+ fk|execution_reservations_delivery_fk|FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE SET NULL
+ fk|execution_reservations_repository_fk|FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE CASCADE
+ fk|execution_reservations_task_fk|FOREIGN KEY (task_id) REFERENCES task_links(id) ON DELETE SET NULL
+(3 rows)
+
+    ?column?     
+-----------------
+ ledger_total|15
+(1 row)
+
+      ?column?       
+---------------------
+ ledger_0014_count|1
+(1 row)
+
+               ?column?               
+--------------------------------------
+ ledger_0014_created_at|1794002928471
+(1 row)
+
+                                           ?column?                                           
+----------------------------------------------------------------------------------------------
+ ledger_latest|46344e9ba62e570e08f2797c21eaef6aaf194191378fa4860cee28444a01c1d3|1794002928471
+(1 row)
+
+ pg_advisory_xact_lock 
+-----------------------
+ 
+(1 row)
+
+down_exit=0
+### snapshot after legal 0014 down
+    ?column?    
+----------------
+ table|<absent>
+(1 row)
+
+ ?column? 
+----------
+(0 rows)
+
+    ?column?     
+-----------------
+ ledger_total|14
+(1 row)
+
+      ?column?       
+---------------------
+ ledger_0014_count|0
+(1 row)
+
+            ?column?             
+---------------------------------
+ ledger_0014_created_at|<absent>
+(1 row)
+
+                                           ?column?                                           
+----------------------------------------------------------------------------------------------
+ ledger_latest|b06e32aebd8dfa96845f74dc916613de7f4d775935c7ce27f5875fcef13f8196|1793898299906
+(1 row)
+
+
+## re-migrate after legal rollback
+$ tsx src/cli/migrate.ts
+{"level":"info","service":"moyu-db","event":"migrate.completed","message":"Database migrations applied successfully"}
+migrate_exit=0
+### snapshot after re-migrate
+           ?column?           
+------------------------------
+ table|execution_reservations
+(1 row)
+
+                                                     ?column?                                                      
+-------------------------------------------------------------------------------------------------------------------
+ fk|execution_reservations_delivery_fk|FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON DELETE SET NULL
+ fk|execution_reservations_repository_fk|FOREIGN KEY (repository_id) REFERENCES repositories(id) ON DELETE CASCADE
+ fk|execution_reservations_task_fk|FOREIGN KEY (task_id) REFERENCES task_links(id) ON DELETE SET NULL
+(3 rows)
+
+    ?column?     
+-----------------
+ ledger_total|25
+(1 row)
+
+      ?column?       
+---------------------
+ ledger_0014_count|1
+(1 row)
+
+               ?column?               
+--------------------------------------
+ ledger_0014_created_at|1794002928471
+(1 row)
+
+                                           ?column?                                           
+----------------------------------------------------------------------------------------------
+ ledger_latest|b52d305a529c2fb69ba8c401062120ee2424c9d9afc10953889aec277bfc397a|1795104810692
+(1 row)
+

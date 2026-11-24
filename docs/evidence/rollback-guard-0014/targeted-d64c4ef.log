@@ -1,0 +1,23 @@
+# targeted 0014 rollback integration tests on d64c4efa3a4b93654081d412c681129293178609 2026-11-20T07:05:10Z
+
+ RUN  v3.2.7 /root/src/rollback-guard-0014-802b3250b91b/packages/db
+
+ ✓ test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > pins the current forward migration hash 1ms
+ ✓ test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > refuses to roll back underneath later applied migrations 1056ms
+ ✓ test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > refuses a ledger row without created_at instead of guessing its order 779ms
+ ✓ test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > refuses when the applied 0014 ledger row has no created_at 673ms
+ ✓ test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > refuses a drifted 0014 ledger hash without dropping the table 1204ms
+ ✓ test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > refuses a missing 0014 ledger row without dropping the table 573ms
+ ✓ test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > refuses a duplicated 0014 ledger row without dropping the table 571ms
+ ✓ test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > refuses when 0014 is not applied at all 770ms
+ ✓ test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > rolls the whole transaction back when a later statement fails 678ms
+ ✓ test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > rolls back legally, refuses a second rollback and re-applies cleanly 654ms
+ ✓ test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > waits for the migration ledger lock before refusing 1114ms
+ ✓ test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > makes migrateDatabase wait for the same ledger lock 625ms
+
+ Test Files  1 passed (1)
+      Tests  12 passed (12)
+   Start at  15:05:11
+   Duration  10.10s (transform 236ms, setup 0ms, collect 1.03s, tests 8.70s, environment 0ms, prepare 99ms)
+
+targeted_exit=0

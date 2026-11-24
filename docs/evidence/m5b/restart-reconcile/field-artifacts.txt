@@ -1,0 +1,87 @@
+# 现场重启对账制品（Issue #95，2026-11-20）
+
+本文只记录实际执行过的现场步骤与结果。所有现场运行都在隔离栈 `m5bmatrix.slice` 内：
+平台 PostgreSQL 16.15（`127.0.0.1:55433`）、runtime Bridge（3403/3404）、supervisor（4591）、
+API（4510）、dispatcher，以及真实 GitHub 测试仓 `Bouyer12/m5a-beta-adf10ad9`。
+生产库、3082 bootstrap、4300 线上实例与 `/root/src/upstream/*` 源码未触碰。
+
+## 代码与制品
+
+- 现场代码 head：`183ac11871055dfbd5d6c867f53caedf67cc20a3`（PR #103 合并 main 后的 head）。
+- 运行时补丁与现场编排提交：`cea533fd67e6d9798e171bd45e4088ff51608560`。
+- platform 侧实现：本 PR 的 dispatcher 改动（首轮 `0c97a7f`、返修 `34536cd`）。
+- dispatcher 制品：`apps/dispatcher/dist/main.js`
+  sha256 `afedb333856bc219881cd48993cd25fca04c5ad5fd3e3c50863f65df3191ea92`（284684 bytes）。
+- 运行时补丁：`integrations/superagent/patches/0031-host-restart-stop-proof.patch`；由
+  `integrations/superagent/build-patched.sh` 在固定上游源码上按 0001–0031 顺序应用后构建：
+  - 输出：`/root/src/upstream/m5b-admission-build22`（新目录，未覆盖旧制品）
+  - `lib/index.js` sha256 `f37ecf5ebc2411057c5b0de92adde33bc95ad9b408346c6e5ffc164ffcf52f23`
+  - 补丁应用 + `pnpm typecheck` + `pnpm build`：exit 0
+  - 上游契约测试：`pnpm exec vitest run tests/stop-proof.spec.ts tests/stop-proof-red.spec.ts`
+    → 2 文件 / 6 tests 通过（含新增 host restart proof 用例）
+- 运行时栈直接用 `M5B_MATRIX_UPSTREAM_BUILD=/root/src/upstream/m5b-admission-build22` 启动；
+  staged profile 的 `node_modules/dsh-superagent` 指向该目录，hash 与上一致。
+
+## 场景 A：回合进行中打断
+
+命令：
+
+```bash
+source /tmp/m5bmatrix/protected/state.env
+bash scripts/m5b/matrix/item5-restart.sh running-live
+```
+
+退出码 0。现场要点（原始日志见 `field-item5-running-live.log`）：
+
+| 项 | 实测 |
+| --- | --- |
+| Bridge PID | 450966 → 451817（`hostRestarted`，新 Assignment） |
+| dispatcher PID | 451131 → 451910（stop + `services-up` 重建） |
+| 另两个被重启的组件 | supervisor、API 与平台 PostgreSQL 在同一协调窗口内 stop/restart/start |
+| `runtime_cursors` | 5 → 8（重启事件）→ 9（Bridge 真实触发）→ 10（owner API 真实消息） |
+| 平台 deliveries | 1 → 2；最新一条 `delivered` + `read`（21:46:35） |
+| worker 数量 | `worker_session_dirs=1` |
+| 运行时 Assignment | 旧 `endedReason=hostRestarted`，新 assignment `running`；仅这两个 |
+| 旧问题 | 修复前新 Assignment 停在 `queued`，effect 每 5 秒 `Later` 重试；本轮已消失 |
+
+同一命令在补丁 0031 之前（build21）实测停在 `VERDICT: ... NOT proven`：新 Assignment 未启动、
+后续输入不产生事件；接入 0031 后同一场景通过。
+
+## 场景 B：真实开放 PR 的 awaiting_review
+
+命令：
+
+```bash
+source /tmp/m5bmatrix/protected/state.env
+M5B_MATRIX_RESTART_BEFORE_CLOSE=1 bash scripts/m5b/matrix/item5-awaiting-review.sh
+```
+
+退出码 0。现场要点（原始日志见 `field-item5-awaiting-review.log`）：
+
+| 项 | 实测 |
+| --- | --- |
+| 真实 PR | `Bouyer12/m5a-beta-adf10ad9#17`，draft、open、`headRefName=agent/fix-readme-probe-2d1857396fb6` |
+| 重启前 | runtime `awaiting_review`，`pr.number/url` 已记录，`ended=null` |
+| 重启 | Bridge PID 453771→455274，dispatcher 454236→455200；supervisor/API/平台 PG 同一协调窗口重启 |
+| 重启后 | runtime `awaiting_review`、PR JSON 完全一致、`ended=null`；平台任务 `awaiting_review|PR17|-`（租约已释放） |
+| 无自动开工 | 无新 Assignment、`operations=0`、`deliveries=1`（不变） |
+| 关闭 PR（不合并） | runtime `closed_unmerged`，平台任务同步；PR #17 已关闭，未合并 |
+
+## 现场编排的必要修正（随补丁提供，不改生产行为）
+
+- `item5-restart.sh` / `item5-awaiting-review.sh`：PG 重启前先停 dispatcher/API/supervisor，
+  PG 回来后用 `stack.sh services-up` 重建 transient units；否则 supervisor 的 pg Pool 会因
+  “terminating connection due to administrator command” 未处理错误而退出。
+- `item5-restart.sh`：恢复回合的 worker 延迟置 0，使后续真实输入的游标推进在单次现场运行
+  内可观测；中断仍然发生在原 live 回合的 600s 模型调用上。
+- `item5-awaiting-review.sh`：`pr-number.txt` 改为 0644（矩阵身份要读），重启前后用完整
+  PR JSON 比较绑定；新增重启块与“无新 Assignment/operation/delivery”断言。
+- `stack.sh` 新增 `services-up` 与 `reset-state`：前者在不重置数据库/票状态的情况下重建
+  transient units，后者在没有第二次凭据 gate 的情况下重建数据库与运行时状态，供场景之间复位。
+
+## 未验证
+
+1. 多仓库同时重启、`discussing` / `waiting_input` 回合。
+2. 宿主真实重启（systemd/OS reboot）而非进程级重启；本轮是进程与两个数据库的隔离重启。
+3. 运行时孤儿进程长期存活时 replacement 会继续等待，需等其退出后的下一次 launch；
+   本轮没有注入长期孤儿。

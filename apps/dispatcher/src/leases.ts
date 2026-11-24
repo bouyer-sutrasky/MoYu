@@ -99,7 +99,7 @@ function toLease(row: LeaseRow): ExecutionLease {
   };
 }
 
-async function appendLeaseEvent(
+export async function appendLeaseEvent(
   database: pg.Pool | pg.PoolClient,
   input: {
     leaseId: string | null;

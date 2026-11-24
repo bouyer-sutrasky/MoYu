@@ -1,0 +1,70 @@
+# red regression for NULL created_at: new tests against the pre-fix 0014 down
+# head=631aa7a (pre-fix code) with the new test file in the worktree
+# command: TEST_DATABASE_ADMIN_URL=postgres://moyu@127.0.0.1:55432/postgres pnpm --filter @moyu/db exec vitest run test/integration/rollback-0014.integration.test.ts --reporter=verbose
+
+ RUN  v3.2.7 /root/src/rollback-guard-0014-802b3250b91b/packages/db
+
+ ✓ test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > pins the current forward migration hash 1ms
+ ✓ test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > refuses to roll back underneath later applied migrations 502ms
+ × test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > refuses a ledger row without created_at instead of guessing its order 440ms
+   → expected [Function] to throw error matching /ledger row\(s\) have no created_at/ but got '0014 rollback refused: 10 later migra…'
+ × test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > refuses when the applied 0014 ledger row has no created_at 445ms
+   → expected [Function] to throw error matching /ledger row\(s\) have no created_at/ but got '0014 rollback refused: the applied 00…'
+ ✓ test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > refuses a drifted 0014 ledger hash without dropping the table 441ms
+ ✓ test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > refuses a missing 0014 ledger row without dropping the table 403ms
+ ✓ test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > refuses a duplicated 0014 ledger row without dropping the table 423ms
+ ✓ test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > refuses when 0014 is not applied at all 366ms
+ ✓ test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > rolls the whole transaction back when a later statement fails 455ms
+ ✓ test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > rolls back legally, refuses a second rollback and re-applies cleanly 535ms
+ ✓ test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > waits for the migration ledger lock before refusing 428ms
+ ✓ test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > makes migrateDatabase wait for the same ledger lock 436ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > refuses a ledger row without created_at instead of guessing its order
+AssertionError: expected [Function] to throw error matching /ledger row\(s\) have no created_at/ but got '0014 rollback refused: 10 later migra…'
+
+- Expected: 
+/ledger row\(s\) have no created_at/
+
++ Received: 
+"0014 rollback refused: 10 later migration(s) are already applied; roll them back first"
+
+ ❯ test/integration/rollback-0014.integration.test.ts:163:5
+    161|     expect(before).toMatchObject({ table: 'execution_reservations', le…
+    162| 
+    163|     await expect(runDown(database)).rejects.toThrow(/ledger row\(s\) h…
+       |     ^
+    164|     expect(await snapshot(database)).toEqual(before);
+    165|   }, 30_000);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  test/integration/rollback-0014.integration.test.ts > 0014 rollback script on real PostgreSQL > refuses when the applied 0014 ledger row has no created_at
+AssertionError: expected [Function] to throw error matching /ledger row\(s\) have no created_at/ but got '0014 rollback refused: the applied 00…'
+
+- Expected: 
+/ledger row\(s\) have no created_at/
+
++ Received: 
+"0014 rollback refused: the applied 0014 ledger row has no created_at"
+
+ ❯ test/integration/rollback-0014.integration.test.ts:177:5
+    175|     expect(before).toMatchObject({ table: 'execution_reservations', le…
+    176| 
+    177|     await expect(runDown(database)).rejects.toThrow(/ledger row\(s\) h…
+       |     ^
+    178|     expect(await snapshot(database)).toEqual(before);
+    179|   }, 30_000);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 10 passed (12)
+   Start at  15:03:19
+   Duration  5.98s (transform 177ms, setup 0ms, collect 827ms, tests 4.88s, environment 0ms, prepare 82ms)
+
+undefined
+/root/src/rollback-guard-0014-802b3250b91b/packages/db:
+[ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL] Command failed with exit code 1: vitest run test/integration/rollback-0014.integration.test.ts '--reporter=verbose'
