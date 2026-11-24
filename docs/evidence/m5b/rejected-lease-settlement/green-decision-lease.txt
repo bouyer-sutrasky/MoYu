@@ -1,0 +1,25 @@
+.                                        | [WARN] Unsupported engine: wanted: {"node":"24.22.2"} (current: {"node":"v22.23.3","pnpm":"11.7.0"})
+
+ RUN  v3.2.7 /root/src/rejected-lease-settle-7baf8c04617e/apps/dispatcher
+
+ ✓ test/integration/decision-lease.integration.test.ts > ignored admission settles its execution generation on real PostgreSQL > settles the unstarted generation and frees the repository slot for the next task 577ms
+ ✓ test/integration/decision-lease.integration.test.ts > ignored admission settles its execution generation on real PostgreSQL > keeps the task, reservation and lease when one named message has no delivery 508ms
+ ✓ test/integration/decision-lease.integration.test.ts > ignored admission settles its execution generation on real PostgreSQL > keeps the task, reservation and lease when a named delivery has no fencing token 500ms
+ ✓ test/integration/decision-lease.integration.test.ts > ignored admission settles its execution generation on real PostgreSQL > keeps the admission when deliveries on the same lease disagree about the fence 521ms
+ ✓ test/integration/decision-lease.integration.test.ts > ignored admission settles its execution generation on real PostgreSQL > reaches the same refusal when the same conflicting evidence arrives in another order 497ms
+ ✓ test/integration/decision-lease.integration.test.ts > ignored admission settles its execution generation on real PostgreSQL > applies the same settlement to a routed decision and keeps its handoff target 507ms
+ ✓ test/integration/decision-lease.integration.test.ts > ignored admission settles its execution generation on real PostgreSQL > leaves the new generation alone when a late ignored receipt names the old one 501ms
+ ✓ test/integration/decision-lease.integration.test.ts > ignored admission settles its execution generation on real PostgreSQL > keeps the generation and records why when a runtime ticket may have executed 502ms
+ ✓ test/integration/decision-lease.integration.test.ts > ignored admission settles its execution generation on real PostgreSQL > keeps the generation when a worker already claimed the reservation 473ms
+ ✓ test/integration/decision-lease.integration.test.ts > ignored admission settles its execution generation on real PostgreSQL > keeps the generation while a command is still queued on it 494ms
+ ✓ test/integration/decision-lease.integration.test.ts > ignored admission settles its execution generation on real PostgreSQL > leaves the admission and generation open while another delivery is in flight 458ms
+ ✓ test/integration/decision-lease.integration.test.ts > ignored admission settles its execution generation on real PostgreSQL > keeps the admission when the delivery fence disagrees with the locked lease row 465ms
+ ✓ test/integration/decision-lease.integration.test.ts > ignored admission settles its execution generation on real PostgreSQL > settles once when two dispatchers apply the same ignored receipt together 429ms
+ ✓ test/integration/decision-lease.integration.test.ts > ignored admission settles its execution generation on real PostgreSQL > settles a historical not_accepted admission that never created a runtime ticket 439ms
+ ✓ test/integration/decision-lease.integration.test.ts > ignored admission settles its execution generation on real PostgreSQL > keeps a historical admission whose runtime ticket may have executed 468ms
+
+ Test Files  1 passed (1)
+      Tests  15 passed (15)
+   Start at  18:37:28
+   Duration  8.74s (transform 427ms, setup 0ms, collect 1.14s, tests 7.34s, environment 0ms, prepare 77ms)
+

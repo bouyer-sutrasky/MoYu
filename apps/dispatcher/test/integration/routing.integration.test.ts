@@ -269,15 +269,21 @@ describe('routed admission handoff on real PostgreSQL', () => {
       [sourceConversationId, repositoryId, options.sourceState ?? 'pending_admission'],
     );
     const sourceTaskId = sourceTask.rows[0]!.id;
-    const sourceLease = await testDatabase.pool.query<{ id: string }>(
+    const sourceLease = await testDatabase.pool.query<{ id: string; fencing_token: string }>(
       `insert into runtime_leases (repository_id, holder_id, expires_at)
-       values ($1, $2, now() + interval '1 hour') returning id`,
+       values ($1, $2, now() + interval '1 hour') returning id, fencing_token`,
       [repositoryId, `task:${sourceTaskId}`],
     );
     await testDatabase.pool.query(`update task_links set runtime_lease_id = $2 where id = $1`, [
       sourceTaskId,
       sourceLease.rows[0]!.id,
     ]);
+    // The ignored receipt is traced through the delivery that carried it; bind
+    // the delivery to the generation it was actually sent under.
+    await testDatabase.pool.query(
+      `update deliveries set runtime_lease_id = $2, fencing_token = $3 where message_id = $1`,
+      [sourceMessageId, sourceLease.rows[0]!.id, sourceLease.rows[0]!.fencing_token],
+    );
 
     const targetConversation = await testDatabase.pool.query<{ id: string }>(
       `insert into conversations
@@ -380,15 +386,19 @@ describe('routed admission handoff on real PostgreSQL', () => {
       [conversationId, fixture.repository.id],
     );
     const taskId = task.rows[0]!.id;
-    const lease = await testDatabase.pool.query<{ id: string }>(
+    const lease = await testDatabase.pool.query<{ id: string; fencing_token: string }>(
       `insert into runtime_leases (repository_id, holder_id, expires_at)
-       values ($1, $2, now() + interval '1 hour') returning id`,
+       values ($1, $2, now() + interval '1 hour') returning id, fencing_token`,
       [fixture.repository.id, `task:${taskId}`],
     );
     await testDatabase.pool.query(`update task_links set runtime_lease_id = $2 where id = $1`, [
       taskId,
       lease.rows[0]!.id,
     ]);
+    await testDatabase.pool.query(
+      `update deliveries set runtime_lease_id = $2, fencing_token = $3 where message_id = $1`,
+      [messageId, lease.rows[0]!.id, lease.rows[0]!.fencing_token],
+    );
     bridge.events.push({
       seq: bridge.events.length + 1,
       id: `decision-routed-second-${suffix}`,

@@ -1,0 +1,24 @@
+.                                        | [WARN] Unsupported engine: wanted: {"node":"24.22.2"} (current: {"node":"v22.23.3","pnpm":"11.7.0"})
+
+ RUN  v3.2.7 /root/src/rejected-lease-settle-7baf8c04617e/apps/dispatcher
+
+ ✓ test/integration/routing.integration.test.ts (13 tests) 6733ms
+   ✓ routed admission handoff on real PostgreSQL > persists a routed decision, releases the source slot and admits the target  588ms
+   ✓ routed admission handoff on real PostgreSQL > sends the routed source conversation one Chinese completion notice from the target report  536ms
+   ✓ routed admission handoff on real PostgreSQL > does not let a historical PR artifact replace the current PR pointer  503ms
+   ✓ routed admission handoff on real PostgreSQL > reserves a later legitimate admission generation independently after the first lease ends  565ms
+   ✓ routed admission handoff on real PostgreSQL > sends the completion notice when the worker delivered and reported before handoff was recorded  520ms
+   ✓ routed admission handoff on real PostgreSQL > routes each report to its own assignment when an earlier report tick was skipped  577ms
+   ✓ routed admission handoff on real PostgreSQL > keeps delivery-proven assignment A when a late handoff sees assignment B  520ms
+   ✓ routed admission handoff on real PostgreSQL > does not send a completion notice for an old report before this rework was handed off and delivered  540ms
+   ✓ routed admission handoff on real PostgreSQL > keeps the empty PR check in the UPDATE so a report cannot overwrite a newer event  477ms
+   ✓ routed admission handoff on real PostgreSQL > keeps the concrete reason for an ordinary refusal and never wakes a target  449ms
+   ✓ routed admission handoff on real PostgreSQL > keeps a manually paused target paused and hands off after it resumes  522ms
+   ✓ routed admission handoff on real PostgreSQL > admits a waiting_input target whose old assignment has no live worker  476ms
+   ✓ routed admission handoff on real PostgreSQL > keeps the source not_accepted and records a failed handoff when the runtime refuses  458ms
+
+ Test Files  1 passed (1)
+      Tests  13 passed (13)
+   Start at  18:42:51
+   Duration  8.21s (transform 451ms, setup 0ms, collect 1.21s, tests 6.73s, environment 0ms, prepare 76ms)
+
