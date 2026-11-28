@@ -109,23 +109,33 @@ async function fetchJson(page, requestPath, options = {}) {
 
 async function openSettings(page, section) {
   const sidebar = page.getByLabel('工作台导航');
-  await sidebar.getByRole('button', { name: '设置', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: '设置' });
-  await dialog.waitFor({ state: 'visible' });
-  if (section) {
-    await dialog
-      .getByRole('navigation', { name: '设置分区' })
-      .getByRole('button', { name: section, exact: true })
-      .click();
+  if (!(await sidebar.isVisible())) {
+    await page.getByRole('button', { name: '打开导航' }).click();
   }
-  return dialog;
+  await sidebar.getByRole('button', { name: '设置', exact: true }).click();
+  const settings = page.getByRole('main');
+  await settings.getByRole('heading', { name: '设置', exact: true }).waitFor();
+  if (section) {
+    await settings.getByRole('button', { name: '账号管理', exact: true }).click();
+    if (section !== '账号管理') {
+      await settings
+        .getByRole('navigation', { name: '账号管理' })
+        .getByRole('button', { name: section, exact: true })
+        .click();
+    }
+  }
+  return settings;
 }
 
 async function setTheme(page, label) {
-  const dialog = await openSettings(page);
-  await dialog.getByRole('group', { name: '主题' }).getByRole('button', { name: label }).click();
-  await dialog.getByRole('button', { name: '关闭', exact: true }).last().click();
-  await dialog.waitFor({ state: 'detached' });
+  const settings = await openSettings(page);
+  await settings.getByRole('group', { name: '主题' }).getByRole('button', { name: label }).click();
+  const sidebar = page.getByLabel('工作台导航');
+  if (!(await sidebar.isVisible())) {
+    await page.getByRole('button', { name: '打开导航' }).click();
+  }
+  await sidebar.getByRole('tab', { name: 'Work', exact: true }).click();
+  await settings.getByRole('heading', { name: '设置', exact: true }).waitFor({ state: 'hidden' });
 }
 
 async function signInWithPasskey(page, capture) {
@@ -261,6 +271,8 @@ async function main() {
     const db = new Client({ connectionString: database.url });
     await db.connect();
     let artifactId = '';
+    let repositoryId = '';
+    let conversationId = '';
     try {
       const ownerResult = await db.query('select id from owners order by created_at limit 1');
       assert(ownerResult.rows[0], 'No owner row exists after registration.');
@@ -269,6 +281,13 @@ async function main() {
          values ($1, $2, $3, $4) returning id`,
         [ownerResult.rows[0].id, 'bouyer-sutrasky/MoYu', 'main', 'provisioning'],
       );
+      repositoryId = repositoryResult.rows[0].id;
+      const conversation = await db.query(
+        `insert into conversations (owner_id, repository_id, mode, execution_mode, source, base_branch, title)
+         values ($1, $2, 'work', 'execute', 'web', 'main', 'E2E 会话') returning id`,
+        [ownerResult.rows[0].id, repositoryId],
+      );
+      conversationId = conversation.rows[0].id;
       const content = 'MoYu M2 protected attachment fixture';
       await writeFile(path.join(artifactDir, 'e2e-attachment.txt'), content, 'utf8');
       const artifactResult = await db.query(
@@ -286,11 +305,10 @@ async function main() {
       await db.end();
     }
 
-    await pageA.reload({ waitUntil: 'domcontentloaded' });
-    const repositorySelect = pageA.getByRole('combobox', { name: '选择仓库' });
-    await repositorySelect.waitFor({ state: 'visible', timeout: 20_000 });
-    const selectedRepository = await repositorySelect.inputValue();
-    assert(selectedRepository, 'The seeded repository was not selectable.');
+    await pageA.goto(`${baseUrl}/?repo=${repositoryId}&conversation=${conversationId}`, {
+      waitUntil: 'domcontentloaded',
+    });
+    await pageA.getByRole('heading', { name: 'E2E 会话', exact: true }).waitFor();
 
     await setTheme(pageA, '浅色');
     const detailsToggle = pageA.getByRole('button', { name: /展开右侧详情|收起右侧详情/ });
@@ -485,7 +503,7 @@ async function main() {
     const meBAfter = await fetchJson(pageB, '/api/v1/auth/me');
     assert(meBAfter.status === 200, 'Revoking one session also revoked the admin session.');
 
-    const settingsLogout = await openSettings(pageB);
+    const settingsLogout = await openSettings(pageB, '账号管理');
     await settingsLogout.getByRole('button', { name: '退出登录' }).click();
     await pageB.getByRole('button', { name: /使用 Passkey 登录/ }).waitFor({ timeout: 20_000 });
     checks.logout = true;

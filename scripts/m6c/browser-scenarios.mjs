@@ -73,8 +73,8 @@ try {
   };
   const checkWidth = async (name) => {
     const width = await page.evaluate(() => ({
-      scrollWidth: document.documentElement.scrollWidth,
-      clientWidth: document.documentElement.clientWidth,
+      scrollWidth: document.querySelector('main:not([hidden])').scrollWidth,
+      clientWidth: document.querySelector('main:not([hidden])').clientWidth,
     }));
     if (width.scrollWidth > width.clientWidth + 1) {
       record.failures.push(
@@ -83,10 +83,13 @@ try {
     }
     return width;
   };
-  const openSettings = async () => {
-    await page.getByRole('button', { name: '设置', exact: true }).click();
-    const dialog = page.getByRole('dialog', { name: '设置', exact: true });
-    await dialog.getByRole('button', { name: 'Superagent', exact: true }).click();
+  const openSuperagent = async () => {
+    const sidebar = page.getByRole('complementary', { name: '工作台导航' });
+    await sidebar.getByRole('button', { name: 'SuperAgent', exact: true }).click();
+    await page
+      .getByRole('main')
+      .getByRole('heading', { name: 'SuperAgent', exact: true })
+      .waitFor();
     await page.locator('#superagent-repository').waitFor({ state: 'visible', timeout: 15_000 });
   };
   const chooseRepo = async (repositoryId) => {
@@ -103,7 +106,21 @@ try {
   await shot('home-1440-light');
   record.scenarios.push({ name: 'home-1440-light', width: await checkWidth('home-1440-light') });
 
-  await openSettings();
+  const desktopSidebar = page.getByRole('complementary', { name: '工作台导航' });
+  await desktopSidebar.getByRole('button', { name: '仓库', exact: true }).click();
+  const repositoryPage = page.getByRole('main');
+  await repositoryPage.getByRole('heading', { name: '仓库', exact: true }).waitFor();
+  await repositoryPage
+    .getByRole('navigation', { name: '已接入仓库' })
+    .locator('[aria-current="page"]')
+    .waitFor();
+  await shot('repositories-1440-light');
+  record.scenarios.push({
+    name: 'repositories-1440-light',
+    width: await checkWidth('repositories-1440-light'),
+  });
+
+  await openSuperagent();
   await chooseRepo(repositoryA);
   await clickGroup('来源');
   await shot('settings-source-a');
@@ -129,7 +146,7 @@ try {
   const afterSwitch = record.requests.slice(switchedAt);
   const wrongRepository = afterSwitch.find(
     (entry) =>
-      entry.url.includes(`/repositories/${repositoryA}/`) &&
+      entry.url.includes(`/repositories/${repositoryA}/superagent/`) &&
       (repositoryB ?? repositoryA) !== repositoryA,
   );
   if (wrongRepository) {
@@ -141,7 +158,7 @@ try {
     wrongRepository: wrongRepository?.url ?? null,
   });
 
-  // Keyboard reachability: tab into the settings dialog and record the focused
+  // Keyboard reachability: tab inside the SuperAgent page and record the focused
   // control without relying on a visible mouse cursor.
   await page.keyboard.press('Tab');
   const focused = await page.evaluate(() => {
@@ -167,19 +184,40 @@ try {
   mobilePage.on('pageerror', (error) => record.failures.push(`mobile pageerror: ${error.message}`));
   await mobilePage.goto(baseUrl.toString(), { waitUntil: 'domcontentloaded', timeout: 30_000 });
   await mobilePage.waitForTimeout(1200);
-  const mobileWidth = await mobilePage.evaluate(() => ({
-    scrollWidth: document.documentElement.scrollWidth,
-    clientWidth: document.documentElement.clientWidth,
-  }));
-  if (mobileWidth.scrollWidth > mobileWidth.clientWidth + 1) {
-    record.failures.push(
-      `mobile: horizontal overflow ${mobileWidth.scrollWidth} > ${mobileWidth.clientWidth}`,
-    );
-  }
-  const mobileShot = join(out, 'home-390-dark.png');
-  await mobilePage.screenshot({ path: mobileShot, fullPage: true });
-  record.screenshots.push(mobileShot);
-  record.scenarios.push({ name: 'home-390-dark', width: mobileWidth });
+  const mobileMain = mobilePage.getByRole('main');
+  const mobileSidebar = mobilePage.getByRole('complementary', { name: '工作台导航' });
+  const mobileSnapshot = async (name) => {
+    const width = await mobileMain.evaluate((main) => ({
+      scrollWidth: main.scrollWidth,
+      clientWidth: main.clientWidth,
+    }));
+    if (width.scrollWidth > width.clientWidth + 1) {
+      record.failures.push(
+        `${name}: horizontal overflow ${width.scrollWidth} > ${width.clientWidth}`,
+      );
+    }
+    const path = join(out, `${name}.png`);
+    await mobilePage.screenshot({ path, fullPage: true });
+    record.screenshots.push(path);
+    record.scenarios.push({ name, width });
+  };
+  await mobileSnapshot('home-390-dark');
+  const openMobilePage = async (label) => {
+    await mobilePage.getByRole('button', { name: '打开导航' }).click();
+    await mobileSidebar.getByRole('button', { name: label, exact: true }).click();
+    await mobileSidebar.waitFor({ state: 'hidden' });
+    await mobileMain.getByRole('heading', { name: label, exact: true }).waitFor();
+  };
+  await openMobilePage('仓库');
+  await mobileMain
+    .getByRole('navigation', { name: '已接入仓库' })
+    .locator('[aria-current="page"]')
+    .waitFor();
+  await mobileSnapshot('repositories-390-dark');
+  await openMobilePage('SuperAgent');
+  await mobileMain.getByRole('button', { name: '部署', exact: true }).click();
+  await mobileMain.getByRole('heading', { name: '部署', exact: true }).waitFor();
+  await mobileSnapshot('superagent-390-dark');
   await mobile.close();
 } catch (error) {
   record.failures.push(error instanceof Error ? (error.stack ?? error.message) : String(error));

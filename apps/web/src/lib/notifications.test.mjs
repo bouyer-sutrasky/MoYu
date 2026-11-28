@@ -12,8 +12,36 @@ const CONVERSATION = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const DEDUPE_KEY = 'moyu.notify.dedupe.v1';
 
 const repositories = [{ id: REPOSITORY, fullName: 'Bouyer12/alpha-fixture' }];
+import { loadNotificationSettings, saveNotificationSettings } from './activity.ts';
+
+test('activity dot is opt-in for each owner and keeps system preferences', () => {
+  const storage = new Map();
+  globalThis.window = {
+    localStorage: {
+      getItem: (key) => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, value),
+    },
+  };
+  try {
+    const oldKey = 'moyu.notify.settings.v1:old-owner';
+    const readKey = 'moyu.activity.read.v1:old-owner';
+    storage.set(oldKey, JSON.stringify({ mode: 'off', categories: { review: false } }));
+    storage.set(readKey, JSON.stringify(['read-event']));
+    const before = loadNotificationSettings('old-owner');
+    assert.equal(before.showActivityBadge, false);
+    assert.equal(loadNotificationSettings('new-owner').showActivityBadge, false);
+    saveNotificationSettings('old-owner', { ...before, showActivityBadge: true });
+    assert.deepEqual(loadNotificationSettings('old-owner'), { ...before, showActivityBadge: true });
+    assert.equal(loadNotificationSettings('new-owner').showActivityBadge, false);
+    assert.deepEqual(JSON.parse(storage.get(readKey)), ['read-event']);
+  } finally {
+    delete globalThis.window;
+  }
+});
+
 const settings = {
   mode: 'always',
+  showActivityBadge: false,
   categories: { needs_reply: true, review: true, completed: true, failed: true },
 };
 
