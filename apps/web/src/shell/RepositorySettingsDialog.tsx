@@ -2,35 +2,35 @@ import { useState } from 'react';
 
 import type { RepositorySummary } from '@moyu/contracts';
 
-import { Modal } from '../components/Modal';
-import { api } from '../lib/api';
+import { api, ApiClientError } from '../lib/api';
 import { describeApiError } from '../lib/errors';
 import styles from './RepositorySettingsDialog.module.css';
 
-interface RepositorySettingsDialogProps {
+interface RepositoryCheckCommandsProps {
   repository: RepositorySummary;
-  onClose: () => void;
+  onSessionLost: () => void;
   onSaved: (repository: RepositorySummary) => void;
 }
 
 const MAX_COMMANDS = 8;
 
 /**
- * Owner-only editor for the repository's check-command override. The field is a
- * shell that the host supervisor runs as its check identity, so the dialog says
- * that plainly and does not offer it anywhere a non-owner can reach.
+ * Owner-only editor for the check commands executed under the supervisor's
+ * check identity.
  */
-export function RepositorySettingsDialog({
+export function RepositoryCheckCommands({
   repository,
-  onClose,
+  onSessionLost,
   onSaved,
-}: RepositorySettingsDialogProps) {
+}: RepositoryCheckCommandsProps) {
   const [custom, setCustom] = useState(repository.checkCommands !== null);
   const [text, setText] = useState((repository.checkCommands ?? []).join('\n'));
+  const [notice, setNotice] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const save = async () => {
+    setNotice(false);
     const commands = custom
       ? text
           .split('\n')
@@ -52,21 +52,20 @@ export function RepositorySettingsDialog({
     try {
       const result = await api.updateRepositoryCheckCommands(repository.id, commands);
       onSaved(result.repository);
-      onClose();
+      setCustom(result.repository.checkCommands !== null);
+      setText((result.repository.checkCommands ?? []).join('\n'));
+      setNotice(true);
     } catch (caught) {
-      setError(describeApiError(caught));
+      if (caught instanceof ApiClientError && caught.status === 401) onSessionLost();
+      else setError(describeApiError(caught));
     } finally {
       setSaving(false);
     }
   };
 
   return (
-    <Modal
-      title="仓库检查命令"
-      description={`${repository.fullName} · 仅所有者可见`}
-      onClose={onClose}
-      wide
-    >
+    <section aria-labelledby="check-commands-heading">
+      <h3 id="check-commands-heading">仓库检查命令</h3>
       <div className={styles.content}>
         <div className={styles.options}>
           <label className={styles.option}>
@@ -74,6 +73,7 @@ export function RepositorySettingsDialog({
               type="radio"
               name="check-command-source"
               checked={!custom}
+              disabled={saving}
               onChange={() => setCustom(false)}
             />
             <span>
@@ -86,6 +86,7 @@ export function RepositorySettingsDialog({
               type="radio"
               name="check-command-source"
               checked={custom}
+              disabled={saving}
               onChange={() => setCustom(true)}
             />
             <span>
@@ -100,6 +101,7 @@ export function RepositorySettingsDialog({
             <span>命令（一行一条，最多 {MAX_COMMANDS} 条）</span>
             <textarea
               rows={7}
+              disabled={saving}
               value={text}
               placeholder={'npm ci --no-audit --no-fund\nnpm run build\nnpm test'}
               spellCheck={false}
@@ -124,19 +126,30 @@ export function RepositorySettingsDialog({
         ) : null}
 
         <div className={styles.actions}>
-          <button type="button" className={styles.secondary} onClick={onClose} disabled={saving}>
-            取消
+          <button
+            type="button"
+            className={styles.secondary}
+            onClick={() => {
+              setCustom(repository.checkCommands !== null);
+              setText((repository.checkCommands ?? []).join('\n'));
+              setNotice(false);
+              setError(null);
+            }}
+            disabled={saving}
+          >
+            还原修改
           </button>
           <button
             type="button"
             className={styles.primary}
             onClick={() => void save()}
-            disabled={saving}
+            disabled={saving || repository.deletion.state === 'deleting'}
           >
             {saving ? '保存中…' : '保存'}
           </button>
         </div>
+        {notice ? <p role="status">检查命令已保存。</p> : null}
       </div>
-    </Modal>
+    </section>
   );
 }

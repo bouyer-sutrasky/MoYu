@@ -9,6 +9,7 @@ import {
 
 import { Icon } from '../components/Icon';
 import { api, ApiClientError } from '../lib/api';
+import { loadDraftFiles, saveDraftFiles } from '../lib/attachmentDrafts';
 import {
   consumeDraftNotice,
   draftForSend,
@@ -92,6 +93,8 @@ export function Composer({
   const [storageWarning, setStorageWarning] = useState<string | null>(null);
   const [attachmentBuckets, setAttachmentBuckets] = useState<Record<string, AttachmentBucket>>({});
   const attachmentVersionsRef = useRef<Map<string, number>>(new Map());
+  const persistedFilesRef = useRef(new Map<string, File[]>());
+  const [fileStorageErrors, setFileStorageErrors] = useState<Record<string, boolean>>({});
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const draftRef = useRef<Draft | null>(null);
@@ -107,9 +110,54 @@ export function Composer({
   const attachmentBucket = attachmentScope
     ? (attachmentBuckets[attachmentScope] ?? EMPTY_ATTACHMENTS)
     : EMPTY_ATTACHMENTS;
+  const attachmentsReady = Boolean(attachmentScope && attachmentBuckets[attachmentScope]);
   const files = attachmentBucket.files;
   const uploading = attachmentBucket.uploading;
   const attachmentError = attachmentBucket.error;
+
+  useEffect(() => {
+    if (!attachmentScope || persistedFilesRef.current.has(attachmentScope)) return;
+    let active = true;
+    void loadDraftFiles(attachmentScope).then(
+      (stored) => {
+        if (!active || (attachmentVersionsRef.current.get(attachmentScope) ?? 0) !== 0) return;
+        persistedFilesRef.current.set(attachmentScope, stored);
+        setAttachmentBuckets((current) =>
+          current[attachmentScope]
+            ? current
+            : {
+                ...current,
+                [attachmentScope]: { ...EMPTY_ATTACHMENTS, files: stored },
+              },
+        );
+      },
+      () => {
+        if (!active) return;
+        setFileStorageErrors((current) => ({ ...current, [attachmentScope]: true }));
+        setAttachmentBuckets((current) =>
+          current[attachmentScope] ? current : { ...current, [attachmentScope]: EMPTY_ATTACHMENTS },
+        );
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [attachmentScope]);
+
+  useEffect(() => {
+    const snapshots = persistedFilesRef.current;
+    for (const [scope, bucket] of Object.entries(attachmentBuckets)) {
+      if (snapshots.get(scope) === bucket.files) continue;
+      snapshots.set(scope, bucket.files);
+      void saveDraftFiles(scope, bucket.files).then(
+        () =>
+          setFileStorageErrors((current) =>
+            current[scope] ? { ...current, [scope]: false } : current,
+          ),
+        () => setFileStorageErrors((current) => ({ ...current, [scope]: true })),
+      );
+    }
+  }, [attachmentBuckets]);
 
   const notAccepted = conversation?.task?.state === 'not_accepted';
   const terminal =
@@ -457,7 +505,7 @@ export function Composer({
     if (!trimmed || !conversationId || !repositoryId || !scope || disabled) {
       return;
     }
-    if (attachmentBucket.uploading) {
+    if (!attachmentsReady || attachmentBucket.uploading) {
       return;
     }
     // Per-conversation request identity, not a single global flag: a late
@@ -660,6 +708,7 @@ export function Composer({
             ref={fileRef}
             className={styles.composerFileInput}
             type="file"
+            disabled={disabled || !attachmentsReady}
             multiple
             accept={ATTACHMENT_ACCEPT}
             onChange={(event) => addFiles(event.target.files)}
@@ -669,7 +718,12 @@ export function Composer({
             type="button"
             className={styles.textButton}
             onClick={() => fileRef.current?.click()}
-            disabled={disabled || uploading || files.length >= attachmentLimits.maxFilesPerMessage}
+            disabled={
+              disabled ||
+              !attachmentsReady ||
+              uploading ||
+              files.length >= attachmentLimits.maxFilesPerMessage
+            }
             title="添加截图、日志或文本文件"
           >
             <Icon name="plus" size={13} /> 附件
@@ -695,6 +749,11 @@ export function Composer({
             <span className={styles.attachmentSize}>发送时上传</span>
           ) : null}
         </div>
+        {attachmentScope && fileStorageErrors[attachmentScope] && files.length > 0 ? (
+          <p className={styles.composerHint} role="status">
+            浏览器无法保存所选附件，刷新前请发送或保留原文件。
+          </p>
+        ) : null}
         {attachmentError ? (
           <p className={styles.composerStatus} data-kind="error" role="alert">
             {attachmentError}
@@ -782,7 +841,13 @@ export function Composer({
             <button
               type="button"
               className={styles.sendButton}
-              disabled={disabled || sending || text.trim().length === 0 || pendingTextMismatch}
+              disabled={
+                disabled ||
+                !attachmentsReady ||
+                sending ||
+                text.trim().length === 0 ||
+                pendingTextMismatch
+              }
               onClick={() => void submit()}
               title={
                 pendingTextMismatch

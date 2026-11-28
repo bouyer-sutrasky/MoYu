@@ -137,6 +137,7 @@ export function PanelProvider({
   navigate = stay,
   back = stay,
   backLabel = '',
+  onSessionLost,
   children,
 }: {
   t: T;
@@ -146,6 +147,7 @@ export function PanelProvider({
   navigate?: PanelContext['navigate'];
   back?: () => void;
   backLabel?: string;
+  onSessionLost?: () => void;
   children: ReactNode;
 }) {
   // Read the current translator via ref so locale changes do not recreate `call` and restart polling.
@@ -153,7 +155,10 @@ export function PanelProvider({
   copy.current = t;
   // Capture the repository in the caller. A new repository creates a new Call,
   // which changes the usePoll dependency and invalidates the old subscription.
-  const call = useMemo(() => caller(() => messages(copy.current), repositoryId), [repositoryId]);
+  const call = useMemo(
+    () => caller(() => messages(copy.current), repositoryId, onSessionLost),
+    [repositoryId, onSessionLost],
+  );
   const [toast, setToast] = useState<{ text: string; id: number }>();
   const notify = useCallback((text: string) => setToast({ text, id: Date.now() }), []);
   // Poll at 1s during a restart until the server goes down and answers again, or time out after 30s if the restart completed between polls.

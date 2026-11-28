@@ -5,10 +5,8 @@ import {
   formatElapsed,
   formatUpdatedAt,
   repositoryActivationLabel,
-  repositoryRuntimeLabel,
-  runtimeResourceLabel,
+  repositoryPreparationLabel,
   taskStateLabel,
-  waitingForLabel,
 } from '../lib/format';
 import styles from './WorkspaceShell.module.css';
 
@@ -18,9 +16,11 @@ const HOME_ROWS = 3;
 function PendingRow({
   conversation,
   onOpen,
+  pending = false,
 }: {
   conversation: ConversationSummary;
   onOpen: (conversationId: string) => void;
+  pending?: boolean;
 }) {
   const task = conversation.task;
   return (
@@ -28,29 +28,40 @@ function PendingRow({
       <button
         type="button"
         className={styles.homeRowButton}
+        data-pending={pending}
         onClick={() => onOpen(conversation.id)}
       >
-        <span className={styles.homeRowTitle}>
-          {conversation.title ?? task?.question ?? '未命名任务'}
+        <span className={styles.homeRowIcon} data-state={task?.state ?? 'unknown'}>
+          <Icon name={task?.state === 'awaiting_review' ? 'task' : 'chat'} size={17} />
         </span>
-        <span className={styles.homeRowMeta}>
-          <span className={styles.homeRowState}>
-            {taskStateLabel(task?.state ?? null, task?.decision)}
+        <span className={styles.homeRowText}>
+          <strong className={styles.homeRowTitle}>
+            {conversation.title ?? task?.question ?? '未命名任务'}
+          </strong>
+          {pending ? (
+            <span className={styles.homeRowState}>
+              {taskStateLabel(task?.state ?? null, task?.decision)}
+            </span>
+          ) : null}
+        </span>
+        {!pending ? (
+          <span className={styles.homeRowMeta}>
+            <span className={styles.homeRowState} data-state={task?.state ?? 'unknown'}>
+              {taskStateLabel(task?.state ?? null, task?.decision)}
+            </span>
+            {task?.prUrl ? <span className={styles.homeRowTag}>PR</span> : null}
+            <span>{formatUpdatedAt(conversation.updatedAt)}</span>
           </span>
-          {task?.prUrl ? <span className={styles.homeRowTag}>PR</span> : null}
-          <span className={styles.homeRowTime}>{formatUpdatedAt(conversation.updatedAt)}</span>
-        </span>
+        ) : (
+          <span className={styles.homeRowChevron}>
+            <Icon name="chevron-down" size={16} />
+          </span>
+        )}
       </button>
     </li>
   );
 }
 
-/**
- * The workbench home: one screen holding the current repository, its instance
- * state, the new-task action and a few rows that want attention. History, logs,
- * resources and forms live on their own pages (sidebar entries and the details
- * panel), not here.
- */
 export function WorkbenchHome({
   repository,
   conversations,
@@ -64,6 +75,7 @@ export function WorkbenchHome({
   onViewAllPending,
   onRepositoryAction,
   repositoryActionBusy,
+  repositoryActionError,
 }: {
   repository: RepositorySummary;
   conversations: ConversationSummary[];
@@ -78,45 +90,33 @@ export function WorkbenchHome({
   onViewAllPending: () => void;
   onRepositoryAction: (action: 'wake' | 'sleep' | 'retry' | 'retry_stop' | 'prepare') => void;
   repositoryActionBusy: boolean;
+  repositoryActionError: string | null;
 }) {
   const runtime = repository.runtime ?? null;
-  const instance = repositoryRuntimeLabel(runtime);
-  const waiting = waitingForLabel(runtime?.waitingFor);
-  const resource = runtimeResourceLabel(runtime?.resource);
   const attention = pendingConversations.slice(0, HOME_ROWS);
-  const pendingIds = new Set(attention.map((conversation) => conversation.id));
-  const recent = conversations
-    .filter((conversation) => !pendingIds.has(conversation.id))
-    .slice(0, HOME_ROWS);
-  const executionSlot =
-    runtime?.executionSlot === 'busy'
-      ? '占用'
-      : runtime?.executionSlot === 'free'
-        ? '空闲'
-        : '未知';
-  const listener =
-    runtime?.listener === 'active' ? '接收中' : runtime?.listener === 'paused' ? '已暂停' : '未知';
-  const activation = runtime?.activation ?? null;
-  const activationLabel = activation ? repositoryActivationLabel(activation) : null;
+  const recent = conversations.slice(0, 4);
+  const activation = runtime?.activation;
+  const failedPreparation = runtime?.preparation.state === 'failed' ? runtime.preparation : null;
+  const activationLabel =
+    repositoryActivationLabel(activation) ??
+    (failedPreparation ? repositoryPreparationLabel(failedPreparation) : null);
   const activationElapsed = activation ? formatElapsed(activation.elapsedMs) : null;
-  const retryAction = activation?.retryAction ?? null;
-
+  const retryAction =
+    activation?.retryAction ??
+    (failedPreparation &&
+    runtime?.actions.some((action) => action.action === 'prepare' && action.enabled)
+      ? 'prepare'
+      : null);
   return (
     <div className={styles.home}>
       <header className={styles.homeHeader}>
         <div className={styles.homeIdentity}>
-          <p className={styles.homeEyebrow}>当前仓库</p>
-          <h1 className={styles.homeTitle}>{repository.fullName}</h1>
-          <p className={styles.homeSubtitle}>
-            默认分支 {repository.defaultBranch}
-            <span className={styles.homeDot} aria-hidden="true">
-              ·
-            </span>
-            {instance}
-            {waiting ? `，${waiting}` : ''}
-            {runtime?.executionSlot === 'busy' ? '，执行槽占用中' : ''}
+          <p className={styles.homeEyebrow}>
+            <Icon name="repository" size={14} /> 当前仓库
           </p>
-          {resource ? <p className={styles.homeSubtitle}>{resource}</p> : null}
+          <h1 className={styles.homeTitle} title={repository.fullName}>
+            {repository.fullName.split('/').at(-1)}
+          </h1>
           <div className={styles.homeActions}>
             <button type="button" className={styles.primaryButton} onClick={onNewTask}>
               <Icon name="plus" />
@@ -124,28 +124,27 @@ export function WorkbenchHome({
             </button>
           </div>
         </div>
-        <dl className={styles.homeFacts}>
+        <div className={styles.homeArt} aria-hidden="true">
+          <div />
+          <div />
           <div>
-            <dt>执行槽</dt>
-            <dd>{executionSlot}</dd>
+            <span>
+              <Icon name="branch" size={13} /> {repository.defaultBranch}
+            </span>
+            <i />
+            <i />
+            <i />
+            <i />
           </div>
-          <div>
-            <dt>监听</dt>
-            <dd>{listener}</dd>
-          </div>
-          <div>
-            <dt>检查命令</dt>
-            <dd>
-              {repository.checkCommands
-                ? `本仓库 ${repository.checkCommands.length} 条`
-                : '继承全局默认'}
-            </dd>
-          </div>
-        </dl>
+        </div>
       </header>
 
       {activationLabel ? (
-        <div className={styles.activationBanner} data-state={activation?.phase} role="status">
+        <div
+          className={styles.activationBanner}
+          data-state={failedPreparation ? 'failed' : activation?.phase}
+          role="status"
+        >
           <div className={styles.activationRow}>
             <strong>{activationLabel}</strong>
             {activationElapsed ? <span>已用时 {activationElapsed}</span> : null}
@@ -163,10 +162,18 @@ export function WorkbenchHome({
               </button>
             ) : null}
           </div>
-          {activation?.detail ? (
-            <p className={styles.activationDetail}>{activation.detail}</p>
+          {(activation?.detail ?? failedPreparation?.detail) ? (
+            <p className={styles.activationDetail}>
+              {activation?.detail ?? failedPreparation?.detail}
+            </p>
           ) : null}
         </div>
+      ) : null}
+
+      {repositoryActionError ? (
+        <p className={styles.runtimeError} role="alert">
+          {repositoryActionError}
+        </p>
       ) : null}
 
       <section className={styles.homeSection} aria-labelledby="home-attention-heading">
@@ -184,12 +191,13 @@ export function WorkbenchHome({
         ) : attention.length === 0 ? (
           <p className={styles.homeEmpty}>没有需要你现在处理的任务。</p>
         ) : (
-          <ul className={styles.homeList}>
+          <ul className={styles.homePendingList}>
             {attention.map((conversation) => (
               <PendingRow
                 key={conversation.id}
                 conversation={conversation}
                 onOpen={onOpenConversation}
+                pending
               />
             ))}
           </ul>
@@ -198,7 +206,7 @@ export function WorkbenchHome({
 
       <section className={styles.homeSection} aria-labelledby="home-recent-heading">
         <div className={styles.homeSectionHeading}>
-          <h2 id="home-recent-heading">最近</h2>
+          <h2 id="home-recent-heading">最近会话</h2>
         </div>
         {conversationsLoading && recent.length === 0 ? (
           <p className={styles.homeEmpty}>正在读取…</p>

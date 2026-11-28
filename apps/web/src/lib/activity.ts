@@ -64,11 +64,13 @@ export function summaryForEvent(event: WorkspaceEvent): string {
 }
 
 export interface NotificationSettings {
+  showActivityBadge: boolean;
   mode: 'off' | 'background' | 'always';
   categories: Record<ActivityCategory, boolean>;
 }
 
 export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
+  showActivityBadge: false,
   mode: 'background',
   categories: {
     needs_reply: true,
@@ -97,6 +99,7 @@ export function loadNotificationSettings(ownerId: string): NotificationSettings 
     if (!raw) return DEFAULT_NOTIFICATION_SETTINGS;
     const parsed = JSON.parse(raw) as Partial<NotificationSettings>;
     return {
+      showActivityBadge: parsed.showActivityBadge === true,
       mode:
         parsed.mode === 'off' || parsed.mode === 'always' || parsed.mode === 'background'
           ? parsed.mode

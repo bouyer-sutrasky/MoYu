@@ -283,6 +283,9 @@ export function ConfigHistory({
   const { settings } = useSettings();
   const { sources } = settings;
   const [open, setOpen] = useState(!!focus);
+  useEffect(() => {
+    if (focus) setOpen(true);
+  }, [focus]);
   const [data, setData] = useState<HistoryView>();
   const [error, setError] = useState<string>();
   const revisions = JSON.stringify([

@@ -129,9 +129,11 @@ function SourceCard({ source }: { source: SourceView }) {
 
 export function SourceSettings({ focus }: { focus?: string }) {
   const { sources } = useSettings().settings;
+  const focusedSource = sources.some((source) => source.id === focus) ? focus : undefined;
   useEffect(() => {
-    if (focus) document.getElementById(`dt-source-${focus}`)?.scrollIntoView?.({ block: 'start' });
-  }, [focus]);
+    if (focusedSource)
+      document.getElementById(`dt-source-${focusedSource}`)?.scrollIntoView?.({ block: 'start' });
+  }, [focusedSource]);
   return (
     <div className="dt-form">
       {sources.map((source) => (

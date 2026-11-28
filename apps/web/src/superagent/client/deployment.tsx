@@ -50,16 +50,19 @@ export function DeploymentPage({
   setup,
   form,
   accounts: showAccounts,
+  draftKey,
 }: {
   setup: SetupView;
   form: DeploymentForm;
   accounts?: boolean;
+  draftKey?: string | undefined;
 }) {
   const { t, notify } = usePanel();
   const snapshot = form?.state;
   const editable = snapshot?.status === 'ready' && snapshot.writable;
   // Pass `revision` only while DSH serves writable values so a draft started before `ready` rebases once writable.
   const draft = useDraft({
+    ...(draftKey ? { key: draftKey } : {}),
     saved: limitsOf(editable ? snapshot.value : setup.machine),
     revision: editable ? snapshot.revision : undefined,
     // The supervisor returns a content hash, not a monotonically increasing

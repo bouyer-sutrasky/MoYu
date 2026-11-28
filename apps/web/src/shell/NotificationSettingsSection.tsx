@@ -1,12 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 
 import { Icon } from '../components/Icon';
 import {
   ACTIVITY_CATEGORIES,
   ACTIVITY_CATEGORY_LABELS,
   DEFAULT_NOTIFICATION_SETTINGS,
-  loadNotificationSettings,
-  saveNotificationSettings,
   type NotificationSettings,
 } from '../lib/activity';
 import {
@@ -17,7 +15,8 @@ import {
 import styles from './NotificationSettingsSection.module.css';
 
 interface NotificationSettingsSectionProps {
-  ownerId: string;
+  settings: NotificationSettings;
+  onChange: (settings: NotificationSettings) => void;
 }
 
 const MODE_OPTIONS: Array<{
@@ -37,23 +36,14 @@ const PERMISSION_TEXT: Record<NotificationPermissionState, string> = {
   denied: '浏览器已拒绝通知。请在地址栏的站点设置中重新允许，然后刷新本页。',
 };
 
-export function NotificationSettingsSection({ ownerId }: NotificationSettingsSectionProps) {
-  const [settings, setSettings] = useState<NotificationSettings>(() =>
-    loadNotificationSettings(ownerId),
-  );
+export function NotificationSettingsSection({
+  settings,
+  onChange,
+}: NotificationSettingsSectionProps) {
   const [permission, setPermission] = useState<NotificationPermissionState>(() =>
     notificationPermission(),
   );
   const [requesting, setRequesting] = useState(false);
-
-  useEffect(() => {
-    setSettings(loadNotificationSettings(ownerId));
-  }, [ownerId]);
-
-  function update(next: NotificationSettings) {
-    setSettings(next);
-    saveNotificationSettings(ownerId, next);
-  }
 
   async function request() {
     if (permission !== 'default') return;
@@ -75,6 +65,15 @@ export function NotificationSettingsSection({ ownerId }: NotificationSettingsSec
         </p>
       </div>
 
+      <label className={styles.category}>
+        <input
+          type="checkbox"
+          checked={settings.showActivityBadge}
+          onChange={(event) => onChange({ ...settings, showActivityBadge: event.target.checked })}
+        />
+        <span>显示活动红点</span>
+      </label>
+
       <div className={styles.modeRow} role="group" aria-label="系统通知时机">
         {MODE_OPTIONS.map((option) => (
           <button
@@ -82,7 +81,7 @@ export function NotificationSettingsSection({ ownerId }: NotificationSettingsSec
             type="button"
             className={settings.mode === option.mode ? styles.modeActive : styles.modeButton}
             aria-pressed={settings.mode === option.mode}
-            onClick={() => update({ ...settings, mode: option.mode })}
+            onClick={() => onChange({ ...settings, mode: option.mode })}
           >
             <span>{option.label}</span>
             <small>{option.hint}</small>
@@ -98,7 +97,7 @@ export function NotificationSettingsSection({ ownerId }: NotificationSettingsSec
               type="checkbox"
               checked={settings.categories[category]}
               onChange={(event) =>
-                update({
+                onChange({
                   ...settings,
                   categories: { ...settings.categories, [category]: event.target.checked },
                 })
@@ -141,7 +140,12 @@ export function NotificationSettingsSection({ ownerId }: NotificationSettingsSec
       <button
         type="button"
         className={styles.textButton}
-        onClick={() => update(DEFAULT_NOTIFICATION_SETTINGS)}
+        onClick={() =>
+          onChange({
+            ...DEFAULT_NOTIFICATION_SETTINGS,
+            showActivityBadge: settings.showActivityBadge,
+          })
+        }
       >
         恢复默认（仅后台，全部类别）
       </button>

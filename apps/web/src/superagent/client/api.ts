@@ -56,6 +56,7 @@ async function api<T>(
   path: string,
   method: string,
   body?: unknown,
+  onSessionLost?: () => void,
 ): Promise<T> {
   let response: Response;
   const json =
@@ -71,6 +72,7 @@ async function api<T>(
   } catch {
     throw new ApiError(messages.offline, 0, { unreachable: true });
   }
+  if (response.status === 401) onSessionLost?.();
   const text = await response.text();
   let value: unknown;
   try {
@@ -190,7 +192,11 @@ export type Call = <K extends keyof Api>(
   ...request: {} extends ApiRequest<K> ? [request?: ApiRequest<K>] : [request: ApiRequest<K>]
 ) => Promise<ApiResponse<K>>;
 /** Build a typed route caller that resolves localized error messages on each request. */
-export function caller(messages: () => ApiMessages, repositoryId: string): Call {
+export function caller(
+  messages: () => ApiMessages,
+  repositoryId: string,
+  onSessionLost?: () => void,
+): Call {
   return (route, ...[request]) => {
     const [method, pattern] = route.split(' ') as [string, string];
     const values = (request ?? {}) as Record<string, unknown> & {
@@ -204,7 +210,14 @@ export function caller(messages: () => ApiMessages, repositoryId: string): Call 
       .filter(([, value]) => value !== undefined && value !== '')
       .map(([name, value]) => `${name}=${encodeURIComponent(String(value))}`)
       .join('&');
-    return api(messages(), repositoryId, query ? `${path}?${query}` : path, method, values.body);
+    return api(
+      messages(),
+      repositoryId,
+      query ? `${path}?${query}` : path,
+      method,
+      values.body,
+      onSessionLost,
+    );
   };
 }
 

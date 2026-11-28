@@ -8,26 +8,33 @@ import {
   type ConversationSummary,
   type Message,
   type RepositorySummary,
+  type RepositoryRuntimeData,
   type TaskReview,
   type WorkspaceEvent,
 } from '@moyu/contracts';
 
 import { api, ApiClientError } from '../lib/api';
-import { categoryForEvent, loadActivityReadIds, loadNotificationSettings } from '../lib/activity';
+import {
+  categoryForEvent,
+  loadActivityReadIds,
+  loadNotificationSettings,
+  saveNotificationSettings,
+  type NotificationSettings,
+} from '../lib/activity';
 import { deliverWebNotification } from '../lib/notifications';
 import { clearOwnerDrafts, moveDraftToAlias } from '../lib/drafts';
+import { clearOwnerDraftFiles } from '../lib/attachmentDrafts';
 import { describeApiError } from '../lib/errors';
 import { Icon } from '../components/Icon';
-import { useTheme } from '../theme/ThemeProvider';
-import { ActivityDialog } from './ActivityDialog';
-import { HistoryDialog } from './HistoryDialog';
+import { ActivitySection } from './ActivityDialog';
+import { HistorySection } from './HistoryDialog';
 import { Composer } from './Composer';
 import { ConversationPane } from './ConversationPane';
 import { DetailsPanel } from './DetailsPanel';
-import { SettingsDialog } from './SettingsDialog';
+import { SettingsPage } from './SettingsDialog';
 import { AddRepositoryDialog } from './AddRepositoryDialog';
-import { RepositoryManagementDialog } from './RepositoryManagementDialog';
-import { RepositorySettingsDialog } from './RepositorySettingsDialog';
+import { RepositoriesPage, type RepositoryAction } from './RepositoriesPage';
+import { SuperagentPage } from './SuperagentPage';
 import { Sidebar } from './Sidebar';
 import type { SettingsGroup } from '../superagent/contract';
 import {
@@ -43,18 +50,23 @@ import styles from './WorkspaceShell.module.css';
 type Mode = 'work' | 'chat';
 type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
 type PageStatus = 'idle' | 'loading' | 'error';
-type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
+type ConnectionStatus = 'initial' | 'retrying' | 'connected' | 'disconnected';
 
 const MESSAGE_PAGE_SIZE = 100;
 const CONVERSATION_PAGE_SIZE = 50;
 /** How many additional `after` pages one SSE merge may fetch before leaving the rest. */
 const SSE_MERGE_PAGE_LIMIT = 5;
 
-const CONNECTION_LABELS: Record<ConnectionStatus, string> = {
-  connecting: '重连中',
-  connected: '实时连接',
-  disconnected: '已断开',
-};
+function isPreparing(repository: RepositorySummary): boolean {
+  const runtime = repository.runtime;
+  const phase = runtime?.activation.phase;
+  return (
+    runtime?.preparation.state === 'preparing' ||
+    phase === 'queued' ||
+    phase === 'preparing' ||
+    phase === 'starting'
+  );
+}
 
 interface ProgressEntry {
   id: string;
@@ -130,7 +142,6 @@ export function WorkspaceShell({
   onRefreshMe,
   onLoggedOut,
 }: WorkspaceShellProps) {
-  const { mode: themeMode, setMode: setThemeMode } = useTheme();
   const [mode, setMode] = useState<Mode>('work');
   const [repositories, setRepositories] = useState<RepositorySummary[]>([]);
   const [repositoriesStatus, setRepositoriesStatus] = useState<LoadStatus>('loading');
@@ -165,7 +176,7 @@ export function WorkspaceShell({
   const [creatingTask, setCreatingTask] = useState(false);
   const [taskCommandBusy, setTaskCommandBusy] = useState(false);
   const [taskCommandError, setTaskCommandError] = useState<string | null>(null);
-  const [connection, setConnection] = useState<ConnectionStatus>('connecting');
+  const [connection, setConnection] = useState<ConnectionStatus>('initial');
 
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [review, setReview] = useState<TaskReview | null>(null);
@@ -174,8 +185,9 @@ export function WorkspaceShell({
   const [reviewBusy, setReviewBusy] = useState<'changes' | 'checks' | null>(null);
   const reviewTaskRef = useRef<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [activityOpen, setActivityOpen] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
+  const [notificationSettings, setNotificationSettings] = useState(() =>
+    loadNotificationSettings(me.owner.id),
+  );
   const [unreadCount, setUnreadCount] = useState(0);
   const [route, setRoute] = useState<WorkspaceRoute>(() =>
     parseWorkspaceRoute(window.location.search),
@@ -183,11 +195,13 @@ export function WorkspaceShell({
   const [routeNotice, setRouteNotice] = useState<{ text: string; retry?: boolean } | null>(null);
   const [routeRetryKey, setRouteRetryKey] = useState(0);
   const [addRepositoryOpen, setAddRepositoryOpen] = useState(false);
-  const [repositoryManagementOpen, setRepositoryManagementOpen] = useState(false);
-  const [repositorySettingsOpen, setRepositorySettingsOpen] = useState(false);
-  const [repositoryActionBusy, setRepositoryActionBusy] = useState(false);
-  const [repositoryActionError, setRepositoryActionError] = useState<string | null>(null);
-  const [loggingOut, setLoggingOut] = useState(false);
+  const [repositoryActions, setRepositoryActions] = useState<
+    Record<string, { busy: boolean; error: string | null }>
+  >({});
+  const [runtimeErrors, setRuntimeErrors] = useState<Record<string, string | null>>({});
+  const runtimeRequestsRef = useRef(new Map<string, number>());
+  const repositoriesRequestRef = useRef(0);
+  const busyRepositoriesRef = useRef(new Set<string>());
 
   const conversationRequestRef = useRef(0);
   const messagesRequestRef = useRef(0);
@@ -232,49 +246,88 @@ export function WorkspaceShell({
   messagesNewerCursorRef.current = messagesNewerCursor;
   conversationsNextCursorRef.current = conversationsNextCursor;
 
-  const loadRepositories = useCallback(async () => {
-    setRepositoriesStatus('loading');
-    setRepositoriesError(null);
-    try {
-      const result = await api.repositories();
-      setRepositories(result.repositories);
-      setRepositoriesStatus('ready');
-    } catch (caught) {
-      if (caught instanceof ApiClientError && caught.status === 401) {
-        onSessionLost();
-        return;
-      }
-      setRepositoriesStatus('error');
-      setRepositoriesError(describeApiError(caught));
-    }
-  }, [onSessionLost]);
-
-  const handleRepositoryAction = useCallback(
-    async (action: 'wake' | 'sleep' | 'retry' | 'retry_stop' | 'prepare') => {
-      const repositoryId = selectedRepositoryIdRef.current;
-      if (!repositoryId) return;
-      setRepositoryActionBusy(true);
-      setRepositoryActionError(null);
+  const loadRepositories = useCallback(
+    async (silent = false) => {
+      const request = ++repositoriesRequestRef.current;
+      if (!silent) setRepositoriesStatus('loading');
+      setRepositoriesError(null);
       try {
-        if (action === 'sleep' || action === 'retry_stop') {
-          await api.sleepRepository(repositoryId);
-        } else if (action === 'prepare') {
-          await api.prepareRepository(repositoryId);
-        } else {
-          await api.wakeRepository(repositoryId);
-        }
-        await loadRepositories();
+        const result = await api.repositories();
+        if (request !== repositoriesRequestRef.current) return;
+        setRepositories(result.repositories);
+        setRepositoriesStatus('ready');
       } catch (caught) {
+        if (request !== repositoriesRequestRef.current) return;
         if (caught instanceof ApiClientError && caught.status === 401) {
           onSessionLost();
           return;
         }
-        setRepositoryActionError(describeApiError(caught));
-      } finally {
-        setRepositoryActionBusy(false);
+        if (!silent) setRepositoriesStatus('error');
+        setRepositoriesError(describeApiError(caught));
       }
     },
-    [loadRepositories, onSessionLost],
+    [onSessionLost],
+  );
+
+  const updateRepositoryRuntime = useCallback(
+    ({ repositoryId, runtime }: RepositoryRuntimeData) => {
+      setRepositories((current) =>
+        current.map((item) => (item.id === repositoryId ? { ...item, runtime } : item)),
+      );
+    },
+    [],
+  );
+
+  const refreshRepositoryRuntime = useCallback(
+    async (repositoryId: string) => {
+      const requests = runtimeRequestsRef.current;
+      const request = (requests.get(repositoryId) ?? 0) + 1;
+      requests.set(repositoryId, request);
+      try {
+        const result = await api.repositoryRuntime(repositoryId);
+        if (requests.get(repositoryId) !== request) return;
+        updateRepositoryRuntime(result);
+        setRuntimeErrors((current) =>
+          current[repositoryId] ? { ...current, [repositoryId]: null } : current,
+        );
+      } catch (caught) {
+        if (requests.get(repositoryId) !== request) return;
+        if (caught instanceof ApiClientError && caught.status === 401) onSessionLost();
+        else
+          setRuntimeErrors((current) => ({ ...current, [repositoryId]: describeApiError(caught) }));
+      }
+    },
+    [onSessionLost, updateRepositoryRuntime],
+  );
+
+  const handleRepositoryAction = useCallback(
+    async (repositoryId: string, action: RepositoryAction) => {
+      const busy = busyRepositoriesRef.current;
+      if (busy.has(repositoryId)) return;
+      busy.add(repositoryId);
+      setRepositoryActions((current) => ({
+        ...current,
+        [repositoryId]: { busy: true, error: null },
+      }));
+      let error: string | null = null;
+      try {
+        const result =
+          action === 'sleep' || action === 'retry_stop'
+            ? await api.sleepRepository(repositoryId)
+            : action === 'prepare'
+              ? await api.prepareRepository(repositoryId)
+              : await api.wakeRepository(repositoryId);
+        updateRepositoryRuntime(result);
+        await refreshRepositoryRuntime(repositoryId);
+      } catch (caught) {
+        if (caught instanceof ApiClientError && caught.status === 401) onSessionLost();
+        else error = describeApiError(caught);
+      } finally {
+        busy.delete(repositoryId);
+        setRepositoryActions((current) => ({ ...current, [repositoryId]: { busy: false, error } }));
+      }
+    },
+    [onSessionLost, refreshRepositoryRuntime, updateRepositoryRuntime],
   );
 
   /**
@@ -307,6 +360,7 @@ export function WorkspaceShell({
       const next = parseWorkspaceRoute(window.location.search);
       routeRef.current = next;
       setRoute(next);
+      setSidebarOpen(false);
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
@@ -317,62 +371,78 @@ export function WorkspaceShell({
     setRouteRetryKey((current) => current + 1);
   }, []);
 
-  const openSettings = useCallback(() => {
-    const current = routeRef.current;
-    if (current.settings) {
+  const openSettings = useCallback(
+    (section: WorkspaceSettingsSection = 'appearance') => {
+      const current = routeRef.current;
+      const settings = current.settings;
+      commitRoute({
+        ...current,
+        repositories: undefined,
+        settings:
+          section === 'superagent' && settings?.section === 'superagent'
+            ? settings
+            : {
+                section,
+                repositoryId: section === 'superagent' ? selectedRepositoryIdRef.current : null,
+                group: section === 'superagent' ? 'source' : null,
+              },
+      });
       setSidebarOpen(false);
-      return;
-    }
-    const repositoryId = selectedRepositoryIdRef.current;
+    },
+    [commitRoute],
+  );
+
+  const openRepositories = useCallback(() => {
+    const current = routeRef.current;
     commitRoute({
       ...current,
-      settings: {
-        section: 'appearance',
-        repositoryId,
-        group: 'source',
-      },
+      settings: null,
+      repositories: current.repositories ?? { repositoryId: selectedRepositoryIdRef.current },
     });
     setSidebarOpen(false);
   }, [commitRoute]);
 
-  const changeSettingsSection = useCallback(
-    (section: WorkspaceSettingsSection) => {
-      const settings = routeRef.current.settings;
-      if (!settings) return;
-      commitRoute({ ...routeRef.current, settings: { ...settings, section } });
+  const selectManagementRepository = useCallback(
+    (repositoryId: string) => {
+      commitRoute({ ...routeRef.current, settings: null, repositories: { repositoryId } });
     },
     [commitRoute],
   );
 
   const changeSuperagentRepository = useCallback(
-    (repositoryId: string | null) => {
+    (repositoryId: string) => {
       const settings = routeRef.current.settings;
-      if (!settings) return;
-      // The settings repository is independent from the workbench repository.
-      // Switching it stays inside the settings dialog and starts that instance's
-      // navigation at its first group, matching the upstream settings shell.
+      if (settings?.section !== 'superagent' || settings.repositoryId === repositoryId) return;
       commitRoute({
         ...routeRef.current,
-        settings: { ...settings, repositoryId, group: 'source' },
+        settings: { section: 'superagent', repositoryId, group: 'source' },
       });
     },
     [commitRoute],
   );
 
-  const changeSuperagentGroup = useCallback(
-    (group: SettingsGroup) => {
+  const changeSuperagentLocation = useCallback(
+    (query: { group: SettingsGroup; source?: string; version?: string }) => {
       const settings = routeRef.current.settings;
-      if (!settings) return;
-      commitRoute({ ...routeRef.current, settings: { ...settings, group } });
+      if (settings?.section !== 'superagent') return;
+      commitRoute({
+        ...routeRef.current,
+        settings: { section: 'superagent', repositoryId: settings.repositoryId, ...query },
+      });
     },
     [commitRoute],
   );
 
-  const closeSettings = useCallback(() => {
-    const current = routeRef.current;
-    if (!current.settings) return;
-    commitRoute({ ...current, settings: null });
-  }, [commitRoute]);
+  function closeManagement(nextMode: Mode) {
+    setMode(nextMode);
+    setSidebarOpen(false);
+    commitRoute({ ...routeRef.current, settings: null, repositories: undefined });
+  }
+
+  function updateNotificationSettings(next: NotificationSettings) {
+    setNotificationSettings(next);
+    saveNotificationSettings(me.owner.id, next);
+  }
 
   const loadPending = useCallback(
     async (repositoryId: string, silent = false) => {
@@ -983,6 +1053,10 @@ export function WorkspaceShell({
     if (repositories.length === 0) {
       setSelectedRepositoryId(null);
       setSelectedConversationId(null);
+      if (desired.repositoryId || desired.conversationId) {
+        setRouteNotice({ text: '要恢复的仓库或会话已不可用。' });
+        commitRoute({ ...desired, repositoryId: null, conversationId: null }, { replace: true });
+      }
       return;
     }
 
@@ -1001,9 +1075,6 @@ export function WorkspaceShell({
           ...desired,
           repositoryId: fallbackRepositoryId,
           conversationId: null,
-          settings: desired.settings
-            ? { ...desired.settings, repositoryId: fallbackRepositoryId }
-            : null,
         },
         { replace: true },
       );
@@ -1016,10 +1087,6 @@ export function WorkspaceShell({
         {
           ...desired,
           repositoryId,
-          settings:
-            desired.settings && !desired.settings.repositoryId
-              ? { ...desired.settings, repositoryId }
-              : desired.settings,
         },
         { replace: true },
       );
@@ -1091,26 +1158,27 @@ export function WorkspaceShell({
     })();
   }, [route, repositories, repositoriesStatus, routeRetryKey, commitRoute, onSessionLost]);
 
-  // A settings route names the repository whose instance it shows. Resolve an
-  // unknown or removed repository to the workbench's repository and keep the
-  // dialog open: the owner asked for settings, not for a different repository.
+  // Management targets are resolved independently from the Work location.
   useEffect(() => {
-    const settings = route.settings;
-    if (!settings || repositoriesStatus !== 'ready' || repositories.length === 0) {
-      return;
-    }
-    if (settings.repositoryId && repositories.some((item) => item.id === settings.repositoryId)) {
-      return;
-    }
-    const current = selectedRepositoryIdRef.current;
-    const workbench =
-      route.repositoryId && repositories.some((item) => item.id === route.repositoryId)
-        ? route.repositoryId
-        : null;
-    const fallback =
-      workbench ??
-      (current && repositories.some((item) => item.id === current) ? current : repositories[0]!.id);
-    commitRoute({ ...route, settings: { ...settings, repositoryId: fallback } }, { replace: true });
+    if (repositoriesStatus !== 'ready' || routeRef.current !== route) return;
+    const superagent = route.settings?.section === 'superagent' ? route.settings : null;
+    const target = route.repositories ?? superagent;
+    if (!target) return;
+    if (repositories.some((item) => item.id === target.repositoryId)) return;
+    const repositoryId =
+      repositories.find((item) => item.id === route.repositoryId)?.id ??
+      repositories[0]?.id ??
+      null;
+    if (target.repositoryId === repositoryId) return;
+    const next = route.repositories
+      ? { ...route, repositories: { repositoryId } }
+      : superagent && {
+          ...route,
+          settings: superagent.repositoryId
+            ? { section: 'superagent' as const, repositoryId, group: superagent.group }
+            : { ...superagent, repositoryId },
+        };
+    if (next) commitRoute(next, { replace: true });
   }, [route, repositories, repositoriesStatus, commitRoute]);
 
   const openConversationTarget = useCallback(
@@ -1118,17 +1186,14 @@ export function WorkspaceShell({
       routeApplySeqRef.current += 1;
       setMode('work');
       setCreatingTask(false);
-      setActivityOpen(false);
-      setHistoryOpen(false);
       setSidebarOpen(false);
       setRouteNotice(null);
       commitRoute({
         ...routeRef.current,
         repositoryId: target.repositoryId,
         conversationId: target.conversationId,
-        // A notification click navigates; it should not leave the settings
-        // dialog over the conversation it opened.
         settings: null,
+        repositories: undefined,
       });
       // The address effect validates the target (`GET conversations/:id`)
       // before it opens it, so a deleted or forbidden conversation falls back
@@ -1276,7 +1341,7 @@ export function WorkspaceShell({
       if (disposed) {
         return;
       }
-      setConnection(source.readyState === EventSource.CLOSED ? 'disconnected' : 'connecting');
+      setConnection(source.readyState === EventSource.CLOSED ? 'disconnected' : 'retrying');
     };
     const onWorkspaceEvent = (raw: Event) => {
       if (!(raw instanceof MessageEvent) || typeof raw.data !== 'string') {
@@ -1318,68 +1383,55 @@ export function WorkspaceShell({
     [repositories, selectedRepositoryId],
   );
 
-  /**
-   * The settings dialog keeps its own repository. Until the route resolves an
-   * explicit target, it opens on the workbench repository (the previous
-   * behavior) instead of an empty instance selector.
-   */
-  const settingsSuperagentRepositoryId = useMemo(() => {
-    const requested = route.settings?.repositoryId ?? null;
-    if (requested && repositories.some((repository) => repository.id === requested)) {
-      return requested;
-    }
-    if (
-      selectedRepositoryId &&
-      repositories.some((repository) => repository.id === selectedRepositoryId)
-    ) {
-      return selectedRepositoryId;
-    }
-    if (
-      route.repositoryId &&
-      repositories.some((repository) => repository.id === route.repositoryId)
-    ) {
-      return route.repositoryId;
-    }
-    return repositories[0]?.id ?? null;
-  }, [repositories, route.repositoryId, route.settings?.repositoryId, selectedRepositoryId]);
+  const page = route.repositories
+    ? 'repositories'
+    : route.settings?.section === 'superagent'
+      ? 'superagent'
+      : route.settings
+        ? 'settings'
+        : 'work';
+  const pageRef = useRef<HTMLElement | null>(null);
+  const detailsVisible = page === 'work' && mode === 'work' && detailsOpen;
+  const managementRepositoryId = route.repositories?.repositoryId ?? null;
+  const managementRepository =
+    repositories.find((item) => item.id === managementRepositoryId) ??
+    (managementRepositoryId ? null : selectedRepository);
+  const superagentRepositoryId =
+    route.settings?.section === 'superagent' ? route.settings.repositoryId : null;
+  const hasRemoval = repositories.some((item) => item.deletion?.state === 'deleting');
 
-  // A repository copy is prepared by the supervisor while the instance can be
-  // asleep or online. Poll only while it is preparing, or while the selected
-  // repository is still being switched in (queued/preparing/starting), so the
-  // phase, percentage and measured elapsed time come from real supervisor
-  // facts, and stop when it settles.
-  const preparationState = selectedRepository?.runtime?.preparation.state;
-  const activationPhase = selectedRepository?.runtime?.activation.phase;
-  const activationActive =
-    activationPhase === 'queued' ||
-    activationPhase === 'preparing' ||
-    activationPhase === 'starting';
   useEffect(() => {
-    const repositoryId = selectedRepositoryId;
-    if (!repositoryId || (preparationState !== 'preparing' && !activationActive)) return;
-    let cancelled = false;
+    if (page !== 'work') pageRef.current?.focus();
+  }, [page]);
+
+  useEffect(() => {
+    if (!hasRemoval) return;
+    const timer = window.setInterval(() => void loadRepositories(true), 2000);
+    return () => window.clearInterval(timer);
+  }, [hasRemoval, loadRepositories]);
+
+  const managedRuntimeId = managementRepository?.id;
+  useEffect(() => {
+    if (page === 'repositories' && managedRuntimeId)
+      void refreshRepositoryRuntime(managedRuntimeId);
+  }, [page, managedRuntimeId, refreshRepositoryRuntime]);
+
+  const managementPollingId =
+    page === 'repositories' && managementRepository && isPreparing(managementRepository)
+      ? managementRepository.id
+      : null;
+  const workPollingId =
+    selectedRepository && isPreparing(selectedRepository) ? selectedRepository.id : null;
+  useEffect(() => {
+    const ids = [...new Set([workPollingId, managementPollingId])].filter((id) => id !== null);
+    if (!ids.length) return;
     const timer = window.setInterval(() => {
-      void api
-        .repositoryRuntime(repositoryId)
-        .then((result) => {
-          if (cancelled) return;
-          setRepositories((current) =>
-            current.map((repository) =>
-              repository.id === repositoryId
-                ? { ...repository, runtime: result.runtime }
-                : repository,
-            ),
-          );
-        })
-        .catch(() => {
-          // The next tick retries; the sidebar keeps the last real phase.
-        });
+      for (const id of ids) {
+        if (!busyRepositoriesRef.current.has(id)) void refreshRepositoryRuntime(id);
+      }
     }, 2000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [preparationState, activationActive, selectedRepositoryId]);
+    return () => window.clearInterval(timer);
+  }, [managementPollingId, workPollingId, refreshRepositoryRuntime]);
 
   const sendMessage = useCallback(
     async (
@@ -1587,41 +1639,19 @@ export function WorkspaceShell({
     ],
   );
 
-  async function logout() {
-    if (loggingOut) {
-      return;
-    }
-    setLoggingOut(true);
-    try {
-      await api.logout();
-    } catch (caught) {
-      if (!(caught instanceof ApiClientError && caught.status === 401)) {
-        setRepositoriesError(describeApiError(caught));
-      }
-    } finally {
-      // Explicit sign-out clears this owner's local drafts. A lost session keeps
-      // them, so signing back in restores work in progress.
-      clearOwnerDrafts(me.owner.id);
-      setLoggingOut(false);
-      onLoggedOut();
-    }
-  }
-
-  function cycleTheme() {
-    setThemeMode(themeMode === 'system' ? 'light' : themeMode === 'light' ? 'dark' : 'system');
-  }
-
   function closeDrawers() {
     setSidebarOpen(false);
-    setDetailsOpen(false);
+    if (page === 'work') setDetailsOpen(false);
   }
 
   function selectRepository(id: string) {
     routeApplySeqRef.current += 1;
     setRouteNotice(null);
+    setMode('work');
+    setCreatingTask(false);
     setSelectedRepositoryId(id);
     setSelectedConversationId(null);
-    commitRoute({ ...routeRef.current, repositoryId: id, conversationId: null });
+    commitRoute({ repositoryId: id, conversationId: null, settings: null });
     setSidebarOpen(false);
   }
 
@@ -1631,7 +1661,12 @@ export function WorkspaceShell({
     setSelectedConversationId(null);
     setCreatingTask(true);
     setSidebarOpen(false);
-    commitRoute({ ...routeRef.current, conversationId: null });
+    commitRoute({
+      ...routeRef.current,
+      conversationId: null,
+      settings: null,
+      repositories: undefined,
+    });
   }
 
   function openConversation(id: string) {
@@ -1645,6 +1680,8 @@ export function WorkspaceShell({
       ...routeRef.current,
       repositoryId: selectedRepositoryIdRef.current ?? routeRef.current.repositoryId,
       conversationId: id,
+      settings: null,
+      repositories: undefined,
     });
   }
 
@@ -1670,19 +1707,12 @@ export function WorkspaceShell({
         跳到主内容
       </a>
 
-      <div className={clsx(styles.shell, detailsOpen && styles.shellWithDetails)}>
+      <div className={clsx(styles.shell, detailsVisible && styles.shellWithDetails)}>
         <Sidebar
           mode={mode}
-          onModeChange={(next) => {
-            setMode(next);
-            setSidebarOpen(false);
-          }}
-          repositories={repositories}
-          repositoriesStatus={repositoriesStatus}
-          repositoriesError={repositoriesError}
+          onModeChange={closeManagement}
+          page={page}
           selectedRepositoryId={selectedRepositoryId}
-          onSelectRepository={selectRepository}
-          onReloadRepositories={() => void loadRepositories()}
           conversations={conversations}
           conversationsStatus={conversationsStatus}
           conversationsError={conversationsError}
@@ -1698,43 +1728,17 @@ export function WorkspaceShell({
             }
           }}
           onNewTask={startNewTask}
-          onOpenAddRepository={() => {
-            setAddRepositoryOpen(true);
-            setSidebarOpen(false);
-          }}
-          onOpenRepositoryManagement={() => {
-            setRepositoryManagementOpen(true);
-            setSidebarOpen(false);
-          }}
-          onOpenRepositorySettings={() => {
-            setRepositorySettingsOpen(true);
-            setSidebarOpen(false);
-          }}
-          onRepositoryAction={(action) => void handleRepositoryAction(action)}
-          repositoryActionBusy={repositoryActionBusy}
-          repositoryActionError={repositoryActionError}
-          onOpenActivity={() => {
-            setActivityOpen(true);
-            setSidebarOpen(false);
-          }}
-          unreadCount={unreadCount}
-          onOpenHistory={() => {
-            setHistoryOpen(true);
-            setSidebarOpen(false);
-          }}
-          onOpenSettings={openSettings}
-          ownerName={me.owner.displayName}
-          themeMode={themeMode}
-          onCycleTheme={cycleTheme}
+          onOpenRepositories={openRepositories}
+          onOpenSuperagent={() => openSettings('superagent')}
+          onOpenSettings={() => openSettings()}
           mobileOpen={sidebarOpen}
           onClose={() => setSidebarOpen(false)}
-          onLogout={() => void logout()}
         />
 
         <div
           className={clsx(
             styles.mobileScrim,
-            (sidebarOpen || detailsOpen) && styles.mobileScrimVisible,
+            (sidebarOpen || detailsVisible) && styles.mobileScrimVisible,
           )}
           onClick={closeDrawers}
           role="presentation"
@@ -1754,14 +1758,24 @@ export function WorkspaceShell({
               <nav className={styles.breadcrumb} aria-label="当前位置">
                 <span>MoYu</span>
                 <span className={styles.breadcrumbSeparator}>/</span>
-                <span>{mode === 'work' ? 'Work' : 'Chat'}</span>
-                {selectedRepository ? (
+                <strong>
+                  {page === 'repositories'
+                    ? '仓库'
+                    : page === 'superagent'
+                      ? 'SuperAgent'
+                      : page === 'settings'
+                        ? '设置'
+                        : mode === 'work'
+                          ? 'Work'
+                          : 'Chat'}
+                </strong>
+                {page === 'work' && mode === 'work' && conversation && selectedRepository ? (
                   <>
                     <span className={styles.breadcrumbSeparator}>/</span>
                     <strong>{selectedRepository.fullName}</strong>
                   </>
                 ) : null}
-                {selectedRepository && conversation ? (
+                {page === 'work' && mode === 'work' && selectedRepository && conversation ? (
                   <>
                     <span className={styles.breadcrumbSeparator}>/</span>
                     <span className={styles.breadcrumbTitle}>
@@ -1773,36 +1787,28 @@ export function WorkspaceShell({
             </div>
 
             <div className={styles.topbarRight}>
-              <span className={styles.connectionPill} data-state={connection}>
-                <span className={styles.connectionDot} aria-hidden="true" />
-                {CONNECTION_LABELS[connection]}
-              </span>
-              <span className={styles.sessionPill} title="会话长期保持，可随时撤销">
-                <span className={styles.sessionDot} aria-hidden="true" />
-                已登录
-              </span>
-              <button
-                type="button"
-                className={styles.topbarButton}
-                onClick={() => setActivityOpen(true)}
-                aria-label="打开活动中心"
-                title="活动中心"
-              >
-                <Icon name="bell" />
-                <span className={styles.topbarBadge} data-empty={unreadCount === 0}>
-                  {unreadCount > 99 ? '99+' : unreadCount}
+              {connection === 'retrying' || connection === 'disconnected' ? (
+                <span
+                  className={styles.connectionPill}
+                  role="status"
+                  data-state={connection === 'retrying' ? 'connecting' : connection}
+                >
+                  <span className={styles.connectionDot} aria-hidden="true" />
+                  {connection === 'retrying' ? '实时连接重连中' : '实时连接已断开'}
                 </span>
-              </button>
-              <button
-                type="button"
-                className={clsx(styles.topbarButton, detailsOpen && styles.topbarButtonActive)}
-                onClick={() => setDetailsOpen((current) => !current)}
-                aria-label={detailsOpen ? '收起右侧详情' : '展开右侧详情'}
-                aria-expanded={detailsOpen}
-                title={detailsOpen ? '收起详情' : '展开详情'}
-              >
-                <Icon name="panel" />
-              </button>
+              ) : null}
+              {page === 'work' && mode === 'work' && conversation ? (
+                <button
+                  type="button"
+                  className={clsx(styles.topbarButton, detailsOpen && styles.topbarButtonActive)}
+                  onClick={() => setDetailsOpen((current) => !current)}
+                  aria-label={detailsOpen ? '收起右侧详情' : '展开右侧详情'}
+                  aria-expanded={detailsOpen}
+                  title={detailsOpen ? '收起详情' : '展开详情'}
+                >
+                  <Icon name="panel" />
+                </button>
+              ) : null}
             </div>
           </header>
 
@@ -1831,7 +1837,13 @@ export function WorkspaceShell({
             </div>
           ) : null}
 
-          <main ref={mainRef} id="main-content" className={styles.main} tabIndex={-1}>
+          <main
+            ref={mainRef}
+            id={page === 'work' ? 'main-content' : undefined}
+            className={styles.main}
+            tabIndex={-1}
+            hidden={page !== 'work'}
+          >
             <ConversationPane
               mode={mode}
               repository={selectedRepository}
@@ -1874,24 +1886,143 @@ export function WorkspaceShell({
               pendingHasMore={pendingHasMore}
               pendingLoading={pendingStatus === 'loading'}
               onOpenConversation={openConversation}
-              onViewAllPending={() => setActivityOpen(true)}
-              onRepositoryAction={(action) => void handleRepositoryAction(action)}
-              repositoryActionBusy={repositoryActionBusy}
+              onViewAllPending={() => openSettings('activity')}
+              onOpenRepositories={openRepositories}
+              onRepositoryAction={(action) => {
+                if (selectedRepositoryId) void handleRepositoryAction(selectedRepositoryId, action);
+              }}
+              repositoryActionBusy={
+                selectedRepositoryId
+                  ? (repositoryActions[selectedRepositoryId]?.busy ?? false)
+                  : false
+              }
+              repositoryActionError={
+                selectedRepositoryId
+                  ? (repositoryActions[selectedRepositoryId]?.error ?? null)
+                  : null
+              }
             />
           </main>
 
-          <Composer
-            mode={mode}
-            repository={selectedRepository}
-            conversation={conversation}
-            conversationLoading={conversationStatus === 'loading'}
-            ownerId={me.owner.id}
-            onSend={sendMessage}
-          />
+          <div
+            className={styles.composerSlot}
+            hidden={
+              page !== 'work' || (mode === 'work' && (!selectedConversationId || creatingTask))
+            }
+          >
+            <Composer
+              mode={mode}
+              repository={selectedRepository}
+              conversation={conversation}
+              conversationLoading={conversationStatus === 'loading'}
+              ownerId={me.owner.id}
+              onSend={sendMessage}
+            />
+          </div>
+          {page !== 'work' ? (
+            <main ref={pageRef} id="main-content" className={styles.main} tabIndex={-1}>
+              <div className={styles.workspacePage}>
+                {page === 'repositories' ? (
+                  <RepositoriesPage
+                    repositories={repositories}
+                    repository={managementRepository}
+                    workRepositoryId={selectedRepositoryId}
+                    loading={repositoriesStatus === 'loading'}
+                    error={repositoriesError}
+                    runtimeError={
+                      managedRuntimeId ? (runtimeErrors[managedRuntimeId] ?? null) : null
+                    }
+                    repositoryActionBusy={
+                      managedRuntimeId
+                        ? (repositoryActions[managedRuntimeId]?.busy ?? false)
+                        : false
+                    }
+                    repositoryActionError={
+                      managedRuntimeId ? (repositoryActions[managedRuntimeId]?.error ?? null) : null
+                    }
+                    onSelect={selectManagementRepository}
+                    onUseInWork={selectRepository}
+                    onBack={() => closeManagement('work')}
+                    onAdd={() => setAddRepositoryOpen(true)}
+                    onReload={() => loadRepositories(true)}
+                    onRepositoryAction={(action) => {
+                      if (managedRuntimeId) void handleRepositoryAction(managedRuntimeId, action);
+                    }}
+                    onSaved={(updated) =>
+                      setRepositories((items) =>
+                        items.map((item) =>
+                          item.id === updated.id
+                            ? { ...item, checkCommands: updated.checkCommands }
+                            : item,
+                        ),
+                      )
+                    }
+                    onSessionLost={onSessionLost}
+                  />
+                ) : route.settings?.section === 'superagent' ? (
+                  <SuperagentPage
+                    repositories={repositories}
+                    repositoryId={
+                      repositories.some((item) => item.id === superagentRepositoryId)
+                        ? superagentRepositoryId
+                        : null
+                    }
+                    route={route.settings}
+                    loading={repositoriesStatus === 'loading'}
+                    error={repositoriesError}
+                    onReload={() => void loadRepositories()}
+                    onRepositoryChange={changeSuperagentRepository}
+                    onNavigate={changeSuperagentLocation}
+                    onSessionLost={onSessionLost}
+                    onAdd={() => setAddRepositoryOpen(true)}
+                  />
+                ) : route.settings ? (
+                  <SettingsPage
+                    me={me}
+                    authState={authState}
+                    section={route.settings.section}
+                    onSectionChange={openSettings}
+                    notificationSettings={notificationSettings}
+                    onNotificationSettingsChange={updateNotificationSettings}
+                    unreadCount={unreadCount}
+                    onRefreshMe={onRefreshMe}
+                    onLoggedOut={async () => {
+                      clearOwnerDrafts(me.owner.id);
+                      try {
+                        await clearOwnerDraftFiles(me.owner.id);
+                      } catch {
+                        // Local storage can be unavailable in a restricted browser.
+                      } finally {
+                        onLoggedOut();
+                      }
+                    }}
+                    onSessionLost={onSessionLost}
+                  >
+                    {route.settings.section === 'activity' ? (
+                      <ActivitySection
+                        ownerId={me.owner.id}
+                        onOpenConversation={openConversationTarget}
+                        onUnreadChange={setUnreadCount}
+                        onSessionLost={onSessionLost}
+                      />
+                    ) : null}
+                    {route.settings.section === 'history' ? (
+                      <HistorySection
+                        repositories={repositories}
+                        initialRepositoryId={selectedRepositoryId}
+                        onOpenConversation={openConversationTarget}
+                        onSessionLost={onSessionLost}
+                      />
+                    ) : null}
+                  </SettingsPage>
+                ) : null}
+              </div>
+            </main>
+          ) : null}
         </div>
 
         <DetailsPanel
-          open={detailsOpen}
+          open={detailsVisible}
           repository={selectedRepository}
           conversation={conversation}
           review={review}
@@ -1904,75 +2035,15 @@ export function WorkspaceShell({
         />
       </div>
 
-      {route.settings ? (
-        <SettingsDialog
-          me={me}
-          authState={authState}
-          repositories={repositories}
-          section={route.settings.section}
-          superagentRepositoryId={settingsSuperagentRepositoryId}
-          superagentGroup={route.settings.group ?? 'source'}
-          onSectionChange={changeSettingsSection}
-          onSuperagentRepositoryChange={changeSuperagentRepository}
-          onSuperagentGroupChange={changeSuperagentGroup}
-          onClose={closeSettings}
-          onRefreshMe={onRefreshMe}
-          onLoggedOut={onLoggedOut}
-          onSessionLost={onSessionLost}
-        />
-      ) : null}
-
-      {activityOpen ? (
-        <ActivityDialog
-          ownerId={me.owner.id}
-          onClose={() => setActivityOpen(false)}
-          onOpenConversation={openConversationTarget}
-          onUnreadChange={setUnreadCount}
-          onSessionLost={onSessionLost}
-        />
-      ) : null}
-
-      {historyOpen ? (
-        <HistoryDialog
-          repositories={repositories}
-          initialRepositoryId={selectedRepositoryId}
-          onClose={() => setHistoryOpen(false)}
-          onOpenConversation={openConversationTarget}
-          onSessionLost={onSessionLost}
-        />
-      ) : null}
-
-      {repositoryManagementOpen ? (
-        <RepositoryManagementDialog
-          repositories={repositories}
-          onClose={() => setRepositoryManagementOpen(false)}
-          onReload={loadRepositories}
-          onRemoved={(removedId) => {
-            const next = repositories.find((repository) => repository.id !== removedId);
-            if (selectedRepositoryIdRef.current === removedId) {
-              setSelectedRepositoryId(next?.id ?? null);
-              setSelectedConversationId(null);
-            }
-          }}
-        />
-      ) : null}
-
       {addRepositoryOpen ? (
         <AddRepositoryDialog
           onClose={() => setAddRepositoryOpen(false)}
           onAdded={async (repositoryId) => {
-            await loadRepositories();
-            setSelectedRepositoryId(repositoryId);
-          }}
-        />
-      ) : null}
-
-      {repositorySettingsOpen && selectedRepository ? (
-        <RepositorySettingsDialog
-          repository={selectedRepository}
-          onClose={() => setRepositorySettingsOpen(false)}
-          onSaved={(updated) => {
-            setRepositories((rows) => rows.map((row) => (row.id === updated.id ? updated : row)));
+            await loadRepositories(true);
+            const current = routeRef.current;
+            if (current.repositories) selectManagementRepository(repositoryId);
+            else if (current.settings?.section === 'superagent')
+              changeSuperagentRepository(repositoryId);
           }}
         />
       ) : null}

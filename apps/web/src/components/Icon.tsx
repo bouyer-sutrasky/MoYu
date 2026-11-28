@@ -17,6 +17,8 @@ export type IconName =
   | 'monitor'
   | 'chevron-down'
   | 'cloud'
+  | 'repository'
+  | 'sparkles'
   | 'branch'
   | 'task'
   | 'search'
@@ -61,6 +63,8 @@ const paths: Record<IconName, string[]> = {
   monitor: ['M3 4h18v12H3z', 'M8 20h8', 'M12 16v4'],
   'chevron-down': ['M6 9l6 6 6-6'],
   cloud: ['M7 18a5 5 0 0 1-.6-9.96A6 6 0 0 1 18 9a4.5 4.5 0 0 1 .5 9z'],
+  repository: ['M5 3h13v17H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm-2 15a2 2 0 0 1 2-2h13M8 7h6m-6 4h4'],
+  sparkles: ['M12 2l2.4 6.6L21 11l-6.6 2.4L12 20l-2.4-6.6L3 11l6.6-2.4L12 2Zm7 14v4m-2-2h4'],
   branch: [
     'M6 3v12',
     'M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',

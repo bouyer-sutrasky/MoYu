@@ -9,20 +9,37 @@ import { SETTINGS_GROUPS, settingsRoute, type SettingsGroup } from './route.ts';
 import { SettingsProvider } from './settings-kit.tsx';
 import { SourceSettings } from './source.tsx';
 
-const STAGE_GROUPS: readonly SettingsGroup[] = ['source', 'eval', 'execution'];
 export function SettingsPage({
   group,
   query,
   state,
+  error,
+  onRetry,
   deploymentForm,
 }: {
   group: SettingsGroup;
   query: { source?: string; version?: string };
-  state: StateView;
+  state: StateView | undefined;
+  error: Error | undefined;
+  onRetry: () => void;
   deploymentForm: DeploymentForm;
 }) {
-  const { t, navigate } = usePanel();
+  const { t, navigate, repositoryId } = usePanel();
   const content = (() => {
+    if (!state) {
+      return error ? (
+        <div role="alert">
+          <p className="dt-error">{error.message}</p>
+          <button type="button" className="dt-btn" onClick={onRetry}>
+            重试
+          </button>
+        </div>
+      ) : (
+        <p className="dt-hint" role="status">
+          正在读取运行时状态…
+        </p>
+      );
+    }
     switch (group) {
       case 'source':
         return (
@@ -44,8 +61,21 @@ export function SettingsPage({
         );
       case 'prompts':
         return <PromptsPage />;
-      case 'deployment':
-        return <DeploymentPage setup={state.setup} form={deploymentForm} />;
+      case 'deployment': {
+        const instanceId = state.moyuInstanceId;
+        return (
+          <DeploymentPage
+            key={instanceId}
+            setup={state.setup}
+            form={deploymentForm}
+            draftKey={
+              instanceId
+                ? `dsh-superagent/draft/${repositoryId}/${instanceId}/deployment`
+                : undefined
+            }
+          />
+        );
+      }
     }
   })();
   return (
@@ -56,7 +86,6 @@ export function SettingsPage({
             key={value}
             type="button"
             className="dt-settings-link"
-            data-stage={STAGE_GROUPS.includes(value) || undefined}
             aria-current={value === group ? 'page' : undefined}
             onClick={() => navigate(settingsRoute(value), true)}
           >

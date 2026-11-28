@@ -69,6 +69,8 @@ interface ConversationPaneProps {
   onViewAllPending: () => void;
   onRepositoryAction: (action: 'wake' | 'sleep' | 'retry' | 'retry_stop' | 'prepare') => void;
   repositoryActionBusy: boolean;
+  repositoryActionError: string | null;
+  onOpenRepositories: () => void;
 }
 
 function DeliveryBadge({ message }: { message: Message }) {
@@ -177,6 +179,8 @@ export function ConversationPane({
   onViewAllPending,
   onRepositoryAction,
   repositoryActionBusy,
+  repositoryActionError,
+  onOpenRepositories,
 }: ConversationPaneProps) {
   if (mode === 'chat') {
     return (
@@ -206,11 +210,9 @@ export function ConversationPane({
           </span>
           <p className={styles.heroEyebrow}>Work 模式</p>
           <h1 className={styles.heroTitle}>先选择一个仓库</h1>
-          <p className={styles.heroLead}>
-            仓库列表来自服务端真实数据。选择仓库后可以查看已有会话或新建任务。网页添加仓库、实例调度与资源控制将在
-            M5 接入；当前只使用已配置的仓库。
-          </p>
-          <span className={styles.phasePill}>没有可用仓库</span>
+          <button type="button" className={styles.secondaryButton} onClick={onOpenRepositories}>
+            打开仓库
+          </button>
         </div>
       </div>
     );
@@ -254,22 +256,21 @@ export function ConversationPane({
 
   if (!conversation) {
     return (
-      <div className={styles.conversation}>
-        <WorkbenchHome
-          repository={repository}
-          conversations={conversations}
-          conversationsLoading={conversationsLoading}
-          pendingConversations={pendingConversations}
-          pendingCount={pendingCount}
-          pendingHasMore={pendingHasMore}
-          pendingLoading={pendingLoading}
-          onNewTask={onNewTask}
-          onOpenConversation={onOpenConversation}
-          onViewAllPending={onViewAllPending}
-          onRepositoryAction={onRepositoryAction}
-          repositoryActionBusy={repositoryActionBusy}
-        />
-      </div>
+      <WorkbenchHome
+        repository={repository}
+        conversations={conversations}
+        conversationsLoading={conversationsLoading}
+        pendingConversations={pendingConversations}
+        pendingCount={pendingCount}
+        pendingHasMore={pendingHasMore}
+        pendingLoading={pendingLoading}
+        onNewTask={onNewTask}
+        onOpenConversation={onOpenConversation}
+        onViewAllPending={onViewAllPending}
+        onRepositoryAction={onRepositoryAction}
+        repositoryActionBusy={repositoryActionBusy}
+        repositoryActionError={repositoryActionError}
+      />
     );
   }
 

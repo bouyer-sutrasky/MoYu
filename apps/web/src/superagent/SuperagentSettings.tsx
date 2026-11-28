@@ -15,6 +15,7 @@ import type {
   SettingsGroup,
 } from './contract';
 import { SettingsPage } from './client/settings';
+import { ApiError } from './client/api';
 import { usePageForm } from './client/deployment';
 import { PanelProvider, usePanelData } from './client/provider';
 import type { Route } from './client/route';
@@ -26,7 +27,10 @@ class DeploymentForm implements ConfigForm<Record<string, unknown>> {
   private readonly listeners = new Set<() => void>();
   private readAbort: AbortController | undefined;
 
-  constructor(private readonly repositoryId: string) {}
+  constructor(
+    private readonly repositoryId: string,
+    private readonly onSessionLost: () => void,
+  ) {}
 
   getSnapshot(): DeploymentSnapshot<Record<string, unknown>> | undefined {
     return this.snapshot;
@@ -51,6 +55,8 @@ class DeploymentForm implements ConfigForm<Record<string, unknown>> {
         `/api/v1/repositories/${encodeURIComponent(this.repositoryId)}/superagent/deployment`,
         { headers: { accept: 'application/json' }, signal: controller.signal },
       );
+      if (controller.signal.aborted) return;
+      if (response.status === 401) this.onSessionLost();
       if (!response.ok) {
         const body = (await response.json().catch(() => ({}))) as {
           error?: { message?: unknown } | string;
@@ -77,7 +83,7 @@ class DeploymentForm implements ConfigForm<Record<string, unknown>> {
       const body = (await response.json()) as {
         data?: DeploymentSnapshot<Record<string, unknown>>;
       };
-      if (body.data) {
+      if (!controller.signal.aborted && body.data) {
         this.snapshot = { ...body.data, savedPendingReadback: false };
         this.emit();
       }
@@ -139,7 +145,9 @@ class DeploymentForm implements ConfigForm<Record<string, unknown>> {
       };
       error?: { message?: unknown; revision?: number } | string;
       revision?: number;
+      issues?: { path: string; message: string }[];
     };
+    if (response.status === 401) this.onSessionLost();
     if (!response.ok) {
       const error =
         typeof body.error === 'string'
@@ -147,6 +155,13 @@ class DeploymentForm implements ConfigForm<Record<string, unknown>> {
           : typeof body.error?.message === 'string'
             ? body.error.message
             : `Deployment save failed (HTTP ${response.status})`;
+      if (response.status === 409) {
+        await this.reload();
+        throw new ApiError(error, response.status);
+      }
+      if (response.status === 422 && Array.isArray(body.issues)) {
+        throw new ApiError(error, response.status, { issues: body.issues });
+      }
       return {
         saved: false,
         revision: typeof body.revision === 'number' ? body.revision : revision,
@@ -181,12 +196,14 @@ class DeploymentForm implements ConfigForm<Record<string, unknown>> {
 
 function SettingsBody({
   group,
+  query,
   deploymentForm,
 }: {
   group: SettingsGroup;
+  query: { source?: string; version?: string };
   deploymentForm: ConfigForm<Record<string, unknown>>;
 }) {
-  const { state } = usePanelData();
+  const { state, error, reload } = usePanelData();
   // useSyncExternalStore is what makes reload()/mutate() actually reach the
   // Deployment page; a plain getter would keep rendering the first snapshot.
   const pageForm = usePageForm(deploymentForm);
@@ -194,12 +211,13 @@ function SettingsBody({
     if (group === 'deployment') void (deploymentForm as DeploymentForm).reload();
   }, [group, deploymentForm]);
 
-  if (!state) return <p className="dt-hint">正在读取运行时状态…</p>;
   return (
     <SettingsPage
       group={group}
-      query={{}}
+      query={query}
       state={state}
+      error={error}
+      onRetry={() => void reload()}
       deploymentForm={group === 'deployment' ? pageForm : undefined}
     />
   );
@@ -207,43 +225,48 @@ function SettingsBody({
 
 export function SuperagentSettings({
   repositoryId,
-  repositoryName,
   group,
-  onGroupChange,
+  source,
+  version,
+  onNavigate,
+  onSessionLost,
 }: {
-  repositoryId: string | null;
-  repositoryName: string | null;
+  repositoryId: string;
   group: SettingsGroup;
-  onGroupChange: (group: SettingsGroup) => void;
+  source?: string | undefined;
+  version?: string | undefined;
+  onSessionLost: () => void;
+  onNavigate: (query: { group: SettingsGroup; source?: string; version?: string }) => void;
 }) {
   const navigate = useCallback(
     (route: Route) => {
-      if (route.page === 'settings') onGroupChange(route.query.group);
+      if (route.page === 'settings') onNavigate(route.query);
     },
-    [onGroupChange],
+    [onNavigate],
   );
 
-  const deploymentForm = useMemo(() => new DeploymentForm(repositoryId ?? ''), [repositoryId]);
+  const deploymentForm = useMemo(
+    () => new DeploymentForm(repositoryId, onSessionLost),
+    [repositoryId, onSessionLost],
+  );
 
-  if (!repositoryId) {
-    return <p className="dt-hint">先在左侧选择一个仓库，再配置它的 Superagent。</p>;
-  }
   return (
     <div className="dt-scope">
-      <p className="dt-hint">
-        正在配置 <strong>{repositoryName ?? repositoryId}</strong> 的独立实例；A 与 B
-        的配置互不影响。
-      </p>
       <PanelProvider
         key={repositoryId}
         repositoryId={repositoryId}
         t={t}
         interval={5000}
         navigate={navigate}
+        onSessionLost={onSessionLost}
       >
-        {/* The provider key remounts the poll/draft state; the caller also captures
-            repositoryId, so an in-flight request for A can never write into B. */}
-        <SettingsBody group={group} deploymentForm={deploymentForm} />
+        {/* A repository change remounts the draft and polling state. The caller
+            also captures its repository, including for writes already in flight. */}
+        <SettingsBody
+          group={group}
+          query={{ ...(source ? { source } : {}), ...(version ? { version } : {}) }}
+          deploymentForm={deploymentForm}
+        />
       </PanelProvider>
     </div>
   );
